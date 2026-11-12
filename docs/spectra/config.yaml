@@ -66,6 +66,16 @@ context: |
     當掉時重啟，退避 1 秒起倍增、上限 30 秒，期間檢查回 error。
     載入、重載、--check-config 都實際啟動外掛並請它驗證 check_options；無法啟動、握手失敗、驗證逾時（5 秒）
     皆為設定錯誤。外掛超過 timeout_ms 未回覆算 error（外掛應自行在期限內回 down），不算後端失敗。
+  - 內附外掛（emfor-check-plugins）：emfor-check 一個執行檔，第一個參數選 redis / mysql / pgsql；
+    crates/emfor-plugin 處理 protocol 1（emfor-check 與其他 Rust 外掛共用）。每次檢查開新連線；
+    redis PING（有密碼先 AUTH）、mysql 與 pgsql 登入後 SELECT 1；role：redis master/replica（ROLE）、
+    mysql primary（@@global.read_only = 0）、pgsql primary（pg_is_in_recovery() 為 false），可搭配 failover。
+    帳號選項一律叫 user；密碼只用 password_file（絕對路徑，每次檢查重讀，去掉一個結尾換行），不接受 password。
+    TLS：tls（預設 false，不退回明文）、tls_verify、server_name（預設後端 IP）、ca_file（預設系統 CA），
+    tls = false 時設定後三者為錯誤；全部用 rustls（aws-lc-rs）。原因前綴：connect: / timeout / tls: / auth: /
+    query: / role is …（down）；password_file: / ca_file: 讀不到為 error。驅動只連結進 emfor-check。
+    實機測試 tests/plugins/run.sh（Debian 映像 emfor-plugins-test：redis、MariaDB、PostgreSQL 各含主從與 TLS），
+    列入本機檢查；mysql 只以 MariaDB 驗證。
   - client（emfor-clients）：emfor_lookup(名稱, affinity_key?) 回傳 "ip:port"（LMDB 後端 id，IPv6 為 [ip]:port）；
     錯誤碼 UNAVAILABLE（LMDB 打不開／lock 格式不符）、INCOMPATIBLE（版本或 JSON 無法解析）、NOT_FOUND、ALL_DOWN，
     各語言依慣例回報。心跳過期（預設 max_staleness 3 秒）或歸零時所有後端視為未知，依 on_all_down 處理，
@@ -90,7 +100,7 @@ context: |
 
   支援平台：Linux 與 FreeBSD 為正式部署平台（daemon 與所有 client 都要在兩者上通過測試），
   GitHub Actions CI（含 FreeBSD VM）為選用、手動觸發，不擋 change 完成或 archive；以本機驗證為準
-  （macOS 與 Debian 映像的 fmt/clippy/test、Docker 內的 dnsmasq/unbound、Linux VM 上的 systemd-resolved）。
+  （macOS 與 Debian 映像的 fmt/clippy/test、Docker 內的 dnsmasq/unbound 與 tests/plugins/run.sh、Linux VM 上的 systemd-resolved）。
   FreeBSD 目前沒有本機環境，相關檢查留在選用的 CI freebsd job，文件標明尚未在 FreeBSD 上驗證。
   macOS 僅作開發用。FreeBSD 附 rc.d 範例（不做打包）。client 與 daemon 必須用同一份 LMDB 原始碼與編譯選項，
   否則 lock 格式不同（MDB_VERSION_MISMATCH），這由 libemfor 與 daemon 共用 Cargo.lock 保證。
@@ -106,7 +116,8 @@ context: |
   變更拆分：emfor-core（已完成）→ emfor-dns（含 balance 設定欄位、LMDB 欄位、DNS 端行為、resolver 部署文件、FreeBSD CI 與 rc.d 範例）
   → emfor-plugins（已完成）→ emfor-clients（相容性驗證、client-lookup 規格、共用測試資料、Rust client 與 cargo-c 產出的 libemfor）
   → emfor-clients-2（Go、Python、Perl、PHP 包裝 libemfor）→ emfor-balance-2（weighted、locality、不認得的 balance 改用 round-robin）
-  → emfor-dns-srv → emfor-dns-port-warning → emfor-balance-fastest（fastest、latency_us、pool）。
+  → emfor-dns-srv → emfor-dns-port-warning → emfor-balance-fastest（fastest、latency_us、pool）
+  → emfor-check-plugins（emfor-check 的 redis、mysql、pgsql 外掛與 emfor-plugin crate）。
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.

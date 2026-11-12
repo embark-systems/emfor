@@ -105,14 +105,18 @@ backends = [
 # A plugin: a long-running program, shared by every service that uses it,
 # speaking line-delimited JSON on stdin/stdout. See
 # docs/plugins/protocol-v1.md. The plugin validates check_options itself.
-# Commented out because the plugin does not exist on a fresh host.
+# emfor-check is the plugin that ships with emfor; its argument picks
+# redis, mysql or pgsql. See docs/deploy/plugins.md for every option.
+# Commented out because emfor-check is not installed on a fresh host.
 #
 # [plugins."redis"]
-# command = ["/usr/local/libexec/emfor-redis", "--verbose"]
+# command = ["/usr/local/libexec/emfor-check", "redis"]
 #
 # [services."sessions.svc.emfor"]
 # check = "redis"      # the plugin name
 # backends = ["10.0.2.1:6379", "10.0.2.2:6379"]
 #
 # [services."sessions.svc.emfor".check_options]
-# password_file = "/etc/emfor/redis.pass"
+# user = "emfor"
+# password_file = "/etc/emfor/redis.pass"   # never the password itself
+# role = "master"                           # only the master is healthy
