@@ -5,7 +5,7 @@ members = ["crates/emfor-daemon", "crates/emfor-format", "crates/emfor-check", "
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "BSD-2-Clause"
 
 [workspace.dependencies]
 emfor-format = { path = "crates/emfor-format" }

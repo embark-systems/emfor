@@ -4,3 +4,6 @@
 docs/spectra/.vector-search.db*
 /clients/build/
 __pycache__/
+
+# Claude Code settings and skills (local only)
+.claude/
