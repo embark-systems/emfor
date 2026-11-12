@@ -106,6 +106,7 @@ The C library, and every client built on it, must come from the same emfor relea
 | Installing, `emfor status`, systemd, metrics and alerting | [docs/deploy/daemon.md](docs/deploy/daemon.md) |
 | Forwarding the DNS zone from dnsmasq, unbound, systemd-resolved or macOS | [docs/deploy/dns-resolver.md](docs/deploy/dns-resolver.md) |
 | redis, MySQL, PostgreSQL and LDAP checks with `emfor-check` | [docs/deploy/plugins.md](docs/deploy/plugins.md) |
+| Lookup latency and throughput, measured | [docs/performance.md](docs/performance.md) |
 | Writing a checker plugin | [docs/plugins/protocol-v1.md](docs/plugins/protocol-v1.md) |
 | Every config option | [examples/emfor.toml](examples/emfor.toml) |
 | systemd unit, FreeBSD rc.d script, Prometheus alerting rules | [examples/](examples/) |

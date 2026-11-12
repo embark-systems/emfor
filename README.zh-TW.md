@@ -107,6 +107,7 @@ C 函式庫以及所有建立在它之上的 client，必須和 daemon 來自同
 | 安裝、`emfor status`、systemd、指標與告警 | [docs/deploy/daemon.md](docs/deploy/daemon.md) |
 | 從 dnsmasq、unbound、systemd-resolved 或 macOS 轉發 DNS 網域 | [docs/deploy/dns-resolver.md](docs/deploy/dns-resolver.md) |
 | 用 `emfor-check` 檢查 redis、MySQL、PostgreSQL 與 LDAP | [docs/deploy/plugins.md](docs/deploy/plugins.md) |
+| 查詢延遲與吞吐量的實測數據 | [docs/performance.md](docs/performance.md) |
 | 撰寫檢查外掛 | [docs/plugins/protocol-v1.md](docs/plugins/protocol-v1.md) |
 | 所有設定選項 | [examples/emfor.toml](examples/emfor.toml) |
 | systemd 單元檔、FreeBSD rc.d 腳本、Prometheus 告警規則 | [examples/](examples/) |
