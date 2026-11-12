@@ -261,7 +261,7 @@ async fn run(
 
     let (tx, rx) = mpsc::unbounded_channel();
     let history = load_history(&store);
-    let writer = writer::spawn_live(store, rx, live, history, metrics_listen(&config));
+    let writer = writer::spawn_live(store, rx, live, history, listen_keys(&config));
     let mut supervisor = Supervisor::start(&config, tx.clone());
     tracing::info!(
         "emfor started: {} services, {} backends, store {}",
@@ -323,13 +323,14 @@ async fn run(
     ExitCode::from(EXIT_OK)
 }
 
-/// `[metrics] listen` as written to `meta/metrics_listen`: IPv4 as
-/// `<ip>:<port>`, IPv6 as `[<ip>]:<port>`.
-fn metrics_listen(config: &Config) -> Option<Vec<String>> {
-    config
-        .metrics
-        .as_ref()
-        .map(|m| m.listen.iter().map(ToString::to_string).collect())
+/// `[dns] listen` and `[metrics] listen` as written to `meta/dns_listen` and
+/// `meta/metrics_listen`: IPv4 as `<ip>:<port>`, IPv6 as `[<ip>]:<port>`.
+fn listen_keys(config: &Config) -> writer::ListenKeys {
+    let strings = |l: &[std::net::SocketAddr]| l.iter().map(ToString::to_string).collect();
+    writer::ListenKeys {
+        dns: config.dns.as_ref().map(|d| strings(&d.listen)),
+        metrics: config.metrics.as_ref().map(|m| strings(&m.listen)),
+    }
 }
 
 /// DNS warnings for a loaded config: services outside the zone, and
@@ -468,19 +469,24 @@ mod tests {
         port_warnings(&config)
     }
 
-    /// State-store "Metrics listen addresses in the store": the address
-    /// forms written to `meta/metrics_listen`.
+    /// State-store "DNS listen addresses in the store" and "Metrics listen
+    /// addresses in the store": the address forms written to the store.
     #[test]
-    fn metrics_listen_address_forms() {
+    fn listen_key_address_forms() {
         let parse = |text: &str| {
             config::parse(text, &Registry::builtin()).unwrap_or_else(|e| panic!("errors: {e:?}"))
         };
-        let c = parse("[metrics]\nlisten = [\"127.0.0.1:5301\", \"[::1]:5301\"]\n");
-        assert_eq!(
-            metrics_listen(&c),
-            Some(vec!["127.0.0.1:5301".to_owned(), "[::1]:5301".to_owned()])
+        let c = parse(
+            "[dns]\nlisten = [\"127.0.0.1:5300\", \"[::1]:5300\"]\n\n[metrics]\nlisten = [\"127.0.0.1:5301\", \"[::1]:5301\"]\n",
         );
-        assert_eq!(metrics_listen(&parse("")), None);
+        assert_eq!(
+            listen_keys(&c),
+            writer::ListenKeys {
+                dns: Some(vec!["127.0.0.1:5300".into(), "[::1]:5300".into()]),
+                metrics: Some(vec!["127.0.0.1:5301".into(), "[::1]:5301".into()]),
+            }
+        );
+        assert_eq!(listen_keys(&parse("")), writer::ListenKeys::default());
     }
 
     /// Example "which services are reported".

@@ -18,9 +18,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use emfor_format::{
-    BackendRecord, Balance, HIST_KEY_PREFIX, HealthState, HistoryEntry, KEY_HEARTBEAT,
-    KEY_METRICS_LISTEN, KEY_SCHEMA_VERSION, KEY_SITE, KEY_STARTED_AT, OnAllDown, SCHEMA_VERSION,
-    SERVICE_KEY_PREFIX, ServiceHistory, ServiceRecord, hist_key, service_key,
+    BackendRecord, Balance, HIST_KEY_PREFIX, HealthState, HistoryEntry, KEY_DNS_LISTEN,
+    KEY_HEARTBEAT, KEY_METRICS_LISTEN, KEY_SCHEMA_VERSION, KEY_SITE, KEY_STARTED_AT, OnAllDown,
+    SCHEMA_VERSION, SERVICE_KEY_PREFIX, ServiceHistory, ServiceRecord, hist_key, service_key,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::MissedTickBehavior;
@@ -121,10 +121,20 @@ struct Writer<S: Sink> {
     histories: BTreeMap<Arc<str>, ServiceHistory>,
     /// Services whose history changed since the last commit.
     hist_dirty: BTreeSet<Arc<str>>,
-    /// `meta/metrics_listen` written at a fresh start, as JSON; deleted when `None`.
-    metrics_listen: Option<String>,
+    /// `meta/dns_listen` and `meta/metrics_listen` with their JSON values,
+    /// written at a fresh start; a key is deleted when its value is `None`.
+    listen: [(&'static str, Option<String>); 2],
     /// Updated before every commit attempt.
     live: LiveState,
+}
+
+/// The listen addresses of the running daemon, written to `meta/dns_listen`
+/// and `meta/metrics_listen` at a fresh start. `None`: the config has no
+/// such table, and the key is deleted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListenKeys {
+    pub dns: Option<Vec<String>>,
+    pub metrics: Option<Vec<String>>,
 }
 
 /// Spawn the writer task. It runs until it receives [`WriterMsg::Shutdown`]
@@ -143,16 +153,9 @@ pub fn spawn_live<S: Sink>(
     rx: mpsc::UnboundedReceiver<WriterMsg>,
     live: LiveState,
     history: BTreeMap<String, ServiceHistory>,
-    metrics_listen: Option<Vec<String>>,
+    listen: ListenKeys,
 ) -> tokio::task::JoinHandle<()> {
-    spawn_inner(
-        sink,
-        rx,
-        Duration::from_secs(1),
-        live,
-        history,
-        metrics_listen,
-    )
+    spawn_inner(sink, rx, Duration::from_secs(1), live, history, listen)
 }
 
 pub fn spawn_with_tick<S: Sink>(
@@ -160,7 +163,14 @@ pub fn spawn_with_tick<S: Sink>(
     rx: mpsc::UnboundedReceiver<WriterMsg>,
     tick: Duration,
 ) -> tokio::task::JoinHandle<()> {
-    spawn_inner(sink, rx, tick, LiveState::default(), BTreeMap::new(), None)
+    spawn_inner(
+        sink,
+        rx,
+        tick,
+        LiveState::default(),
+        BTreeMap::new(),
+        ListenKeys::default(),
+    )
 }
 
 fn spawn_inner<S: Sink>(
@@ -169,8 +179,14 @@ fn spawn_inner<S: Sink>(
     tick: Duration,
     live: LiveState,
     history: BTreeMap<String, ServiceHistory>,
-    metrics_listen: Option<Vec<String>>,
+    listen: ListenKeys,
 ) -> tokio::task::JoinHandle<()> {
+    let json =
+        |l: Option<Vec<String>>| l.map(|l| serde_json::to_string(&l).expect("strings serialize"));
+    let listen = [
+        (KEY_DNS_LISTEN, json(listen.dns)),
+        (KEY_METRICS_LISTEN, json(listen.metrics)),
+    ];
     tokio::spawn(async move {
         let mut w = Writer {
             sink,
@@ -184,8 +200,7 @@ fn spawn_inner<S: Sink>(
                 .map(|(name, h)| (Arc::from(name), h))
                 .collect(),
             hist_dirty: BTreeSet::new(),
-            metrics_listen: metrics_listen
-                .map(|l| serde_json::to_string(&l).expect("strings serialize")),
+            listen,
         };
         // First tick one period from now: start-up already writes a heartbeat.
         let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + tick, tick);
@@ -264,10 +279,12 @@ impl<S: Sink> Writer<S> {
             let started = unix_ms();
             self.live.set_started_at(started);
             ops.push(Op::Put(KEY_STARTED_AT.into(), started.to_string()));
-            ops.push(match &self.metrics_listen {
-                Some(l) => Op::Put(KEY_METRICS_LISTEN.into(), l.clone()),
-                None => Op::Delete(KEY_METRICS_LISTEN.into()),
-            });
+            for (key, value) in &self.listen {
+                ops.push(match value {
+                    Some(v) => Op::Put((*key).into(), v.clone()),
+                    None => Op::Delete((*key).into()),
+                });
+            }
             ops.push(Op::Put(KEY_HEARTBEAT.into(), unix_ms().to_string()));
             ops.push(Op::DeletePrefix(SERVICE_KEY_PREFIX.into()));
             // History is pruned key by key below, never by prefix: a key the
@@ -513,14 +530,17 @@ mod tests {
         assert_eq!(store.get(KEY_SITE).unwrap(), None);
     }
 
-    /// State-store "Metrics listen addresses in the store": written at a
-    /// fresh start, left alone by a reload, deleted at a start without
-    /// `[metrics]`.
+    /// State-store "DNS listen addresses in the store" and "Metrics listen
+    /// addresses in the store": written at a fresh start, left alone by a
+    /// reload, deleted at a start without the table.
     #[tokio::test]
-    async fn metrics_listen_written_at_start() {
+    async fn listen_keys_written_at_start() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
-        let listen = vec!["127.0.0.1:5301".to_owned(), "[::1]:5301".to_owned()];
+        let listen = ListenKeys {
+            dns: Some(vec!["127.0.0.1:5300".into(), "[::1]:5300".into()]),
+            metrics: Some(vec!["127.0.0.1:5301".into(), "[::1]:5301".into()]),
+        };
         let start = |tx: &mpsc::UnboundedSender<WriterMsg>, fresh_start| {
             tx.send(WriterMsg::SetLayout {
                 fresh_start,
@@ -529,6 +549,16 @@ mod tests {
             })
             .unwrap();
         };
+        let keys = |store: &Store| {
+            (
+                store.get(KEY_DNS_LISTEN).unwrap(),
+                store.get(KEY_METRICS_LISTEN).unwrap(),
+            )
+        };
+        let want = (
+            Some(r#"["127.0.0.1:5300","[::1]:5300"]"#.to_owned()),
+            Some(r#"["127.0.0.1:5301","[::1]:5301"]"#.to_owned()),
+        );
         let (tx, rx) = mpsc::unbounded_channel();
         let w = spawn_inner(
             store.clone(),
@@ -536,24 +566,23 @@ mod tests {
             Duration::from_secs(3600),
             LiveState::default(),
             BTreeMap::new(),
-            Some(listen),
+            listen,
         );
         start(&tx, true);
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let want = Some(r#"["127.0.0.1:5301","[::1]:5301"]"#);
-        assert_eq!(store.get(KEY_METRICS_LISTEN).unwrap().as_deref(), want);
+        assert_eq!(keys(&store), want);
         start(&tx, false);
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(store.get(KEY_METRICS_LISTEN).unwrap().as_deref(), want);
+        assert_eq!(keys(&store), want);
         drop(tx);
         w.await.unwrap();
 
-        // Next run without [metrics]: the earlier value is gone.
+        // Next run without [dns] or [metrics]: the earlier values are gone.
         let (tx, rx) = mpsc::unbounded_channel();
         spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
         start(&tx, true);
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(store.get(KEY_METRICS_LISTEN).unwrap(), None);
+        assert_eq!(keys(&store), (None, None));
     }
 
     #[tokio::test]
@@ -865,7 +894,13 @@ mod tests {
             ("gone.svc.emfor".to_owned(), ServiceHistory::default()),
         ]);
         let (tx, rx) = mpsc::unbounded_channel();
-        spawn_live(store.clone(), rx, LiveState::default(), loaded, None);
+        spawn_live(
+            store.clone(),
+            rx,
+            LiveState::default(),
+            loaded,
+            ListenKeys::default(),
+        );
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
@@ -918,7 +953,13 @@ mod tests {
             ("old.svc.emfor".to_owned(), old),
         ]);
         let (tx, rx) = mpsc::unbounded_channel();
-        spawn_live(store.clone(), rx, LiveState::default(), loaded, None);
+        spawn_live(
+            store.clone(),
+            rx,
+            LiveState::default(),
+            loaded,
+            ListenKeys::default(),
+        );
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
@@ -1030,7 +1071,7 @@ mod tests {
             Duration::from_secs(3600),
             live.clone(),
             BTreeMap::new(),
-            None,
+            ListenKeys::default(),
         );
         let id = "10.0.0.11:8080";
         let svc = "api.svc.emfor";
@@ -1110,7 +1151,7 @@ mod tests {
             Duration::from_secs(3600),
             live.clone(),
             BTreeMap::new(),
-            None,
+            ListenKeys::default(),
         );
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
@@ -1177,7 +1218,7 @@ mod tests {
             Duration::from_secs(3600),
             live.clone(),
             BTreeMap::new(),
-            None,
+            ListenKeys::default(),
         );
         let mut l = layout("a", &["10.0.0.1:80"], 0, true);
         l.dns_ttl = Some(5);
@@ -1260,7 +1301,7 @@ mod tests {
             Duration::from_secs(3600),
             live.clone(),
             BTreeMap::new(),
-            None,
+            ListenKeys::default(),
         );
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,

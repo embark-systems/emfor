@@ -815,34 +815,32 @@ fn status_beside_a_running_daemon() {
 }
 
 /// Status-command "Status text output" and "Status filtering and JSON
-/// output": the daemon line and `--json` show the `[metrics]` addresses the
-/// running daemon wrote to `meta/metrics_listen`.
+/// output": the daemon line and `--json` show the `[dns]` and `[metrics]`
+/// addresses the running daemon wrote to `meta/dns_listen` and
+/// `meta/metrics_listen`.
 #[test]
-fn status_shows_metrics_addresses() {
+fn status_shows_listen_addresses() {
     let (_l, backend) = listener();
-    // Another test can take the port between picking and binding it.
-    let (d, metrics) = (0..5)
+    // Another test can take a port between picking and binding it.
+    let (d, dns, metrics) = (0..5)
         .find_map(|_| {
-            let port = TcpListener::bind("127.0.0.1:0")
-                .unwrap()
-                .local_addr()
-                .unwrap()
-                .port();
-            let metrics = format!("127.0.0.1:{port}");
+            let dns = format!("127.0.0.1:{}", free_port());
+            let metrics = format!("127.0.0.1:{}", free_port());
             let mut d = start(&format!(
-                "[metrics]\nlisten = [\"{metrics}\"]\n\n{}",
+                "[dns]\nlisten = [\"{dns}\"]\n\n[metrics]\nlisten = [\"{metrics}\"]\n\n{}",
                 tcp_service("api.svc.emfor", &backend)
             ));
             std::thread::sleep(Duration::from_millis(200));
-            d.running().then_some((d, metrics))
+            d.running().then_some((d, dns, metrics))
         })
-        .expect("no free metrics port after 5 tries");
+        .expect("no free ports after 5 tries");
     let r = Reader::open(&d.store());
     // Exit status 0 needs a healthy backend.
     wait_for(|| {
         r.service("api.svc.emfor")
             .is_some_and(|s| s.backends[0].state == HealthState::Healthy)
     });
+    assert_eq!(r.get("meta/dns_listen").unwrap(), format!("[\"{dns}\"]"));
     assert_eq!(
         r.get("meta/metrics_listen").unwrap(),
         format!("[\"{metrics}\"]")
@@ -851,10 +849,14 @@ fn status_shows_metrics_addresses() {
     assert_eq!(code, 0, "{out}{err}");
     let line = out.lines().nth(1).unwrap();
     assert!(line.starts_with("daemon: running, "), "{out}");
-    assert!(line.ends_with(&format!(", metrics {metrics}")), "{out}");
+    assert!(
+        line.ends_with(&format!(", dns {dns}, metrics {metrics}")),
+        "{out}"
+    );
     let (code, out, _) = status(&d.config(), &["--json"]);
     assert_eq!(code, 0, "{out}");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["dns_listen"], serde_json::json!([dns]));
     assert_eq!(v["metrics_listen"], serde_json::json!([metrics]));
     let (code, _) = d.stop();
     assert_eq!(code, 0);

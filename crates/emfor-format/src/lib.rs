@@ -22,6 +22,9 @@ pub const KEY_SITE: &str = "meta/site";
 /// `[metrics] listen` of the running daemon as a JSON array of strings;
 /// absent when the config has no `[metrics]` table.
 pub const KEY_METRICS_LISTEN: &str = "meta/metrics_listen";
+/// `[dns] listen` of the running daemon as a JSON array of strings; absent
+/// when the config has no `[dns]` table.
+pub const KEY_DNS_LISTEN: &str = "meta/dns_listen";
 /// Prefix of service record keys: `svc/<service name>`.
 pub const SERVICE_KEY_PREFIX: &str = "svc/";
 

@@ -62,7 +62,7 @@ target/release/emfor --config /tmp/emfor/emfor.toml
 ```console
 $ target/release/emfor status --config /tmp/emfor/emfor.toml
 store: /tmp/emfor/state.mdb
-daemon: running, heartbeat 0.0s ago, up 4.0s, metrics 127.0.0.1:5301
+daemon: running, heartbeat 0.0s ago, up 4.0s, dns 127.0.0.1:5300, metrics 127.0.0.1:5301
 
 web.svc.emfor  round-robin  on_all_down=open
   127.0.0.1:8080  healthy  1.6s ago  4.5ms
