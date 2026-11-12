@@ -4,8 +4,6 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use emfor_plugin::{OptionError, Options};
-use rustls_pki_types::CertificateDer;
-use rustls_pki_types::pem::PemObject;
 use serde_json::Value;
 
 use crate::Kind;
@@ -43,12 +41,7 @@ impl Role {
 }
 
 /// TLS settings; present only with `tls = true`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TlsSettings {
-    pub verify: bool,
-    pub server_name: Option<String>,
-    pub ca_file: Option<PathBuf>,
-}
+pub use emfor_tls::TlsSettings;
 
 /// Validated `check_options`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -147,11 +140,8 @@ fn parse_with(
     let verify = boolean(options, "tls_verify", true, &mut errors);
     let server_name = non_empty_string(options, "server_name", &mut errors);
     let server_name = match server_name {
-        Some(name) if rustls_pki_types::ServerName::try_from(name.as_str()).is_err() => {
-            errors.push(OptionError::new(
-                "server_name",
-                "not a valid host name or IP address",
-            ));
+        Some(name) if let Err(message) = emfor_tls::check_server_name(&name) => {
+            errors.push(OptionError::new("server_name", message));
             None
         }
         other => other,
@@ -258,18 +248,7 @@ fn check_password_file(path: &Path) -> Result<(), String> {
 }
 
 fn check_ca_file(path: &Path) -> Result<(), String> {
-    let bytes = read_option_file(path)?;
-    if load_certificates(&bytes).is_empty() {
-        return Err("no certificate found".into());
-    }
-    Ok(())
-}
-
-/// The PEM certificates in `bytes`; anything else is skipped.
-pub fn load_certificates(bytes: &[u8]) -> Vec<CertificateDer<'static>> {
-    CertificateDer::pem_slice_iter(bytes)
-        .filter_map(Result::ok)
-        .collect()
+    emfor_tls::check_ca_file(path)
 }
 
 /// Remove one trailing `\n` or `\r\n`.

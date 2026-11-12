@@ -69,6 +69,21 @@ backends = ["10.0.7.11:11211", "10.0.7.12:11211"]
 send = "stats\r\n"
 expect = "STAT pid"
 
+# TLS: the checker completes a TLS handshake (no plaintext fallback) and
+# verifies the certificate against server_name (default: the backend IP)
+# using the system's CA certificates, or ca_file. tls_verify = false still
+# encrypts but accepts any certificate. With expect, send and expect run
+# over TLS. The options mean the same as in emfor-check.
+[services."imap.svc.emfor"]
+check = "tcp"
+backends = ["10.0.8.11:993", "10.0.8.12:993"]
+
+[services."imap.svc.emfor".check_options]
+tls = true
+server_name = "imap.internal"
+# ca_file = "/etc/emfor/internal-ca.pem"  # read by --check-config; must exist
+expect = "* OK"
+
 # An HTTP service, checked every second.
 [services."api.svc.emfor"]
 check = "http"

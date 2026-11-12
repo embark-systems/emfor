@@ -602,12 +602,10 @@ name = "emfor-check"
 version = "0.1.0"
 dependencies = [
  "emfor-plugin",
+ "emfor-tls",
  "libc",
  "mysql_async",
- "rcgen",
  "rustls",
- "rustls-native-certs",
- "rustls-pki-types",
  "serde_json",
  "tempfile",
  "tokio",
@@ -637,6 +635,7 @@ dependencies = [
  "async-trait",
  "clap",
  "emfor-format",
+ "emfor-tls",
  "futures",
  "heed",
  "hickory-proto",
@@ -688,6 +687,20 @@ name = "emfor-spike-probe"
 version = "0.1.0"
 dependencies = [
  "heed",
+]
+
+[[package]]
+name = "emfor-tls"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rcgen",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

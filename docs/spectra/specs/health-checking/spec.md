@@ -25,14 +25,20 @@ Every check SHALL produce exactly one result: `up` (the backend passed), `down` 
 
 The `tcp` checker SHALL connect to the backend address. A refused or unreachable connection SHALL be `down`. A local failure to create the socket (such as too many open files) SHALL be `error`.
 
-The `tcp` checker SHALL accept two optional `check_options` keys and no others:
+The `tcp` checker SHALL accept these optional `check_options` keys and no others:
 
-- `send`: a string whose UTF-8 bytes the checker SHALL write to the connection once, right after connecting, without any further unescaping.
+- `send`: a string whose UTF-8 bytes the checker SHALL write to the connection once, right after connecting (after the TLS handshake when `tls = true`), without any further unescaping.
 - `expect`: a string whose UTF-8 bytes SHALL appear, byte for byte and case-sensitively, somewhere in the bytes the backend sends.
+- `tls`: a boolean, default `false`. With `true` the checker SHALL perform a TLS handshake right after connecting and SHALL NOT fall back to plaintext.
+- `tls_verify`: a boolean, default `true`. With `false` the checker SHALL accept any server certificate and still encrypt.
+- `server_name`: a host name or IP address, default the backend IP. The server certificate SHALL match it, and it SHALL be sent as SNI when it is a host name.
+- `ca_file`: an absolute path of a PEM file. The server certificate SHALL be verified against the certificates in it instead of the system's CA certificates.
 
-Validation SHALL fail when `send` or `expect` is not a string, when `send` is set without `expect` (error on `expect`: `required when send is set`), when `expect` is empty, or when `expect` is longer than 16384 bytes. An empty `send` with an `expect` SHALL behave as `expect` alone.
+Validation SHALL fail when `send` or `expect` is not a string, when `send` is set without `expect` (error on `expect`: `required when send is set`), when `expect` is empty, or when `expect` is longer than 16384 bytes; when `tls` or `tls_verify` is not a boolean (`must be a boolean`); when `server_name` is not a valid host name or IP address (`not a valid host name or IP address`); when `ca_file` is not an absolute path (`not an absolute path`), does not exist (`file not found`) or holds no PEM certificate (`no certificate found`); and when `tls_verify`, `server_name` or `ca_file` is set without `tls = true` (`requires tls = true`). An empty `send` with an `expect` SHALL behave as `expect` alone.
 
-Without `expect`, a completed connection SHALL be `up` and the connection SHALL be closed immediately. With `expect`, the checker SHALL write `send` when set, then read from the connection and keep the received bytes, up to 16384 bytes. It SHALL answer `up` and close the connection as soon as the received bytes contain `expect`, including when `expect` spans several reads. It SHALL answer `down` with reason `expect: got "<excerpt>"` when the backend closes the connection, or 16384 bytes have been received, without `expect` appearing. The excerpt SHALL be the first 64 received bytes, escaped so that printable ASCII other than `\`, `'` and `"` stays as is; tab, carriage return and line feed become `\t`, `\r` and `\n`; `\`, `'` and `"` are preceded by `\`; and every other byte becomes `\x` followed by two lowercase hex digits. A failure while writing SHALL be `down` with a reason starting `send: `; a failure while reading, other than the backend closing the connection, SHALL be `down` with a reason starting `expect: `. A check that has not finished within the service's `timeout` SHALL be `down` with reason `timeout`, as for every checker.
+With `tls = true`, a failed TLS handshake or certificate verification SHALL be `down` with a reason starting `tls: `. The handshake SHALL get at most 90% of the time left before the service's `timeout`; when the backend has not completed it by then, the result SHALL be `down` with reason `tls: no answer to the TLS handshake (does the port speak TLS?)`. When less than 100 ms would be left for the handshake, the service's `timeout` SHALL apply instead. When `ca_file` cannot be read during a check, or the host has no system CA certificates and `ca_file` is not set, the result SHALL be `error` with a reason starting `ca_file: ` or `tls: ` respectively.
+
+Without `expect`, a completed connection (with `tls = true`, a completed handshake) SHALL be `up` and the connection SHALL be closed immediately (with `tls = true`, after sending a TLS close_notify). With `expect`, the checker SHALL write `send` when set, then read from the connection and keep the received bytes, up to 16384 bytes. It SHALL answer `up` and close the connection as soon as the received bytes contain `expect`, including when `expect` spans several reads. It SHALL answer `down` with reason `expect: got "<excerpt>"` when the backend closes the connection, or 16384 bytes have been received, without `expect` appearing. The excerpt SHALL be the first 64 received bytes, escaped so that printable ASCII other than `\`, `'` and `"` stays as is; tab, carriage return and line feed become `\t`, `\r` and `\n`; `\`, `'` and `"` are preceded by `\`; and every other byte becomes `\x` followed by two lowercase hex digits. A failure while writing SHALL be `down` with a reason starting `send: `; a failure while reading, other than the backend closing the connection, SHALL be `down` with a reason starting `expect: `. A check that has not finished within the service's `timeout` SHALL be `down` with reason `timeout`, as for every checker.
 
 #### Scenario: Listening backend
 
@@ -121,14 +127,75 @@ Without `expect`, a completed connection SHALL be `up` and the connection SHALL 
 | `{ send = ["a"], expect = "b" }` | `send` | `must be a string` |
 | `expect` of 16385 bytes | `expect` | `must be at most 16384 bytes` |
 
+#### Scenario: TLS handshake succeeds
+
+- **WHEN** a `tcp` service sets `tls = true`, `ca_file` holds the CA that signed the backend certificate and `server_name` matches it
+- **THEN** the result is `up`
+
+#### Scenario: TLS with expected text
+
+- **WHEN** a `tcp` service sets `tls = true` and `expect`, and the backend sends a greeting containing `expect` over TLS after the handshake
+- **THEN** the result is `up`
+
+##### Example: TLS greeting
+
+- **GIVEN** `check_options = { tls = true, server_name = "db.test", ca_file = "/etc/emfor/ca.pem", expect = "+OK" }` and a certificate for `db.test` signed by that CA
+- **WHEN** the backend completes the handshake and sends `+OK ready\r\n`
+- **THEN** the result is `up`
+
+#### Scenario: TLS name mismatch
+
+- **WHEN** `tls = true`, `ca_file` holds the CA that signed the backend certificate, and `server_name` does not match the certificate
+- **THEN** the result is `down` with a reason starting `tls: `
+
+#### Scenario: TLS verification turned off
+
+- **WHEN** `tls = true`, `tls_verify = false` and the backend certificate names another host and is signed by an unknown CA
+- **THEN** the result is `up`
+
+#### Scenario: TLS to a plaintext port
+
+- **WHEN** `tls = true`, the service's `timeout` is 1 s, and the backend accepts the connection but never answers the TLS handshake
+- **THEN** the result is `down` with reason `tls: no answer to the TLS handshake (does the port speak TLS?)` before the timeout passes
+
+#### Scenario: CA file removed after validation
+
+- **WHEN** `ca_file` is deleted after the config was applied
+- **THEN** checks of that service are `error` with a reason starting `ca_file: `
+
+#### Scenario: Invalid TLS options
+
+- **WHEN** a `tcp` service sets a TLS option that breaks the rules above
+- **THEN** validation fails with an error on the named key
+
+##### Example: TLS validation errors
+
+| `check_options` | Error key | Message |
+| --- | --- | --- |
+| `{ tls = "yes" }` | `tls` | `must be a boolean` |
+| `{ server_name = "db.test" }` | `server_name` | `requires tls = true` |
+| `{ tls = false, tls_verify = false }` | `tls_verify` | `requires tls = true` |
+| `{ tls = true, server_name = "not a name" }` | `server_name` | `not a valid host name or IP address` |
+| `{ tls = true, ca_file = "ca.pem" }` | `ca_file` | `not an absolute path` |
+| `{ tls = true, ca_file = "/etc/emfor/missing.pem" }` | `ca_file` | `file not found` |
+| `{ tls = true, ca_file = "/etc/emfor/not-pem.txt" }` | `ca_file` | `no certificate found` |
+
 
 <!-- @trace
-source: emfor-tcp-expect
+source: emfor-tcp-tls
 updated: 2026-11-12
 code:
-  - examples/emfor.toml
+  - crates/emfor-check/src/net.rs
   - crates/emfor-daemon/src/checker/tcp.rs
-  - crates/emfor-daemon/src/config.rs
+  - crates/emfor-tls/Cargo.toml
+  - examples/emfor.toml
+  - crates/emfor-check/Cargo.toml
+  - crates/emfor-check/src/options.rs
+  - crates/emfor-daemon/Cargo.toml
+  - crates/emfor-tls/src/lib.rs
+  - crates/emfor-tls/src/tests.rs
+  - crates/emfor-tls/src/testing.rs
+  - Cargo.toml
 tests:
   - crates/emfor-daemon/tests/daemon.rs
 -->

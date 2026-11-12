@@ -1,0 +1,25 @@
+[package]
+name = "emfor-tls"
+description = "TLS for emfor checks: trust, certificate verification and handshake timing shared by the tcp checker and emfor-check"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# A throwaway CA and a local TLS server, for tests of crates using this one.
+testing = ["dep:rcgen"]
+
+[dependencies]
+libc = "0.2.191"
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"], optional = true }
+rustls = "0.23.46"
+rustls-native-certs = "0.8.5"
+rustls-pki-types = "1.16.0"
+tokio = { version = "1.54.1", features = ["net", "io-util", "time"] }
+tokio-rustls = "0.26.6"
+
+[dev-dependencies]
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["full"] }

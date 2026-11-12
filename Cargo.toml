@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/emfor-daemon", "crates/emfor-format", "crates/emfor-check", "crates/emfor-plugin", "tests/spike/probe", "tools/emfor-fixture", "clients/rust"]
+members = ["crates/emfor-daemon", "crates/emfor-format", "crates/emfor-check", "crates/emfor-plugin", "crates/emfor-tls", "tests/spike/probe", "tools/emfor-fixture", "clients/rust"]
 
 [workspace.package]
 version = "0.1.0"

@@ -345,6 +345,7 @@ fn example_config_is_valid() {
         "balance = \"locality\"",
         "dns_ttl = ",
         "expect = ",
+        "tls = true",
     ] {
         assert!(
             text.lines().any(|l| l.starts_with(line)),
@@ -364,7 +365,7 @@ fn example_config_is_valid() {
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
-        "config ok: 6 services, 15 backends"
+        "config ok: 7 services, 17 backends"
     );
 }
 

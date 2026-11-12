@@ -1,10 +1,15 @@
-//! `tcp` checker: a completed TCP connect is `up`; with `expect`, the
-//! backend's response (after the optional `send`) must contain it.
+//! `tcp` checker: a completed TCP connect is `up`; with `tls = true`, a
+//! completed TLS handshake; with `expect`, the backend's response (after
+//! the optional `send`) must contain it.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
+
+use emfor_tls::{TlsFailure, TlsSettings};
 
 use futures::future::BoxFuture;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use super::{CheckRequest, CheckResult, Checker, CheckerFactory, OptionError, reject_unknown_keys};
@@ -25,7 +30,19 @@ impl CheckerFactory for TcpFactory {
 
     fn validate(&self, options: &toml::Table) -> Result<Arc<dyn Checker>, Vec<OptionError>> {
         let mut errors = Vec::new();
-        reject_unknown_keys(options, &["send", "expect"], &mut errors);
+        reject_unknown_keys(
+            options,
+            &[
+                "send",
+                "expect",
+                "tls",
+                "tls_verify",
+                "server_name",
+                "ca_file",
+            ],
+            &mut errors,
+        );
+        let tls = tls_settings(options, &mut errors);
         let send = string_option(options, "send", &mut errors);
         let expect = string_option(options, "expect", &mut errors);
         let expect = match (&send, expect) {
@@ -50,6 +67,7 @@ impl CheckerFactory for TcpFactory {
             return Err(errors);
         }
         Ok(Arc::new(TcpChecker {
+            tls,
             expect: expect.map(|expect| Expect {
                 send: send.unwrap_or_default().into_bytes(),
                 expect: expect.into_bytes(),
@@ -74,8 +92,84 @@ fn string_option(
     }
 }
 
+/// The TLS options: `Some` with `tls = true`. `tls_verify`, `server_name`
+/// and `ca_file` are checked with the same messages as in emfor-check.
+fn tls_settings(options: &toml::Table, errors: &mut Vec<OptionError>) -> Option<TlsSettings> {
+    let tls = bool_option(options, "tls", false, errors);
+    let verify = bool_option(options, "tls_verify", true, errors);
+    let server_name = match options.get("server_name") {
+        None => None,
+        Some(toml::Value::String(name)) if !name.is_empty() => {
+            match emfor_tls::check_server_name(name) {
+                Ok(()) => Some(name.clone()),
+                Err(message) => {
+                    errors.push(OptionError::new("server_name", message));
+                    None
+                }
+            }
+        }
+        Some(_) => {
+            errors.push(OptionError::new(
+                "server_name",
+                "must be a non-empty string",
+            ));
+            None
+        }
+    };
+    let ca_file = match options.get("ca_file") {
+        None => None,
+        Some(toml::Value::String(path)) => match emfor_tls::check_ca_file(Path::new(path)) {
+            Ok(()) => Some(PathBuf::from(path)),
+            Err(message) => {
+                errors.push(OptionError::new("ca_file", message));
+                None
+            }
+        },
+        Some(_) => {
+            errors.push(OptionError::new("ca_file", "must be a string"));
+            None
+        }
+    };
+    if !tls {
+        for key in ["tls_verify", "server_name", "ca_file"] {
+            if options.contains_key(key) {
+                errors.push(OptionError::new(key, "requires tls = true"));
+            }
+        }
+        return None;
+    }
+    if verify && ca_file.is_none() {
+        // Load the system's CA certificates now, while the config is being
+        // validated, instead of in the first check.
+        emfor_tls::preload_system_roots();
+    }
+    Some(TlsSettings {
+        verify,
+        server_name,
+        ca_file,
+    })
+}
+
+fn bool_option(
+    options: &toml::Table,
+    key: &str,
+    default: bool,
+    errors: &mut Vec<OptionError>,
+) -> bool {
+    match options.get(key) {
+        None => default,
+        Some(toml::Value::Boolean(b)) => *b,
+        Some(_) => {
+            errors.push(OptionError::new(key, "must be a boolean"));
+            default
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct TcpChecker {
+    /// `Some` with `tls = true`.
+    tls: Option<TlsSettings>,
     expect: Option<Expect>,
 }
 
@@ -91,12 +185,29 @@ struct Expect {
 impl Checker for TcpChecker {
     fn check(&self, req: CheckRequest) -> BoxFuture<'_, CheckResult> {
         Box::pin(async move {
+            let start = Instant::now();
             let stream = match TcpStream::connect(req.target).await {
                 Ok(stream) => stream,
                 Err(e) => return io_result("", &e),
             };
+            let Some(tls) = &self.tls else {
+                return match &self.expect {
+                    None => CheckResult::Up,
+                    Some(expect) => expect.run(stream).await,
+                };
+            };
+            let remaining = req.timeout.saturating_sub(start.elapsed());
+            let mut stream =
+                match emfor_tls::handshake(stream, tls, req.target.ip(), remaining).await {
+                    Ok(stream) => stream,
+                    Err(f) => return tls_result(f),
+                };
             match &self.expect {
-                None => CheckResult::Up,
+                None => {
+                    // Send close_notify; the result does not depend on it.
+                    let _ = stream.shutdown().await;
+                    CheckResult::Up
+                }
                 Some(expect) => expect.run(stream).await,
             }
         })
@@ -106,7 +217,7 @@ impl Checker for TcpChecker {
 impl Expect {
     /// Write `send`, then read until `expect` shows up, the backend closes
     /// the connection, or [`MAX_RESPONSE`] bytes have arrived.
-    async fn run(&self, mut stream: TcpStream) -> CheckResult {
+    async fn run(&self, mut stream: impl AsyncRead + AsyncWrite + Unpin) -> CheckResult {
         if !self.send.is_empty()
             && let Err(e) = stream.write_all(&self.send).await
         {
@@ -119,6 +230,8 @@ impl Expect {
             let n = match stream.read(&mut chunk[..want]).await {
                 Ok(0) => break,
                 Ok(n) => n,
+                // A TLS backend that closes without close_notify.
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return io_result("expect: ", &e),
             };
             // Only the new bytes and the tail that could start a match.
@@ -137,6 +250,16 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+/// `error` for a local TLS failure (such as an unreadable `ca_file`),
+/// `down` otherwise.
+fn tls_result(f: TlsFailure) -> CheckResult {
+    if f.local {
+        CheckResult::Error(f.reason)
+    } else {
+        CheckResult::Down(f.reason)
+    }
+}
+
 /// `error` for a local failure, `down` otherwise, with `prefix` in front.
 fn io_result(prefix: &str, e: &std::io::Error) -> CheckResult {
     if is_local_io_error(e) {
@@ -148,13 +271,8 @@ fn io_result(prefix: &str, e: &std::io::Error) -> CheckResult {
 
 /// True when an I/O error is caused by the emfor host itself (out of file
 /// descriptors, buffers, memory, or local ports) rather than the backend.
-pub(crate) fn is_local_io_error(e: &std::io::Error) -> bool {
-    use nix::errno::Errno;
-    matches!(
-        e.raw_os_error().map(Errno::from_raw),
-        Some(Errno::EMFILE | Errno::ENFILE | Errno::ENOBUFS | Errno::ENOMEM | Errno::EADDRNOTAVAIL)
-    )
-}
+/// The same function decides this for TLS handshakes and emfor-check.
+pub(crate) use emfor_tls::is_local_io_error;
 
 #[cfg(test)]
 mod tests {
@@ -419,12 +537,155 @@ expect = "STAT pid""#,
     }
 
     #[test]
+    fn tls_option_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.pem");
+        let not_pem = dir.path().join("not-pem.txt");
+        std::fs::write(&not_pem, "hello").unwrap();
+        let (missing, not_pem) = (missing.display(), not_pem.display());
+        let cases = [
+            (r#"tls = "yes""#.to_string(), "tls", "must be a boolean"),
+            (
+                r#"server_name = "db.test""#.into(),
+                "server_name",
+                "requires tls = true",
+            ),
+            (
+                "tls = false\ntls_verify = false".into(),
+                "tls_verify",
+                "requires tls = true",
+            ),
+            (
+                "tls = true\nserver_name = \"not a name\"".into(),
+                "server_name",
+                "not a valid host name or IP address",
+            ),
+            (
+                "tls = true\nca_file = \"ca.pem\"".into(),
+                "ca_file",
+                "not an absolute path",
+            ),
+            (
+                format!("tls = true\nca_file = \"{missing}\""),
+                "ca_file",
+                "file not found",
+            ),
+            (
+                format!("tls = true\nca_file = \"{not_pem}\""),
+                "ca_file",
+                "no certificate found",
+            ),
+        ];
+        for (opts, key, message) in cases {
+            assert_eq!(
+                checker(&opts).unwrap_err(),
+                vec![OptionError::new(key, message)],
+                "{opts}"
+            );
+        }
+    }
+
+    /// A TLS backend for `db.test` that sends `greeting`, and its CA file.
+    async fn tls_backend(greeting: &'static [u8]) -> (SocketAddr, tempfile::TempDir, String) {
+        let pki = emfor_tls::testing::pki("db.test");
+        let dir = tempfile::tempdir().unwrap();
+        let ca = dir.path().join("ca.pem");
+        std::fs::write(&ca, &pki.ca_pem).unwrap();
+        let addr = emfor_tls::testing::tls_server(pki.server_config, greeting).await;
+        let ca = ca.display().to_string();
+        (addr, dir, ca)
+    }
+
+    async fn check_with(opts: &str, addr: SocketAddr) -> CheckResult {
+        crate::checker::run_check(&*checker(opts).unwrap(), req(addr)).await
+    }
+
+    #[tokio::test]
+    async fn tls_handshake_succeeds() {
+        let (addr, _dir, ca) = tls_backend(b"").await;
+        let opts = format!("tls = true\nserver_name = \"db.test\"\nca_file = \"{ca}\"");
+        assert_eq!(check_with(&opts, addr).await, CheckResult::Up);
+    }
+
+    #[tokio::test]
+    async fn tls_with_expected_text() {
+        let (addr, _dir, ca) = tls_backend(b"+OK ready\r\n").await;
+        let opts =
+            format!("tls = true\nserver_name = \"db.test\"\nca_file = \"{ca}\"\nexpect = \"+OK\"");
+        assert_eq!(check_with(&opts, addr).await, CheckResult::Up);
+    }
+
+    #[tokio::test]
+    async fn tls_close_without_close_notify_keeps_excerpt() {
+        let pki = emfor_tls::testing::pki("db.test");
+        let addr = emfor_tls::testing::tls_server_without_close_notify(
+            pki.server_config,
+            b"-ERR auth\r\n",
+        )
+        .await;
+        let opts = "tls = true\ntls_verify = false\nexpect = \"+OK\"";
+        assert_eq!(
+            check_with(opts, addr).await,
+            CheckResult::Down(r#"expect: got "-ERR auth\r\n""#.into())
+        );
+    }
+
+    #[tokio::test]
+    async fn tls_name_mismatch_is_down() {
+        let (addr, _dir, ca) = tls_backend(b"").await;
+        let opts = format!("tls = true\nserver_name = \"other.test\"\nca_file = \"{ca}\"");
+        match check_with(&opts, addr).await {
+            CheckResult::Down(r) => assert!(r.starts_with("tls: "), "{r}"),
+            other => panic!("expected down, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tls_verification_turned_off() {
+        let (addr, _dir, _ca) = tls_backend(b"").await;
+        let opts = "tls = true\ntls_verify = false\nserver_name = \"other.test\"";
+        assert_eq!(check_with(opts, addr).await, CheckResult::Up);
+    }
+
+    #[tokio::test]
+    async fn tls_to_a_plaintext_port() {
+        let (addr, task) = backend(vec![Hold]).await;
+        let c = checker("tls = true\ntls_verify = false").unwrap();
+        let start = std::time::Instant::now();
+        let r = CheckRequest::new("a", addr, Duration::from_secs(1));
+        assert_eq!(
+            crate::checker::run_check(&*c, r).await,
+            CheckResult::Down(
+                "tls: no answer to the TLS handshake (does the port speak TLS?)".into()
+            )
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ca_file_removed_after_validation_is_error() {
+        let (addr, dir, ca) = tls_backend(b"").await;
+        let c = checker(&format!(
+            "tls = true\nserver_name = \"db.test\"\nca_file = \"{ca}\""
+        ))
+        .unwrap();
+        std::fs::remove_file(dir.path().join("ca.pem")).unwrap();
+        match crate::checker::run_check(&*c, req(addr)).await {
+            CheckResult::Error(r) => assert!(r.starts_with("ca_file: "), "{r}"),
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    use nix::libc as libc_errno;
+
+    #[test]
     fn local_errno_classification() {
         assert!(is_local_io_error(&std::io::Error::from_raw_os_error(
-            nix::libc::EMFILE
+            libc_errno::EMFILE
         )));
         assert!(!is_local_io_error(&std::io::Error::from_raw_os_error(
-            nix::libc::ECONNREFUSED
+            libc_errno::ECONNREFUSED
         )));
     }
 }

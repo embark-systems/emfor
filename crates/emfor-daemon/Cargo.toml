@@ -18,6 +18,7 @@ path = "tests/support/test_plugin.rs"
 async-trait = "0.1.92"
 clap = { version = "4.6.7", features = ["derive"] }
 emfor-format.workspace = true
+emfor-tls = { path = "../emfor-tls" }
 futures = "0.3.34"
 heed = "0.22"
 hickory-proto = "0.26.3"
@@ -36,6 +37,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
+emfor-tls = { path = "../emfor-tls", features = ["testing"] }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["test-util", "full"] }
 tracing-test = "0.2.6"
