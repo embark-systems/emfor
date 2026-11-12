@@ -44,6 +44,17 @@ context: |
     當掉時重啟，退避 1 秒起倍增、上限 30 秒，期間檢查回 error。
     載入、重載、--check-config 都實際啟動外掛並請它驗證 check_options；無法啟動、握手失敗、驗證逾時（5 秒）
     皆為設定錯誤。外掛超過 timeout_ms 未回覆算 error（外掛應自行在期限內回 down），不算後端失敗。
+  - client（emfor-clients）：emfor_lookup(名稱, affinity_key?) 回傳 "ip:port"（LMDB 後端 id，IPv6 為 [ip]:port）；
+    錯誤碼 UNAVAILABLE（LMDB 打不開／鎖不相容）、INCOMPATIBLE（版本或 JSON 無法解析）、NOT_FOUND、ALL_DOWN，
+    各語言依慣例回報。心跳過期（預設 max_staleness 3 秒）或歸零時所有後端視為未知，依 on_all_down 處理，
+    不另設錯誤碼；全部不健康但照樣回傳時第一版不另行通知呼叫端。round-robin 每程序每服務一個 atomic 計數器、
+    起點隨機；sticky 對每台後端算 MD5(affinity_key + 後端 id) 前 4 bytes big-endian 取最大，無 key 用 round-robin。
+    設定只有預設值加環境變數 EMFOR_STORE、EMFOR_MAX_STALENESS；唯讀開檔、每程序開一次、fork 後重開、可多執行緒呼叫。
+    跨語言共用測試資料放 tests/conformance/v1/（JSON：LMDB 內容 + 查詢 → 預期 ip:port 或錯誤碼），
+    由 Rust 小工具 emfor-fixture 轉成 LMDB 檔。第一個任務為相容性驗證（macOS 與 Debian 容器：C 以系統 liblmdb
+    唯讀開檔、PHP dba lmdb handler 讀取；FreeBSD 待 CI）；daemon 內建 liblmdb 0.9.70 使用平台預設鎖機制
+    （Linux／FreeBSD robust mutex、macOS SysV semaphore），不相容時回 MDB_INCOMPATIBLE 而非損壞資料。
+    驗證失敗即停止 emfor-clients，另開 emfor-sqlite-store 改 daemon 儲存層，完成後再繼續。
   - 設定：全域 [defaults] + 每個服務覆寫（interval、timeout、rise、fall、jitter、on_all_down）；
     check_options 交給檢查器驗證；SIGHUP 重載時全部驗證通過才套用。
   - 全部不健康時預設 open（照樣回傳並標記 all_down），可依服務改 closed。
@@ -67,9 +78,11 @@ context: |
   - balance = "weighted"：後端可設 weight，依比例挑選。
   - balance = "zone"：後端可加標籤，client 需知道自己所在機房，優先挑同機房後端。
   - DNS SRV 記錄：需為每台後端產生名稱（例如 b0.api.svc.emfor）作為 SRV 目標，讓支援的程式取得 port。
+  - DNS port 一致性警告：服務在 DNS 網域內但後端 port 不一致時，daemon 啟動與重載時發 warn（經 DNS 只能拿到 IP）。
 
-  變更拆分：emfor-core（已完成）→ emfor-dns（含 balance 設定欄位、LMDB 欄位、DNS 端行為、resolver 部署文件、FreeBSD CI 與 rc.d 範例）→ emfor-plugins
-  → emfor-clients（含 client 端 balance 行為）→ 後續規劃中的分配方式。
+  變更拆分：emfor-core（已完成）→ emfor-dns（含 balance 設定欄位、LMDB 欄位、DNS 端行為、resolver 部署文件、FreeBSD CI 與 rc.d 範例）
+  → emfor-plugins（已完成）→ emfor-clients（相容性驗證、client-lookup 規格、共用測試資料、C 與 Rust client）
+  → emfor-clients-2（Go、Python、Perl、PHP）→ 後續規劃中的分配方式。
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
