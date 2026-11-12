@@ -423,11 +423,17 @@ fn command_change_restarts_plugin_and_resets_backends() {
 #[test]
 fn crash_and_recovery() {
     let mark = marker("crash");
-    // fall × interval = 3s outlasts the 1s restart delay.
-    let settings = "interval = \"200ms\"\ntimeout = \"100ms\"\nrise = 2\nfall = 15\n";
+    // While the block file exists the plugin exits at start, so the outage
+    // lasts past the first restart (1s) until the second (2s later). That
+    // outlasts the store's once-per-second commit of reason changes, so the
+    // `error` results are sure to reach the store. fall × interval = 8s
+    // still outlasts the outage.
+    let block = std::env::temp_dir().join(format!("{mark}.block"));
+    let block_env = format!("EMFOR_TEST_PLUGIN_BLOCK_FILE={}", block.display());
+    let settings = "interval = \"200ms\"\ntimeout = \"100ms\"\nrise = 2\nfall = 40\n";
     let d = Daemon::start(&format!(
         "{}{}",
-        plugin_decl("fake", &[], &mark),
+        plugin_decl("fake", &[&block_env], &mark),
         plugin_service(SVC, "fake", "up", settings)
     ));
     let r = Reader::open(&d.store());
@@ -436,17 +442,19 @@ fn crash_and_recovery() {
             .is_some_and(|b| b.state == HealthState::Healthy)
     });
     let pid = d.started_pids("fake")[0];
+    std::fs::write(&block, "").unwrap();
     kill(Pid::from_raw(pid as i32), Signal::SIGKILL).unwrap();
-    let mut saw_error = false;
+    wait_for("error result during the outage", || {
+        let b = r.backend(SVC).unwrap();
+        assert_eq!(b.state, HealthState::Healthy, "backend left healthy: {b:?}");
+        b.reason.as_deref().is_some_and(|r| r.starts_with("plugin"))
+    });
+    std::fs::remove_file(&block).unwrap();
     wait_for("plugin restarted", || {
         let b = r.backend(SVC).unwrap();
         assert_eq!(b.state, HealthState::Healthy, "backend left healthy: {b:?}");
-        if b.reason.as_deref().is_some_and(|r| r.starts_with("plugin")) {
-            saw_error = true;
-        }
         d.started_pids("fake").len() == 2
     });
-    assert!(saw_error, "no error result during the outage");
     assert_eq!(d.log().matches("test plugin started").count(), 2);
     assert!(d.log().contains("plugin fake exited"), "{}", d.log());
     // Results return after the restart.

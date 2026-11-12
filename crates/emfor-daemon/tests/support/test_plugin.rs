@@ -11,6 +11,8 @@
 //! - `EMFOR_TEST_PLUGIN_PROTOCOL=<n>`: answer the handshake with protocol `n`.
 //! - `EMFOR_TEST_PLUGIN_NO_HELLO=1`: never answer the handshake.
 //! - `EMFOR_TEST_PLUGIN_EXIT_AT_START=1`: exit at once with status 3.
+//! - `EMFOR_TEST_PLUGIN_BLOCK_FILE=<path>`: exit at once with status 3 while
+//!   `<path>` exists, so a test can keep the plugin down across restarts.
 //! - `EMFOR_TEST_PLUGIN_VALIDATE_HANG=1`: never answer `validate`.
 //! - `EMFOR_TEST_PLUGIN_IGNORE_EOF=1`: keep running after stdin closes.
 //! - `EMFOR_TEST_PLUGIN_GARBAGE=1`: write a non-JSON line and an unknown
@@ -44,6 +46,12 @@ fn flag(name: &str) -> bool {
 fn main() {
     if flag("EMFOR_TEST_PLUGIN_EXIT_AT_START") {
         eprintln!("test plugin exiting at start");
+        std::process::exit(3);
+    }
+    if let Some(path) = std::env::var_os("EMFOR_TEST_PLUGIN_BLOCK_FILE")
+        && std::path::Path::new(&path).exists()
+    {
+        eprintln!("test plugin blocked at start");
         std::process::exit(3);
     }
     eprintln!("test plugin started");
