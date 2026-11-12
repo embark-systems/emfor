@@ -1,13 +1,18 @@
 # Client compatibility spike results
 
-Run `tests/spike/run.sh`: it starts emfor with a throwaway store and checks
-that C (the system liblmdb, through `pkg-config lmdb`) and PHP (the `dba`
-`lmdb` handler) can open the store read-only. See design "Compatibility spike
-before any client" in docs/spectra/changes/emfor-clients/design.md.
+`tests/spike/run.sh [1|2]` starts emfor with a throwaway store, runs one
+spike against it, and prints PASS or FAIL per check. See design "Compatibility
+spike before any client" in docs/spectra/changes/emfor-clients/design.md.
 
 The daemon writes the store with heed 0.22, which bundles lmdb-master-sys
 0.2.6: liblmdb 0.9.70 from the `mdb.master` branch (lock version 2, data
 version 1).
+
+# Spike 1: system liblmdb and PHP dba (failed)
+
+`tests/spike/run.sh 1` checks that C (the system liblmdb, through
+`pkg-config lmdb`) and PHP (the `dba` `lmdb` handler) can open the store
+read-only.
 
 ## Results (2026-11-12)
 
@@ -85,3 +90,44 @@ application makes next. Clients keep `MDB_NOTLS`. Without it each thread keeps
 its reader slot until the thread exits, and the slot table is sized once by
 the daemon when it creates the lock file (126 by default, shared by every
 process on the host), so many worker processes would run out of slots.
+
+# Spike 2: cargo-c library with the daemon's LMDB (passed)
+
+`tests/spike/run.sh 2` (the default) builds tests/spike/probe/, a workspace
+member that reads the store with heed and so with the daemon's own LMDB. It is
+installed with `cargo cinstall --features capi` into a temporary prefix. Its
+one export, `probe_heartbeat(path)`, opens the store with
+`MDB_RDONLY | MDB_NOSUBDIR | MDB_NOTLS` and returns `meta/heartbeat`. Every
+check runs against the running daemon:
+
+- **C:** tests/spike/probe_read.c, built with `pkg-config --cflags --libs
+  emforprobe`, reads the heartbeat three times 1s apart and needs it to
+  increase.
+- **Python:** tests/spike/probe_read.py loads the shared library with `ctypes`.
+- **PHP:** tests/spike/probe_read.php calls it through `FFI`. When PHP has the
+  `dba` `lmdb` handler, the script first creates and writes a separate store
+  with `dba`, which uses the system's LMDB. It then calls the probe in the same
+  process and reads the `dba` store again.
+- **Symbols:** tests/spike/check_symbols.sh lists the shared library's exported
+  symbols and fails on any not starting with `probe_`.
+
+## Results (2026-11-12)
+
+| Check | macOS 27.2, arm64 | Debian 13.7 container, arm64 |
+| --- | --- | --- |
+| Toolchain | rustc 1.99.1, cargo-c 0.10.26 | rustc 1.99.1 (`rust:1-trixie`), cargo-c 0.10.26 |
+| C via `pkg-config` | PASS (heartbeat increased over three reads) | PASS |
+| Python `ctypes` | PASS (Python 3.9.6) | PASS (Python 3.13.5) |
+| PHP `FFI` | PASS (PHP 8.5.12; no `dba` `lmdb` handler, so the same-process part was skipped) | PASS (PHP 8.4.27-1~deb13u1): the `dba` store, opened with liblmdb 0.9.31, read the same value before and after the probe call |
+| Exported symbols | PASS: only `probe_heartbeat` | PASS: only `probe_heartbeat` |
+| FreeBSD | not run (CI job, manual dispatch only) | |
+
+Neither exit trigger in design "LMDB exit rule" fires, so emfor-clients
+continues with the store in LMDB and the client exported as `libemfor`.
+
+Two details for the client:
+
+- cbindgen writes C++ by default. tests/spike/probe/cbindgen.toml sets
+  `language = "C"`, and the client crate needs the same file.
+- cargo-c puts the header in `include/<crate name>/` and adds that directory
+  to `Cflags`, so C code includes it as `<emforprobe.h>`.

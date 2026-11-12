@@ -83,7 +83,7 @@ No client exists yet, so there is nothing to migrate. Afterwards this change res
 
 1. **Open the store** (the first time, or after a fork; see "Opening, fork and threads").
    - The file is missing, permission is denied, or any other open error → `UNAVAILABLE`.
-   - The open returns `MDB_VERSION_MISMATCH` or `MDB_INVALID` → `UNAVAILABLE`, with the message: `LMDB format of <path> differs from this libemfor; install libemfor from the same emfor release as the daemon`.
+   - The open returns `MDB_VERSION_MISMATCH` or `MDB_INVALID` → `UNAVAILABLE`, with the message: `LMDB format of <path> differs from this emfor client (<LMDB error text>); install libemfor from the same emfor release as the daemon`. The same text serves the Rust crate and `libemfor`, which share the code.
    - `EMFOR_MAX_STALENESS` is invalid → `UNAVAILABLE`.
 2. **Read the metadata** in one read-only transaction, which steps 3 to 6 also use.
    - `meta/schema_version` is missing → `UNAVAILABLE`: the daemon has not initialized the store.
@@ -101,6 +101,7 @@ No client exists yet, so there is nothing to migrate. Afterwards this change res
    - With none healthy:
      - `on_all_down == "closed"` → `ALL_DOWN`;
      - `"open"` → every backend, in config order, is a candidate.
+   - A service with no backends at all has no candidate, so it gives `ALL_DOWN` whatever its `on_all_down`. The daemon never writes such a record (config requires at least one backend); a hand-made store can.
 6. **Pick one candidate by `balance`** and return its `id`.
 
 | Code | Meaning |
@@ -143,6 +144,7 @@ There is no configuration function. A test entry point that takes the path and s
 - The environment is opened with `MDB_RDONLY | MDB_NOSUBDIR | MDB_NOTLS`, once per process, and reused.
 - `MDB_NOTLS` lets read transactions be created on any thread, and returns the reader slot when each transaction ends. Without it, every thread that ever looked up would keep a slot until it exits. The table has 126 slots for the whole host (see Context), so many worker processes could run out. With `MDB_NOTLS`, each lookup takes a shared lock to claim a slot. On Linux this costs about 1.7 µs per lookup with 8 processes reading at once (tests/spike/RESULTS.md), which is acceptable.
 - A failed open is not remembered: the next lookup tries again, so a client started before the daemon recovers by itself.
+- Before calling LMDB, the client checks that the store file exists. LMDB would otherwise create `<path>-lock` even when the data file is missing, and a lock file owned by an application user could stop the daemon from setting its modes when it starts.
 
 **Fork:** each lookup compares the current pid with the pid that opened the environment. If they differ:
 - the inherited handle is dropped without closing it, because LMDB forbids using it after a fork;
@@ -185,6 +187,7 @@ Fields:
   - `"stale"`: that time minus `2 × max_staleness_ms`;
   - `"zero"`;
   - `"missing"`.
+- **`max_staleness`** (optional) is a raw `EMFOR_MAX_STALENESS` value. When present, the runner passes it through the client's own parser instead of using `max_staleness_ms`, so invalid values are checked through the shared data.
 - **`schema_version`** may be omitted, so the key is absent.
 - **`raw`** holds extra keys written verbatim, for malformed records.
 - **Each lookup** has `name`, an optional `affinity_key`, and exactly one of:
@@ -220,13 +223,14 @@ typedef enum {
 
 emfor_status emfor_lookup(const char *name, const char *affinity_key,
                           char *out, size_t out_len);
-const char *emfor_status_name(emfor_status status); /* "UNAVAILABLE", ... */
+const char *emfor_status_name(int status); /* "UNAVAILABLE", ...; "UNKNOWN" for other values */
 const char *emfor_last_error(void); /* thread-local detail of the last failure on this thread */
 ```
 
 - `affinity_key` may be NULL.
 - On `EMFOR_OK`, `out` holds the NUL-terminated `ip:port`.
 - Each exported function runs its body inside `std::panic::catch_unwind`. A panic becomes `EMFOR_UNAVAILABLE` with the message `internal error: <panic message>`, and never unwinds into C.
+- `emfor_status_name` takes an `int`, not `emfor_status`: C may store any integer in an enum variable, and an out-of-range value received as a Rust enum is undefined behavior. Passing an `emfor_status` to it needs no cast.
 - The strings from `emfor_status_name` are static. The string from `emfor_last_error` stays valid until the next call on the same thread.
 - C programs build with `pkg-config --cflags --libs emfor` after `cargo cinstall --release --features capi --prefix <prefix>` in clients/rust/.
 
@@ -242,7 +246,8 @@ pub enum ErrorCode { Unavailable, Incompatible, NotFound, AllDown }
 // ErrorCode::as_str() -> "UNAVAILABLE" | "INCOMPATIBLE" | "NOT_FOUND" | "ALL_DOWN"
 ```
 
-- It reads the store with heed and parses records with `emfor_format::ServiceRecord`.
+- It reads the store through `lmdb-master-sys`, the LMDB binding inside heed, rather than heed itself. heed keeps a process-wide list of open files and removes a file only when its environment is closed, but a forked child must never close the environment it inherited, so with heed the child could never open the store again. Cargo.lock holds one `lmdb-master-sys`, shared with the daemon through heed; the test clients/rust/tests/same_lmdb.rs fails if a second version appears.
+- It parses records with `emfor_format::ServiceRecord`.
 - It uses `md-5` for the sticky hash.
 - The test entry point is behind the cargo feature `testing`; the C API is behind `capi`.
 

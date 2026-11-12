@@ -1,0 +1,42 @@
+[package]
+name = "emfor-client"
+description = "Look up a healthy backend in the local emfor state store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "emfor_client"
+
+[features]
+# Test entry point (explicit store path and staleness); not public API.
+testing = []
+# C API, built into libemfor with cargo-c.
+capi = []
+
+[dependencies]
+emfor-format.workspace = true
+# heed's LMDB binding, used directly so a forked child can open the store
+# again. Cargo.lock holds one version of it, shared with the daemon through
+# heed (checked by tests/same_lmdb.rs).
+lmdb-master-sys = "0.2"
+md-5 = "0.11"
+serde_json.workspace = true
+
+[dev-dependencies]
+emfor-fixture = { path = "../../tools/emfor-fixture" }
+libc = "0.2"
+serde_json.workspace = true
+tempfile = "3.27.0"
+
+[package.metadata.capi.library]
+name = "emfor"
+
+[package.metadata.capi.header]
+name = "emfor"
+subdirectory = "emfor"
+
+[package.metadata.capi.pkg_config]
+name = "emfor"
+filename = "emfor"
+description = "Look up a healthy backend in the local emfor state store"

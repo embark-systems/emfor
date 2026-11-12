@@ -1,0 +1,15 @@
+[package]
+name = "emfor-fixture"
+description = "Writes emfor conformance test cases into LMDB store files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+emfor-format.workspace = true
+heed = "0.22"
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

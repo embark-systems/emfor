@@ -18,8 +18,8 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
       - name: dnsmasq recipe
         run: tests/resolver/run.sh dnsmasq
       - name: unbound recipe
@@ -35,8 +35,12 @@ jobs:
         with:
           release: "14.3"
           usesh: true
-          prepare: pkg install -y rust
+          # cargo-c, pkgconf, python3 and PHP with FFI: client spike 2
+          # (tests/spike/RESULTS.md). The PHP dba same-process check runs
+          # only if the php84-dba build has the lmdb handler.
+          prepare: pkg install -y rust cargo-c pkgconf python3 php84 php84-ffi php84-dba
           run: |
             rustc --version
-            cargo test --workspace
+            cargo test --workspace --all-features
             sh tests/resolver/freebsd.sh
+            sh tests/spike/run.sh 2

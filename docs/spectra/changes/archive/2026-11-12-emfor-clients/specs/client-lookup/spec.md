@@ -46,7 +46,7 @@ Each failure SHALL carry a human-readable message naming the cause. Each languag
 | `svc/api.svc.emfor` = `{not json` | `INCOMPATIBLE` |
 | `svc/api.svc.emfor` has `"balance":"weighted"` | `INCOMPATIBLE` |
 | no `svc/nope.svc.emfor` key, lookup `nope.svc.emfor` | `NOT_FOUND` |
-| every backend `down`, `on_all_down` = `closed` | `ALL_DOWN` |
+| every backend `unhealthy`, `on_all_down` = `closed` | `ALL_DOWN` |
 
 #### Scenario: Schema check wins over a missing service
 
@@ -105,12 +105,12 @@ When the store is fresh, the candidates SHALL be the backends whose `state` is `
 
 #### Scenario: Unhealthy backends are skipped
 
-- **WHEN** a fresh failover service lists `10.0.1.5:5432` (`down`) then `10.0.1.6:5432` (`healthy`)
+- **WHEN** a fresh failover service lists `10.0.1.5:5432` (`unhealthy`) then `10.0.1.6:5432` (`healthy`)
 - **THEN** the lookup returns `10.0.1.6:5432`
 
 #### Scenario: Open service with every backend down
 
-- **WHEN** a fresh failover service with `on_all_down = "open"` lists `10.0.1.5:5432` (`down`) then `10.0.1.6:5432` (`unknown`)
+- **WHEN** a fresh failover service with `on_all_down = "open"` lists `10.0.1.5:5432` (`unhealthy`) then `10.0.1.6:5432` (`unknown`)
 - **THEN** the lookup returns `10.0.1.5:5432`
 
 ### Requirement: Round-robin spreads lookups across candidates
@@ -124,7 +124,7 @@ For a service with `balance = "round-robin"`, or with no `balance` field, the cl
 
 #### Scenario: Unhealthy backend is never returned
 
-- **WHEN** the same service has `10.0.0.12:8080` marked `down` and is looked up 4 times
+- **WHEN** the same service has `10.0.0.12:8080` marked `unhealthy` and is looked up 4 times
 - **THEN** every result is `10.0.0.11:8080` or `10.0.0.13:8080`, and each appears twice
 
 ### Requirement: Sticky uses rendezvous hashing version 1
@@ -157,9 +157,9 @@ For a service with `balance = "sticky"` and a non-empty affinity key, the client
 | Key | Healthy backends | Result |
 | --- | --- | --- |
 | `user-42` | all three | `10.0.0.12:8080` |
-| `user-42` | `.11`, `.13` (`.12` down) | `10.0.0.11:8080` |
+| `user-42` | `.11`, `.13` (`.12` unhealthy) | `10.0.0.11:8080` |
 | `user-7` | all three | `10.0.0.11:8080` |
-| `user-7` | `.12`, `.13` (`.11` down) | `10.0.0.13:8080` |
+| `user-7` | `.12`, `.13` (`.11` unhealthy) | `10.0.0.13:8080` |
 
 #### Scenario: Empty key falls back to round-robin
 

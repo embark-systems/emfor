@@ -1,0 +1,24 @@
+[
+  {
+    "case": "two healthy round-robin backends",
+    "store": {
+      "schema_version": "1",
+      "heartbeat": "fresh",
+      "raw": {},
+      "services": [
+        {
+          "name": "api.svc.emfor",
+          "on_all_down": "closed",
+          "balance": "round-robin",
+          "all_down": false,
+          "backends": [
+            {"id": "10.0.0.11:8080", "ip": "10.0.0.11", "port": 8080, "state": "healthy", "checked_at": 1, "reason": null},
+            {"id": "10.0.0.12:8080", "ip": "10.0.0.12", "port": 8080, "state": "healthy", "checked_at": 1, "reason": null}
+          ]
+        }
+      ]
+    },
+    "max_staleness_ms": 60000,
+    "lookups": []
+  }
+]
