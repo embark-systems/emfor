@@ -4,6 +4,8 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::cargo_bin;
@@ -15,6 +17,9 @@ use nix::unistd::Pid;
 struct Daemon {
     child: Child,
     dir: tempfile::TempDir,
+    /// Everything the daemon wrote to stderr so far, read by `reader`.
+    log: Arc<Mutex<String>>,
+    reader: Option<JoinHandle<()>>,
 }
 
 impl Daemon {
@@ -27,10 +32,24 @@ impl Daemon {
     fn signal(&self, s: Signal) {
         kill(Pid::from_raw(self.child.id() as i32), s).unwrap();
     }
+    /// Wait until the daemon has logged `text`.
+    fn wait_log(&self, text: &str) {
+        wait_for(|| self.log.lock().unwrap().contains(text));
+    }
+    /// Wait for the daemon to exit; returns (exit code, all of stderr).
+    fn wait(&mut self) -> (i32, String) {
+        let status = self.child.wait().unwrap();
+        if let Some(r) = self.reader.take() {
+            r.join().unwrap();
+        }
+        (
+            status.code().unwrap_or(-1),
+            self.log.lock().unwrap().clone(),
+        )
+    }
     fn stop(mut self) -> (i32, String) {
         self.signal(Signal::SIGTERM);
-        let status = self.child.wait().unwrap();
-        (status.code().unwrap_or(-1), stderr(&mut self.child))
+        self.wait()
     }
 }
 
@@ -38,17 +57,6 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.child.kill();
     }
-}
-
-fn stderr(child: &mut Child) -> String {
-    let mut err = String::new();
-    child
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut err)
-        .unwrap();
-    err
 }
 
 fn header(dir: &std::path::Path) -> String {
@@ -85,7 +93,7 @@ fn spawn(body: &str) -> Daemon {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
     std::fs::write(&cfg, format!("{}{body}", header(dir.path()))).unwrap();
-    let child = Command::new(cargo_bin("emfor"))
+    let mut child = Command::new(cargo_bin("emfor"))
         .arg("--config")
         .arg(&cfg)
         .env_remove("RUST_LOG")
@@ -93,7 +101,23 @@ fn spawn(body: &str) -> Daemon {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    Daemon { child, dir }
+    let mut pipe = child.stderr.take().unwrap();
+    let log = Arc::new(Mutex::new(String::new()));
+    let sink = log.clone();
+    let reader = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n @ 1..) = pipe.read(&mut buf) {
+            sink.lock()
+                .unwrap()
+                .push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+    });
+    Daemon {
+        child,
+        dir,
+        log,
+        reader: Some(reader),
+    }
 }
 
 fn wait_for(mut cond: impl FnMut() -> bool) {
@@ -219,10 +243,10 @@ fn no_dns_table_opens_no_dns_socket() {
     let d = spawn(&service("api.svc.emfor", &["192.0.2.1:9"], ""));
     let store = d.dir.path().join("state.mdb");
     wait_for(|| std::fs::metadata(&store).is_ok_and(|m| m.len() > 0));
-    std::thread::sleep(Duration::from_millis(300));
+    // A DNS server would be reported before this line.
+    d.wait_log("emfor started");
     let (code, err) = d.stop();
     assert_eq!(code, 0);
-    assert!(err.contains("emfor started"), "{err}");
     assert!(!err.contains("DNS server"), "{err}");
 }
 
@@ -235,9 +259,8 @@ fn address_in_use_exits_one() {
         dns_table(port),
         service("api.svc.emfor", &["192.0.2.1:9"], "")
     ));
-    let status = d.child.wait().unwrap();
-    assert_eq!(status.code(), Some(1));
-    let err = stderr(&mut d.child);
+    let (code, err) = d.wait();
+    assert_eq!(code, 1);
     assert!(err.contains(&format!("127.0.0.1:{port}")), "{err}");
 }
 
@@ -320,7 +343,7 @@ fn reload_rejects_listen_change_and_applies_balance_and_ttl() {
         service("api.svc.emfor", &backends, "balance = \"failover\"\n")
     ));
     d.signal(Signal::SIGHUP);
-    std::thread::sleep(Duration::from_millis(500));
+    d.wait_log("reload rejected");
     assert!(ask(other, "api.svc.emfor", RecordType::A).is_none());
     let picks: Vec<String> = (0..2)
         .map(|_| {
@@ -366,7 +389,7 @@ fn reload_removing_dns_table_is_reported_with_other_errors() {
             .replace("timeout = \"100ms\"", "timeout = \"5s\""),
     );
     d.signal(Signal::SIGHUP);
-    std::thread::sleep(Duration::from_millis(500));
+    d.wait_log("reload rejected");
     assert!(
         ask(port, "api.svc.emfor", RecordType::A).is_some(),
         "DNS keeps answering"
@@ -381,14 +404,18 @@ fn reload_adding_dns_table_requires_restart() {
     let d = spawn(&service("api.svc.emfor", &["192.0.2.1:9"], ""));
     let store = d.dir.path().join("state.mdb");
     wait_for(|| std::fs::metadata(&store).is_ok_and(|m| m.len() > 0));
-    let port = free_port();
+    // Held for the whole test, as in
+    // reload_rejects_listen_change_and_applies_balance_and_ttl: another
+    // test's daemon must not answer on it.
+    let held = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
     d.write_config(&format!(
         "{}{}",
         dns_table(port),
         service("api.svc.emfor", &["192.0.2.1:9"], "")
     ));
     d.signal(Signal::SIGHUP);
-    std::thread::sleep(Duration::from_millis(500));
+    d.wait_log("reload rejected");
     assert!(
         ask(port, "api.svc.emfor", RecordType::A).is_none(),
         "no DNS socket opened"
