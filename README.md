@@ -110,6 +110,7 @@ The C library, and every client built on it, must come from the same emfor relea
 | Writing a checker plugin | [docs/plugins/protocol-v1.md](docs/plugins/protocol-v1.md) |
 | Every config option | [examples/emfor.toml](examples/emfor.toml) |
 | systemd unit, FreeBSD rc.d script, Prometheus alerting rules | [examples/](examples/) |
+| Making a release | [RELEASING.md](RELEASING.md) |
 | Requirements (specs) | [docs/spectra/specs/](docs/spectra/specs/) |
 
 ## Platforms
