@@ -22,12 +22,12 @@ Each client library SHALL provide a lookup operation `emfor_lookup(name, affinit
 
 A lookup that cannot return an address SHALL fail with exactly one of these codes, decided by the first step that fails, in this order:
 
-1. `UNAVAILABLE` — the store file cannot be opened (missing, permission denied, incompatible lock format, any other open error), the key `meta/schema_version` is absent, or `EMFOR_MAX_STALENESS` holds an invalid value.
+1. `UNAVAILABLE` — the store file cannot be opened (missing, permission denied, LMDB lock or data format different from the client's, any other open error), the key `meta/schema_version` is absent, or `EMFOR_MAX_STALENESS` holds an invalid value.
 2. `INCOMPATIBLE` — `meta/schema_version` is not `1`, `meta/heartbeat` is missing or not a decimal integer, or the service record cannot be parsed as a version 1 record.
 3. `NOT_FOUND` — no `svc/<name>` key exists for the normalized name.
 4. `ALL_DOWN` — no backend is usable and the service's `on_all_down` is `closed`.
 
-Each failure SHALL carry a human-readable message naming the cause. Each language SHALL expose the code in its own idiom (a status value in C, an error value in Rust) with the code's name available as the exact strings above. A malformed store SHALL NOT make the lookup crash, panic or abort.
+Each failure SHALL carry a human-readable message naming the cause. Each language SHALL expose the code in its own idiom (a status value in the C library, an error value in Rust) with the code's name available as the exact strings above. A malformed store SHALL NOT make the lookup crash, panic or abort.
 
 #### Scenario: Error code by store condition
 
@@ -215,9 +215,49 @@ The client SHALL open the store read-only, at most once per process, and reuse i
 - **WHEN** 8 threads each perform 1000 lookups of a fresh round-robin service with 2 healthy backends
 - **THEN** every lookup returns one of the 2 addresses and none fails
 
+### Requirement: C library shares the daemon's LMDB
+
+The C library `libemfor` SHALL be built from the Rust client crate in the daemon's workspace, so that it reads the store with the same LMDB source and build options as the daemon. Its shared library SHALL export only symbols whose names start with `emfor_`. When the store's LMDB lock or data format differs from the library's, the lookup SHALL fail with `UNAVAILABLE` and a message telling the operator to install `libemfor` from the same emfor release as the daemon. No C function SHALL let a Rust panic unwind into the caller.
+
+#### Scenario: Library from the same release reads the daemon's store
+
+- **WHEN** a C program linked with `libemfor` through `pkg-config emfor` looks up a service in the store of a running daemon from the same workspace build
+- **THEN** the lookup returns one of the service's addresses
+
+#### Scenario: Only emfor symbols are exported
+
+- **WHEN** the dynamic symbol table of the shared library is listed
+- **THEN** every defined exported symbol starts with `emfor_`, so none starts with `mdb_`
+
+#### Scenario: Another LMDB in the same process
+
+- **WHEN** a process has already opened a different store through the system's LMDB library and then calls `emfor_lookup`
+- **THEN** both stores remain readable and the lookup returns an address
+
+#### Scenario: Store written by a different LMDB format
+
+- **WHEN** the store is not in this library's LMDB format: a lock file created by an LMDB build with a different lock format (as with Debian's liblmdb 0.9.31, `MDB_VERSION_MISMATCH`), or a data file LMDB does not recognize (`MDB_INVALID`)
+- **THEN** the lookup fails with `UNAVAILABLE`, and the message names the store path and says to install `libemfor` from the same emfor release as the daemon
+
+#### Scenario: C status values
+
+- **WHEN** the C function `emfor_lookup` ends in each outcome below
+- **THEN** it returns the listed status, and `emfor_status_name` returns the listed name
+
+##### Example: C status mapping
+
+| Outcome | Status | `emfor_status_name` |
+| --- | --- | --- |
+| address written to `out` | `EMFOR_OK` (0) | `OK` |
+| store cannot be opened | `EMFOR_UNAVAILABLE` (1) | `UNAVAILABLE` |
+| `meta/schema_version` = `2` | `EMFOR_INCOMPATIBLE` (2) | `INCOMPATIBLE` |
+| no such service | `EMFOR_NOT_FOUND` (3) | `NOT_FOUND` |
+| closed service, all down | `EMFOR_ALL_DOWN` (4) | `ALL_DOWN` |
+| `name` is NULL, or `out_len` is 8 for `10.0.0.11:8080` | `EMFOR_INVALID_ARGUMENT` (5) | `INVALID_ARGUMENT` |
+
 ### Requirement: Shared conformance data defines the contract
 
-The repository SHALL contain conformance data under `tests/conformance/v1/`: `cases.json`, a list of cases each giving store contents and lookups with their expected address, expected set of addresses, or expected error code; and `sticky-v1.json`, the rendezvous hash and pick vectors. A fixture tool SHALL write a case's store contents to an LMDB file in the daemon's format. Every client library SHALL include a test runner that executes every case and vector and SHALL pass all of them.
+The repository SHALL contain conformance data under `tests/conformance/v1/`: `cases.json`, a list of cases each giving store contents and lookups with their expected address, expected set of addresses, or expected error code; and `sticky-v1.json`, the rendezvous hash and pick vectors. A fixture tool SHALL write a case's store contents to an LMDB file in the daemon's format. Every client interface (the Rust API, the C API, and each later language wrapper) SHALL have a test runner that executes every case and vector, and SHALL pass all of them.
 
 #### Scenario: Client passes the shared cases
 
@@ -227,4 +267,4 @@ The repository SHALL contain conformance data under `tests/conformance/v1/`: `ca
 #### Scenario: Data covers every requirement
 
 - **WHEN** the cases are listed by the requirement they exercise
-- **THEN** each requirement in this capability except thread and fork safety has at least one case, and the four error codes, the three balance methods, both `on_all_down` settings and all four heartbeat forms (fresh, stale, zero, missing) each appear in at least one case
+- **THEN** each requirement in this capability except thread and fork safety and the C library sharing the daemon's LMDB has at least one case, and the four error codes, the three balance methods, both `on_all_down` settings and all four heartbeat forms (fresh, stale, zero, missing) each appear in at least one case

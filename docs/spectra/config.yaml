@@ -8,7 +8,9 @@ context: |
 
   技術棧：
   - daemon：Rust、tokio；DNS 用 hickory-server；LMDB 用 heed；設定檔 TOML（humantime-serde 解析時間）
-  - client：C（liblmdb + 內嵌 cJSON）、Rust、Go（PowerDNS/lmdb-go）、Python（lmdb）、Perl（LMDB_File）、PHP（dba lmdb，備案 FFI）
+  - client：Rust crate emfor-client（heed，與 daemon 同一份 Cargo.lock）以 cargo-c 產出 C library libemfor；
+    C 直接連結，Go（cgo）、Python（ctypes）、Perl（FFI::Platypus 或 XS）、PHP（extension 或 FFI，emfor-clients-2 決定）
+    包裝 libemfor 的動態函式庫。不使用系統 liblmdb、PHP dba 或各語言自帶的 LMDB 套件。
 
   核心決定：
   - 對外介面只有兩條：本機 LMDB（給 client）與只聽 127.0.0.1 的 DNS（給沒有 client 的程式）。不做 HTTP API / gRPC。
@@ -45,27 +47,30 @@ context: |
     載入、重載、--check-config 都實際啟動外掛並請它驗證 check_options；無法啟動、握手失敗、驗證逾時（5 秒）
     皆為設定錯誤。外掛超過 timeout_ms 未回覆算 error（外掛應自行在期限內回 down），不算後端失敗。
   - client（emfor-clients）：emfor_lookup(名稱, affinity_key?) 回傳 "ip:port"（LMDB 後端 id，IPv6 為 [ip]:port）；
-    錯誤碼 UNAVAILABLE（LMDB 打不開／鎖不相容）、INCOMPATIBLE（版本或 JSON 無法解析）、NOT_FOUND、ALL_DOWN，
+    錯誤碼 UNAVAILABLE（LMDB 打不開／lock 格式不符）、INCOMPATIBLE（版本或 JSON 無法解析）、NOT_FOUND、ALL_DOWN，
     各語言依慣例回報。心跳過期（預設 max_staleness 3 秒）或歸零時所有後端視為未知，依 on_all_down 處理，
     不另設錯誤碼；全部不健康但照樣回傳時第一版不另行通知呼叫端。round-robin 每程序每服務一個 atomic 計數器、
     起點隨機；sticky 對每台後端算 MD5(affinity_key + 後端 id) 前 4 bytes big-endian 取最大，無 key 用 round-robin。
     設定只有預設值加環境變數 EMFOR_STORE、EMFOR_MAX_STALENESS；唯讀開檔、每程序開一次、fork 後重開、可多執行緒呼叫。
     跨語言共用測試資料放 tests/conformance/v1/（JSON：LMDB 內容 + 查詢 → 預期 ip:port 或錯誤碼），
-    由 Rust 小工具 emfor-fixture 轉成 LMDB 檔。第一個任務為相容性驗證（macOS 與 Debian 容器：C 以系統 liblmdb
-    唯讀開檔、PHP dba lmdb handler 讀取；FreeBSD 待 CI）；daemon 內建 liblmdb 0.9.70 使用平台預設鎖機制
-    （Linux／FreeBSD robust mutex、macOS SysV semaphore），不相容時回 MDB_INCOMPATIBLE 而非損壞資料。
-    驗證失敗即停止 emfor-clients，另開 emfor-sqlite-store 改 daemon 儲存層，完成後再繼續。
+    由 Rust 小工具 emfor-fixture 轉成 LMDB 檔。
+    相容性驗證結果（2026-11-12，tests/spike/RESULTS.md）：系統 liblmdb 與 PHP dba 都讀不了 daemon 的 store
+    （Debian 0.9.31 資料檔相容但 lock 格式不同；macOS Homebrew 1.0.3 連資料檔都不認得；Homebrew PHP 沒有 lmdb handler），
+    因此 client 改為內嵌 daemon 同一份 LMDB：emfor-client 經 cargo-c 產出 libemfor，cdylib 不對外公開 mdb_* 符號，
+    各語言只包裝動態函式庫（不用 .a）。libemfor 與 emfor 同版本一起發布、一起升級。
+    讀取保留 MDB_NOTLS：每次交易結束歸還讀取槽；不用 MDB_NOTLS 時每條執行緒會一直佔用一個讀取槽，
+    而槽數由 daemon 建立 lock 檔時決定（預設 126，全主機共用）。實測一次查詢 Linux 約 0.2–1.7 µs，SQLite WAL 約 2–6 µs，
+    效能不是選擇依據。
   - 設定：全域 [defaults] + 每個服務覆寫（interval、timeout、rise、fall、jitter、on_all_down）；
     check_options 交給檢查器驗證；SIGHUP 重載時全部驗證通過才套用。
   - 全部不健康時預設 open（照樣回傳並標記 all_down），可依服務改 closed。
-  - LMDB 退場機制：在 emfor-clients 第一個任務判斷。PHP dba 讀不到（FFI 補救在正式環境不可用），
-    或鎖機制不相容（無法讓 client 用與 daemon 相同編譯選項的 liblmdb）時，改用 SQLite WAL
-    （kv 表沿用現有 key 與 JSON、schema_version 升 2，daemon 新增 SQLite 版 Sink）；效能不構成退場理由。
-    完整判斷步驟寫在 emfor-clients 的 design.md。
+  - LMDB 退場機制：只有 cargo-c 版 libemfor 的驗證也失敗（讀不了 daemon 的 store，或同一程序載入其他 LMDB 時衝突）
+    才改用 SQLite WAL（kv 表沿用現有 key 與 JSON、schema_version 升 2、persistent WAL、daemon 新增 SQLite 版 Sink），
+    另開 emfor-sqlite-store；效能不構成退場理由。完整判斷步驟寫在 emfor-clients 的 design.md。
 
   支援平台：Linux 與 FreeBSD 為正式部署平台（daemon 與所有 client 都要在兩者上通過測試，CI 含 FreeBSD VM），
-  macOS 僅作開發用。FreeBSD 附 rc.d 範例（不做打包）。emfor-clients 的第一個驗證項目：各語言 client 與 daemon
-  在 Linux、FreeBSD、macOS 上使用相同的 LMDB 鎖機制（liblmdb 編譯選項不一致會造成鎖不相容），與 PHP dba 驗證並列。
+  macOS 僅作開發用。FreeBSD 附 rc.d 範例（不做打包）。client 與 daemon 必須用同一份 LMDB 原始碼與編譯選項，
+  否則 lock 格式不同（MDB_VERSION_MISMATCH），這由 libemfor 與 daemon 共用 Cargo.lock 保證。
 
   跨語言相容規格（皆帶版本號，以共用測試資料把關）：LMDB 資料格式、外掛訊息格式、affinity_key 分配演算法。
 
@@ -81,8 +86,8 @@ context: |
   - DNS port 一致性警告：服務在 DNS 網域內但後端 port 不一致時，daemon 啟動與重載時發 warn（經 DNS 只能拿到 IP）。
 
   變更拆分：emfor-core（已完成）→ emfor-dns（含 balance 設定欄位、LMDB 欄位、DNS 端行為、resolver 部署文件、FreeBSD CI 與 rc.d 範例）
-  → emfor-plugins（已完成）→ emfor-clients（相容性驗證、client-lookup 規格、共用測試資料、C 與 Rust client）
-  → emfor-clients-2（Go、Python、Perl、PHP）→ 後續規劃中的分配方式。
+  → emfor-plugins（已完成）→ emfor-clients（相容性驗證、client-lookup 規格、共用測試資料、Rust client 與 cargo-c 產出的 libemfor）
+  → emfor-clients-2（Go、Python、Perl、PHP 包裝 libemfor）→ 後續規劃中的分配方式。
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.

@@ -13,7 +13,8 @@
 | 外掛 | plugin | 以常駐子程序形式運作的外部檢查器，透過 stdin/stdout 逐行 JSON 與 emfor 溝通，須在設定檔 `[plugins.*]` 註冊。 | extension、module（「模組」保留給 client） |
 | 負責網域 | `zone`（`[dns] zone`） | emfor DNS 負責回答的網域，預設 `svc.emfor`。只有名稱在這個網域底下的服務能用 DNS 查到；網域以外的查詢回 `REFUSED`。 | domain、suffix |
 | 本機 resolver | resolver | 應用主機上負責所有 DNS 查詢的程式（systemd-resolved、dnsmasq、unbound、FreeBSD `local_unbound`），依網域把負責網域的查詢轉發給 emfor。emfor 本身不是 resolver。 | DNS server（指 emfor 時） |
-| client | client | 各語言（C、Rust、Go、Python、Perl、PHP）的查詢函式庫，對外只提供 `emfor_lookup`，內部讀取本機 LMDB。 | 模組、SDK、driver |
+| client | client | 各語言（C、Rust、Go、Python、Perl、PHP）的查詢函式庫，對外只提供 `emfor_lookup`，內部讀取本機 LMDB。Rust 直接用 crate；其他語言都包裝 `libemfor`。 | 模組、SDK、driver |
+| libemfor | `libemfor`（`.so` / `.dylib`） | 由 Rust crate `emfor-client` 經 cargo-c 產出的 C 函式庫，內嵌與 daemon 同一份 LMDB，C、Go、Python、Perl、PHP client 都包裝它的動態函式庫。必須與 emfor 同版本一起升級。 | 系統 liblmdb、PHP dba（lock 格式與 daemon 不同，讀不了 store） |
 
 ## 狀態與結果
 
@@ -29,7 +30,7 @@
 | 標準用語 | 英文 / 識別字 | 定義 | 避免使用 |
 | --- | --- | --- | --- |
 | 查詢 | `emfor_lookup(名稱, affinity_key?)` | client 唯一的對外呼叫，傳入服務名稱，回傳一個後端的 `ip:port` 字串（即 LMDB 後端記錄的 `id`，IPv6 為 `[ip]:port`）。設定只透過環境變數 `EMFOR_STORE`、`EMFOR_MAX_STALENESS` 覆寫預設值。 | pick、resolve |
-| 錯誤碼 | `UNAVAILABLE` / `INCOMPATIBLE` / `NOT_FOUND` / `ALL_DOWN` | 查詢失敗的原因，各語言共用：LMDB 打不開或鎖機制不相容／格式版本或記錄無法解析／查無服務／沒有健康後端且 `on_all_down = "closed"`。各語言依自身慣例回報（回傳碼、`Result`、`error`、exception）。 | `STALE`（心跳過期不是獨立錯誤） |
+| 錯誤碼 | `UNAVAILABLE` / `INCOMPATIBLE` / `NOT_FOUND` / `ALL_DOWN` | 查詢失敗的原因，各語言共用：LMDB 打不開或 lock 格式不符（`libemfor` 與 daemon 版本不同）／格式版本或記錄無法解析／查無服務／沒有健康後端且 `on_all_down = "closed"`。各語言依自身慣例回報（回傳碼、`Result`、`error`、exception）。 | `STALE`（心跳過期不是獨立錯誤） |
 | 黏著鍵 | `affinity_key` | 由應用程式從 cookie、header 等處取出的值；同一個 key 在後端健康時永遠分到同一台後端。無狀態：原本的後端恢復健康後，key 會回到它身上。 | **`weight_condition`**（已棄用，容易誤解為權重比例） |
 | 分配方式 | `balance` | 每個服務在設定檔指定的挑選後端方式，daemon 寫進 LMDB 服務記錄，client 與 DNS 都依它挑選。值見下表「分配方式的值」。 | 分配規則、策略、algorithm |
 | 黏著分配演算法 | rendezvous hashing（HRW） | `sticky` 使用：對每台候選後端計算 `MD5(key + 後端識別)` 前 4 位元組（big-endian uint32），取最大者。為跨語言規格，帶版本號。 | consistent hash ring、ketama |
@@ -54,3 +55,4 @@
 - `weight_condition` → `affinity_key`：原名稱容易被理解為「依權重比例挑選」，實際語意是依 cookie / header 的值做黏著式分配。
 - 查詢回傳值「後端 IP」→ `ip:port`：同一服務的後端 port 可以不同，只回 IP 會讓應用程式連錯 port；`ip:port` 與設定檔、LMDB `id` 相同。經 DNS 仍只能得到 IP（SRV 屬後續規劃）。
 - 「分配規則」→ 分配方式（`balance`）：原本只有黏著與隨機兩種固定行為，現在改為每個服務在設定檔選擇的方式；rendezvous hashing 改稱黏著分配演算法，只屬於 `sticky`。
+- client 讀 LMDB 的方式「各語言用自己的 LMDB 套件」→ `libemfor`：相容性驗證發現系統 liblmdb 與 PHP dba 的 lock 格式和 daemon 不同，讀不了 store。
