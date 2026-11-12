@@ -138,4 +138,23 @@ scrape_configs:
 
 The default address is loopback only, for a Prometheus or agent on the same host. To scrape from elsewhere, listen on an address the scraper can reach and allow only the scraper's address in the host firewall: the endpoint has no authentication and no TLS, and it shows every service name and backend address.
 
-For alerting on a service, `emfor_service_all_down == 1` matches the `ALL DOWN` of `emfor status`; `sum by (service, backend) (increase(emfor_backend_transitions_total{to!="unknown"}[10m])) >= 5` is close to the `FLAPPING` mark (5 or more changes between `healthy` and `unhealthy` in 10 minutes).
+### Alerting rules
+
+[`examples/prometheus/emfor-rules.yml`](../../examples/prometheus/emfor-rules.yml) has alerting rules for a scrape job named `emfor`:
+
+| Alert | Fires when | Severity |
+| --- | --- | --- |
+| `EmforMetricsDown` | The endpoint cannot be scraped for 2 minutes | critical |
+| `EmforServiceAllDown` | A service is `ALL DOWN` for 1 minute | critical |
+| `EmforStoreCommitFailing` | A store commit failed in the last 5 minutes; clients soon see a stale heartbeat | critical |
+| `EmforBackendUnhealthy` | A backend is unhealthy for 10 minutes | warning |
+| `EmforBackendFlapping` | 5 or more changes between `healthy` and `unhealthy` in 10 minutes, like the `FLAPPING` mark of `emfor status` | warning |
+| `EmforBackendCheckErrors` | More than half of a backend's checks in 10 minutes end in `error` (the check could not decide), for 10 minutes | warning |
+| `EmforBackendNotChecked` | A backend's last check is over 5 minutes old, for 5 minutes | warning |
+
+The durations are starting points; set them from the services' `interval`, `rise` and `fall`. `EmforBackendNotChecked` fires on services whose `interval` is close to 5 minutes, so raise its threshold if you have any. [`emfor-rules.test.yml`](../../examples/prometheus/emfor-rules.test.yml) next to it holds unit tests for the rules. After you change the rules, run both commands below; they were last checked with promtool 3.5.0:
+
+```sh
+promtool check rules examples/prometheus/emfor-rules.yml
+promtool test rules examples/prometheus/emfor-rules.test.yml
+```

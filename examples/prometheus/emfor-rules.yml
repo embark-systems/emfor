@@ -1,0 +1,72 @@
+# Alerting rules for emfor's /metrics; see docs/deploy/daemon.md, section
+# "Alerting rules". Assumes the scrape job is named "emfor". Thresholds are
+# starting points: adjust the "for" durations to the services' intervals.
+#
+# Check with: promtool check rules emfor-rules.yml
+#             promtool test rules emfor-rules.test.yml
+groups:
+  - name: emfor
+    rules:
+      - alert: EmforMetricsDown
+        expr: up{job="emfor"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "emfor on {{ $labels.instance }} cannot be scraped"
+          description: "The daemon is down or its [metrics] listen address is unreachable. Clients report every service as unknown once the store heartbeat is older than 3 seconds."
+
+      - alert: EmforServiceAllDown
+        expr: emfor_service_all_down == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} has no healthy backend"
+          description: "Same as ALL DOWN in emfor status. Lookups follow on_all_down: open picks from all backends, closed fails."
+
+      - alert: EmforBackendUnhealthy
+        expr: emfor_backend_state{state="unhealthy"} == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.backend }} of {{ $labels.service }} unhealthy for 10 minutes"
+          description: "emfor already routes around it; emfor status shows the last failure message."
+
+      - alert: EmforBackendFlapping
+        expr: sum by (instance, service, backend) (increase(emfor_backend_transitions_total{to!="unknown"}[10m])) >= 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.backend }} of {{ $labels.service }} is flapping"
+          description: "{{ $value | humanize }} changes between healthy and unhealthy in 10 minutes, like the FLAPPING mark of emfor status. Consider raising rise or fall."
+
+      - alert: EmforBackendCheckErrors
+        expr: |
+          sum by (instance, service, backend) (increase(emfor_backend_checks_total{result="error"}[10m]))
+            / sum by (instance, service, backend) (increase(emfor_backend_checks_total[10m]))
+            > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Most checks of {{ $labels.backend }} of {{ $labels.service }} end in error"
+          description: "An error means the check could not decide (a broken plugin, bad check_options), not that the backend is down. After interval * fall of errors the backend turns unknown."
+
+      - alert: EmforBackendNotChecked
+        expr: time() - emfor_backend_last_check_timestamp_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.backend }} of {{ $labels.service }} not checked for over 5 minutes"
+          description: "Its check task is stuck. Raise the threshold for services with an interval near 5 minutes."
+
+      - alert: EmforStoreCommitFailing
+        expr: increase(emfor_store_commit_failures_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "emfor on {{ $labels.instance }} cannot write its state store"
+          description: "Clients read the store: while commits fail its heartbeat ages and they report services as unknown. Check the daemon log and the store's map_size and disk."

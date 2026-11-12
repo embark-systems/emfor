@@ -1,0 +1,133 @@
+# Unit tests for emfor-rules.yml: promtool test rules emfor-rules.test.yml
+rule_files:
+  - emfor-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'up{job="emfor",instance="h1:5301"}'
+        values: '1 0 0 0'
+      - series: 'emfor_service_all_down{job="emfor",instance="h1:5301",service="api.svc.emfor"}'
+        values: '0 1 1 1'
+      - series: 'emfor_service_all_down{job="emfor",instance="h1:5301",service="db.svc.emfor"}'
+        values: '0 0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: EmforMetricsDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: EmforMetricsDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: emfor, instance: "h1:5301"}
+            exp_annotations:
+              summary: "emfor on h1:5301 cannot be scraped"
+              description: "The daemon is down or its [metrics] listen address is unreachable. Clients report every service as unknown once the store heartbeat is older than 3 seconds."
+      - eval_time: 1m
+        alertname: EmforServiceAllDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: EmforServiceAllDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: emfor, instance: "h1:5301", service: api.svc.emfor}
+            exp_annotations:
+              summary: "api.svc.emfor has no healthy backend"
+              description: "Same as ALL DOWN in emfor status. Lookups follow on_all_down: open picks from all backends, closed fails."
+
+  - interval: 1m
+    input_series:
+      - series: 'emfor_backend_state{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.12:8080",state="unhealthy"}'
+        values: '1x15'
+      - series: 'emfor_backend_state{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.11:8080",state="unhealthy"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: EmforBackendUnhealthy
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: EmforBackendUnhealthy
+        exp_alerts:
+          - exp_labels: {severity: warning, job: emfor, instance: "h1:5301", service: api.svc.emfor, backend: "10.0.0.12:8080", state: unhealthy}
+            exp_annotations:
+              summary: "10.0.0.12:8080 of api.svc.emfor unhealthy for 10 minutes"
+              description: "emfor already routes around it; emfor status shows the last failure message."
+
+  # Six changes in six minutes flap; two do not, and transitions to unknown
+  # (start, check changes) are not counted.
+  - interval: 1m
+    input_series:
+      - series: 'emfor_backend_transitions_total{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.12:8080",to="healthy"}'
+        values: '0 1 1 2 2 3 3'
+      - series: 'emfor_backend_transitions_total{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.12:8080",to="unhealthy"}'
+        values: '0 0 1 1 2 2 3'
+      - series: 'emfor_backend_transitions_total{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.11:8080",to="healthy"}'
+        values: '0 1 1 1 1 1 1'
+      - series: 'emfor_backend_transitions_total{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.11:8080",to="unhealthy"}'
+        values: '0 0 1 1 1 1 1'
+      - series: 'emfor_backend_transitions_total{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.11:8080",to="unknown"}'
+        values: '0 1 2 3 4 5 6'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: EmforBackendFlapping
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: "h1:5301", service: api.svc.emfor, backend: "10.0.0.12:8080"}
+            exp_annotations:
+              summary: "10.0.0.12:8080 of api.svc.emfor is flapping"
+              description: "6 changes between healthy and unhealthy in 10 minutes, like the FLAPPING mark of emfor status. Consider raising rise or fall."
+
+  - interval: 1m
+    input_series:
+      - series: 'emfor_backend_checks_total{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.12:8080",result="error"}'
+        values: '0+30x20'
+      - series: 'emfor_backend_checks_total{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.12:8080",result="up"}'
+        values: '0x20'
+      - series: 'emfor_backend_checks_total{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.11:8080",result="error"}'
+        values: '0+1x20'
+      - series: 'emfor_backend_checks_total{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.11:8080",result="up"}'
+        values: '0+29x20'
+      # Last check stuck at 0 for one backend, current for the other.
+      - series: 'emfor_backend_last_check_timestamp_seconds{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.12:8080"}'
+        values: '0x20'
+      - series: 'emfor_backend_last_check_timestamp_seconds{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.11:8080"}'
+        values: '0+60x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EmforBackendCheckErrors
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: EmforBackendCheckErrors
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: "h1:5301", service: api.svc.emfor, backend: "10.0.0.12:8080"}
+            exp_annotations:
+              summary: "Most checks of 10.0.0.12:8080 of api.svc.emfor end in error"
+              description: "An error means the check could not decide (a broken plugin, bad check_options), not that the backend is down. After interval * fall of errors the backend turns unknown."
+      - eval_time: 10m
+        alertname: EmforBackendNotChecked
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: EmforBackendNotChecked
+        exp_alerts:
+          - exp_labels: {severity: warning, job: emfor, instance: "h1:5301", service: api.svc.emfor, backend: "10.0.0.12:8080"}
+            exp_annotations:
+              summary: "10.0.0.12:8080 of api.svc.emfor not checked for over 5 minutes"
+              description: "Its check task is stuck. Raise the threshold for services with an interval near 5 minutes."
+
+  - interval: 1m
+    input_series:
+      - series: 'emfor_store_commit_failures_total{job="emfor",instance="h1:5301"}'
+        values: '0 0 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: EmforStoreCommitFailing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: EmforStoreCommitFailing
+        exp_alerts:
+          - exp_labels: {severity: critical, job: emfor, instance: "h1:5301"}
+            exp_annotations:
+              summary: "emfor on h1:5301 cannot write its state store"
+              description: "Clients read the store: while commits fail its heartbeat ages and they report services as unknown. Check the daemon log and the store's map_size and disk."
+      - eval_time: 8m
+        alertname: EmforStoreCommitFailing
+        exp_alerts: []
