@@ -18,6 +18,15 @@ install -m 0755 target/release/emfor /usr/local/sbin/emfor
 
 - The prefix must be an absolute path; anything else fails the build.
 - `cargo install --root <dir>` only decides where the binary goes. Cargo does not pass it to the build, so set `EMFOR_PREFIX` as well.
+
+With `cargo install`, name each crate: the repository root is a workspace, not a package, so `cargo install --path .` fails with "found a virtual manifest". From an unpacked source release or a checkout:
+
+```sh
+EMFOR_PREFIX=/usr/local cargo install --locked --path crates/emfor-daemon --root /usr/local
+cargo install --locked --path crates/emfor-check --root /usr/local
+```
+
+This installs `emfor` and `emfor-check` into `/usr/local/bin`; nothing else in the crates is installed. Packaging systems that run `cargo install` per crate (for example `CARGO_INSTALL_PATH` in FreeBSD ports) take the same two paths, `crates/emfor-daemon` and `crates/emfor-check`, with `EMFOR_PREFIX` set to the package prefix in the build environment.
 - `emfor --help` shows the path that was built in, after `--config`.
 - Only the config path changes. The store stays at the `[store] path` of the config (default `/var/lib/emfor/state.mdb`), and clients keep their own default; see the client READMEs.
 

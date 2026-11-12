@@ -9,10 +9,16 @@ license.workspace = true
 name = "emfor"
 path = "src/main.rs"
 
-# Plugin used by emfor's own tests; see tests/support/test_plugin.rs.
+# Plugin used by emfor's own tests; see tests/support/test_plugin.rs. Built
+# only with the test-plugin feature, so `cargo install` leaves it out; the
+# dev-dependency on this crate below turns the feature on for `cargo test`.
 [[bin]]
 name = "emfor-test-plugin"
 path = "tests/support/test_plugin.rs"
+required-features = ["test-plugin"]
+
+[features]
+test-plugin = []
 
 [dependencies]
 async-trait = "0.1.92"
@@ -38,6 +44,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
+emfor-daemon = { path = ".", features = ["test-plugin"] }
 emfor-tls = { path = "../emfor-tls", features = ["testing"] }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["test-util", "full"] }

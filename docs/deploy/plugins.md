@@ -20,6 +20,8 @@ cargo build --release --bin emfor-check
 install -m 0755 target/release/emfor-check /usr/local/libexec/emfor-check
 ```
 
+Or with `cargo install`, which puts it in `<root>/bin`: `cargo install --locked --path crates/emfor-check --root /usr/local` (see [daemon.md](daemon.md#building-with-an-install-prefix)).
+
 The database drivers (and the LDAP encoder) are linked into `emfor-check` only; the `emfor` daemon and libemfor do not contain them.
 
 ## Configuring

@@ -634,6 +634,7 @@ dependencies = [
  "assert_cmd",
  "async-trait",
  "clap",
+ "emfor-daemon",
  "emfor-format",
  "emfor-tls",
  "futures",
