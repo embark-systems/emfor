@@ -121,33 +121,46 @@ impl Checker for ExecChecker {
             };
             let mut guard = GroupGuard(child.id().map(|id| Pid::from_raw(id as i32)));
             let stdout = child.stdout.take().expect("stdout is piped");
-            let mut reader = tokio::spawn(read_limited(stdout));
-            let status = match child.wait().await {
-                Ok(s) => s,
-                Err(e) => return CheckResult::Error(format!("cannot wait for {program}: {e}")),
-            };
-            guard.kill_now();
-            // Background children may keep stdout open; don't wait for them.
-            let out = match tokio::time::timeout(STDOUT_GRACE, &mut reader).await {
-                Ok(Ok(bytes)) => bytes,
-                _ => {
-                    reader.abort();
-                    Vec::new()
+            // Read stdout in this future (not a spawned task) into a buffer
+            // owned here, so bytes already read are kept even when the grace
+            // period below runs out.
+            let mut out = Vec::new();
+            let status = {
+                let read = read_limited(stdout, &mut out);
+                tokio::pin!(read);
+                let mut eof = false;
+                let status = tokio::select! {
+                    s = child.wait() => s,
+                    () = &mut read => {
+                        eof = true;
+                        child.wait().await
+                    }
+                };
+                let status = match status {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return CheckResult::Error(format!("cannot wait for {program}: {e}"));
+                    }
+                };
+                guard.kill_now();
+                // Background children may keep stdout open; don't wait for them.
+                if !eof {
+                    let _ = tokio::time::timeout(STDOUT_GRACE, &mut read).await;
                 }
+                status
             };
             outcome(status, &first_line(&out))
         })
     }
 }
 
-/// Read up to [`STDOUT_LIMIT`] bytes, then drain the rest so the command
-/// never blocks on a full pipe.
-async fn read_limited(mut r: impl AsyncRead + Unpin) -> Vec<u8> {
-    let mut kept = Vec::new();
+/// Read up to [`STDOUT_LIMIT`] bytes into `kept`, then drain the rest so the
+/// command never blocks on a full pipe. Returns at end of file or on error.
+async fn read_limited(mut r: impl AsyncRead + Unpin, kept: &mut Vec<u8>) {
     let mut buf = [0u8; 4096];
     loop {
         match r.read(&mut buf).await {
-            Ok(0) | Err(_) => return kept,
+            Ok(0) | Err(_) => return,
             Ok(n) => {
                 let room = STDOUT_LIMIT.saturating_sub(kept.len());
                 kept.extend_from_slice(&buf[..n.min(room)]);
@@ -206,9 +219,13 @@ mod tests {
         t
     }
 
+    /// Run a script as `/bin/sh <script>`. Executing the freshly written
+    /// script itself fails now and then with ETXTBSY ("Text file busy") on
+    /// Linux: a process forked by a parallel test can still hold the write
+    /// descriptor inherited from the test that wrote the script.
     fn checker_for(path: &Path) -> Arc<dyn Checker> {
         ExecFactory
-            .validate(&options(&[path.to_str().unwrap()]))
+            .validate(&options(&["/bin/sh", path.to_str().unwrap()]))
             .unwrap()
     }
 
@@ -282,6 +299,34 @@ mod tests {
         );
     }
 
+    /// A child that leaves the process group survives the kill and keeps
+    /// stdout open, so reading stops at the grace period; the first line
+    /// already read must still be the reason.
+    #[tokio::test]
+    async fn reason_is_kept_when_stdout_stays_open() {
+        let dir = TempDir::new().unwrap();
+        let ready = dir.path().join("ready");
+        let pidfile = dir.path().join("child.pid");
+        let body = format!(
+            "echo 'still the reason'\n\
+             perl -e 'setpgrp(0, 0); open(F, \">\", $ARGV[0]); close(F); sleep 30' {ready} &\n\
+             echo $! > {pid}\n\
+             while [ ! -f {ready} ]; do sleep 0.01; done\n\
+             exit 1",
+            ready = ready.display(),
+            pid = pidfile.display(),
+        );
+        let p = script(&dir, "check", &body);
+        let r = run_check(checker_for(&p).as_ref(), req(Duration::from_secs(5))).await;
+        let child: i32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let _ = nix::sys::signal::kill(Pid::from_raw(child), Signal::SIGKILL);
+        assert_eq!(r, CheckResult::Down("still the reason".into()));
+    }
+
     #[tokio::test]
     async fn backend_is_passed_in_environment() {
         let r = run(
@@ -297,14 +342,58 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let p = script(&dir, "check", r#"echo "$1|$2"; exit 1"#);
         let c = ExecFactory
-            .validate(&options(&[p.to_str().unwrap(), "a b", "$HOME"]))
+            .validate(&options(&["/bin/sh", p.to_str().unwrap(), "a b", "$HOME"]))
             .unwrap();
         let r = run_check(c.as_ref(), req(Duration::from_secs(5))).await;
         assert_eq!(r, CheckResult::Down("a b|$HOME".into()));
     }
 
+    /// Whether `pid` is still running. A zombie (killed but not yet reaped
+    /// by init, which can lag under load) counts as gone: it has terminated.
     fn alive(pid: i32) -> bool {
-        nix::sys::signal::kill(Pid::from_raw(pid), None).is_ok()
+        if nix::sys::signal::kill(Pid::from_raw(pid), None).is_err() {
+            return false;
+        }
+        !is_zombie(pid)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn is_zombie(pid: i32) -> bool {
+        // Field 3 of /proc/<pid>/stat, after the parenthesised command name.
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|s| {
+                let rest = &s[s.rfind(')')? + 1..];
+                rest.split_whitespace().next().map(|state| state == "Z")
+            })
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn is_zombie(pid: i32) -> bool {
+        std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim_start()
+                    .starts_with('Z')
+            })
+            .unwrap_or(false)
+    }
+
+    /// Wait until `pid` is gone, up to a generous deadline so a loaded
+    /// machine does not fail the test; a child that really survives the
+    /// kill still fails it.
+    async fn assert_gone(pid: i32) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while alive(pid) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "background child {pid} still running"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     #[tokio::test]
@@ -323,13 +412,7 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        for _ in 0..50 {
-            if !alive(child) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        panic!("background child {child} still running");
+        assert_gone(child).await;
     }
 
     #[tokio::test]
@@ -349,14 +432,7 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        // The orphaned child is reaped by init; give it a moment.
-        for _ in 0..50 {
-            if !alive(child) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        panic!("background child {child} still running");
+        assert_gone(child).await;
     }
 
     #[test]
