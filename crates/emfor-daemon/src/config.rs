@@ -1,0 +1,807 @@
+//! TOML config: parsing, defaults and per-service overrides, validation.
+//!
+//! The file is walked key by key (instead of `serde` with
+//! `deny_unknown_fields`) so that every violation is reported, each with its
+//! TOML path, rather than stopping at the first one.
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use emfor_format::OnAllDown;
+
+use crate::checker::{Checker, Registry};
+
+pub const DEFAULT_CONFIG_PATH: &str = "/etc/emfor/emfor.toml";
+
+/// One validation problem, located by TOML path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigError {
+    pub path: String,
+    pub message: String,
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.path.is_empty() {
+            f.write_str(&self.message)
+        } else {
+            write!(f, "{}: {}", self.path, self.message)
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreConfig {
+    pub path: PathBuf,
+    pub map_size: usize,
+    pub file_mode: u32,
+    pub lock_file_mode: u32,
+}
+
+impl Default for StoreConfig {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::from("/var/lib/emfor/state.mdb"),
+            map_size: 64 * 1024 * 1024,
+            file_mode: 0o644,
+            lock_file_mode: 0o666,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogConfig {
+    pub level: String,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            level: "info".into(),
+        }
+    }
+}
+
+/// Effective check settings of a service.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Settings {
+    pub interval: Duration,
+    pub timeout: Duration,
+    pub rise: u32,
+    pub fall: u32,
+    /// Fraction of `interval`, 0.0 to 0.5.
+    pub jitter: f64,
+    pub on_all_down: OnAllDown,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(2),
+            timeout: Duration::from_secs(1),
+            rise: 2,
+            fall: 3,
+            jitter: 0.10,
+            on_all_down: OnAllDown::Open,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Backend {
+    /// Normalized backend string (`ip:port`, IPv6 as `[addr]:port`).
+    pub id: String,
+    pub addr: SocketAddr,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServiceConfig {
+    /// Normalized service name.
+    pub name: String,
+    pub check: String,
+    pub check_options: toml::Table,
+    pub checker: Arc<dyn Checker>,
+    pub settings: Settings,
+    pub backends: Vec<Backend>,
+}
+
+impl ServiceConfig {
+    /// True when `check` or `check_options` differ, which resets backend state on reload.
+    pub fn check_changed(&self, other: &ServiceConfig) -> bool {
+        self.check != other.check || self.check_options != other.check_options
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub store: StoreConfig,
+    pub log: LogConfig,
+    /// Sorted by name.
+    pub services: Vec<ServiceConfig>,
+}
+
+impl Config {
+    pub fn backend_count(&self) -> usize {
+        self.services.iter().map(|s| s.backends.len()).sum()
+    }
+}
+
+/// Read and validate a config file.
+pub fn load(path: &Path, registry: &Registry) -> Result<Config, Vec<ConfigError>> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        vec![ConfigError {
+            path: String::new(),
+            message: format!("cannot read {}: {e}", path.display()),
+        }]
+    })?;
+    parse(&text, registry)
+}
+
+/// Parse and validate config text.
+pub fn parse(text: &str, registry: &Registry) -> Result<Config, Vec<ConfigError>> {
+    let root: toml::Table = text.parse().map_err(|e: toml::de::Error| {
+        vec![ConfigError {
+            path: String::new(),
+            message: format!("invalid TOML: {}", e.message()),
+        }]
+    })?;
+    let mut v = Validator::default();
+    let config = v.root(&root, registry);
+    if v.errors.is_empty() {
+        Ok(config)
+    } else {
+        Err(v.errors)
+    }
+}
+
+/// Parse only the `[store]` table. `None` when the TOML is unreadable or the
+/// table itself is invalid. Used on reload to report a `[store]` change even
+/// when other parts of the file fail validation.
+pub fn parse_store(text: &str) -> Option<StoreConfig> {
+    let root: toml::Table = text.parse().ok()?;
+    let mut v = Validator::default();
+    let store = v.store(&root);
+    v.errors.is_empty().then_some(store)
+}
+
+/// Lowercase and strip one trailing dot.
+pub fn normalize_service_name(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    lower.strip_suffix('.').map(str::to_string).unwrap_or(lower)
+}
+
+fn valid_service_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 253
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+}
+
+/// TOML key quoted when it is not a bare key, as in `services."api.svc.emfor"`.
+fn key_path(parent: &str, key: &str) -> String {
+    let bare = !key.is_empty()
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    let k = if bare {
+        key.to_string()
+    } else {
+        format!("\"{key}\"")
+    };
+    if parent.is_empty() {
+        k
+    } else {
+        format!("{parent}.{k}")
+    }
+}
+
+/// Settings explicitly present in one table (`[defaults]` or a service).
+#[derive(Default)]
+struct PartialSettings {
+    interval: Option<Duration>,
+    timeout: Option<Duration>,
+    rise: Option<u32>,
+    fall: Option<u32>,
+    jitter: Option<f64>,
+    on_all_down: Option<OnAllDown>,
+}
+
+impl PartialSettings {
+    fn over(&self, base: &Settings) -> Settings {
+        Settings {
+            interval: self.interval.unwrap_or(base.interval),
+            timeout: self.timeout.unwrap_or(base.timeout),
+            rise: self.rise.unwrap_or(base.rise),
+            fall: self.fall.unwrap_or(base.fall),
+            jitter: self.jitter.unwrap_or(base.jitter),
+            on_all_down: self.on_all_down.unwrap_or(base.on_all_down),
+        }
+    }
+}
+
+const SETTING_KEYS: &[&str] = &[
+    "interval",
+    "timeout",
+    "rise",
+    "fall",
+    "jitter",
+    "on_all_down",
+];
+
+#[derive(Default)]
+struct Validator {
+    errors: Vec<ConfigError>,
+}
+
+impl Validator {
+    fn err(&mut self, path: impl Into<String>, message: impl Into<String>) {
+        self.errors.push(ConfigError {
+            path: path.into(),
+            message: message.into(),
+        });
+    }
+
+    fn unknown_keys(&mut self, table: &toml::Table, parent: &str, allowed: &[&str]) {
+        for key in table.keys() {
+            if !allowed.contains(&key.as_str()) {
+                self.err(key_path(parent, key), "unknown key");
+            }
+        }
+    }
+
+    fn table<'a>(&mut self, root: &'a toml::Table, key: &str) -> Option<&'a toml::Table> {
+        match root.get(key) {
+            None => None,
+            Some(toml::Value::Table(t)) => Some(t),
+            Some(_) => {
+                self.err(key, "must be a table");
+                None
+            }
+        }
+    }
+
+    fn string<'a>(&mut self, table: &'a toml::Table, parent: &str, key: &str) -> Option<&'a str> {
+        match table.get(key) {
+            None => None,
+            Some(toml::Value::String(s)) => Some(s),
+            Some(_) => {
+                self.err(key_path(parent, key), "must be a string");
+                None
+            }
+        }
+    }
+
+    fn root(&mut self, root: &toml::Table, registry: &Registry) -> Config {
+        self.unknown_keys(root, "", &["store", "log", "defaults", "services"]);
+        let store = self.store(root);
+        let log = self.log(root);
+
+        let defaults_table = self.table(root, "defaults");
+        let defaults_partial = match defaults_table {
+            Some(t) => {
+                self.unknown_keys(t, "defaults", SETTING_KEYS);
+                self.settings(t, "defaults")
+            }
+            None => PartialSettings::default(),
+        };
+        let defaults = defaults_partial.over(&Settings::default());
+        if defaults.timeout > defaults.interval {
+            self.err("defaults.timeout", "timeout must not exceed interval");
+        }
+
+        let mut services = Vec::new();
+        if let Some(svcs) = self.table(root, "services") {
+            let mut seen: HashMap<String, String> = HashMap::new();
+            let ordered: BTreeMap<&String, &toml::Value> = svcs.iter().collect();
+            for (raw_name, value) in ordered {
+                let path = key_path("services", raw_name);
+                let name = normalize_service_name(raw_name);
+                if !valid_service_name(&name) {
+                    self.err(&path, "invalid service name: labels of [a-z0-9-], 1-63 characters each, 253 characters total");
+                } else if let Some(first) = seen.insert(name.clone(), raw_name.clone()) {
+                    self.err(
+                        &path,
+                        format!("duplicate service \"{name}\" (also defined as \"{first}\")"),
+                    );
+                }
+                let toml::Value::Table(t) = value else {
+                    self.err(&path, "must be a table");
+                    continue;
+                };
+                if let Some(s) = self.service(t, &path, name, &defaults, registry) {
+                    services.push(s);
+                }
+            }
+        }
+        services.sort_by(|a, b| a.name.cmp(&b.name));
+        Config {
+            store,
+            log,
+            services,
+        }
+    }
+
+    fn store(&mut self, root: &toml::Table) -> StoreConfig {
+        let mut store = StoreConfig::default();
+        let Some(t) = self.table(root, "store") else {
+            return store;
+        };
+        self.unknown_keys(
+            t,
+            "store",
+            &["path", "map_size", "file_mode", "lock_file_mode"],
+        );
+        if let Some(p) = self.string(t, "store", "path") {
+            if p.is_empty() {
+                self.err("store.path", "must not be empty");
+            } else {
+                store.path = PathBuf::from(p);
+            }
+        }
+        if let Some(s) = self.string(t, "store", "map_size") {
+            match parse_size(s) {
+                Some(n) if n >= 1024 * 1024 => store.map_size = n,
+                Some(_) => self.err("store.map_size", "must be at least 1MiB"),
+                None => self.err("store.map_size", "invalid size, use e.g. \"64MiB\""),
+            }
+        }
+        for (key, slot) in [
+            ("file_mode", &mut store.file_mode),
+            ("lock_file_mode", &mut store.lock_file_mode),
+        ] {
+            if let Some(s) = self.string(t, "store", key) {
+                match u32::from_str_radix(s, 8) {
+                    Ok(m) if m <= 0o777 => *slot = m,
+                    _ => self.err(
+                        format!("store.{key}"),
+                        "must be an octal mode string such as \"0644\"",
+                    ),
+                }
+            }
+        }
+        store
+    }
+
+    fn log(&mut self, root: &toml::Table) -> LogConfig {
+        let mut log = LogConfig::default();
+        let Some(t) = self.table(root, "log") else {
+            return log;
+        };
+        self.unknown_keys(t, "log", &["level"]);
+        if let Some(l) = self.string(t, "log", "level") {
+            if ["trace", "debug", "info", "warn", "error"].contains(&l) {
+                log.level = l.to_string();
+            } else {
+                self.err(
+                    "log.level",
+                    "must be one of trace, debug, info, warn, error",
+                );
+            }
+        }
+        log
+    }
+
+    fn duration(&mut self, t: &toml::Table, parent: &str, key: &str) -> Option<Duration> {
+        let s = self.string(t, parent, key)?;
+        match humantime::parse_duration(s) {
+            Ok(d) => Some(d),
+            Err(_) => {
+                self.err(
+                    key_path(parent, key),
+                    format!("invalid duration \"{s}\", use e.g. \"500ms\" or \"2s\""),
+                );
+                None
+            }
+        }
+    }
+
+    fn count(&mut self, t: &toml::Table, parent: &str, key: &str) -> Option<u32> {
+        match t.get(key)? {
+            toml::Value::Integer(n) if *n >= 1 && *n <= u32::MAX as i64 => Some(*n as u32),
+            toml::Value::Integer(_) => {
+                self.err(key_path(parent, key), format!("{key} must be at least 1"));
+                None
+            }
+            _ => {
+                self.err(key_path(parent, key), "must be an integer");
+                None
+            }
+        }
+    }
+
+    fn settings(&mut self, t: &toml::Table, parent: &str) -> PartialSettings {
+        let mut p = PartialSettings::default();
+        if let Some(d) = self.duration(t, parent, "interval") {
+            if d < Duration::from_millis(100) {
+                self.err(key_path(parent, "interval"), "interval below 100ms");
+            } else {
+                p.interval = Some(d);
+            }
+        }
+        if let Some(d) = self.duration(t, parent, "timeout") {
+            if d.is_zero() {
+                self.err(
+                    key_path(parent, "timeout"),
+                    "timeout must be greater than zero",
+                );
+            } else {
+                p.timeout = Some(d);
+            }
+        }
+        p.rise = self.count(t, parent, "rise");
+        p.fall = self.count(t, parent, "fall");
+        if let Some(s) = self.string(t, parent, "jitter") {
+            match s
+                .strip_suffix('%')
+                .and_then(|n| n.trim().parse::<f64>().ok())
+            {
+                Some(pct) if (0.0..=50.0).contains(&pct) => p.jitter = Some(pct / 100.0),
+                Some(_) => self.err(key_path(parent, "jitter"), "jitter above 50% or below 0%"),
+                None => self.err(
+                    key_path(parent, "jitter"),
+                    format!("invalid jitter \"{s}\", use e.g. \"10%\""),
+                ),
+            }
+        }
+        if let Some(s) = self.string(t, parent, "on_all_down") {
+            match s {
+                "open" => p.on_all_down = Some(OnAllDown::Open),
+                "closed" => p.on_all_down = Some(OnAllDown::Closed),
+                _ => self.err(
+                    key_path(parent, "on_all_down"),
+                    "must be \"open\" or \"closed\"",
+                ),
+            }
+        }
+        p
+    }
+
+    fn service(
+        &mut self,
+        t: &toml::Table,
+        path: &str,
+        name: String,
+        defaults: &Settings,
+        registry: &Registry,
+    ) -> Option<ServiceConfig> {
+        let mut allowed = vec!["check", "backends", "check_options"];
+        allowed.extend_from_slice(SETTING_KEYS);
+        self.unknown_keys(t, path, &allowed);
+
+        let partial = self.settings(t, path);
+        let settings = partial.over(defaults);
+        if (partial.interval.is_some() || partial.timeout.is_some())
+            && settings.timeout > settings.interval
+        {
+            self.err(
+                key_path(path, "timeout"),
+                "timeout must not exceed interval",
+            );
+        }
+
+        let backends = self.backends(t, path);
+
+        let check_options = match t.get("check_options") {
+            None => toml::Table::new(),
+            Some(toml::Value::Table(o)) => o.clone(),
+            Some(_) => {
+                self.err(key_path(path, "check_options"), "must be a table");
+                toml::Table::new()
+            }
+        };
+        let check = match t.get("check") {
+            None => {
+                self.err(key_path(path, "check"), "missing required key");
+                None
+            }
+            Some(toml::Value::String(c)) => Some(c.clone()),
+            Some(_) => {
+                self.err(key_path(path, "check"), "must be a string");
+                None
+            }
+        }?;
+        let Some(factory) = registry.get(&check) else {
+            self.err(
+                key_path(path, "check"),
+                format!("unknown checker `{check}`"),
+            );
+            return None;
+        };
+        let checker = match factory.validate(&check_options) {
+            Ok(c) => c,
+            Err(errs) => {
+                let opts_path = key_path(path, "check_options");
+                for e in errs {
+                    self.err(format!("{opts_path}.{}", e.key), e.message);
+                }
+                return None;
+            }
+        };
+        Some(ServiceConfig {
+            name,
+            check,
+            check_options,
+            checker,
+            settings,
+            backends: backends?,
+        })
+    }
+
+    fn backends(&mut self, t: &toml::Table, path: &str) -> Option<Vec<Backend>> {
+        let bpath = key_path(path, "backends");
+        let items = match t.get("backends") {
+            None => {
+                self.err(&bpath, "missing required key");
+                return None;
+            }
+            Some(toml::Value::Array(a)) if a.is_empty() => {
+                self.err(&bpath, "must not be empty");
+                return None;
+            }
+            Some(toml::Value::Array(a)) => a,
+            Some(_) => {
+                self.err(&bpath, "must be an array of \"ip:port\" strings");
+                return None;
+            }
+        };
+        let before = self.errors.len();
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        for (i, item) in items.iter().enumerate() {
+            let ipath = format!("{bpath}[{i}]");
+            let Some(s) = item.as_str() else {
+                self.err(ipath, "must be a string");
+                continue;
+            };
+            match s.parse::<SocketAddr>() {
+                Ok(addr) if addr.port() != 0 => {
+                    if !seen.insert(addr) {
+                        self.err(ipath, format!("duplicate backend \"{s}\""));
+                    } else {
+                        out.push(Backend { id: addr.to_string(), addr });
+                    }
+                }
+                _ => self.err(
+                    ipath,
+                    format!("backend \"{s}\" must be an IP literal with port: IPv4:port or [IPv6]:port, port 1-65535"),
+                ),
+            }
+        }
+        (self.errors.len() == before).then_some(out)
+    }
+}
+
+/// Parse `"64MiB"`, `"512KiB"`, `"1GiB"`, or a plain byte count.
+fn parse_size(s: &str) -> Option<usize> {
+    let s = s.trim();
+    let (num, mult) = [
+        ("GiB", 1usize << 30),
+        ("MiB", 1 << 20),
+        ("KiB", 1 << 10),
+        ("B", 1),
+    ]
+    .iter()
+    .find_map(|(suf, m)| s.strip_suffix(suf).map(|n| (n.trim(), *m)))
+    .unwrap_or((s, 1));
+    num.parse::<usize>().ok()?.checked_mul(mult)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_ok(text: &str) -> Config {
+        parse(text, &Registry::builtin()).unwrap_or_else(|e| panic!("errors: {e:?}"))
+    }
+
+    fn parse_err(text: &str) -> Vec<ConfigError> {
+        parse(text, &Registry::builtin()).expect_err("expected validation errors")
+    }
+
+    const SVC: &str = r#"
+[services."api.svc.emfor"]
+check = "tcp"
+backends = ["10.0.0.1:80"]
+"#;
+
+    #[test]
+    fn effective_settings_resolution() {
+        // Rows of the "effective settings resolution" example.
+        let rows: &[(&str, &str, u64, u32)] = &[
+            ("", "", 2, 3),
+            ("[defaults]\ninterval = \"5s\"\n", "", 5, 3),
+            (
+                "[defaults]\ninterval = \"5s\"\nfall = 5\n",
+                "interval = \"1s\"\n",
+                1,
+                5,
+            ),
+        ];
+        for (defaults, svc_extra, interval, fall) in rows {
+            let c = parse_ok(&format!("{defaults}{SVC}{svc_extra}"));
+            let s = &c.services[0].settings;
+            assert_eq!(
+                s.interval,
+                Duration::from_secs(*interval),
+                "{defaults:?} {svc_extra:?}"
+            );
+            assert_eq!(s.fall, *fall);
+        }
+    }
+
+    #[test]
+    fn service_inherits_and_overrides() {
+        let c = parse_ok(&format!(
+            "[defaults]\ninterval = \"5s\"\n{SVC}interval = \"1s\"\n"
+        ));
+        let s = c.services[0].settings;
+        assert_eq!(s.interval, Duration::from_secs(1));
+        assert_eq!(s.timeout, Duration::from_secs(1));
+        assert_eq!((s.rise, s.fall), (2, 3));
+        assert!((s.jitter - 0.10).abs() < 1e-9);
+        assert_eq!(s.on_all_down, OnAllDown::Open);
+    }
+
+    #[test]
+    fn built_in_defaults_without_any_tables() {
+        let c = parse_ok(SVC);
+        assert_eq!(c.services[0].settings, Settings::default());
+        assert_eq!(c.store, StoreConfig::default());
+        assert_eq!(c.log.level, "info");
+    }
+
+    #[test]
+    fn name_normalization() {
+        let c = parse_ok(
+            "[services.\"API.svc.emfor.\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
+        );
+        assert_eq!(c.services[0].name, "api.svc.emfor");
+    }
+
+    #[test]
+    fn duplicate_after_normalization() {
+        let e = parse_err(&format!(
+            "{SVC}\n[services.\"API.SVC.EMFOR\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.2:80\"]\n"
+        ));
+        assert!(
+            e.iter()
+                .any(|e| e.message.contains("duplicate service \"api.svc.emfor\"")),
+            "{e:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_service_names() {
+        for bad in ["-api.svc", "api..svc", "api_svc", "a.b-"] {
+            let e = parse_err(&format!(
+                "[services.\"{bad}\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n"
+            ));
+            assert!(
+                e.iter()
+                    .any(|e| e.message.starts_with("invalid service name")),
+                "{bad}: {e:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn multiple_errors_reported_together() {
+        let e = parse_err(
+            "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\ninterval = \"2s\"\ntimeout = \"3s\"\nbackends = [\"10.0.0.1:70000\"]\n",
+        );
+        assert!(
+            e.iter()
+                .any(|e| e.path == "services.\"api.svc.emfor\".timeout"),
+            "{e:?}"
+        );
+        assert!(
+            e.iter()
+                .any(|e| e.path == "services.\"api.svc.emfor\".backends[0]"),
+            "{e:?}"
+        );
+    }
+
+    #[test]
+    fn validation_outcomes_table() {
+        // Rows of the "validation outcomes" example: (service lines, expected message fragment or None for ok).
+        let rows: &[(&str, Option<&str>)] = &[
+            (
+                "interval = \"50ms\"\ntimeout = \"10ms\"\n",
+                Some("interval below 100ms"),
+            ),
+            ("interval = \"1s\"\ntimeout = \"1s\"\n", None),
+            (
+                "interval = \"1s\"\ntimeout = \"2s\"\n",
+                Some("timeout must not exceed interval"),
+            ),
+            ("jitter = \"60%\"\n", Some("jitter above 50%")),
+            (
+                "backends = [\"db.local:5432\"]\n",
+                Some("must be an IP literal with port"),
+            ),
+            ("backends = [\"[2001:db8::1]:8080\"]\n", None),
+            ("chekc = \"tcp\"\n", Some("unknown key")),
+            ("check = \"redis\"\n", Some("unknown checker `redis`")),
+        ];
+        for (lines, expected) in rows {
+            let mut svc = String::from("[services.\"api.svc.emfor\"]\n");
+            svc.push_str(lines);
+            if !lines.contains("check ") && !lines.contains("check=") {
+                svc.push_str("check = \"tcp\"\n");
+            }
+            if !lines.contains("backends") {
+                svc.push_str("backends = [\"10.0.0.1:80\"]\n");
+            }
+            match (parse(&svc, &Registry::builtin()), expected) {
+                (Ok(_), None) => {}
+                (Err(e), Some(frag)) => assert!(
+                    e.iter().any(|e| e.message.contains(frag)),
+                    "{lines:?}: {e:?}"
+                ),
+                (r, _) => panic!("{lines:?}: unexpected {r:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_key_path_and_check_options_errors() {
+        let e = parse_err(&format!("{SVC}intervall = \"1s\"\n"));
+        assert_eq!(e[0].path, "services.\"api.svc.emfor\".intervall");
+        assert_eq!(
+            e[0].to_string(),
+            "services.\"api.svc.emfor\".intervall: unknown key"
+        );
+
+        let e = parse_err(&format!(
+            "{SVC}\n[services.\"api.svc.emfor\".check_options]\npath = \"/\"\n"
+        ));
+        assert_eq!(e[0].path, "services.\"api.svc.emfor\".check_options.path");
+    }
+
+    #[test]
+    fn store_and_log_tables() {
+        let c = parse_ok(&format!(
+            "[store]\npath = \"/tmp/x.mdb\"\nmap_size = \"16MiB\"\nfile_mode = \"0640\"\nlock_file_mode = \"0660\"\n[log]\nlevel = \"debug\"\n{SVC}"
+        ));
+        assert_eq!(c.store.path, PathBuf::from("/tmp/x.mdb"));
+        assert_eq!(c.store.map_size, 16 << 20);
+        assert_eq!((c.store.file_mode, c.store.lock_file_mode), (0o640, 0o660));
+        assert_eq!(c.log.level, "debug");
+        let e = parse_err(&format!("[store]\nfile_mode = \"999\"\n{SVC}"));
+        assert_eq!(e[0].path, "store.file_mode");
+        // The store table alone, even when the rest of the file is invalid.
+        let s = parse_store("[store]\npath = \"/tmp/y.mdb\"\n[services.a]\nrise = 0\n").unwrap();
+        assert_eq!(s.path, PathBuf::from("/tmp/y.mdb"));
+        assert_eq!(parse_store("[store]\nfile_mode = \"999\"\n"), None);
+    }
+
+    #[test]
+    fn rise_zero_and_backend_ids() {
+        let e = parse_err(&format!("{SVC}rise = 0\n"));
+        assert!(e[0].message.contains("rise must be at least 1"));
+        let c = parse_ok(
+            "[services.a]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\", \"[2001:DB8::1]:8080\"]\n",
+        );
+        let ids: Vec<_> = c.services[0]
+            .backends
+            .iter()
+            .map(|b| b.id.as_str())
+            .collect();
+        assert_eq!(ids, ["10.0.0.1:80", "[2001:db8::1]:8080"]);
+        let e = parse_err(
+            "[services.a]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\", \"10.0.0.1:80\"]\n",
+        );
+        assert!(e[0].message.contains("duplicate backend"));
+    }
+}

@@ -1,0 +1,44 @@
+# Example emfor config. Validate with:
+#   emfor --check-config --config examples/emfor.toml
+
+[store]
+path = "/var/lib/emfor/state.mdb"
+map_size = "64MiB"
+file_mode = "0644"
+# Readers (the emfor clients in your applications) register themselves in the
+# "<path>-lock" file, so every application user needs write access to it.
+# The default 0666 lets any local user read the store. To restrict access,
+# create a group for your applications, chgrp the store files to it, and use:
+#   lock_file_mode = "0660"
+#   file_mode = "0640"
+lock_file_mode = "0666"
+
+[log]
+level = "info"
+
+# Built-in defaults, shown here explicitly. Any service can override them.
+[defaults]
+interval = "2s"        # time between the end of one check and the start of the next
+timeout = "1s"         # must not exceed interval
+rise = 2               # consecutive passes before a backend is healthy
+fall = 3               # consecutive failures before a backend is unhealthy
+jitter = "10%"         # random +/- spread of interval, 0% to 50%
+on_all_down = "open"   # "open": readers still pick a backend; "closed": readers fail
+
+# A plain TCP service: a backend is up when it accepts a connection.
+[services."db.svc.emfor"]
+check = "tcp"
+backends = ["10.0.1.5:5432", "10.0.1.6:5432"]
+on_all_down = "closed"
+
+# An HTTP service, checked every second.
+[services."api.svc.emfor"]
+check = "http"
+backends = ["10.0.0.11:8080", "10.0.0.12:8080", "[2001:db8::11]:8080"]
+interval = "1s"
+
+[services."api.svc.emfor".check_options]
+path = "/healthz"
+scheme = "http"              # or "https"
+host_header = "api.internal" # optional
+expect_status = ["200-299"]  # default ["200-399"]

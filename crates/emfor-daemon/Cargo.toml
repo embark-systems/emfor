@@ -1,0 +1,33 @@
+[package]
+name = "emfor-daemon"
+description = "emfor health-check daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "emfor"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+emfor-format.workspace = true
+futures = "0.3.34"
+heed = "0.22"
+humantime = "2.4.0"
+nix = { version = "0.31.3", features = ["fs", "signal", "process"] }
+rand = "0.10.3"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["full"] }
+toml = "1.2.1"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["test-util", "full"] }
+tracing-test = "0.2.6"

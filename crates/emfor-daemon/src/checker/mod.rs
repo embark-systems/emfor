@@ -1,0 +1,177 @@
+//! Checker interface, result kinds, and the checker registry.
+
+use std::collections::HashMap;
+use std::fmt;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::future::BoxFuture;
+
+/// Result of one check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckResult {
+    /// The backend passed.
+    Up,
+    /// The backend failed; the string says why.
+    Down(String),
+    /// emfor could not perform the check because of a local problem.
+    /// Not counted as a backend failure.
+    Error(String),
+}
+
+impl CheckResult {
+    /// Reason text for `Down` / `Error`, `None` for `Up`.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            CheckResult::Up => None,
+            CheckResult::Down(r) | CheckResult::Error(r) => Some(r),
+        }
+    }
+}
+
+/// A configured checker that can check one backend address.
+///
+/// The same checker is called concurrently for every backend of a service.
+/// Implementations do not need to enforce the timeout: [`run_check`] does.
+pub trait Checker: Send + Sync + fmt::Debug {
+    fn check(&self, target: SocketAddr) -> BoxFuture<'_, CheckResult>;
+
+    /// Release per-backend resources. Called when a reload removes `target`
+    /// from a service whose checker is kept.
+    fn forget(&self, _target: SocketAddr) {}
+}
+
+/// A validation problem inside `check_options`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionError {
+    /// Key path relative to `check_options`, e.g. `"expect_status"`.
+    pub key: String,
+    pub message: String,
+}
+
+impl OptionError {
+    pub fn new(key: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            message: message.into(),
+        }
+    }
+}
+
+/// Builds checkers of one kind from their `check_options`.
+pub trait CheckerFactory: Send + Sync {
+    /// The `check` value that selects this factory, e.g. `"tcp"`.
+    fn kind(&self) -> &'static str;
+    /// Validate `options` and build a checker. A config that validates is
+    /// guaranteed to be runnable.
+    fn validate(&self, options: &toml::Table) -> Result<Arc<dyn Checker>, Vec<OptionError>>;
+}
+
+/// Maps `check` names to factories.
+#[derive(Clone, Default)]
+pub struct Registry {
+    factories: HashMap<&'static str, Arc<dyn CheckerFactory>>,
+}
+
+impl Registry {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Registry with the built-in `tcp` and `http` checkers.
+    pub fn builtin() -> Self {
+        let mut r = Self::empty();
+        r.register(Arc::new(tcp::TcpFactory));
+        r.register(Arc::new(http::HttpFactory));
+        r
+    }
+
+    pub fn register(&mut self, factory: Arc<dyn CheckerFactory>) {
+        self.factories.insert(factory.kind(), factory);
+    }
+
+    pub fn get(&self, kind: &str) -> Option<&Arc<dyn CheckerFactory>> {
+        self.factories.get(kind)
+    }
+}
+
+/// Run one check with a hard timeout. A check that has not finished within
+/// `timeout` is `Down("timeout")`.
+pub async fn run_check(
+    checker: &dyn Checker,
+    target: SocketAddr,
+    timeout: Duration,
+) -> CheckResult {
+    match tokio::time::timeout(timeout, checker.check(target)).await {
+        Ok(result) => result,
+        Err(_) => CheckResult::Down("timeout".into()),
+    }
+}
+
+/// Reject any key in `options` not listed in `allowed`.
+pub(crate) fn reject_unknown_keys(
+    options: &toml::Table,
+    allowed: &[&str],
+    errors: &mut Vec<OptionError>,
+) {
+    for key in options.keys() {
+        if !allowed.contains(&key.as_str()) {
+            errors.push(OptionError::new(key.clone(), "unknown key"));
+        }
+    }
+}
+
+pub mod http;
+pub mod tcp;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct Sleepy(Duration);
+
+    impl Checker for Sleepy {
+        fn check(&self, _: SocketAddr) -> BoxFuture<'_, CheckResult> {
+            Box::pin(async move {
+                tokio::time::sleep(self.0).await;
+                CheckResult::Up
+            })
+        }
+    }
+
+    fn addr() -> SocketAddr {
+        "127.0.0.1:1".parse().unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_check_is_down_timeout() {
+        let r = run_check(
+            &Sleepy(Duration::from_secs(5)),
+            addr(),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(r, CheckResult::Down("timeout".into()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fast_check_keeps_result() {
+        let r = run_check(
+            &Sleepy(Duration::from_millis(10)),
+            addr(),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(r, CheckResult::Up);
+    }
+
+    #[test]
+    fn unknown_kind_is_not_registered() {
+        let r = Registry::builtin();
+        assert!(r.get("redis").is_none());
+        assert!(r.get("tcp").is_some());
+        assert!(r.get("http").is_some());
+    }
+}
