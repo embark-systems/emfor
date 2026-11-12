@@ -16,7 +16,10 @@ use emfor_format::{Balance, OnAllDown};
 use crate::checker::exec::parse_command;
 use crate::checker::{Checker, Registry};
 
-pub const DEFAULT_CONFIG_PATH: &str = "/etc/emfor/emfor.toml";
+/// The config file read when `--config` is absent: `/etc/emfor/emfor.toml`,
+/// or `<EMFOR_PREFIX>/etc/emfor/emfor.toml` when built with `EMFOR_PREFIX`
+/// (see build.rs).
+pub const DEFAULT_CONFIG_PATH: &str = env!("EMFOR_DEFAULT_CONFIG_PATH");
 
 /// One validation problem, located by TOML path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,27 +191,49 @@ impl Config {
 
 /// Read and validate a config file.
 pub fn load(path: &Path, registry: &Registry) -> Result<Config, Vec<ConfigError>> {
+    validate(&read_table(path)?, |v, root| v.root(root, registry))
+}
+
+/// Read only the `[store]` table of a config file, for `emfor status`: the
+/// rest of the file is not validated, so a broken service table does not
+/// hide the store of a daemon still running with an older config.
+pub fn load_store(path: &Path) -> Result<StoreConfig, Vec<ConfigError>> {
+    validate(&read_table(path)?, |v, root| v.store(root))
+}
+
+/// Parse and validate config text.
+pub fn parse(text: &str, registry: &Registry) -> Result<Config, Vec<ConfigError>> {
+    validate(&parse_table(text)?, |v, root| v.root(root, registry))
+}
+
+fn read_table(path: &Path) -> Result<toml::Table, Vec<ConfigError>> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         vec![ConfigError {
             path: String::new(),
             message: format!("cannot read {}: {e}", path.display()),
         }]
     })?;
-    parse(&text, registry)
+    parse_table(&text)
 }
 
-/// Parse and validate config text.
-pub fn parse(text: &str, registry: &Registry) -> Result<Config, Vec<ConfigError>> {
-    let root: toml::Table = text.parse().map_err(|e: toml::de::Error| {
+fn parse_table(text: &str) -> Result<toml::Table, Vec<ConfigError>> {
+    text.parse().map_err(|e: toml::de::Error| {
         vec![ConfigError {
             path: String::new(),
             message: format!("invalid TOML: {}", e.message()),
         }]
-    })?;
+    })
+}
+
+/// Run one validation over the parsed file; any error fails it.
+fn validate<T>(
+    root: &toml::Table,
+    f: impl FnOnce(&mut Validator, &toml::Table) -> T,
+) -> Result<T, Vec<ConfigError>> {
     let mut v = Validator::default();
-    let config = v.root(&root, registry);
+    let out = f(&mut v, root);
     if v.errors.is_empty() {
-        Ok(config)
+        Ok(out)
     } else {
         Err(v.errors)
     }
@@ -904,6 +929,10 @@ fn parse_size(s: &str) -> Option<usize> {
 }
 
 #[cfg(test)]
+#[path = "../build/prefix.rs"]
+mod prefix;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1414,5 +1443,22 @@ backends = ["10.0.0.1:80"]
         assert!(!old.check_changed(&with("plugin:redis:[\"/a\"]")));
         assert!(old.check_changed(&with("plugin:redis:[\"/b\"]")));
         assert_eq!(parse_ok(SVC).services[0].checker_id, "tcp");
+    }
+
+    #[test]
+    fn prefix_to_default_config_path() {
+        use super::prefix::default_config_path as path;
+        for (prefix, want) in [
+            (None, "/etc/emfor/emfor.toml"),
+            (Some("/usr"), "/etc/emfor/emfor.toml"),
+            (Some("/usr/local"), "/usr/local/etc/emfor/emfor.toml"),
+            (Some("/usr/local/"), "/usr/local/etc/emfor/emfor.toml"),
+            (Some("/opt/emfor"), "/opt/emfor/etc/emfor/emfor.toml"),
+            (Some(""), "/etc/emfor/emfor.toml"),
+        ] {
+            assert_eq!(path(prefix).unwrap(), want, "{prefix:?}");
+        }
+        let err = path(Some("usr/local")).unwrap_err();
+        assert!(err.contains("EMFOR_PREFIX"), "{err}");
     }
 }

@@ -10,6 +10,7 @@ pub mod plugin;
 pub mod schedule;
 pub mod select;
 pub mod state;
+pub mod status;
 pub mod store;
 pub mod supervisor;
 pub mod writer;

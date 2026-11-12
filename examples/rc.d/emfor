@@ -8,6 +8,10 @@
 # Settings in /etc/rc.conf:
 #   emfor_enable  YES to start at boot (default NO)
 #   emfor_config  config file (default /usr/local/etc/emfor/emfor.toml)
+#                 Build emfor with EMFOR_PREFIX=/usr/local to make this the
+#                 binary's own default too, so "emfor status" and
+#                 "emfor --check-config" need no --config
+#                 (see docs/deploy/daemon.md).
 #   emfor_user    user to run as (default root). A dedicated user is better:
 #                 it needs write access to the directory of [store] path and
 #                 nothing else, since the default DNS port 5300 is unprivileged.

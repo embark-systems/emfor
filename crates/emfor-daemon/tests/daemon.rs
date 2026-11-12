@@ -674,3 +674,149 @@ fn fastest_pool_excludes_slow_backend() {
     let (code, _) = d.stop();
     assert_eq!(code, 0);
 }
+
+#[test]
+fn help_shows_the_built_in_config_path() {
+    let out = Command::new(cargo_bin("emfor"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let help = String::from_utf8_lossy(&out.stdout);
+    // Tests are normally built without EMFOR_PREFIX; with it, only the
+    // suffix is known here.
+    let want = match std::env::var("EMFOR_PREFIX") {
+        Err(_) => "[default: /etc/emfor/emfor.toml]".to_owned(),
+        Ok(_) => "etc/emfor/emfor.toml]".to_owned(),
+    };
+    assert!(help.contains(&want), "{help}");
+}
+
+/// Run `emfor status --config <cfg> <args>`: (exit code, stdout, stderr).
+fn status(cfg: &Path, args: &[&str]) -> (i32, String, String) {
+    let out = Command::new(cargo_bin("emfor"))
+        .arg("status")
+        .arg("--config")
+        .arg(cfg)
+        .args(args)
+        .env_remove("NO_COLOR")
+        .output()
+        .unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn status_beside_a_running_daemon() {
+    let (_l, addr) = listener();
+    let d = start(&tcp_service("api.svc.emfor", &addr));
+    let r = Reader::open(&d.store());
+    wait_for(|| {
+        r.service("api.svc.emfor")
+            .is_some_and(|s| s.backends[0].state == HealthState::Healthy)
+    });
+
+    let (code, out, err) = status(&d.config(), &[]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("daemon: running, heartbeat "), "{out}");
+    assert!(
+        out.contains("api.svc.emfor  round-robin  on_all_down=open\n"),
+        "{out}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with(&format!("  {addr}  healthy  "))),
+        "{out}"
+    );
+    assert!(
+        !out.contains('\x1b'),
+        "escape sequences in piped output: {out:?}"
+    );
+
+    // The daemon keeps writing heartbeats after status read the store.
+    let hb = r.get("meta/heartbeat").unwrap();
+    wait_for(|| r.get("meta/heartbeat").is_some_and(|h| h != hb));
+
+    let (code, out, _) = status(&d.config(), &["--json", "--service", "api.svc.emfor"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["daemon"], "running");
+    assert_eq!(v["services"].as_array().unwrap().len(), 1);
+    assert_eq!(v["services"][0]["name"], "api.svc.emfor");
+
+    let (code, _, err) = status(&d.config(), &["--service", "nope.svc.emfor"]);
+    assert_eq!((code, err.trim()), (2, "service nope.svc.emfor not found"));
+
+    // A broken service table does not stop status: only [store] is read.
+    let text = std::fs::read_to_string(d.config()).unwrap();
+    std::fs::write(
+        d.config(),
+        text.replace("check = \"tcp\"", "check = \"tcp\"\nintervall = \"1s\""),
+    )
+    .unwrap();
+    let (code, out, err) = status(&d.config(), &[]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("api.svc.emfor"));
+
+    // Stop the daemon but keep its directory (Daemon::stop drops it).
+    let mut d = d;
+    d.signal(Signal::SIGTERM);
+    assert!(d.child.wait().unwrap().success());
+    let (code, out, _) = status(&d.config(), &[]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("daemon: stopped\n"), "{out}");
+    assert!(out.contains("api.svc.emfor"), "{out}");
+}
+
+#[test]
+fn status_without_a_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("none.mdb");
+    let cfg = dir.path().join("emfor.toml");
+    std::fs::write(&cfg, format!("[store]\npath = \"{}\"\n", store.display())).unwrap();
+    let (code, _, err) = status(&cfg, &[]);
+    assert_eq!(code, 2);
+    assert_eq!(
+        err.trim(),
+        format!("cannot open store {}: no such file", store.display())
+    );
+    assert!(!store.exists());
+    assert!(!dir.path().join("none.mdb-lock").exists());
+}
+
+#[test]
+fn status_refuses_another_format_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("state.mdb");
+    {
+        let env = unsafe {
+            let mut o = EnvOpenOptions::new().read_txn_without_tls();
+            o.flags(EnvFlags::NO_SUB_DIR);
+            o.open(&store).unwrap()
+        };
+        let mut wtxn = env.write_txn().unwrap();
+        let db: Database<Str, Str> = env.create_database(&mut wtxn, None).unwrap();
+        db.put(&mut wtxn, "meta/schema_version", "2").unwrap();
+        wtxn.commit().unwrap();
+    }
+    let cfg = dir.path().join("emfor.toml");
+    std::fs::write(&cfg, format!("[store]\npath = \"{}\"\n", store.display())).unwrap();
+    let (code, _, err) = status(&cfg, &[]);
+    assert_eq!(code, 2);
+    assert_eq!(
+        err.trim(),
+        "store format version 2; this emfor reads version 1"
+    );
+}
+
+#[test]
+fn status_watch_needs_a_terminal() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    std::fs::write(&cfg, "").unwrap();
+    let (code, _, err) = status(&cfg, &["--watch"]);
+    assert_eq!((code, err.trim()), (2, "--watch needs a terminal"));
+}

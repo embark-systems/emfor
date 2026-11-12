@@ -34,15 +34,33 @@ pub const EXIT_CONFIG: u8 = 2;
 )]
 pub struct Cli {
     /// Config file.
-    #[arg(long, value_name = "PATH", default_value = DEFAULT_CONFIG_PATH)]
+    #[arg(long, value_name = "PATH", default_value = DEFAULT_CONFIG_PATH, global = true)]
     pub config: PathBuf,
     /// Validate the config file and exit.
     #[arg(long)]
     pub check_config: bool,
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub enum Command {
+    /// Show the health state the running daemon publishes, then exit.
+    ///
+    /// Exits 1 when the daemon is not updating the store or a shown service
+    /// has no healthy backend, 2 when the store cannot be read.
+    Status(crate::status::StatusArgs),
 }
 
 pub fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(Command::Status(args)) = &cli.command {
+        if cli.check_config {
+            eprintln!("--check-config cannot be used with status");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+        return crate::status::main(&cli.config, args);
+    }
     // Loading a config starts plugins, so the runtime comes first.
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(r) => r,
