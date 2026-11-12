@@ -21,6 +21,29 @@ install -m 0755 target/release/emfor /usr/local/sbin/emfor
 - `emfor --help` shows the path that was built in, after `--config`.
 - Only the config path changes. The store stays at the `[store] path` of the config (default `/var/lib/emfor/state.mdb`), and clients keep their own default; see the client READMEs.
 
+## Running under systemd
+
+[`examples/systemd/emfor.service`](../../examples/systemd/emfor.service) runs the daemon as user `emfor` with the binary at `/usr/local/sbin/emfor` and the config at `/etc/emfor/emfor.toml`:
+
+```sh
+cargo build --release --bin emfor
+install -m 0755 target/release/emfor /usr/local/sbin/emfor
+useradd --system --no-create-home --shell /usr/sbin/nologin emfor
+install -m 0644 examples/systemd/emfor.service /etc/systemd/system/emfor.service
+systemctl daemon-reload
+systemctl enable --now emfor
+```
+
+Build without `EMFOR_PREFIX` (or with `/usr`) so that `emfor status` and `emfor --check-config` find `/etc/emfor/emfor.toml` without `--config`; the unit passes `--config` itself.
+
+- **Store directory**: `StateDirectory=emfor` creates `/var/lib/emfor`, owned by `emfor` with mode 0755, for the default `[store] path`. Applications that use an emfor client need to reach it; `[store] file_mode` and `lock_file_mode` decide who can read the store. Do not switch to `DynamicUser=`: its directory sits under `/var/lib/private` (mode 0700), where clients cannot reach it.
+- **Reload**: `systemctl reload emfor` runs `emfor --check-config` first and fails without signalling the daemon if the config is invalid; otherwise it sends SIGHUP. `[store]`, `[dns] listen` and `[metrics] listen` changes need `systemctl restart emfor`.
+- **Restarts**: the unit restarts the daemon after a crash, but not after exit status 1 (a listen address in use, the store held by another emfor) or 2 (invalid config), which a retry does not fix.
+- **Logs**: the daemon logs to stderr, which goes to the journal (`journalctl -u emfor`).
+- **Hardening**: the file system is read-only except `/var/lib/emfor`, there is no access to home directories or devices, and no capabilities. Plugins run under the same limits. A `[store] path` elsewhere needs `ReadWritePaths=<its directory>`; a plugin under a home directory needs `ProtectHome=` relaxed. For DNS on port 53, set `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` and `AmbientCapabilities=CAP_NET_BIND_SERVICE`.
+
+The unit passes `systemd-analyze verify` with no warnings and rates 1.7 (OK) in `systemd-analyze security`, both with systemd 257 on Debian 13. It has not been run on a live system yet.
+
 ## emfor status
 
 `emfor status` shows what the running daemon has published in the state store. It reads only the `[store]` table of the config (so it still works while the rest of the file has an error), opens the store read-only like a client, and never changes it.
@@ -124,7 +147,7 @@ The server answers only `GET /metrics` (a query string is ignored): other paths 
 
 The two counters start at 0 when a backend first appears in the running daemon, keep counting across reloads (also when `check` or `check_options` change), and start again from 0 if the backend is removed and added back. They restart with the daemon; Prometheus handles that as a counter reset.
 
-Services are listed by name and backends in config order. Measured with one service of 10 unreachable backends: 104 series and 10.6 KB per scrape, that is 10 series per backend plus 4 for the daemon and the service. A backend has no last-check series before its first check, a healthy backend adds the latency series, and a backend of a `fastest` service adds `in_pool`, so a backend has 9 to 12 series.
+Services are listed by name and backends in config order. Measured with one service of 10 unreachable backends: 104 series and 10.6 KB per scrape, that is 10 series per backend plus 4 for the daemon and the service (the test `series_for_ten_backends` in `crates/emfor-daemon/tests/metrics.rs` keeps it so). A backend has no last-check series before its first check, a healthy backend adds the latency series, and a backend of a `fastest` service adds `in_pool`, so a backend has 9 to 12 series.
 
 ### Scraping
 

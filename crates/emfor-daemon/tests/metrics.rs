@@ -301,3 +301,33 @@ fn unhealthy_backend_and_removed_service() {
     let (code, log) = d.stop();
     assert_eq!(code, 0, "{log}");
 }
+
+/// One service of 10 refused backends gives 104 series once every backend
+/// is checked: 10 per backend (state 3, last check 1, checks 3,
+/// transitions 3) plus 3 for the daemon and 1 for the service. The count
+/// in docs/deploy/daemon.md, section "Metrics served".
+#[test]
+fn series_for_ten_backends() {
+    let backends: Vec<String> = (0..10).map(|_| free_addr().to_string()).collect();
+    let addr = free_addr();
+    let d = spawn(&format!(
+        "{}{}",
+        metrics_table(addr),
+        service("api.svc.emfor", &backends)
+    ));
+    d.wait_log("emfor started");
+    let mut body = String::new();
+    wait_for(|| {
+        body = scrape(addr);
+        body.matches("state=\"unhealthy\"} 1\n").count() == 10
+            && body
+                .matches("emfor_backend_last_check_timestamp_seconds{")
+                .count()
+                == 10
+    });
+    let (_, body) = body.split_once("\r\n\r\n").unwrap();
+    let series = body.lines().filter(|l| !l.starts_with('#')).count();
+    assert_eq!(series, 104, "{body}");
+    let (code, log) = d.stop();
+    assert_eq!(code, 0, "{log}");
+}
