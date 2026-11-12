@@ -44,3 +44,22 @@ jobs:
             cargo test --workspace --all-features
             sh tests/resolver/freebsd.sh
             sh tests/spike/run.sh 2
+
+  # The C library and the Go, Python, Perl and PHP wrappers: each one's tests
+  # and the shared conformance driver (make -C clients test).
+  clients:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config golang-go python3 libperl-dev php-dev php-cli php-dba
+          cargo install cargo-c --locked
+      - run: make -C clients test
+        env:
+          # The PHP test must run the same-process check with dba's lmdb.
+          EMFOR_REQUIRE_DBA: "1"

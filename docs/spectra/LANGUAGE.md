@@ -13,7 +13,7 @@
 | 外掛 | plugin | 以常駐子程序形式運作的外部檢查器，透過 stdin/stdout 逐行 JSON 與 emfor 溝通，須在設定檔 `[plugins.*]` 註冊。 | extension、module（「模組」保留給 client） |
 | 負責網域 | `zone`（`[dns] zone`） | emfor DNS 負責回答的網域，預設 `svc.emfor`。只有名稱在這個網域底下的服務能用 DNS 查到；網域以外的查詢回 `REFUSED`。 | domain、suffix |
 | 本機 resolver | resolver | 應用主機上負責所有 DNS 查詢的程式（systemd-resolved、dnsmasq、unbound、FreeBSD `local_unbound`），依網域把負責網域的查詢轉發給 emfor。emfor 本身不是 resolver。 | DNS server（指 emfor 時） |
-| client | client | 各語言（C、Rust、Go、Python、Perl、PHP）的查詢函式庫，對外只提供 `emfor_lookup`，內部讀取本機 LMDB。Rust 直接用 crate；其他語言都包裝 `libemfor`。 | 模組、SDK、driver |
+| client | client | 各語言（C、Rust、Go、Python、Perl、PHP）的查詢函式庫，對外只提供一個查詢呼叫，內部讀取本機 LMDB：C `emfor_lookup`、Rust `emfor_client::lookup`、Go `emfor.Lookup`、Python `emfor.lookup`、Perl `Emfor::lookup`、PHP `Emfor\lookup`。Rust 直接用 crate；其他語言都包裝 `libemfor`（Go 用 cgo、Python 用 ctypes、Perl 用 XS、PHP 用 C extension）。 | 模組、SDK、driver |
 | libemfor | `libemfor`（`.so` / `.dylib`） | 由 Rust crate `emfor-client` 經 cargo-c 產出的 C 函式庫，內嵌與 daemon 同一份 LMDB，C、Go、Python、Perl、PHP client 都包裝它的動態函式庫。必須與 emfor 同版本一起升級。 | 系統 liblmdb、PHP dba（lock 格式與 daemon 不同，讀不了 store） |
 
 ## 狀態與結果

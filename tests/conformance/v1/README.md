@@ -22,3 +22,28 @@ data" of the emfor-clients change.
 
 `emfor-fixture <cases.json> <index> <out.mdb>` (tools/emfor-fixture) writes a
 case's store to an LMDB file with the daemon's LMDB.
+
+## Running a client through the shared driver
+
+The C library and the Go, Python, Perl and PHP wrappers are checked by
+`emfor-conformance` (tools/emfor-fixture), which needs no code in the client
+beyond a small lookup program:
+
+```
+emfor-conformance [--cases <cases.json>] [--vectors <sticky-v1.json>] [--timeout-ms <ms>] -- <program...>
+```
+
+For each case it writes the store, then runs the program once per lookup:
+
+| Item | Value |
+| --- | --- |
+| Invocation | `<program...> <name> <affinity-key> <count>`; the key is `""` for no key |
+| Output | `count` lines, one per lookup in the same process: `OK <address>` or `ERR <CODE> <message>` |
+| Environment | `EMFOR_STORE` = the case's store; `EMFOR_MAX_STALENESS` = the case's `max_staleness`, or `<max_staleness_ms>ms` |
+| Exit status | `0`; any other status, or running past the time limit (default 10 s), fails every lookup of that run |
+
+`count` is the length of `expect_all_of`, or 1. Each pick vector becomes a
+sticky service `pick-<i>.svc.emfor` in one extra store and is looked up with
+its key. The hash vectors are checked only by the Rust runner, since no other
+interface exposes the hash. The driver prints a summary and exits 1 if any
+lookup fails. clients/libemfor.mk defines `$(EMFOR_CONFORMANCE)` for it.

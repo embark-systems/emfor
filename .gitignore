@@ -2,4 +2,5 @@
 .spectra/
 /target
 docs/spectra/.vector-search.db*
-/clients/c/build/
+/clients/build/
+__pycache__/

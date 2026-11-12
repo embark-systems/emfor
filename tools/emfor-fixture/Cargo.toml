@@ -10,6 +10,4 @@ publish = false
 emfor-format.workspace = true
 heed = "0.22"
 serde_json.workspace = true
-
-[dev-dependencies]
 tempfile = "3.27.0"

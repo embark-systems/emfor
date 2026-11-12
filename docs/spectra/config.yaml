@@ -9,7 +9,8 @@ context: |
   技術棧：
   - daemon：Rust、tokio；DNS 用 hickory-server；LMDB 用 heed；設定檔 TOML（humantime-serde 解析時間）
   - client：Rust crate emfor-client（heed，與 daemon 同一份 Cargo.lock）以 cargo-c 產出 C library libemfor；
-    C 直接連結，Go（cgo）、Python（ctypes）、Perl（FFI::Platypus 或 XS）、PHP（extension 或 FFI，emfor-clients-2 決定）
+    C 直接連結，Go（cgo，emfor.Lookup）、Python（ctypes，emfor.lookup）、Perl（XS，Emfor::lookup）、
+    PHP（C extension，Emfor\lookup；不用 FFI，因 ffi.enable 預設 preload 擋住 php-fpm）
     包裝 libemfor 的動態函式庫。不使用系統 liblmdb、PHP dba 或各語言自帶的 LMDB 套件。
 
   核心決定：

@@ -1,0 +1,8 @@
+/Makefile.xs
+/Makefile.xs.old
+/MYMETA.*
+/blib/
+/pm_to_blib
+/Emfor.c
+/Emfor.o
+/Emfor.bs
