@@ -4,7 +4,7 @@ A plugin is a program that checks backends for emfor. Use one when a check needs
 
 emfor starts each plugin as a long-lived child process and talks to it over stdin and stdout. A plugin can be written in any language.
 
-emfor ships one plugin program, `emfor-check`, with redis, MySQL and PostgreSQL checks; see [docs/deploy/plugins.md](../deploy/plugins.md). To write a plugin in Rust, the `emfor-plugin` crate (crates/emfor-plugin) handles this protocol: implement its `Plugin` trait and call `emfor_plugin::run`.
+emfor ships one plugin program, `emfor-check`, with redis, MySQL, PostgreSQL and LDAP checks; see [docs/deploy/plugins.md](../deploy/plugins.md). To write a plugin in Rust, the `emfor-plugin` crate (crates/emfor-plugin) handles this protocol: implement its `Plugin` trait and call `emfor_plugin::run`.
 
 ## Registering a plugin
 
