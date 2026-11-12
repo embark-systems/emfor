@@ -8,47 +8,30 @@ Defines how operators configure emfor: the TOML file format, built-in defaults w
 
 ### Requirement: TOML config with defaults and per-service overrides
 
-The daemon SHALL read its configuration from a TOML file, `/etc/emfor/emfor.toml` by default or the path given with `--config`. Each service under `[services."<name>"]` SHALL use the value of `interval`, `timeout`, `rise`, `fall`, `jitter`, and `on_all_down` from its own table when present, otherwise from `[defaults]`, otherwise from the built-in defaults: `interval = "2s"`, `timeout = "1s"`, `rise = 2`, `fall = 3`, `jitter = "10%"`, `on_all_down = "open"`. Durations SHALL be strings with units (for example `"500ms"`, `"2s"`).
+The daemon SHALL read its configuration from a TOML file, `/etc/emfor/emfor.toml` by default or the path given with `--config`. Each service under `[services."<name>"]` SHALL use the value of `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, and `balance` from its own table when present, otherwise from `[defaults]`, otherwise from the built-in defaults: `interval = "2s"`, `timeout = "1s"`, `rise = 2`, `fall = 3`, `jitter = "10%"`, `on_all_down = "open"`, `balance = "round-robin"`. A service MAY also set `dns_ttl`, which overrides `[dns] ttl` for that service and has no `[defaults]` entry. Durations SHALL be strings with units (for example `"500ms"`, `"2s"`).
 
 #### Scenario: Service inherits and overrides settings
 
 - **WHEN** `[defaults]` sets `interval = "5s"` and a service sets only `interval = "1s"`
-- **THEN** that service uses `interval` 1s and `timeout` 1s, `rise` 2, `fall` 3, `jitter` 10%, `on_all_down` open
+- **THEN** that service uses `interval` 1s and `timeout` 1s, `rise` 2, `fall` 3, `jitter` 10%, `on_all_down` open, `balance` round-robin
 
 ##### Example: effective settings resolution
 
-| `[defaults]` | Service table | Effective `interval` | Effective `fall` |
-| --- | --- | --- | --- |
-| absent | absent | 2s | 3 |
-| `interval = "5s"` | absent | 5s | 3 |
-| `interval = "5s"`, `fall = 5` | `interval = "1s"` | 1s | 5 |
+| `[defaults]` | Service table | Effective `interval` | Effective `fall` | Effective `balance` |
+| --- | --- | --- | --- | --- |
+| absent | absent | 2s | 3 | round-robin |
+| `interval = "5s"` | absent | 5s | 3 | round-robin |
+| `interval = "5s"`, `fall = 5` | `interval = "1s"` | 1s | 5 | round-robin |
+| `balance = "failover"` | absent | 2s | 3 | failover |
+| `balance = "failover"` | `balance = "sticky"` | 2s | 3 | sticky |
 
 
 <!-- @trace
-source: emfor-core
+source: emfor-dns
 updated: 2026-11-12
 code:
-  - crates/emfor-daemon/src/checker/http.rs
-  - crates/emfor-daemon/src/writer.rs
-  - Cargo.toml
-  - crates/emfor-daemon/src/cli.rs
-  - CLAUDE.md
-  - crates/emfor-daemon/src/main.rs
-  - crates/emfor-daemon/src/state.rs
-  - crates/emfor-daemon/Cargo.toml
-  - .spectra.yaml
-  - crates/emfor-daemon/src/checker/tcp.rs
-  - crates/emfor-daemon/src/checker/mod.rs
-  - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/src/config.rs
-  - crates/emfor-daemon/src/supervisor.rs
-  - crates/emfor-daemon/src/store.rs
-  - crates/emfor-format/src/lib.rs
-  - examples/emfor.toml
-  - crates/emfor-format/Cargo.toml
-  - crates/emfor-daemon/src/schedule.rs
-tests:
-  - crates/emfor-daemon/tests/daemon.rs
+  - docs/deploy/dns-resolver.md
+  - examples/rc.d/emfor
 -->
 
 ---
@@ -99,9 +82,11 @@ tests:
 
 The daemon SHALL reject a config that violates any of these rules and SHALL report every violation, each prefixed with its TOML path:
 
-- `interval` at least 100ms; `timeout` greater than zero and not greater than `interval` (equal is allowed, because checks of one backend run one after another and cannot overlap); `rise` at least 1; `fall` at least 1; `jitter` from 0% to 50%; `on_all_down` is `open` or `closed`.
-- `backends` is non-empty; every entry is `IPv4:port` or `[IPv6]:port` with port 1–65535; no entry repeats within a service.
+- `interval` at least 100ms; `timeout` greater than zero and not greater than `interval` (equal is allowed, because checks of one backend run one after another and cannot overlap); `rise` at least 1; `fall` at least 1; `jitter` from 0% to 50%; `on_all_down` is `open` or `closed`; `balance` is `round-robin`, `sticky`, `failover`, `weighted`, or `locality`; `dns_ttl` is a whole number of seconds from 0s to 3600s.
+- `backends` is non-empty; every entry is a string or a table; a string, and a table's `addr`, is `IPv4:port` or `[IPv6]:port` with port 1–65535; a table has `addr` and no keys other than `addr`, `weight`, `site`; `weight` is an integer from 1 to 100; no `addr` repeats within a service.
+- The top-level `site` and every backend `site` are, after ASCII lowercasing, 1 to 63 characters of `[a-z0-9-]` that do not start or end with `-`.
 - `check` names a registered checker and `check_options` passes that checker's validation.
+- `[dns] listen` is a non-empty array of `IPv4:port` or `[IPv6]:port` with port 1–65535 and no repeats; `[dns] zone` follows the service name rules after the same normalization; `[dns] ttl` is a whole number of seconds from 0s to 3600s.
 - No unknown keys anywhere in the file.
 
 #### Scenario: Multiple errors reported together
@@ -119,35 +104,33 @@ The daemon SHALL reject a config that violates any of these rules and SHALL repo
 | `jitter` | `"60%"` | error: jitter above 50% |
 | `backends` | `["db.local:5432"]` | error: backend must be an IP literal with port |
 | `backends` | `["[2001:db8::1]:8080"]` | ok |
+| `backends` | `[{ addr = "10.0.0.1:80", weight = 3, site = "dc1" }]` | ok |
+| `backends` | `[{ weight = 3 }]` | error: backend table needs addr |
+| `backends` | `[{ addr = "10.0.0.1:80", wieght = 3 }]` | error: unknown key |
+| `backends` | `[{ addr = "10.0.0.1:80", weight = 0 }]` | error: weight must be from 1 to 100 |
+| `backends` | `[{ addr = "10.0.0.1:80", weight = 101 }]` | error: weight must be from 1 to 100 |
+| `backends` | `["10.0.0.1:80", { addr = "10.0.0.1:80" }]` | error: duplicate backend |
+| `backends` | `[{ addr = "10.0.0.1:80", site = "dc_1" }]` | error: invalid site label |
+| `site` (top level) | `"DC-1"` | ok, normalized to `dc-1` |
+| `site` (top level) | `"-dc1"` | error: invalid site label |
 | `chekc` (typo key) | `"tcp"` | error: unknown key |
 | `check` | `"redis"` | error: unknown checker `redis` |
+| `balance` | `"weighted"` | ok |
+| `balance` | `"least-conn"` | error: balance must be round-robin, sticky, failover, weighted, or locality |
+| `dns_ttl` | `"1500ms"` | error: dns_ttl must be whole seconds |
+| `[dns] ttl` | `"2h"` | error: ttl above 3600s |
+| `[dns] listen` | `[]` | error: listen must not be empty |
+| `[dns] listen` | `["localhost:5300"]` | error: listen address must be an IP literal with port |
+| `[dns] zone` | `"svc..emfor"` | error: invalid zone name |
+| `[dns] zone` | `"SVC.Emfor."` | ok, normalized to `svc.emfor` |
 
 
 <!-- @trace
-source: emfor-core
+source: emfor-balance-2
 updated: 2026-11-12
 code:
-  - crates/emfor-daemon/src/checker/http.rs
-  - crates/emfor-daemon/src/writer.rs
-  - Cargo.toml
-  - crates/emfor-daemon/src/cli.rs
-  - CLAUDE.md
-  - crates/emfor-daemon/src/main.rs
-  - crates/emfor-daemon/src/state.rs
-  - crates/emfor-daemon/Cargo.toml
-  - .spectra.yaml
-  - crates/emfor-daemon/src/checker/tcp.rs
-  - crates/emfor-daemon/src/checker/mod.rs
-  - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/src/config.rs
-  - crates/emfor-daemon/src/supervisor.rs
-  - crates/emfor-daemon/src/store.rs
-  - crates/emfor-format/src/lib.rs
-  - examples/emfor.toml
-  - crates/emfor-format/Cargo.toml
-  - crates/emfor-daemon/src/schedule.rs
-tests:
-  - crates/emfor-daemon/tests/daemon.rs
+  - docs/deploy/dns-resolver.md
+  - examples/rc.d/emfor
 -->
 
 ---
@@ -234,7 +217,7 @@ tests:
 ---
 ### Requirement: Reload on SIGHUP applies only a fully valid config
 
-On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes validation, the daemon SHALL apply it. If any validation error exists, the daemon SHALL log every error at `error` level and continue running the previous config unchanged. A change to any key in the `[store]` table SHALL be a validation error on reload.
+On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes validation, the daemon SHALL apply it. If any validation error exists, the daemon SHALL log every error at `error` level and continue running the previous config unchanged. A change to any key in the `[store]` table SHALL be a validation error on reload. A change to `[dns] listen`, including adding or removing the `[dns]` table, SHALL be a validation error on reload with the message "dns listen settings require restart". Changes to `[dns] zone`, `[dns] ttl`, `dns_ttl`, and `balance` SHALL take effect on reload.
 
 #### Scenario: Valid reload adds a service
 
@@ -251,29 +234,43 @@ On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes v
 - **WHEN** `[store] path` is changed in the config file and the daemon receives `SIGHUP`
 - **THEN** the reload is rejected with the error "store settings require restart"
 
+#### Scenario: DNS listen change requires restart
+
+- **WHEN** `[dns] listen` is changed from `["127.0.0.1:5300"]` to `["127.0.0.1:5301"]` and the daemon receives `SIGHUP`
+- **THEN** the reload is rejected with the error "dns listen settings require restart" and the DNS server keeps answering on 127.0.0.1:5300
+
+#### Scenario: Balance change applies on reload
+
+- **WHEN** a service with healthy backends 10.0.0.1 and 10.0.0.2 changes from `balance = "round-robin"` to `balance = "failover"` and the daemon receives `SIGHUP`
+- **THEN** every following A query for that service returns 10.0.0.1
+
 <!-- @trace
-source: emfor-core
+source: emfor-dns
 updated: 2026-11-12
 code:
-  - crates/emfor-daemon/src/checker/http.rs
-  - crates/emfor-daemon/src/writer.rs
-  - Cargo.toml
-  - crates/emfor-daemon/src/cli.rs
-  - CLAUDE.md
-  - crates/emfor-daemon/src/main.rs
-  - crates/emfor-daemon/src/state.rs
-  - crates/emfor-daemon/Cargo.toml
-  - .spectra.yaml
-  - crates/emfor-daemon/src/checker/tcp.rs
-  - crates/emfor-daemon/src/checker/mod.rs
-  - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/src/config.rs
-  - crates/emfor-daemon/src/supervisor.rs
-  - crates/emfor-daemon/src/store.rs
-  - crates/emfor-format/src/lib.rs
-  - examples/emfor.toml
-  - crates/emfor-format/Cargo.toml
-  - crates/emfor-daemon/src/schedule.rs
-tests:
-  - crates/emfor-daemon/tests/daemon.rs
+  - docs/deploy/dns-resolver.md
+  - examples/rc.d/emfor
+-->
+
+---
+### Requirement: Host site and backend weight and site
+
+The config SHALL accept an optional top-level `site`, the label of the data centre this host is in. Each `backends` entry SHALL be either a backend string or a table with the key `addr` (a backend string) and the optional keys `weight` and `site`. `weight` SHALL default to 1 and `site` to none. A string entry SHALL be equivalent to a table with only `addr`. `weight` and `site` SHALL be accepted under every `balance` value; only `weighted` uses `weight` and only `locality` uses `site`. Site labels SHALL be ASCII-lowercased when read. A change of the top-level `site`, a backend's `weight`, or a backend's `site` SHALL take effect on reload.
+
+#### Scenario: Mixed backend forms
+
+- **WHEN** a service lists `backends = ["10.0.0.10:8080", { addr = "10.0.0.11:8080", weight = 3, site = "DC1" }]`
+- **THEN** the service has backend `10.0.0.10:8080` with weight 1 and no site, and backend `10.0.0.11:8080` with weight 3 and site `dc1`
+
+#### Scenario: Weight change applies on reload
+
+- **WHEN** a `weighted` service changes a backend from `weight = 1` to `weight = 4` and the daemon receives `SIGHUP`
+- **THEN** the store record for that backend shows `weight` 4 and the DNS answers follow the new weight
+
+<!-- @trace
+source: emfor-balance-2
+updated: 2026-11-12
+code:
+  - docs/deploy/dns-resolver.md
+  - examples/rc.d/emfor
 -->

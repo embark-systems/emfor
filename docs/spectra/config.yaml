@@ -82,7 +82,10 @@ context: |
     才改用 SQLite WAL（kv 表沿用現有 key 與 JSON、schema_version 升 2、persistent WAL、daemon 新增 SQLite 版 Sink），
     另開 emfor-sqlite-store；效能不構成退場理由。完整判斷步驟寫在 emfor-clients 的 design.md。
 
-  支援平台：Linux 與 FreeBSD 為正式部署平台（daemon 與所有 client 都要在兩者上通過測試，CI 含 FreeBSD VM），
+  支援平台：Linux 與 FreeBSD 為正式部署平台（daemon 與所有 client 都要在兩者上通過測試），
+  GitHub Actions CI（含 FreeBSD VM）為選用、手動觸發，不擋 change 完成或 archive；以本機驗證為準
+  （macOS 與 Debian 映像的 fmt/clippy/test、Docker 內的 dnsmasq/unbound、Linux VM 上的 systemd-resolved）。
+  FreeBSD 目前沒有本機環境，相關檢查留在選用的 CI freebsd job，文件標明尚未在 FreeBSD 上驗證。
   macOS 僅作開發用。FreeBSD 附 rc.d 範例（不做打包）。client 與 daemon 必須用同一份 LMDB 原始碼與編譯選項，
   否則 lock 格式不同（MDB_VERSION_MISMATCH），這由 libemfor 與 daemon 共用 Cargo.lock 保證。
 

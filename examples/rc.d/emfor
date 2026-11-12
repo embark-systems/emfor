@@ -14,6 +14,9 @@
 #
 # "service emfor reload" sends SIGHUP: the config is re-read and applied only
 # if it is fully valid. [store] and [dns] listen changes need a restart.
+#
+# Not yet run on FreeBSD: tests/resolver/freebsd.sh exercises start, reload
+# and stop on a FreeBSD host (also the optional CI freebsd job).
 
 # PROVIDE: emfor
 # REQUIRE: LOGIN

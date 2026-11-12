@@ -9,7 +9,7 @@ Programs written in languages without an emfor client can only find a healthy ba
 - Defined DNS responses for every case: outside the zone (REFUSED), unknown name (NXDOMAIN with SOA), no backend of the requested address family (NODATA), all backends down with `on_all_down = "closed"` (SERVFAIL).
 - Reload applies `zone`, `ttl`, `dns_ttl`, and `balance`; a change to `[dns] listen` (including adding or removing `[dns]`) requires a restart, like `[store]`.
 - Deployment guide docs/deploy/dns-resolver.md explaining how to forward the zone from dnsmasq, unbound (including FreeBSD `local_unbound`), systemd-resolved, and macOS `/etc/resolver`, with verification commands and caching caveats. The dnsmasq and unbound recipes are tested automatically in containers.
-- FreeBSD becomes an official platform: a GitHub Actions workflow runs the full test suite on Linux and in a FreeBSD VM, and an example rc.d script is provided.
+- FreeBSD becomes an official platform: a GitHub Actions workflow can run the full test suite on Linux and in a FreeBSD VM, and an example rc.d script is provided. The workflow is optional and started by hand; local runs gate this change.
 
 ## Non-Goals (optional)
 

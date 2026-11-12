@@ -4,14 +4,14 @@ emfor's DNS server answers only its own zone (`[dns] zone`, default `svc.emfor`)
 
 This guide uses the defaults: zone `svc.emfor`, `127.0.0.1:5300`, and a service named `api.svc.emfor`. If you change `zone` or `listen`, change the snippets to match.
 
-Each snippet below is copied verbatim from a file in [resolver/](resolver/). `tests/resolver/run.sh` checks that the copies match and runs the dnsmasq and unbound recipes in a container.
+Each snippet below is copied verbatim from a file in [resolver/](resolver/). `tests/resolver/run.sh` checks that the copies match and runs the dnsmasq and unbound recipes in a container. The GitHub Actions workflow can run every check below, but it is optional and started by hand; the verification column names the local runs.
 
 | Resolver | Typical host | Snippet | How it was verified |
 | --- | --- | --- | --- |
 | dnsmasq | Linux | [resolver/dnsmasq.conf](resolver/dnsmasq.conf) | `tests/resolver/run.sh dnsmasq` (Debian container) |
 | unbound | Linux | [resolver/unbound.conf](resolver/unbound.conf) | `tests/resolver/run.sh unbound` (Debian container) |
-| `local_unbound` | FreeBSD | [resolver/unbound.conf](resolver/unbound.conf) | CI `freebsd` job |
-| systemd-resolved | Linux | [resolver/resolved.conf](resolver/resolved.conf) | CI `linux` job (systemd version recorded below) |
+| `local_unbound` | FreeBSD | [resolver/unbound.conf](resolver/unbound.conf) | `tests/resolver/freebsd.sh` (optional CI `freebsd` job); not yet run on FreeBSD |
+| systemd-resolved | Linux | [resolver/resolved.conf](resolver/resolved.conf) | `tests/resolver/resolved.sh` on an Ubuntu VM (version recorded below) |
 | `/etc/resolver` | macOS | [resolver/macos-resolver](resolver/macos-resolver) | manually (version recorded below) |
 
 ## Check emfor first
@@ -88,6 +88,8 @@ drill -p 5300 api.svc.emfor @127.0.0.1   # emfor directly
 getent hosts api.svc.emfor                # through the system resolver
 ```
 
+Not yet verified on FreeBSD: `tests/resolver/freebsd.sh` checks this recipe and `examples/rc.d/emfor` (`service emfor start`, `reload`, `stop`) on a FreeBSD host, and the optional CI `freebsd` job runs it.
+
 To run emfor itself, see `examples/rc.d/emfor`.
 
 ## systemd-resolved
@@ -112,7 +114,7 @@ resolvectl query api.svc.emfor
 getent hosts api.svc.emfor
 ```
 
-Verified in CI on the GitHub Actions `ubuntu-latest` runner; the systemd version is recorded in the CI log of the `linux` job.
+Verified with `tests/resolver/resolved.sh` on Ubuntu 26.04.1 LTS with systemd 259 (259.9-0ubuntu0.1), systemd-resolved in stub mode, on 2026-11-12. Other systemd versions are untested.
 
 ## macOS /etc/resolver
 

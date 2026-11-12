@@ -6,7 +6,7 @@ This change adds the second read path. Applications in languages without an emfo
 
 It also introduces `balance`, the per-service choice of how one backend is picked. DNS is its first user; `emfor-clients` will reuse the same definitions and add the affinity-key path for `sticky`.
 
-FreeBSD is now an official platform next to Linux, and the repository has a GitHub remote (`origin`, github.com/vanillahsu/emfor), so CI can run on both.
+FreeBSD is now an official platform next to Linux, and the repository has a GitHub remote (`origin`, github.com/vanillahsu/emfor), so CI can run on both. GitHub Actions jobs currently do not start for this account (billing or spending limit), so CI is an optional extra check and local runs gate this change (decision "GitHub Actions CI is optional; local runs are the gate").
 
 Terms follow docs/spectra/LANGUAGE.md: zone (負責網域), resolver (本機 resolver), balance (分配方式).
 
@@ -18,7 +18,7 @@ Terms follow docs/spectra/LANGUAGE.md: zone (負責網域), resolver (本機 res
 - A precise answer for every query shape, so resolvers cache correctly and applications see the right `getaddrinfo` error.
 - `balance` in config and in the LMDB record, so clients can follow the same choice later.
 - A tested guide for forwarding the zone from common resolvers on Linux, FreeBSD, and macOS.
-- CI that runs the full test suite on Linux and FreeBSD.
+- A CI workflow that can run the full test suite on Linux and FreeBSD when started by hand; it is optional and does not gate this change.
 
 **Non-Goals:**
 
@@ -117,7 +117,7 @@ docs/deploy/dns-resolver.md has one section per resolver: dnsmasq (`server=/<zon
 
 tests/resolver/ holds a Dockerfile and a script `tests/resolver/run.sh <dnsmasq|unbound>` that builds emfor in a Rust image, runs it with a test config against a local TCP backend inside a Debian container, configures the resolver exactly as the guide says, points the container's resolv.conf at that resolver, and asserts that `getent hosts api.svc.emfor` returns the backend address. The guide's snippets and the test configs are kept identical by having the test script read the snippet files from docs/deploy/resolver/ that the guide includes verbatim.
 
-The systemd-resolved recipe is verified on the GitHub Actions Ubuntu runner, which runs systemd-resolved. The FreeBSD `local_unbound` recipe is verified in the FreeBSD CI job. The macOS recipe is verified manually on a developer Mac, and the guide records the macOS version used.
+The systemd-resolved recipe is verified locally by `tests/resolver/resolved.sh` on an Ubuntu VM running systemd-resolved (the same script the optional CI `linux` job runs). The FreeBSD `local_unbound` recipe is checked by `tests/resolver/freebsd.sh`, which runs in the optional CI `freebsd` job or by hand on a FreeBSD host; until one of them has run, the guide marks the recipe as not yet verified. The macOS recipe is verified manually on a developer Mac, and the guide records the macOS version used.
 
 ### CI on GitHub Actions with a FreeBSD VM
 
@@ -127,6 +127,21 @@ The systemd-resolved recipe is verified on the GitHub Actions Ubuntu runner, whi
 - `freebsd`: `vmactions/freebsd-vm` on a supported FreeBSD 14 release, installs Rust from packages, runs `cargo test --workspace`, then applies the `local_unbound` recipe and checks resolution with `drill` and `getent`.
 
 Alternative considered: Cirrus CI for native FreeBSD runners. Rejected to keep one CI system with the repository's GitHub remote.
+
+The workflow is started by hand (`workflow_dispatch`); see "GitHub Actions CI is optional; local runs are the gate".
+
+### GitHub Actions CI is optional; local runs are the gate
+
+GitHub Actions jobs do not start for this account (billing or spending limit), and the user chose not to depend on them. A green workflow run is therefore not required to complete or archive this change, and the workflow stays manual (`workflow_dispatch`) so pushes do not produce failed runs.
+
+The gate is the same checks run locally:
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings` and `cargo test --workspace --all-features` on macOS and in the Debian test image.
+- `tests/resolver/run.sh dnsmasq` and `tests/resolver/run.sh unbound` in Docker.
+- `tests/resolver/resolved.sh` on a Linux VM with systemd-resolved; the guide records that VM's Ubuntu and systemd versions.
+
+FreeBSD has no local runner (installing a FreeBSD VM on the development Mac was declined). The FreeBSD checks (`cargo test` on FreeBSD, `tests/resolver/freebsd.sh` with the rc.d example and `local_unbound`) stay in the optional `freebsd` job; the guide and examples state that they have not been run on FreeBSD yet. Running them later, by CI or by hand, needs no change to this plan.
+
+Alternative considered: keep CI as the gate and leave the change open until billing is fixed. Rejected by the user: it blocks archiving emfor-dns and every change after it for an account issue unrelated to the code.
 
 ### FreeBSD rc.d example
 
@@ -158,7 +173,7 @@ examples/rc.d/emfor is an rc.subr script using `daemon(8)` to run `emfor --confi
 
 - `cargo test --workspace` passes, including table tests for selection and for every response-rule row, and end-to-end tests that start the `emfor` binary and send it DNS messages built with hickory-proto over UDP and TCP.
 - `tests/resolver/run.sh dnsmasq` and `tests/resolver/run.sh unbound` pass locally with Docker.
-- The GitHub Actions workflow passes on both the `linux` and `freebsd` jobs for the commit that completes this change.
+- The local gate in "GitHub Actions CI is optional; local runs are the gate" passes for the commit that completes this change; a green GitHub Actions run is optional.
 - The macOS section of docs/deploy/dns-resolver.md names the macOS version it was verified on.
 
 **Scope boundaries**
@@ -169,7 +184,8 @@ In scope: everything above. Out of scope: everything under Non-Goals, and any ch
 
 - [hickory-server's API changes between minor versions] → Keep all behavior in the pure `answer` function; the hickory adapter stays small and is the only code touched on upgrade.
 - [Resolvers with a minimum cache TTL keep returning a backend after it fails] → Documented in the guide's caching section with the exact setting per resolver; it is a deployment choice, not something emfor can override.
-- [The systemd-resolved recipe depends on the systemd version] → Verified on the CI runner's version, which the guide records; other versions are noted as untested.
+- [The systemd-resolved recipe depends on the systemd version] → Verified on the local VM's version, which the guide records; other versions are noted as untested.
+- [FreeBSD is an official platform but nothing has run on FreeBSD yet] → The guide and the rc.d example say so; the optional `freebsd` job or `tests/resolver/freebsd.sh` on a FreeBSD host closes the gap when available.
 - [FreeBSD VM jobs are slow (estimated several minutes per run; not measured)] → Acceptable for correctness; measure on the first runs and cache the cargo registry if it exceeds 15 minutes.
 - [Per-family all-down can surprise operators who expect service-wide behavior] → Stated explicitly in the spec and the guide; most services are single-family.
 - [`round-robin` over DNS is shaped by resolver caching: with TTL 1s, one cached answer serves a whole host for a second] → Inherent to DNS; the guide explains it. Clients (later change) do not have this limit.
@@ -180,4 +196,4 @@ Additive. Existing configs without `[dns]` or `balance` behave as before, with `
 
 ## Open Questions
 
-None blocking. The exact systemd-resolved recipe is settled by the CI check in this change.
+None blocking. The exact systemd-resolved recipe is settled by `tests/resolver/resolved.sh` run locally.
