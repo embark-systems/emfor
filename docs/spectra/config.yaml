@@ -37,6 +37,14 @@ context: |
     回應：zone 以外 REFUSED；zone 內查無服務 NXDOMAIN（附 SOA）；服務無該 IP 版本的後端回空答案（NODATA）；
     全部不健康且 on_all_down = "closed" 回 SERVFAIL；"open" 時從所有後端挑選。
     重載：zone、ttl 可重載；listen 變更需重啟（同 [store]）。
+    SRV（emfor-dns-srv）：回答在服務名稱本身與 _<任意>._tcp.<服務名稱>（_tcp.<服務名稱> 為空節點、不支援 _udp）；
+    回傳全部候選後端（兩種 IP 版本合併判斷健康；全部不健康 closed 回 SERVFAIL），balance 對應 SRV：
+    failover 依候選順序給 priority 0、1、2…；weighted 的 SRV weight = 後端 weight；locality 同 site priority 0、其他 1；
+    round-robin、sticky、不認得的值同 priority 並輪換順序（每個服務一個獨立的 SRV 計數器）。
+    target 由 IP 推出：IPv4 如 10-0-0-11.<服務名稱>，IPv6 用完整 8 組 4 位數（如 2001-0db8-0000-0000-0000-0000-0000-0011），
+    target 名稱本身可查 A/AAAA（不論健康狀態）；A/AAAA 放 additional 區段。
+    UDP 上限為 client 的 EDNS 大小限制在 512–1232（無 EDNS 為 512）：放不下先整批拿掉 additional（不設 TC），
+    SRV 本身放不下才截斷並設 TC（由 emfor 自行截斷，保留 OPT 記錄）。
     交付部署文件 docs/deploy/dns-resolver.md：dnsmasq、unbound（含 FreeBSD local_unbound，需 domain-insecure
     與 do-not-query-localhost: no）、systemd-resolved、macOS /etc/resolver；每節附直接查 emfor 與經系統 resolver
     查詢的驗證指令，以及快取（最短快取時間、負快取）注意事項。dnsmasq 與 unbound 的設定以容器自動測試驗證；
@@ -86,11 +94,8 @@ context: |
   後續規劃（已決定要做、尚未排入 change；用語見 LANGUAGE.md「分配方式的值」）：
   - balance = "fastest"（延後）：最近一次檢查延遲最低；LMDB 需記錄檢查延遲，並設計防止所有 client 湧向同一台的分散機制，
     需先實驗再決定。
-  - DNS SRV 記錄（emfor-dns-srv，排在 emfor-balance-2 之後）：回答在服務名稱本身，也接受 _<任意>._tcp.<服務名稱>；
-    回傳全部候選後端（failover 依設定順序給 priority、weighted 對應 SRV weight、round-robin 與 locality 同 priority 輪換順序，
-    locality 同 site 的 priority 較高）；target 用 IP 推出的名稱（例如 10-0-0-11.api.svc.emfor），A/AAAA 放 additional 區段。
   不做：balance = "random"（client 的 round-robin 起點本來就隨機，效果幾乎相同）。
-  - DNS port 一致性警告：服務在 DNS 網域內但後端 port 不一致時，daemon 啟動與重載時發 warn（經 DNS 只能拿到 IP）。
+  - DNS port 一致性警告：服務在 DNS 網域內但後端 port 不一致時，daemon 啟動與重載時發 warn（A/AAAA 只能拿到 IP；要 port 需改用 SRV）。
 
   變更拆分：emfor-core（已完成）→ emfor-dns（含 balance 設定欄位、LMDB 欄位、DNS 端行為、resolver 部署文件、FreeBSD CI 與 rc.d 範例）
   → emfor-plugins（已完成）→ emfor-clients（相容性驗證、client-lookup 規格、共用測試資料、Rust client 與 cargo-c 產出的 libemfor）

@@ -153,6 +153,46 @@ ip_address: 127.0.0.1
 
 On macOS the mDNS responder holds UDP 5353, which is why the default port is 5300.
 
+## SRV records
+
+A/AAAA answers carry only an address. When the backends of a service listen on different ports, or a program wants the whole backend list, query SRV instead. emfor answers SRV on two names, with the same records:
+
+- the service name itself: `api.svc.emfor`
+- `_<anything>._tcp.<service name>`: `_http._tcp.api.svc.emfor`, the form Go's `net.LookupSRV("http", "tcp", "api.svc.emfor")`, gRPC and similar clients build
+
+`_tcp.api.svc.emfor` exists but has no records (NODATA). `_udp` names are not answered (NXDOMAIN).
+
+An SRV answer lists every backend that may be used: the healthy ones, or all of them when none is healthy and `on_all_down = "open"` (`"closed"` answers SERVFAIL). IPv4 and IPv6 backends are listed together. Each record carries the backend's port, and `balance` sets the priority, weight and order:
+
+| `balance` | priority | weight | order |
+| --- | --- | --- | --- |
+| `failover` | 0, 1, 2, … in config order (the first healthy backend gets 0) | 1 | config order |
+| `weighted` | 0 | the backend's `weight` | config order |
+| `locality` | 0 for backends in the host's `site`, 1 for the others (all 0 when none matches) | 1 | rotates on every query |
+| `round-robin`, `sticky`, any other value | 0 | 1 | rotates on every query |
+
+SRV clients try the lowest priority first and pick by weight within a priority. Clients that just take the first record still spread out, because the order rotates.
+
+**Target names.** Each record points to a name derived from the backend's IP under the service name, and emfor answers A or AAAA for it, whatever the backend's health:
+
+- IPv4 `10.0.0.11` → `10-0-0-11.api.svc.emfor`
+- IPv6 `2001:db8::11` → `2001-0db8-0000-0000-0000-0000-0000-0011.api.svc.emfor` (all eight groups, four digits each)
+
+The addresses also come in the additional section of the SRV answer, so most clients need no second query.
+
+**Size.** Over UDP a reply stays within the size the client advertises with EDNS (at most 1232 bytes), or 512 bytes without EDNS. When the addresses do not fit, emfor leaves them all out, and the client looks up the target names itself. When even the SRV records do not fit, emfor sets the TC flag and the resolver repeats the query over TCP, where the reply is complete. Without EDNS, 512 bytes hold 8 IPv4 backends with their addresses, or 11 without them. With EDNS, 1232 bytes hold 19 and 27.
+
+Check:
+
+```sh
+dig @127.0.0.1 -p 5300 _http._tcp.api.svc.emfor SRV   # emfor directly
+dig @127.0.0.1 -p 5300 10-0-0-11.api.svc.emfor A      # a target name
+dig _http._tcp.api.svc.emfor SRV                      # dnsmasq or unbound on 127.0.0.1:53
+resolvectl service _http._tcp api.svc.emfor            # systemd-resolved
+```
+
+Expect `status: NOERROR`, the `aa` flag (when asking emfor directly), one SRV record per backend, and the addresses under `ADDITIONAL SECTION`. `tests/resolver/run.sh` checks the dnsmasq and unbound lines, and `tests/resolver/resolved.sh` the systemd-resolved line. On macOS, `dig` bypasses `/etc/resolver`, so test SRV through the application itself.
+
 ## Caching
 
 emfor answers with a short TTL (default 1s, per service `dns_ttl`), so a backend that fails drops out of answers within about a second. Resolver caching can stretch that:

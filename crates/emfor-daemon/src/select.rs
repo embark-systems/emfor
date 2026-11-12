@@ -6,7 +6,7 @@
 
 use std::net::IpAddr;
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use emfor_format::{BackendRecord, Balance, HealthState, OnAllDown, ServiceRecord};
 
@@ -42,16 +42,30 @@ fn candidate_backends(
     record: &ServiceRecord,
     family: Family,
 ) -> Result<Vec<(IpAddr, &BackendRecord)>, Selection> {
-    let of_family: Vec<(IpAddr, &BackendRecord)> = record
-        .backends
-        .iter()
-        .filter_map(|b| b.ip.parse::<IpAddr>().ok().map(|ip| (ip, b)))
+    let of_family: Vec<(IpAddr, &BackendRecord)> = parsed(record)
         .filter(|(ip, _)| family.matches(ip))
         .collect();
     if of_family.is_empty() {
         return Err(Selection::NoFamily);
     }
-    let healthy: Vec<(IpAddr, &BackendRecord)> = of_family
+    healthy_or_all(record, of_family)
+}
+
+/// Backends whose address parses, in config order.
+fn parsed(record: &ServiceRecord) -> impl Iterator<Item = (IpAddr, &BackendRecord)> {
+    record
+        .backends
+        .iter()
+        .filter_map(|b| b.ip.parse::<IpAddr>().ok().map(|ip| (ip, b)))
+}
+
+/// The healthy ones of `list` when there are any, else all of them or
+/// `AllDown` by `on_all_down`.
+fn healthy_or_all<'a>(
+    record: &ServiceRecord,
+    list: Vec<(IpAddr, &'a BackendRecord)>,
+) -> Result<Vec<(IpAddr, &'a BackendRecord)>, Selection> {
+    let healthy: Vec<(IpAddr, &BackendRecord)> = list
         .iter()
         .filter(|(_, b)| b.state == HealthState::Healthy)
         .copied()
@@ -60,7 +74,7 @@ fn candidate_backends(
         return Ok(healthy);
     }
     match record.on_all_down {
-        OnAllDown::Open => Ok(of_family),
+        OnAllDown::Open => Ok(list),
         OnAllDown::Closed => Err(Selection::AllDown),
     }
 }
@@ -126,10 +140,78 @@ pub fn select(
     Selection::Chosen(ip)
 }
 
+/// One SRV record's data, before it becomes a DNS record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SrvTarget {
+    pub ip: IpAddr,
+    pub port: u16,
+    pub priority: u16,
+    pub weight: u16,
+}
+
+/// Every SRV candidate of a service, both families, with priority, weight
+/// and order from `balance`. `rotation` is the service's SRV counter; it
+/// advances once per call that returns candidates. `site` is the host's site.
+pub fn srv_targets(
+    record: &ServiceRecord,
+    rotation: &AtomicU64,
+    site: Option<&str>,
+) -> Result<Vec<SrvTarget>, Selection> {
+    let all: Vec<(IpAddr, &BackendRecord)> = parsed(record).collect();
+    if all.is_empty() {
+        return Err(Selection::NoFamily);
+    }
+    let c = healthy_or_all(record, all)?;
+    let target = |(ip, b): (IpAddr, &BackendRecord), priority: u16, weight: u16| SrvTarget {
+        ip,
+        port: b.port,
+        priority,
+        weight,
+    };
+    let rotated = || {
+        let start = (rotation.fetch_add(1, Ordering::Relaxed) % c.len() as u64) as usize;
+        c[start..]
+            .iter()
+            .chain(&c[..start])
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    let out = match record.balance {
+        Balance::Failover => {
+            rotation.fetch_add(1, Ordering::Relaxed);
+            c.iter()
+                .enumerate()
+                .map(|(i, b)| target(*b, u16::try_from(i).unwrap_or(u16::MAX), 1))
+                .collect()
+        }
+        Balance::Weighted => {
+            rotation.fetch_add(1, Ordering::Relaxed);
+            c.iter()
+                .map(|b| target(*b, 0, u16::try_from(b.1.weight).unwrap_or(u16::MAX)))
+                .collect()
+        }
+        Balance::Locality => {
+            let local = |b: &BackendRecord| site.is_some() && b.site.as_deref() == site;
+            let any_local = c.iter().any(|(_, b)| local(b));
+            let mut list: Vec<SrvTarget> = rotated()
+                .into_iter()
+                .map(|b| target(b, u16::from(any_local && !local(b.1)), 1))
+                .collect();
+            list.sort_by_key(|t| t.priority);
+            list
+        }
+        Balance::RoundRobin | Balance::Sticky | Balance::Unknown => {
+            rotated().into_iter().map(|b| target(b, 0, 1)).collect()
+        }
+    };
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use HealthState::*;
+    use std::collections::BTreeSet;
 
     fn rec(
         backends: &[(&str, HealthState)],
@@ -482,5 +564,220 @@ mod tests {
             .collect();
         let (a, b) = (chosen("10.0.0.1"), chosen("10.0.0.2"));
         assert_eq!(got, [a, b, a, b]);
+    }
+
+    /// Backend `ip:port` with state, weight and site.
+    fn srv_rec(
+        backends: &[(&str, u16, HealthState, u32, Option<&str>)],
+        on_all_down: OnAllDown,
+        balance: Balance,
+    ) -> ServiceRecord {
+        let mut r = rec(&[], on_all_down, balance);
+        r.backends = backends
+            .iter()
+            .map(|(ip, port, state, weight, site)| BackendRecord {
+                id: format!("{ip}:{port}"),
+                ip: ip.to_string(),
+                port: *port,
+                weight: *weight,
+                site: site.map(str::to_string),
+                state: *state,
+                checked_at: None,
+                reason: None,
+            })
+            .collect();
+        r.refresh_all_down();
+        r
+    }
+
+    /// `(ip, port, priority, weight)` per record.
+    fn srv(
+        r: &ServiceRecord,
+        n: &AtomicU64,
+        site: Option<&str>,
+    ) -> Result<Vec<(String, u16, u16, u16)>, Selection> {
+        srv_targets(r, n, site).map(|l| {
+            l.into_iter()
+                .map(|t| (t.ip.to_string(), t.port, t.priority, t.weight))
+                .collect()
+        })
+    }
+
+    fn row(ip: &str, port: u16, priority: u16, weight: u16) -> (String, u16, u16, u16) {
+        (ip.to_string(), port, priority, weight)
+    }
+
+    #[test]
+    fn srv_failover_priorities() {
+        let r = srv_rec(
+            &[
+                ("10.0.0.11", 8080, Unhealthy, 1, None),
+                ("10.0.0.12", 8080, Healthy, 1, None),
+                ("10.0.0.13", 8080, Healthy, 1, None),
+            ],
+            OnAllDown::Open,
+            Balance::Failover,
+        );
+        let n = AtomicU64::new(0);
+        for _ in 0..2 {
+            assert_eq!(
+                srv(&r, &n, None).unwrap(),
+                vec![row("10.0.0.12", 8080, 0, 1), row("10.0.0.13", 8080, 1, 1)]
+            );
+        }
+    }
+
+    #[test]
+    fn srv_weighted_weights() {
+        let r = srv_rec(
+            &[
+                ("10.0.0.11", 8080, Healthy, 1, None),
+                ("10.0.0.12", 8080, Healthy, 3, None),
+                ("10.0.0.13", 8080, Healthy, 1, None),
+            ],
+            OnAllDown::Open,
+            Balance::Weighted,
+        );
+        let n = AtomicU64::new(0);
+        for _ in 0..3 {
+            assert_eq!(
+                srv(&r, &n, None).unwrap(),
+                vec![
+                    row("10.0.0.11", 8080, 0, 1),
+                    row("10.0.0.12", 8080, 0, 3),
+                    row("10.0.0.13", 8080, 0, 1)
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn srv_round_robin_rotation() {
+        for balance in [Balance::RoundRobin, Balance::Sticky, Balance::Unknown] {
+            let r = srv_rec(
+                &[
+                    ("10.0.0.1", 80, Healthy, 1, None),
+                    ("10.0.0.2", 80, Healthy, 1, None),
+                    ("10.0.0.3", 80, Healthy, 1, None),
+                ],
+                OnAllDown::Open,
+                balance,
+            );
+            let n = AtomicU64::new(0);
+            let order = |l: Vec<(String, u16, u16, u16)>| {
+                assert!(l.iter().all(|t| t.2 == 0 && t.3 == 1));
+                l.into_iter().map(|t| t.0).collect::<Vec<_>>()
+            };
+            assert_eq!(
+                order(srv(&r, &n, None).unwrap()),
+                ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+            );
+            assert_eq!(
+                order(srv(&r, &n, None).unwrap()),
+                ["10.0.0.2", "10.0.0.3", "10.0.0.1"]
+            );
+            assert_eq!(
+                order(srv(&r, &n, None).unwrap()),
+                ["10.0.0.3", "10.0.0.1", "10.0.0.2"]
+            );
+        }
+    }
+
+    #[test]
+    fn srv_locality_priorities() {
+        let r = srv_rec(
+            &[
+                ("10.0.0.11", 8080, Healthy, 1, Some("dc1")),
+                ("10.0.1.11", 8080, Healthy, 1, Some("dc2")),
+                ("10.0.0.12", 8080, Healthy, 1, Some("dc1")),
+            ],
+            OnAllDown::Open,
+            Balance::Locality,
+        );
+        let n = AtomicU64::new(0);
+        for _ in 0..3 {
+            let l = srv(&r, &n, Some("dc1")).unwrap();
+            assert_eq!(l.len(), 3);
+            assert!(l[0].0.starts_with("10.0.0.") && l[0].2 == 0);
+            assert!(l[1].0.starts_with("10.0.0.") && l[1].2 == 0);
+            assert_eq!(l[2], row("10.0.1.11", 8080, 1, 1));
+        }
+        // Rotation still spreads the local backends.
+        let firsts: BTreeSet<String> = (0..2)
+            .map(|_| srv(&r, &n, Some("dc1")).unwrap()[0].0.clone())
+            .collect();
+        assert_eq!(firsts.len(), 2);
+
+        // Example: locality priorities by host site (priorities in config order).
+        let two = srv_rec(
+            &[
+                ("10.0.0.11", 8080, Healthy, 1, Some("dc1")),
+                ("10.0.1.11", 8080, Healthy, 1, Some("dc2")),
+            ],
+            OnAllDown::Open,
+            Balance::Locality,
+        );
+        for site in [Some("dc3"), None] {
+            let l = srv(&two, &AtomicU64::new(0), site).unwrap();
+            assert!(l.iter().all(|t| t.2 == 0), "{site:?}: {l:?}");
+        }
+        let l = srv(&r, &AtomicU64::new(0), Some("dc1")).unwrap();
+        let prio = |ip: &str| l.iter().find(|t| t.0 == ip).unwrap().2;
+        assert_eq!(
+            [prio("10.0.0.11"), prio("10.0.1.11"), prio("10.0.0.12")],
+            [0, 1, 0]
+        );
+    }
+
+    #[test]
+    fn srv_health_across_families_and_all_down() {
+        let mixed = srv_rec(
+            &[
+                ("10.0.0.11", 8080, Unhealthy, 1, None),
+                ("2001:db8::11", 8080, Healthy, 1, None),
+            ],
+            OnAllDown::Closed,
+            Balance::RoundRobin,
+        );
+        assert_eq!(
+            srv(&mixed, &AtomicU64::new(0), None).unwrap(),
+            vec![row("2001:db8::11", 8080, 0, 1)]
+        );
+
+        let down = [
+            ("10.0.0.11", 8080, Unhealthy, 1, None),
+            ("2001:db8::11", 8080, Unknown, 1, None),
+        ];
+        let closed = srv_rec(&down, OnAllDown::Closed, Balance::RoundRobin);
+        let n = AtomicU64::new(0);
+        assert_eq!(srv(&closed, &n, None), Err(Selection::AllDown));
+        assert_eq!(n.load(Ordering::Relaxed), 0, "no answer, no rotation");
+
+        let open = srv_rec(&down, OnAllDown::Open, Balance::RoundRobin);
+        assert_eq!(
+            srv(&open, &AtomicU64::new(0), None).unwrap(),
+            vec![
+                row("10.0.0.11", 8080, 0, 1),
+                row("2001:db8::11", 8080, 0, 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn srv_counter_is_separate_from_family_counters() {
+        let r = srv_rec(
+            &[
+                ("10.0.0.1", 80, Healthy, 1, None),
+                ("10.0.0.2", 80, Healthy, 1, None),
+            ],
+            OnAllDown::Open,
+            Balance::RoundRobin,
+        );
+        let rr = crate::live::RoundRobin::default();
+        for _ in 0..3 {
+            srv_targets(&r, &rr.srv, None).unwrap();
+        }
+        assert_eq!(rr.srv.load(Ordering::Relaxed), 3);
+        assert_eq!(rr.for_family(Family::V4).counter.load(Ordering::Relaxed), 0);
     }
 }

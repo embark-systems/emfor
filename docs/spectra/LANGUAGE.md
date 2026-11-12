@@ -13,6 +13,8 @@
 | 外掛 | plugin | 以常駐子程序形式運作的外部檢查器，透過 stdin/stdout 逐行 JSON 與 emfor 溝通，須在設定檔 `[plugins.*]` 註冊。 | extension、module（「模組」保留給 client） |
 | 負責網域 | `zone`（`[dns] zone`） | emfor DNS 負責回答的網域，預設 `svc.emfor`。只有名稱在這個網域底下的服務能用 DNS 查到；網域以外的查詢回 `REFUSED`。 | domain、suffix |
 | 本機 resolver | resolver | 應用主機上負責所有 DNS 查詢的程式（systemd-resolved、dnsmasq、unbound、FreeBSD `local_unbound`），依網域把負責網域的查詢轉發給 emfor。emfor 本身不是 resolver。 | DNS server（指 emfor 時） |
+| SRV 查詢名稱 | SRV owner name | 可查 SRV 的名稱：服務名稱本身，或 `_<任意>._tcp.<服務名稱>`（例如 `_http._tcp.api.svc.emfor`）。`_tcp.<服務名稱>` 是空節點（NODATA），`_udp` 不支援（NXDOMAIN）。 | service record name |
+| SRV target 名稱 | SRV target name | SRV 記錄指向的主機名稱，由後端 IP 推出：`<IP 標籤>.<服務名稱>`。IPv4 把 `.` 換成 `-`（`10-0-0-11.api.svc.emfor`）；IPv6 寫成完整 8 組、每組 4 位小寫十六進位，以 `-` 連接（`2001-0db8-0000-0000-0000-0000-0000-0011.api.svc.emfor`），不用縮寫，因為縮寫可能以 `-` 開頭或結尾。這個名稱可查 A/AAAA，不論後端健康狀態。 | 後端主機名稱、hostname |
 | client | client | 各語言（C、Rust、Go、Python、Perl、PHP）的查詢函式庫，對外只提供一個查詢呼叫，內部讀取本機 LMDB：C `emfor_lookup`、Rust `emfor_client::lookup`、Go `emfor.Lookup`、Python `emfor.lookup`、Perl `Emfor::lookup`、PHP `Emfor\lookup`。Rust 直接用 crate；其他語言都包裝 `libemfor`（Go 用 cgo、Python 用 ctypes、Perl 用 XS、PHP 用 C extension）。 | 模組、SDK、driver |
 | libemfor | `libemfor`（`.so` / `.dylib`） | 由 Rust crate `emfor-client` 經 cargo-c 產出的 C 函式庫，內嵌與 daemon 同一份 LMDB，C、Go、Python、Perl、PHP client 都包裝它的動態函式庫。必須與 emfor 同版本一起升級。 | 系統 liblmdb、PHP dba（lock 格式與 daemon 不同，讀不了 store） |
 
@@ -55,7 +57,7 @@ client 讀到不認得的 `balance` 值（較新版 daemon 寫入的）時，改
 ## 用語修正紀錄
 
 - `weight_condition` → `affinity_key`：原名稱容易被理解為「依權重比例挑選」，實際語意是依 cookie / header 的值做黏著式分配。
-- 查詢回傳值「後端 IP」→ `ip:port`：同一服務的後端 port 可以不同，只回 IP 會讓應用程式連錯 port；`ip:port` 與設定檔、LMDB `id` 相同。經 DNS 仍只能得到 IP（SRV 屬後續規劃）。
+- 查詢回傳值「後端 IP」→ `ip:port`：同一服務的後端 port 可以不同，只回 IP 會讓應用程式連錯 port；`ip:port` 與設定檔、LMDB `id` 相同。經 DNS 的 A/AAAA 仍只能得到 IP；要 port 用 SRV（emfor-dns-srv）。
 - 「分配規則」→ 分配方式（`balance`）：原本只有黏著與隨機兩種固定行為，現在改為每個服務在設定檔選擇的方式；rendezvous hashing 改稱黏著分配演算法，只屬於 `sticky`。
 - client 讀 LMDB 的方式「各語言用自己的 LMDB 套件」→ `libemfor`：相容性驗證發現系統 liblmdb 與 PHP dba 的 lock 格式和 daemon 不同，讀不了 store。
 - 分配方式 `zone` → `locality`，機房標籤稱 `site`：`zone` 已是 DNS 負責網域（`[dns] zone`）的名稱，兩者容易混淆。

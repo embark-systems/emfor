@@ -35,6 +35,8 @@ pub struct FamilyChoice {
 pub struct RoundRobin {
     v4: FamilyChoice,
     v6: FamilyChoice,
+    /// SRV answer rotation, independent of the A and AAAA state.
+    pub srv: AtomicU64,
 }
 
 impl RoundRobin {
@@ -135,6 +137,10 @@ mod tests {
             .for_family(Family::V4)
             .counter
             .store(7, Ordering::Relaxed);
+        live.read().services["a"]
+            .round_robin
+            .srv
+            .store(5, Ordering::Relaxed);
         live.replace([svc("a")].into_iter().collect(), None);
         let v = live.read();
         assert_eq!(v.services.len(), 1);
@@ -146,5 +152,6 @@ mod tests {
                 .load(Ordering::Relaxed),
             7
         );
+        assert_eq!(v.services["a"].round_robin.srv.load(Ordering::Relaxed), 5);
     }
 }

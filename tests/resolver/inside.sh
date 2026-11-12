@@ -61,4 +61,10 @@ done
 echo "$out" | grep -q '^127\.0\.0\.1 ' || fail "unexpected answer: $out"
 if getent hosts nope.svc.emfor >/dev/null; then fail "nope.svc.emfor resolved"; fi
 
-echo "ok: $resolver forwards svc.emfor to emfor ($out)"
+# SRV through the system resolver, and the target name it points to.
+srv=$(dig +short _http._tcp.api.svc.emfor SRV)
+[ "$srv" = "0 1 8080 127-0-0-1.api.svc.emfor." ] || fail "unexpected SRV answer: $srv"
+target=$(dig +short 127-0-0-1.api.svc.emfor A)
+[ "$target" = "127.0.0.1" ] || fail "unexpected target answer: $target"
+
+echo "ok: $resolver forwards svc.emfor to emfor ($out; SRV $srv)"

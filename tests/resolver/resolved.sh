@@ -52,4 +52,8 @@ until out=$(getent hosts api.svc.emfor); do
 done
 echo "$out" | grep -q '^127\.0\.0\.1 ' || fail "unexpected answer: $out"
 resolvectl query api.svc.emfor
+# SRV through systemd-resolved, as docs/deploy/dns-resolver.md shows it.
+srv=$(resolvectl service _http._tcp api.svc.emfor) || fail "resolvectl service failed"
+echo "$srv"
+echo "$srv" | grep -q '127-0-0-1.api.svc.emfor' || fail "unexpected SRV answer: $srv"
 echo "ok: systemd-resolved forwards svc.emfor to emfor ($out)"
