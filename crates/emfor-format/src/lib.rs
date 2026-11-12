@@ -19,6 +19,9 @@ pub const KEY_HEARTBEAT: &str = "meta/heartbeat";
 pub const KEY_STARTED_AT: &str = "meta/started_at";
 /// The host's site label (config top-level `site`); absent when not set.
 pub const KEY_SITE: &str = "meta/site";
+/// `[metrics] listen` of the running daemon as a JSON array of strings;
+/// absent when the config has no `[metrics]` table.
+pub const KEY_METRICS_LISTEN: &str = "meta/metrics_listen";
 /// Prefix of service record keys: `svc/<service name>`.
 pub const SERVICE_KEY_PREFIX: &str = "svc/";
 

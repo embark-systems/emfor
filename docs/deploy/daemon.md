@@ -28,7 +28,7 @@ install -m 0755 target/release/emfor /usr/local/sbin/emfor
 ```console
 $ emfor status
 store: /var/lib/emfor/state.mdb
-daemon: running, heartbeat 0.4s ago, up 3h12m, site tpe1
+daemon: running, heartbeat 0.4s ago, up 3h12m, site tpe1, metrics 127.0.0.1:5301
 
 api.svc.emfor  round-robin  on_all_down=open
   10.0.0.11:8080  healthy    0.8s ago  1.2ms
@@ -38,7 +38,7 @@ db.svc.emfor  failover  on_all_down=open  ALL DOWN
   10.0.3.1:5432   unhealthy  1.1s ago  -      auth: 28P01: password authentication failed for user "emfor"
 ```
 
-- **daemon line**: `running` while the heartbeat is at most 3 seconds old; `stale` when it is older (the daemon hangs or is gone without a clean shutdown); `stopped` after a clean shutdown. The services shown are what the daemon last wrote; with a stale or stopped daemon, do not trust them.
+- **daemon line**: `running` while the heartbeat is at most 3 seconds old; `stale` when it is older (the daemon hangs or is gone without a clean shutdown); `stopped` after a clean shutdown. A running daemon with a `[metrics]` table adds `metrics` and its listen addresses, separated by spaces, as the daemon wrote them to `meta/metrics_listen` at start (so a changed config that has not been applied by a restart does not show). The services shown are what the daemon last wrote; with a stale or stopped daemon, do not trust them.
 - **service line**: the `balance`, `on_all_down`, and `ALL DOWN` when no backend is healthy.
 - **backend lines**: health state after `rise` / `fall`, time since the last check finished (`never` before the first), the smoothed check latency (`-` when the backend is not healthy), `pool` for the fast backends of a `fastest` service, `FLAPPING (<n> changes in 10m)` for a flapping backend (see [State history](#state-history)), and the message of the last failed check. The message is cleared by the next passing check, which can happen before the backend counts as healthy again (`rise`).
 
@@ -50,7 +50,7 @@ On a terminal the states are colored; set `NO_COLOR` to turn that off. Piped out
 | --- | --- |
 | `--config <path>` | Config file to take `[store] path` from |
 | `--service <name>` | Show one service |
-| `--json` | One JSON object: `store`, `daemon` (`running`, `stale`, `stopped`), `heartbeat_ms`, `heartbeat_age_ms`, `started_at_ms`, `site`, `services` (the store's service records as written), `history` (service name → its `hist/` value as written) and `flapping` (`[{"service", "backend", "changes"}]`) |
+| `--json` | One JSON object: `store`, `daemon` (`running`, `stale`, `stopped`), `heartbeat_ms`, `heartbeat_age_ms`, `started_at_ms`, `site`, `metrics_listen` (the `[metrics]` listen addresses, or `null`), `services` (the store's service records as written), `history` (service name → its `hist/` value as written) and `flapping` (`[{"service", "backend", "changes"}]`) |
 | `--watch` | Redraw every second until Ctrl-C; needs a terminal, not with `--json` |
 | `--history` | List each backend's recorded state changes, newest first; not with `--json` or `--watch` |
 

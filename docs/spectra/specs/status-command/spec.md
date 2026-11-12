@@ -49,7 +49,7 @@ tests:
 `emfor status` SHALL print, in this order:
 
 1. `store: <path>`;
-2. one daemon line: `daemon: running, heartbeat <age> ago, up <duration>` followed by `, site <site>` when `meta/site` is set; `daemon: stale, heartbeat <age> ago` when the heartbeat is older than 3 seconds; `daemon: stopped` when the heartbeat is `0`;
+2. one daemon line: `daemon: running, heartbeat <age> ago, up <duration>` followed by `, site <site>` when `meta/site` is set and then `, metrics <addresses>` when `meta/metrics_listen` holds a JSON array of strings, the addresses separated by single spaces in stored order; `daemon: stale, heartbeat <age> ago` when the heartbeat is older than 3 seconds; `daemon: stopped` when the heartbeat is `0`;
 3. for each service in name order, a line `<name>  <balance>  on_all_down=<open|closed>` followed by `  ALL DOWN` when `all_down` is true;
 4. under each service, one line per backend in store order with the backend `id`, its health state (`healthy`, `unhealthy` or `unknown`), the time since `checked_at` as `<age> ago` (`never` when absent), the check latency (`-` when absent), the marker `pool` for members of a `fastest` service's pool, and the last failure `reason` when present.
 
@@ -72,6 +72,21 @@ Ages and durations SHALL be written as `<s>.<tenths>s` under one minute, `<m>m<s
 | latency 1200 µs | `1.2ms` |
 | latency 1 400 000 µs | `1.4s` |
 
+#### Scenario: Metrics addresses on the daemon line
+
+- **WHEN** the daemon is running with heartbeat 400 ms old, started 3 h 12 min ago, `meta/site` `tpe1` and `meta/metrics_listen` `["127.0.0.1:5301","[::1]:5301"]`
+- **THEN** the daemon line is `daemon: running, heartbeat 0.4s ago, up 3h12m, site tpe1, metrics 127.0.0.1:5301 [::1]:5301`
+
+##### Example: metrics part of the daemon line
+
+| `meta/metrics_listen` | Daemon state | Daemon line ends with |
+| --- | --- | --- |
+| `["127.0.0.1:5301"]` | running | `, metrics 127.0.0.1:5301` |
+| `["127.0.0.1:5301","[::1]:5301"]` | running | `, metrics 127.0.0.1:5301 [::1]:5301` |
+| absent | running | `up <duration>` or `site <site>`, no `metrics` |
+| `not json` | running | no `metrics` |
+| `["127.0.0.1:5301"]` | stopped | `daemon: stopped` |
+
 #### Scenario: Stopped daemon
 
 - **WHEN** the daemon shut down cleanly and the heartbeat is `0`
@@ -84,18 +99,14 @@ Ages and durations SHALL be written as `<s>.<tenths>s` under one minute, `<m>m<s
 
 
 <!-- @trace
-source: emfor-status
+source: emfor-status-metrics
 updated: 2026-11-13
 code:
-  - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/build/prefix.rs
-  - crates/emfor-daemon/Cargo.toml
-  - docs/deploy/daemon.md
-  - crates/emfor-daemon/build.rs
-  - crates/emfor-daemon/src/cli.rs
+  - crates/emfor-format/src/lib.rs
   - crates/emfor-daemon/src/status.rs
-  - crates/emfor-daemon/src/config.rs
-  - examples/rc.d/emfor
+  - crates/emfor-daemon/src/writer.rs
+  - docs/deploy/daemon.md
+  - crates/emfor-daemon/src/cli.rs
 tests:
   - crates/emfor-daemon/tests/daemon.rs
 -->
@@ -103,12 +114,17 @@ tests:
 ---
 ### Requirement: Status filtering and JSON output
 
-`emfor status --service <name>` SHALL show only that service; when the store has no such service it SHALL print `service <name> not found` and exit 2. `emfor status --json` SHALL print one JSON object instead of text: `store` (path), `daemon` (`running`, `stale` or `stopped`), `heartbeat_ms` (the stored value), `heartbeat_age_ms` (null when stopped), `started_at_ms`, `site` (null when absent), `services`, an array of the service records exactly as stored, in name order, `history`, an object mapping each listed service name that has a `hist/` key to that key's value exactly as stored, and `flapping`, an array of `{"service":<name>,"backend":<id>,"changes":<n>}` for every flapping backend of the listed services (see "Flapping backends"), in service name order and then store order. `--json` and `--service` SHALL combine, and `--service` SHALL limit `history` and `flapping` the same way as `services`. Exit statuses SHALL be the same as for text output.
+`emfor status --service <name>` SHALL show only that service; when the store has no such service it SHALL print `service <name> not found` and exit 2. `emfor status --json` SHALL print one JSON object instead of text: `store` (path), `daemon` (`running`, `stale` or `stopped`), `heartbeat_ms` (the stored value), `heartbeat_age_ms` (null when stopped), `started_at_ms`, `site` (null when absent), `metrics_listen` (the array of strings stored in `meta/metrics_listen`, null when the key is absent or does not hold a JSON array of strings), `services`, an array of the service records exactly as stored, in name order, `history`, an object mapping each listed service name that has a `hist/` key to that key's value exactly as stored, and `flapping`, an array of `{"service":<name>,"backend":<id>,"changes":<n>}` for every flapping backend of the listed services (see "Flapping backends"), in service name order and then store order. `--json` and `--service` SHALL combine, and `--service` SHALL limit `history` and `flapping` the same way as `services`. Exit statuses SHALL be the same as for text output.
 
 #### Scenario: JSON for one service
 
 - **WHEN** an operator runs `emfor status --json --service api.svc.emfor` while the daemon is running
 - **THEN** the output parses as JSON with `daemon` equal to `running` and `services` holding one record whose `name` is `api.svc.emfor`
+
+#### Scenario: JSON metrics addresses
+
+- **WHEN** `meta/metrics_listen` holds `["127.0.0.1:5301"]` and an operator runs `emfor status --json`
+- **THEN** `metrics_listen` equals `["127.0.0.1:5301"]`, and with the key absent it is `null`
 
 #### Scenario: Unknown service
 
@@ -127,15 +143,14 @@ tests:
 
 
 <!-- @trace
-source: emfor-status-history
+source: emfor-status-metrics
 updated: 2026-11-13
 code:
-  - docs/deploy/daemon.md
-  - crates/emfor-daemon/src/writer.rs
-  - crates/emfor-daemon/src/store.rs
   - crates/emfor-format/src/lib.rs
-  - crates/emfor-daemon/src/cli.rs
   - crates/emfor-daemon/src/status.rs
+  - crates/emfor-daemon/src/writer.rs
+  - docs/deploy/daemon.md
+  - crates/emfor-daemon/src/cli.rs
 tests:
   - crates/emfor-daemon/tests/daemon.rs
 -->

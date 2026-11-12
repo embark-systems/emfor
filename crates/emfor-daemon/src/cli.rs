@@ -249,7 +249,7 @@ async fn run(
 
     let (tx, rx) = mpsc::unbounded_channel();
     let history = load_history(&store);
-    let writer = writer::spawn_live(store, rx, live, history);
+    let writer = writer::spawn_live(store, rx, live, history, metrics_listen(&config));
     let mut supervisor = Supervisor::start(&config, tx.clone());
     tracing::info!(
         "emfor started: {} services, {} backends, store {}",
@@ -309,6 +309,15 @@ async fn run(
     let _ = done_rx.await;
     let _ = writer.await;
     ExitCode::from(EXIT_OK)
+}
+
+/// `[metrics] listen` as written to `meta/metrics_listen`: IPv4 as
+/// `<ip>:<port>`, IPv6 as `[<ip>]:<port>`.
+fn metrics_listen(config: &Config) -> Option<Vec<String>> {
+    config
+        .metrics
+        .as_ref()
+        .map(|m| m.listen.iter().map(ToString::to_string).collect())
 }
 
 /// DNS warnings for a loaded config: services outside the zone, and
@@ -445,6 +454,21 @@ mod tests {
         let config =
             config::parse(&text, &Registry::builtin()).unwrap_or_else(|e| panic!("errors: {e:?}"));
         port_warnings(&config)
+    }
+
+    /// State-store "Metrics listen addresses in the store": the address
+    /// forms written to `meta/metrics_listen`.
+    #[test]
+    fn metrics_listen_address_forms() {
+        let parse = |text: &str| {
+            config::parse(text, &Registry::builtin()).unwrap_or_else(|e| panic!("errors: {e:?}"))
+        };
+        let c = parse("[metrics]\nlisten = [\"127.0.0.1:5301\", \"[::1]:5301\"]\n");
+        assert_eq!(
+            metrics_listen(&c),
+            Some(vec!["127.0.0.1:5301".to_owned(), "[::1]:5301".to_owned()])
+        );
+        assert_eq!(metrics_listen(&parse("")), None);
     }
 
     /// Example "which services are reported".

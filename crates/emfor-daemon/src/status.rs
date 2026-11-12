@@ -14,8 +14,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use emfor_format::{
-    HIST_KEY_PREFIX, HealthState, HistoryEntry, KEY_HEARTBEAT, KEY_SCHEMA_VERSION, KEY_SITE,
-    KEY_STARTED_AT, SCHEMA_VERSION, SERVICE_KEY_PREFIX, ServiceHistory, ServiceRecord,
+    HIST_KEY_PREFIX, HealthState, HistoryEntry, KEY_HEARTBEAT, KEY_METRICS_LISTEN,
+    KEY_SCHEMA_VERSION, KEY_SITE, KEY_STARTED_AT, SCHEMA_VERSION, SERVICE_KEY_PREFIX,
+    ServiceHistory, ServiceRecord,
 };
 use heed::types::Str;
 use heed::{Database, Env, EnvFlags, EnvOpenOptions, WithoutTls};
@@ -59,6 +60,8 @@ pub struct Snapshot {
     pub heartbeat_ms: u64,
     pub started_at_ms: Option<u64>,
     pub site: Option<String>,
+    /// `meta/metrics_listen`; `None` when absent or not an array of strings.
+    pub metrics_listen: Option<Vec<String>>,
     /// In name order.
     pub services: Vec<ServiceRecord>,
     /// Backend state history by service name; unreadable values are left out.
@@ -160,6 +163,7 @@ impl Reader {
         let heartbeat_ms = number(get(KEY_HEARTBEAT)?).unwrap_or(0);
         let started_at_ms = number(get(KEY_STARTED_AT)?);
         let site = get(KEY_SITE)?.map(str::to_owned);
+        let metrics_listen = metrics_listen(get(KEY_METRICS_LISTEN)?);
         let mut services = Vec::new();
         for item in self
             .db
@@ -187,6 +191,7 @@ impl Reader {
             heartbeat_ms,
             started_at_ms,
             site,
+            metrics_listen,
             services,
             history,
         })
@@ -308,6 +313,12 @@ fn reverse(line: &str) -> String {
     )
 }
 
+/// A `meta/metrics_listen` value; display only, so anything but a JSON
+/// array of strings reads as absent.
+fn metrics_listen(value: Option<&str>) -> Option<Vec<String>> {
+    value.and_then(|v| serde_json::from_str(v).ok())
+}
+
 /// The `store:` and `daemon:` lines.
 fn header(snap: &Snapshot, store: &Path, now_ms: u64, style: Style) -> Vec<String> {
     let mut lines = vec![format!("store: {}", store.display())];
@@ -322,6 +333,9 @@ fn header(snap: &Snapshot, store: &Path, now_ms: u64, style: Style) -> Vec<Strin
         }
         if let Some(site) = &snap.site {
             write!(line, ", site {site}").unwrap();
+        }
+        if let Some(listen) = &snap.metrics_listen {
+            write!(line, ", metrics {}", listen.join(" ")).unwrap();
         }
         lines.push(line);
     } else {
@@ -447,6 +461,7 @@ pub fn json(snap: &Snapshot, store: &Path, now_ms: u64) -> serde_json::Value {
         "heartbeat_age_ms": hb_age,
         "started_at_ms": snap.started_at_ms,
         "site": snap.site,
+        "metrics_listen": snap.metrics_listen,
         "services": snap.services,
         "history": snap.history,
         "flapping": flapping(snap, now_ms)
@@ -773,6 +788,7 @@ mod tests {
             heartbeat_ms: heartbeat_ago.map_or(0, |a| NOW - a),
             started_at_ms: Some(NOW - 3_600_000),
             site: Some("tpe1".into()),
+            metrics_listen: None,
             services,
             history: BTreeMap::new(),
         }
@@ -962,6 +978,57 @@ mod tests {
         assert_eq!(
             filter(s, Some("nope.svc.emfor")),
             Err(Failure("service nope.svc.emfor not found".into()))
+        );
+    }
+
+    /// Spec "Status text output", example "metrics part of the daemon
+    /// line", and scenario "Metrics addresses on the daemon line".
+    #[test]
+    fn metrics_on_the_daemon_line() {
+        let rows: [(Option<&str>, Option<u64>, &str); 5] = [
+            (
+                Some(r#"["127.0.0.1:5301"]"#),
+                Some(400),
+                ", site tpe1, metrics 127.0.0.1:5301",
+            ),
+            (
+                Some(r#"["127.0.0.1:5301","[::1]:5301"]"#),
+                Some(400),
+                ", site tpe1, metrics 127.0.0.1:5301 [::1]:5301",
+            ),
+            (None, Some(400), ", site tpe1"),
+            (Some("not json"), Some(400), ", site tpe1"),
+            (Some(r#"["127.0.0.1:5301"]"#), None, "daemon: stopped"),
+        ];
+        for (value, heartbeat_ago, end) in rows {
+            let mut s = snap(heartbeat_ago, vec![]);
+            s.metrics_listen = metrics_listen(value);
+            let line = &render(&s)[1];
+            assert!(line.ends_with(end), "{value:?}: {line}");
+        }
+        let mut s = snap(Some(400), vec![]);
+        s.started_at_ms = Some(NOW - (3 * 60 + 12) * 60_000);
+        s.metrics_listen = Some(vec!["127.0.0.1:5301".into(), "[::1]:5301".into()]);
+        assert_eq!(
+            render(&s)[1],
+            "daemon: running, heartbeat 0.4s ago, up 3h12m, site tpe1, metrics 127.0.0.1:5301 [::1]:5301"
+        );
+        assert_eq!(metrics_listen(Some("[1]")), None);
+    }
+
+    /// Spec "Status filtering and JSON output", scenario "JSON metrics
+    /// addresses".
+    #[test]
+    fn json_metrics_listen() {
+        let mut s = snap(Some(400), vec![]);
+        assert_eq!(
+            json(&s, Path::new("/s.mdb"), NOW)["metrics_listen"],
+            serde_json::Value::Null
+        );
+        s.metrics_listen = Some(vec!["127.0.0.1:5301".into()]);
+        assert_eq!(
+            json(&s, Path::new("/s.mdb"), NOW)["metrics_listen"],
+            serde_json::json!(["127.0.0.1:5301"])
         );
     }
 

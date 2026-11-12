@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use emfor_format::{
     BackendRecord, Balance, HIST_KEY_PREFIX, HealthState, HistoryEntry, KEY_HEARTBEAT,
-    KEY_SCHEMA_VERSION, KEY_SITE, KEY_STARTED_AT, OnAllDown, SCHEMA_VERSION, SERVICE_KEY_PREFIX,
-    ServiceHistory, ServiceRecord, hist_key, service_key,
+    KEY_METRICS_LISTEN, KEY_SCHEMA_VERSION, KEY_SITE, KEY_STARTED_AT, OnAllDown, SCHEMA_VERSION,
+    SERVICE_KEY_PREFIX, ServiceHistory, ServiceRecord, hist_key, service_key,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::MissedTickBehavior;
@@ -121,6 +121,8 @@ struct Writer<S: Sink> {
     histories: BTreeMap<Arc<str>, ServiceHistory>,
     /// Services whose history changed since the last commit.
     hist_dirty: BTreeSet<Arc<str>>,
+    /// `meta/metrics_listen` written at a fresh start, as JSON; deleted when `None`.
+    metrics_listen: Option<String>,
     /// Updated before every commit attempt.
     live: LiveState,
 }
@@ -141,8 +143,16 @@ pub fn spawn_live<S: Sink>(
     rx: mpsc::UnboundedReceiver<WriterMsg>,
     live: LiveState,
     history: BTreeMap<String, ServiceHistory>,
+    metrics_listen: Option<Vec<String>>,
 ) -> tokio::task::JoinHandle<()> {
-    spawn_inner(sink, rx, Duration::from_secs(1), live, history)
+    spawn_inner(
+        sink,
+        rx,
+        Duration::from_secs(1),
+        live,
+        history,
+        metrics_listen,
+    )
 }
 
 pub fn spawn_with_tick<S: Sink>(
@@ -150,7 +160,7 @@ pub fn spawn_with_tick<S: Sink>(
     rx: mpsc::UnboundedReceiver<WriterMsg>,
     tick: Duration,
 ) -> tokio::task::JoinHandle<()> {
-    spawn_inner(sink, rx, tick, LiveState::default(), BTreeMap::new())
+    spawn_inner(sink, rx, tick, LiveState::default(), BTreeMap::new(), None)
 }
 
 fn spawn_inner<S: Sink>(
@@ -159,6 +169,7 @@ fn spawn_inner<S: Sink>(
     tick: Duration,
     live: LiveState,
     history: BTreeMap<String, ServiceHistory>,
+    metrics_listen: Option<Vec<String>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut w = Writer {
@@ -173,6 +184,8 @@ fn spawn_inner<S: Sink>(
                 .map(|(name, h)| (Arc::from(name), h))
                 .collect(),
             hist_dirty: BTreeSet::new(),
+            metrics_listen: metrics_listen
+                .map(|l| serde_json::to_string(&l).expect("strings serialize")),
         };
         // First tick one period from now: start-up already writes a heartbeat.
         let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + tick, tick);
@@ -251,6 +264,10 @@ impl<S: Sink> Writer<S> {
             let started = unix_ms();
             self.live.set_started_at(started);
             ops.push(Op::Put(KEY_STARTED_AT.into(), started.to_string()));
+            ops.push(match &self.metrics_listen {
+                Some(l) => Op::Put(KEY_METRICS_LISTEN.into(), l.clone()),
+                None => Op::Delete(KEY_METRICS_LISTEN.into()),
+            });
             ops.push(Op::Put(KEY_HEARTBEAT.into(), unix_ms().to_string()));
             ops.push(Op::DeletePrefix(SERVICE_KEY_PREFIX.into()));
             // History is pruned key by key below, never by prefix: a key the
@@ -494,6 +511,49 @@ mod tests {
         .unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(store.get(KEY_SITE).unwrap(), None);
+    }
+
+    /// State-store "Metrics listen addresses in the store": written at a
+    /// fresh start, left alone by a reload, deleted at a start without
+    /// `[metrics]`.
+    #[tokio::test]
+    async fn metrics_listen_written_at_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let listen = vec!["127.0.0.1:5301".to_owned(), "[::1]:5301".to_owned()];
+        let start = |tx: &mpsc::UnboundedSender<WriterMsg>, fresh_start| {
+            tx.send(WriterMsg::SetLayout {
+                fresh_start,
+                site: None,
+                services: vec![layout("a", &["10.0.0.1:80"], 0, fresh_start)],
+            })
+            .unwrap();
+        };
+        let (tx, rx) = mpsc::unbounded_channel();
+        let w = spawn_inner(
+            store.clone(),
+            rx,
+            Duration::from_secs(3600),
+            LiveState::default(),
+            BTreeMap::new(),
+            Some(listen),
+        );
+        start(&tx, true);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let want = Some(r#"["127.0.0.1:5301","[::1]:5301"]"#);
+        assert_eq!(store.get(KEY_METRICS_LISTEN).unwrap().as_deref(), want);
+        start(&tx, false);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(store.get(KEY_METRICS_LISTEN).unwrap().as_deref(), want);
+        drop(tx);
+        w.await.unwrap();
+
+        // Next run without [metrics]: the earlier value is gone.
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
+        start(&tx, true);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(store.get(KEY_METRICS_LISTEN).unwrap(), None);
     }
 
     #[tokio::test]
@@ -805,7 +865,7 @@ mod tests {
             ("gone.svc.emfor".to_owned(), ServiceHistory::default()),
         ]);
         let (tx, rx) = mpsc::unbounded_channel();
-        spawn_live(store.clone(), rx, LiveState::default(), loaded);
+        spawn_live(store.clone(), rx, LiveState::default(), loaded, None);
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
@@ -858,7 +918,7 @@ mod tests {
             ("old.svc.emfor".to_owned(), old),
         ]);
         let (tx, rx) = mpsc::unbounded_channel();
-        spawn_live(store.clone(), rx, LiveState::default(), loaded);
+        spawn_live(store.clone(), rx, LiveState::default(), loaded, None);
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
@@ -970,6 +1030,7 @@ mod tests {
             Duration::from_secs(3600),
             live.clone(),
             BTreeMap::new(),
+            None,
         );
         let id = "10.0.0.11:8080";
         let svc = "api.svc.emfor";
@@ -1049,6 +1110,7 @@ mod tests {
             Duration::from_secs(3600),
             live.clone(),
             BTreeMap::new(),
+            None,
         );
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
@@ -1115,6 +1177,7 @@ mod tests {
             Duration::from_secs(3600),
             live.clone(),
             BTreeMap::new(),
+            None,
         );
         let mut l = layout("a", &["10.0.0.1:80"], 0, true);
         l.dns_ttl = Some(5);
@@ -1197,6 +1260,7 @@ mod tests {
             Duration::from_secs(3600),
             live.clone(),
             BTreeMap::new(),
+            None,
         );
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
