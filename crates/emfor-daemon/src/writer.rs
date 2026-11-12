@@ -18,7 +18,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::MissedTickBehavior;
 
 use crate::config::Backend;
-use crate::live::{LiveService, LiveState, LiveView};
+use crate::live::{LiveService, LiveState};
 use crate::schedule::{BackendUpdate, unix_ms};
 use crate::store::{Store, delete_prefix};
 
@@ -220,8 +220,10 @@ impl<S: Sink> Writer<S> {
             self.dirty.remove(&name);
             ops.push(Op::Delete(service_key(&name)));
         }
-        let mut view = LiveView::default();
+        let mut live = std::collections::HashMap::new();
         for s in services {
+            // Config parsing normalizes names; the live view relies on it.
+            debug_assert_eq!(&*s.name, s.name.to_ascii_lowercase());
             let old = if s.reset {
                 None
             } else {
@@ -244,18 +246,12 @@ impl<S: Sink> Writer<S> {
                 backends,
             };
             rec.refresh_all_down();
-            view.services.insert(
-                s.name.to_string(),
-                LiveService {
-                    record: rec.clone(),
-                    dns_ttl: s.dns_ttl,
-                },
-            );
+            live.insert(s.name.to_string(), LiveService::new(rec.clone(), s.dns_ttl));
             self.generations.insert(s.name.clone(), s.generation);
             self.records.insert(s.name.clone(), rec);
             self.dirty.insert(s.name);
         }
-        self.live.replace(view);
+        self.live.replace(live);
         self.flush(ops);
     }
 

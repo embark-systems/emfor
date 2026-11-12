@@ -30,7 +30,7 @@ Scope exclusions are recorded in design.md under Goals / Non-Goals.
 ## Impact
 
 - Code: crates/emfor-format/src/lib.rs (new `Balance` type and record field), crates/emfor-daemon/src/config.rs (new keys and `[dns]` table), crates/emfor-daemon/src/writer.rs and crates/emfor-daemon/src/supervisor.rs (publish live state to DNS), crates/emfor-daemon/src/cli.rs (start DNS, reload rules), new modules crates/emfor-daemon/src/select.rs and crates/emfor-daemon/src/dns.rs.
-- New dependency: hickory-server and hickory-proto 0.26 (DNS); hickory-resolver as a dev-dependency for tests.
+- New dependency: hickory-server and hickory-proto 0.26 (DNS); tests build DNS messages with hickory-proto.
 - New files: docs/deploy/dns-resolver.md, examples/rc.d/emfor, .github/workflows/ci.yml, tests/resolver/ (container recipes for dnsmasq and unbound).
 - examples/emfor.toml gains `balance` and a `[dns]` table.
 - Existing LMDB readers: none exist yet; the new `balance` field is additive.

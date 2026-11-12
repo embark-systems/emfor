@@ -203,12 +203,16 @@ pub fn parse_store(text: &str) -> Option<StoreConfig> {
 
 /// Parse only `[dns] listen`: `Some(None)` without a `[dns]` table,
 /// `Some(Some(addrs))` with one, `None` when the TOML is unreadable or the
-/// table itself is invalid. Used on reload like [`parse_store`].
+/// listen value itself is invalid. Errors in other `[dns]` keys are ignored,
+/// so a listen change is reported together with them on reload.
 pub fn parse_dns_listen(text: &str) -> Option<Option<Vec<SocketAddr>>> {
     let root: toml::Table = text.parse().ok()?;
     let mut v = Validator::default();
-    let dns = v.dns(&root);
-    v.errors.is_empty().then(|| dns.map(|d| d.listen))
+    let Some(t) = v.table(&root, "dns") else {
+        return v.errors.is_empty().then_some(None);
+    };
+    let listen = v.dns_listen(t);
+    v.errors.is_empty().then_some(Some(listen))
 }
 
 /// Lowercase and strip one trailing dot.
@@ -380,10 +384,8 @@ impl Validator {
         }
     }
 
-    fn dns(&mut self, root: &toml::Table) -> Option<DnsConfig> {
-        let t = self.table(root, "dns")?;
-        let mut dns = DnsConfig::default();
-        self.unknown_keys(t, "dns", &["listen", "zone", "ttl"]);
+    /// `[dns] listen`, or the default when absent or invalid (errors recorded).
+    fn dns_listen(&mut self, t: &toml::Table) -> Vec<SocketAddr> {
         match t.get("listen") {
             None => {}
             Some(toml::Value::Array(a)) if a.is_empty() => {
@@ -407,10 +409,18 @@ impl Validator {
                         ),
                     }
                 }
-                dns.listen = out;
+                return out;
             }
             Some(_) => self.err("dns.listen", "must be an array of \"ip:port\" strings"),
         }
+        DnsConfig::default().listen
+    }
+
+    fn dns(&mut self, root: &toml::Table) -> Option<DnsConfig> {
+        let t = self.table(root, "dns")?;
+        let mut dns = DnsConfig::default();
+        self.unknown_keys(t, "dns", &["listen", "zone", "ttl"]);
+        dns.listen = self.dns_listen(t);
         if let Some(z) = self.string(t, "dns", "zone") {
             let zone = normalize_service_name(z);
             if valid_service_name(&zone) {
@@ -965,6 +975,12 @@ backends = ["10.0.0.1:80"]
             Some(Some(DnsConfig::default().listen))
         );
         assert_eq!(parse_dns_listen("[dns]\nlisten = []\n"), None);
+        // Other [dns] errors do not hide a listen change.
+        assert_eq!(
+            parse_dns_listen("[dns]\nlisten = [\"127.0.0.1:5301\"]\nttl = \"2h\"\n"),
+            Some(Some(vec!["127.0.0.1:5301".parse().unwrap()]))
+        );
+        assert_eq!(parse_dns_listen("dns = 1\n"), None);
     }
 
     #[test]

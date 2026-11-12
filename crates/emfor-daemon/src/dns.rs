@@ -2,10 +2,7 @@
 //! health state. All behavior is in the pure function [`answer`]; the
 //! hickory-server adapter only decodes and encodes.
 
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hickory_proto::op::{OpCode, ResponseCode};
@@ -29,17 +26,6 @@ pub struct DnsSettings {
     pub ttl: u32,
     /// SOA serial: daemon start time in Unix seconds, truncated to 32 bits.
     pub serial: u32,
-}
-
-/// Round-robin positions per service and family, global across DNS clients.
-#[derive(Debug, Default)]
-pub struct Counters(Mutex<HashMap<(String, Family), Arc<AtomicU64>>>);
-
-impl Counters {
-    fn get(&self, service: &str, family: Family) -> Arc<AtomicU64> {
-        let mut m = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        m.entry((service.to_string(), family)).or_default().clone()
-    }
 }
 
 /// What to send back. Records carry the query name as received.
@@ -105,7 +91,6 @@ pub fn answer(
     questions: &[(Name, RecordType)],
     view: &LiveView,
     settings: &DnsSettings,
-    counters: &Counters,
 ) -> Reply {
     if op_code != OpCode::Query {
         return Reply::error(ResponseCode::NotImp);
@@ -117,6 +102,11 @@ pub fn answer(
     let zone = settings.zone.as_str();
     if !in_zone(&name, zone) {
         return Reply::error(ResponseCode::Refused);
+    }
+    if !view.ready {
+        // Starting up: which names exist is not known yet. SERVFAIL is not
+        // cached like NXDOMAIN would be.
+        return Reply::error(ResponseCode::ServFail);
     }
     let soa = soa_record(settings);
     let nodata = |soa: Record| Reply::authoritative(ResponseCode::NoError, Vec::new(), Some(soa));
@@ -130,8 +120,8 @@ pub fn answer(
             RecordType::AAAA => Family::V6,
             _ => return nodata(soa),
         };
-        let counter = counters.get(&name, family);
-        return match select(&svc.record, family, &counter) {
+        let counter = svc.round_robin.for_family(family);
+        return match select(&svc.record, family, counter) {
             Selection::Chosen(ip) => {
                 let ttl = svc.dns_ttl.unwrap_or(settings.ttl);
                 let rdata = match ip {
@@ -159,16 +149,11 @@ pub fn answer(
 pub struct Handler {
     live: LiveState,
     settings: watch::Receiver<DnsSettings>,
-    counters: Counters,
 }
 
 impl Handler {
     pub fn new(live: LiveState, settings: watch::Receiver<DnsSettings>) -> Handler {
-        Handler {
-            live,
-            settings,
-            counters: Counters::default(),
-        }
+        Handler { live, settings }
     }
 }
 
@@ -188,13 +173,7 @@ impl RequestHandler for Handler {
         let reply = {
             let settings = self.settings.borrow().clone();
             let view = self.live.read();
-            answer(
-                request.metadata.op_code,
-                &questions,
-                &view,
-                &settings,
-                &self.counters,
-            )
+            answer(request.metadata.op_code, &questions, &view, &settings)
         };
         let mut metadata = hickory_proto::op::Metadata::response_from_request(&request.metadata);
         metadata.response_code = reply.rcode;
@@ -289,18 +268,19 @@ mod tests {
                 .collect(),
         };
         record.refresh_all_down();
-        (name.to_string(), LiveService { record, dns_ttl })
+        (name.to_string(), LiveService::new(record, dns_ttl))
     }
 
     fn view(services: Vec<(String, LiveService)>) -> LiveView {
         LiveView {
+            ready: true,
             services: services.into_iter().collect(),
         }
     }
 
     fn ask(v: &LiveView, name: &str, t: RecordType) -> Reply {
         let q = [(Name::from_ascii(name).unwrap(), t)];
-        answer(OpCode::Query, &q, v, &settings(), &Counters::default())
+        answer(OpCode::Query, &q, v, &settings())
     }
 
     /// rcode, answer rdata as text, has SOA in authority.
@@ -419,11 +399,10 @@ mod tests {
             Balance::RoundRobin,
             None,
         )]);
-        let counters = Counters::default();
         let q = [(Name::from_ascii("api.svc.emfor").unwrap(), RecordType::A)];
         let picks: Vec<String> = (0..4)
             .map(|_| {
-                answer(OpCode::Query, &q, &rr, &settings(), &counters).answers[0]
+                answer(OpCode::Query, &q, &rr, &settings()).answers[0]
                     .data
                     .to_string()
             })
@@ -442,7 +421,7 @@ mod tests {
         )]);
         for _ in 0..3 {
             assert_eq!(
-                answer(OpCode::Query, &q, &fo, &settings(), &counters).answers[0]
+                answer(OpCode::Query, &q, &fo, &settings()).answers[0]
                     .data
                     .to_string(),
                 "10.0.0.2"
@@ -530,19 +509,42 @@ mod tests {
     fn malformed_and_unsupported() {
         let v = LiveView::default();
         let s = settings();
-        let c = Counters::default();
         let q = (Name::from_ascii("svc.emfor").unwrap(), RecordType::SOA);
         assert_eq!(
-            answer(OpCode::Update, std::slice::from_ref(&q), &v, &s, &c).rcode,
+            answer(OpCode::Update, std::slice::from_ref(&q), &v, &s).rcode,
             ResponseCode::NotImp
         );
         assert_eq!(
-            answer(OpCode::Query, &[], &v, &s, &c).rcode,
+            answer(OpCode::Query, &[], &v, &s).rcode,
             ResponseCode::FormErr
         );
         assert_eq!(
-            answer(OpCode::Query, &[q.clone(), q], &v, &s, &c).rcode,
+            answer(OpCode::Query, &[q.clone(), q], &v, &s).rcode,
             ResponseCode::FormErr
+        );
+    }
+
+    #[test]
+    fn servfail_until_first_layout() {
+        let mut v = view(vec![service(
+            "api.svc.emfor",
+            &[("10.0.0.1", Healthy)],
+            OnAllDown::Open,
+            Balance::RoundRobin,
+            None,
+        )]);
+        v.ready = false;
+        assert_eq!(
+            ask(&v, "api.svc.emfor", RecordType::A).rcode,
+            ResponseCode::ServFail
+        );
+        assert_eq!(
+            ask(&v, "nope.svc.emfor", RecordType::A).rcode,
+            ResponseCode::ServFail
+        );
+        assert_eq!(
+            ask(&v, "example.com", RecordType::A).rcode,
+            ResponseCode::Refused
         );
     }
 

@@ -344,3 +344,49 @@ fn reload_rejects_listen_change_and_applies_balance_and_ttl() {
     let (_, err) = d.stop();
     assert!(err.contains("dns listen settings require restart"), "{err}");
 }
+
+#[test]
+fn reload_removing_dns_table_is_reported_with_other_errors() {
+    let port = free_port();
+    let d = spawn(&format!(
+        "{}{}",
+        dns_table(port),
+        service("api.svc.emfor", &["192.0.2.1:9"], "")
+    ));
+    wait_for(|| ask(port, "api.svc.emfor", RecordType::A).is_some());
+    // No [dns] table, and a timeout above the interval.
+    d.write_config(
+        &service("api.svc.emfor", &["192.0.2.1:9"], "")
+            .replace("timeout = \"100ms\"", "timeout = \"5s\""),
+    );
+    d.signal(Signal::SIGHUP);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        ask(port, "api.svc.emfor", RecordType::A).is_some(),
+        "DNS keeps answering"
+    );
+    let (_, err) = d.stop();
+    assert!(err.contains("dns listen settings require restart"), "{err}");
+    assert!(err.contains("timeout must not exceed interval"), "{err}");
+}
+
+#[test]
+fn reload_adding_dns_table_requires_restart() {
+    let d = spawn(&service("api.svc.emfor", &["192.0.2.1:9"], ""));
+    let store = d.dir.path().join("state.mdb");
+    wait_for(|| std::fs::metadata(&store).is_ok_and(|m| m.len() > 0));
+    let port = free_port();
+    d.write_config(&format!(
+        "{}{}",
+        dns_table(port),
+        service("api.svc.emfor", &["192.0.2.1:9"], "")
+    ));
+    d.signal(Signal::SIGHUP);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        ask(port, "api.svc.emfor", RecordType::A).is_none(),
+        "no DNS socket opened"
+    );
+    let (_, err) = d.stop();
+    assert!(err.contains("dns listen settings require restart"), "{err}");
+}

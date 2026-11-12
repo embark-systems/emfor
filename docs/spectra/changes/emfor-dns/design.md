@@ -48,7 +48,7 @@ A new module crates/emfor-daemon/src/select.rs holds `select(record, family, cou
 
 The all-down decision is per address family: an A query for a service whose IPv4 backends are all down but whose IPv6 backends are healthy is treated as all-down for A. This keeps each record type self-consistent.
 
-Round-robin counters are kept per service and per family in the DNS module (`AtomicU64`), so rotation is global across all DNS clients of the daemon. A reload keeps counters; their value only shifts the starting point.
+Round-robin counters are kept per service and per family (`AtomicU64`) next to the service in the live view, so rotation is global across all DNS clients of the daemon. A reload keeps the counters of services that stay; a removed service's counters go with it.
 
 Alternative considered: put selection inside the DNS handler. Rejected because `emfor-clients` must implement exactly the same rules in six languages, and a pure function with a table test is the reference for them.
 
@@ -73,6 +73,7 @@ The default port is 5300, not 5353: 5353 is the mDNS port, held by mDNSResponder
 | Query | Reply |
 | --- | --- |
 | Opcode not QUERY | NOTIMP |
+| Name under the zone before the writer has applied the first layout (startup) | SERVFAIL, so a resolver does not cache NXDOMAIN for a name that exists |
 | Question count not 1 | FORMERR |
 | Name not equal to or under the zone | REFUSED |
 | A or AAAA for a service name, candidate found | NOERROR, AA, one A or AAAA record, TTL = service `dns_ttl` or `[dns] ttl` |
@@ -155,7 +156,7 @@ examples/rc.d/emfor is an rc.subr script using `daemon(8)` to run `emfor --confi
 
 **Acceptance criteria**
 
-- `cargo test --workspace` passes, including table tests for selection and for every response-rule row, and end-to-end tests that start the `emfor` binary and query it with hickory-resolver.
+- `cargo test --workspace` passes, including table tests for selection and for every response-rule row, and end-to-end tests that start the `emfor` binary and send it DNS messages built with hickory-proto over UDP and TCP.
 - `tests/resolver/run.sh dnsmasq` and `tests/resolver/run.sh unbound` pass locally with Docker.
 - The GitHub Actions workflow passes on both the `linux` and `freebsd` jobs for the commit that completes this change.
 - The macOS section of docs/deploy/dns-resolver.md names the macOS version it was verified on.
