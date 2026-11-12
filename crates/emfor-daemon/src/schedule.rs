@@ -171,10 +171,7 @@ mod tests {
     }
 
     fn backend() -> Backend {
-        Backend {
-            id: "10.0.0.11:8080".into(),
-            addr: "10.0.0.11:8080".parse().unwrap(),
-        }
+        Backend::new("10.0.0.11:8080".parse().unwrap())
     }
 
     #[tokio::test(start_paused = true)]

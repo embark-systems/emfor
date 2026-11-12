@@ -54,7 +54,10 @@ const char *emfor_last_error(void);
 `ip:port`, or `[ip]:port` for IPv6, with a terminating NUL to `out`.
 A buffer of `EMFOR_ADDR_MAX` bytes always fits. `affinity_key` may be NULL;
 it is used only by services with `balance = "sticky"`, where the same key
-gets the same backend while that backend is healthy.
+gets the same backend while that backend is healthy. The service's `balance`
+decides the backend: `round-robin`, `sticky`, `failover`, `weighted` (in
+proportion to backend weights) or `locality` (backends in the host's site
+first); a `balance` the library does not know is treated as `round-robin`.
 
 On failure `out` is left unchanged, and the status says why:
 

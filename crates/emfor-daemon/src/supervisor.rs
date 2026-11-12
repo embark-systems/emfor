@@ -122,6 +122,7 @@ impl Supervisor {
         }
         let _ = self.writer.send(WriterMsg::SetLayout {
             fresh_start,
+            site: config.site.clone(),
             services: layouts.clone(),
         });
 

@@ -121,7 +121,7 @@ pub fn answer(
             _ => return nodata(soa),
         };
         let counter = svc.round_robin.for_family(family);
-        return match select(&svc.record, family, counter) {
+        return match select(&svc.record, family, counter, view.site.as_deref()) {
             Selection::Chosen(ip) => {
                 let ttl = svc.dns_ttl.unwrap_or(settings.ttl);
                 let rdata = match ip {
@@ -261,6 +261,8 @@ mod tests {
                     id: format!("{ip}:80"),
                     ip: ip.to_string(),
                     port: 80,
+                    weight: 1,
+                    site: None,
                     state: *state,
                     checked_at: None,
                     reason: None,
@@ -275,7 +277,15 @@ mod tests {
         LiveView {
             ready: true,
             services: services.into_iter().collect(),
+            site: None,
         }
+    }
+
+    /// The A answers of `n` queries for `name`.
+    fn a_answers(v: &LiveView, name: &str, n: usize) -> Vec<String> {
+        (0..n)
+            .map(|_| ask(v, name, RecordType::A).answers[0].data.to_string())
+            .collect()
     }
 
     fn ask(v: &LiveView, name: &str, t: RecordType) -> Reply {
@@ -427,6 +437,77 @@ mod tests {
                 "10.0.0.2"
             );
         }
+    }
+
+    #[test]
+    fn weighted_proportions_over_one_cycle() {
+        let (name, mut svc) = service(
+            "api.svc.emfor",
+            &[
+                ("10.0.0.1", Healthy),
+                ("10.0.0.2", Healthy),
+                ("10.0.0.3", Healthy),
+            ],
+            OnAllDown::Open,
+            Balance::Weighted,
+            None,
+        );
+        svc.record.backends[1].weight = 3;
+        let v = view(vec![(name, svc)]);
+        let got = a_answers(&v, "api.svc.emfor", 5);
+        let count = |ip: &str| got.iter().filter(|a| *a == ip).count();
+        assert_eq!(
+            (count("10.0.0.1"), count("10.0.0.2"), count("10.0.0.3")),
+            (1, 3, 1),
+            "{got:?}"
+        );
+    }
+
+    /// Spec "Weight change applies on reload": after the record changes from
+    /// weights 1:1 to 1:3 (the choice state is kept across reloads), the next
+    /// four answers follow the new weights.
+    #[test]
+    fn weight_change_applies_to_answers() {
+        let (name, old) = service(
+            "api.svc.emfor",
+            &[("10.0.0.1", Healthy), ("10.0.0.2", Healthy)],
+            OnAllDown::Open,
+            Balance::Weighted,
+            None,
+        );
+        let v = view(vec![(name.clone(), old.clone())]);
+        a_answers(&v, "api.svc.emfor", 3);
+        let mut new = old.clone();
+        new.record.backends[1].weight = 4;
+        assert!(std::sync::Arc::ptr_eq(&new.round_robin, &old.round_robin));
+        let v = view(vec![(name, new)]);
+        let got = a_answers(&v, "api.svc.emfor", 5);
+        let count = |ip: &str| got.iter().filter(|a| *a == ip).count();
+        assert_eq!((count("10.0.0.1"), count("10.0.0.2")), (1, 4), "{got:?}");
+    }
+
+    #[test]
+    fn locality_answers_only_local_backends() {
+        let (name, mut svc) = service(
+            "api.svc.emfor",
+            &[
+                ("10.0.0.1", Healthy),
+                ("10.0.0.2", Healthy),
+                ("10.0.0.3", Healthy),
+            ],
+            OnAllDown::Open,
+            Balance::Locality,
+            None,
+        );
+        for (b, site) in svc.record.backends.iter_mut().zip(["dc1", "dc1", "dc2"]) {
+            b.site = Some(site.into());
+        }
+        let mut v = view(vec![(name, svc)]);
+        v.site = Some("dc1".into());
+        assert_eq!(
+            a_answers(&v, "api.svc.emfor", 4),
+            ["10.0.0.1", "10.0.0.2", "10.0.0.1", "10.0.0.2"]
+        );
     }
 
     #[test]

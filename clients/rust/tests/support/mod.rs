@@ -85,6 +85,20 @@ pub fn check(
             other => Some(format!("{what}: got {other:?}")),
         };
     }
+    if let Some(want) = lookup.get("expect_counts").and_then(Value::as_object) {
+        let want: std::collections::BTreeMap<String, u64> = want
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_u64().unwrap()))
+            .collect();
+        let mut got = std::collections::BTreeMap::new();
+        for _ in 0..want.values().sum::<u64>() {
+            match call() {
+                Ok(a) => *got.entry(a).or_insert(0) += 1,
+                Err(e) => return Some(format!("{what}: got error {e:?}")),
+            }
+        }
+        return (got != want).then(|| format!("{what}: got counts {got:?}"));
+    }
     let want: BTreeSet<&str> = lookup["expect_all_of"]
         .as_array()
         .unwrap()

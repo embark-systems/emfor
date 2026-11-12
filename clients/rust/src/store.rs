@@ -56,6 +56,8 @@ pub struct Snapshot {
     pub schema_version: Option<String>,
     pub heartbeat: Option<String>,
     pub record: Option<String>,
+    /// `meta/site`: the host's site, for `locality`.
+    pub site: Option<String>,
 }
 
 /// Aborts a read transaction when dropped.
@@ -145,6 +147,9 @@ impl Env {
             schema_version: self.get(&txn, emfor_format::KEY_SCHEMA_VERSION)?,
             heartbeat: self.get(&txn, emfor_format::KEY_HEARTBEAT)?,
             record: self.get(&txn, record_key)?,
+            // Only `locality` uses the site: an unreadable value counts as
+            // no site rather than failing lookups of every service.
+            site: self.get(&txn, emfor_format::KEY_SITE).ok().flatten(),
         })
     }
 

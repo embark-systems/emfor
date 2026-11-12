@@ -75,21 +75,53 @@ pub fn rendezvous_index<'a>(key: &str, ids: impl Iterator<Item = &'a str>) -> us
     best.map_or(0, |(_, i)| i)
 }
 
-/// Pick one candidate by `balance`. `next` gives this service's next
-/// round-robin counter value.
+/// Pick one candidate by `balance`. `site` is the host's site (`meta/site`);
+/// `next` gives this service's next round-robin counter value.
 pub fn pick(
     balance: Balance,
     candidates: &[&BackendRecord],
     affinity_key: Option<&str>,
+    site: Option<&str>,
     next: impl FnOnce() -> u64,
 ) -> String {
     let key = affinity_key.filter(|k| !k.is_empty());
     let i = match (balance, key) {
         (Balance::Failover, _) => 0,
         (Balance::Sticky, Some(k)) => rendezvous_index(k, candidates.iter().map(|b| b.id.as_str())),
-        (Balance::RoundRobin | Balance::Sticky, _) => (next() % candidates.len() as u64) as usize,
+        (Balance::Weighted, _) => weighted_index(candidates, next()),
+        (Balance::Locality, _) => {
+            let local: Vec<usize> = (0..candidates.len())
+                .filter(|&i| site.is_some() && candidates[i].site.as_deref() == site)
+                .collect();
+            if local.is_empty() {
+                (next() % candidates.len() as u64) as usize
+            } else {
+                local[(next() % local.len() as u64) as usize]
+            }
+        }
+        // round-robin, sticky without a key, and a balance this client does
+        // not know (written by a newer daemon).
+        _ => (next() % candidates.len() as u64) as usize,
     };
     candidates[i].id.clone()
+}
+
+/// `weighted`: the first candidate, in config order, whose cumulative weight
+/// exceeds `counter % W`, W being the sum of the weights.
+pub fn weighted_index(candidates: &[&BackendRecord], counter: u64) -> usize {
+    let total: u64 = candidates.iter().map(|b| u64::from(b.weight)).sum();
+    if total == 0 {
+        return (counter % candidates.len() as u64) as usize;
+    }
+    let r = counter % total;
+    let mut cumulative = 0;
+    for (i, b) in candidates.iter().enumerate() {
+        cumulative += u64::from(b.weight);
+        if cumulative > r {
+            return i;
+        }
+    }
+    candidates.len() - 1
 }
 
 #[cfg(test)]
@@ -102,6 +134,8 @@ mod tests {
             id: id.into(),
             ip: ip.trim_matches(['[', ']']).into(),
             port: port.parse().unwrap(),
+            weight: 1,
+            site: None,
             state,
             checked_at: Some(1),
             reason: None,
@@ -164,7 +198,7 @@ mod tests {
             vec![be("10.0.1.5:5432", Unhealthy), be("10.0.1.6:5432", Unknown)],
         );
         assert_eq!(
-            pick(r.balance, &candidates(&r, false).unwrap(), None, || 0),
+            pick(r.balance, &candidates(&r, false).unwrap(), None, None, || 0),
             "10.0.1.5:5432"
         );
         let r = rec(
@@ -209,14 +243,20 @@ mod tests {
                 .collect()
         };
         let never = || panic!("sticky with a key must not use the counter");
-        assert_eq!(pick(Balance::Sticky, &refs, Some("user-42"), never), API[1]);
         assert_eq!(
-            pick(Balance::Sticky, &without(1), Some("user-42"), never),
+            pick(Balance::Sticky, &refs, Some("user-42"), None, never),
+            API[1]
+        );
+        assert_eq!(
+            pick(Balance::Sticky, &without(1), Some("user-42"), None, never),
             API[0]
         );
-        assert_eq!(pick(Balance::Sticky, &refs, Some("user-7"), never), API[0]);
         assert_eq!(
-            pick(Balance::Sticky, &without(0), Some("user-7"), never),
+            pick(Balance::Sticky, &refs, Some("user-7"), None, never),
+            API[0]
+        );
+        assert_eq!(
+            pick(Balance::Sticky, &without(0), Some("user-7"), None, never),
             API[2]
         );
     }
@@ -231,17 +271,70 @@ mod tests {
         let all: Vec<BackendRecord> = API.iter().map(|a| be(a, Healthy)).collect();
         let refs: Vec<&BackendRecord> = all.iter().collect();
         let got: std::collections::BTreeSet<String> = (5..8)
-            .map(|n| pick(Balance::RoundRobin, &refs, Some("user-42"), || n))
+            .map(|n| pick(Balance::RoundRobin, &refs, Some("user-42"), None, || n))
             .collect();
         assert_eq!(got.len(), 3, "3 consecutive counter values cover all 3");
         // Sticky without a key, or with an empty key, is round-robin.
-        assert_eq!(pick(Balance::Sticky, &refs, Some(""), || 4), API[1]);
-        assert_eq!(pick(Balance::Sticky, &refs, None, || 5), API[2]);
+        assert_eq!(pick(Balance::Sticky, &refs, Some(""), None, || 4), API[1]);
+        assert_eq!(pick(Balance::Sticky, &refs, None, None, || 5), API[2]);
         assert_eq!(
-            pick(Balance::Failover, &refs, Some("user-42"), || panic!(
+            pick(Balance::Failover, &refs, Some("user-42"), None, || panic!(
                 "no counter"
             )),
             API[0]
         );
+    }
+
+    #[test]
+    fn weighted_counter_to_backend_example() {
+        let mut heavy = be("10.0.0.11:8080", Healthy);
+        heavy.weight = 3;
+        let light = be("10.0.0.12:8080", Healthy);
+        let refs = [&heavy, &light];
+        let got: Vec<String> = (0..8)
+            .map(|n| pick(Balance::Weighted, &refs, Some("user-42"), None, || n))
+            .collect();
+        let (h, l) = ("10.0.0.11:8080", "10.0.0.12:8080");
+        assert_eq!(got, [h, h, h, l, h, h, h, l]);
+        // A weight of 0 (never written by the daemon) does not panic.
+        let mut zero = light.clone();
+        zero.weight = 0;
+        assert_eq!(weighted_index(&[&zero], 5), 0);
+    }
+
+    #[test]
+    fn weighted_skips_unhealthy_and_reads_old_records() {
+        let mut heavy = be("10.0.0.11:8080", Unhealthy);
+        heavy.weight = 3;
+        let r = rec(
+            Balance::Weighted,
+            OnAllDown::Open,
+            vec![heavy, be("10.0.0.12:8080", Healthy)],
+        );
+        let c = candidates(&r, false).unwrap();
+        for n in 0..3 {
+            assert_eq!(pick(r.balance, &c, None, None, || n), "10.0.0.12:8080");
+        }
+        // Records from an older daemon have no weight: each counts as 1.
+        let json = r#"{"name":"a","on_all_down":"open","balance":"weighted","all_down":false,"backends":[
+            {"id":"10.0.0.11:8080","ip":"10.0.0.11","port":8080,"state":"healthy","checked_at":1,"reason":null},
+            {"id":"10.0.0.12:8080","ip":"10.0.0.12","port":8080,"state":"healthy","checked_at":1,"reason":null}]}"#;
+        let r: ServiceRecord = serde_json::from_str(json).unwrap();
+        let c = candidates(&r, false).unwrap();
+        let got: std::collections::BTreeSet<String> = (0..2)
+            .map(|n| pick(r.balance, &c, None, None, || n))
+            .collect();
+        assert_eq!(got.len(), 2);
+    }
+
+    #[test]
+    fn unknown_balance_is_round_robin_and_ignores_the_key() {
+        let all: Vec<BackendRecord> = API[..2].iter().map(|a| be(a, Healthy)).collect();
+        let refs: Vec<&BackendRecord> = all.iter().collect();
+        let b: Balance = serde_json::from_str("\"some-future-method\"").unwrap();
+        let got: std::collections::BTreeSet<String> = (0..2)
+            .map(|n| pick(b, &refs, Some("user-42"), None, || n))
+            .collect();
+        assert_eq!(got.len(), 2);
     }
 }

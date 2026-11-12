@@ -3,6 +3,11 @@
 # With [plugins] declared, --check-config starts the plugins to validate
 # check_options, then stops them before it exits.
 
+# The data centre this host is in (optional): services with
+# balance = "locality" prefer backends whose site matches. Must come before
+# the first table.
+site = "dc1"
+
 [store]
 path = "/var/lib/emfor/state.mdb"
 map_size = "64MiB"
@@ -34,7 +39,8 @@ rise = 2               # consecutive passes before a backend is healthy
 fall = 3               # consecutive failures before a backend is unhealthy
 jitter = "10%"         # random +/- spread of interval, 0% to 50%
 on_all_down = "open"   # "open": readers still pick a backend; "closed": readers fail
-balance = "round-robin" # "round-robin", "sticky" (by affinity key), or "failover"
+balance = "round-robin" # "round-robin", "sticky" (by affinity key), "failover",
+                        # "weighted" (by backend weight) or "locality" (same site first)
 
 # A plain TCP service: a backend is up when it accepts a connection.
 [services."db.svc.emfor"]
@@ -55,6 +61,29 @@ path = "/healthz"
 scheme = "http"              # or "https"
 host_header = "api.internal" # optional
 expect_status = ["200-299"]  # default ["200-399"]
+
+# Weighted: over every 5 choices, 10.0.4.12 is chosen 3 times and the others
+# once each. A backend is a string, or a table with addr and optional
+# weight (1 to 100, default 1) and site.
+[services."search.svc.emfor"]
+check = "tcp"
+balance = "weighted"
+backends = [
+  "10.0.4.11:9200",
+  { addr = "10.0.4.12:9200", weight = 3 },
+  "10.0.4.13:9200",
+]
+
+# Locality: backends in this host's site (dc1) while any of them is healthy,
+# otherwise the other sites; round-robin among them.
+[services."cache.svc.emfor"]
+check = "tcp"
+balance = "locality"
+backends = [
+  { addr = "10.0.5.11:6379", site = "dc1" },
+  { addr = "10.0.5.12:6379", site = "dc1" },
+  { addr = "10.1.5.11:6379", site = "dc2" },
+]
 
 # A Nagios-style check script, run once per check without a shell. The
 # backend is in EMFOR_IP, EMFOR_PORT and EMFOR_SERVICE. Exit 0 is up; 1 or 2
@@ -80,9 +109,9 @@ expect_status = ["200-299"]  # default ["200-399"]
 # [plugins."redis"]
 # command = ["/usr/local/libexec/emfor-redis", "--verbose"]
 #
-# [services."cache.svc.emfor"]
+# [services."sessions.svc.emfor"]
 # check = "redis"      # the plugin name
 # backends = ["10.0.2.1:6379", "10.0.2.2:6379"]
 #
-# [services."cache.svc.emfor".check_options]
+# [services."sessions.svc.emfor".check_options]
 # password_file = "/etc/emfor/redis.pass"

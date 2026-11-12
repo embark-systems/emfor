@@ -3,23 +3,42 @@
 //! do not depend on LMDB commits succeeding.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 use emfor_format::ServiceRecord;
 
 use crate::select::Family;
 
-/// Round-robin positions of one service, per family. Shared by every DNS
-/// client of the daemon, kept across reloads, dropped with the service.
+/// Smooth weighted round-robin state for one candidate list.
+#[derive(Debug, Default)]
+pub struct Swrr {
+    /// Candidates (address and weight) the state belongs to.
+    pub candidates: Vec<(IpAddr, u32)>,
+    /// Current value per candidate.
+    pub current: Vec<i64>,
+}
+
+/// Choice state of one service and family.
+#[derive(Debug, Default)]
+pub struct FamilyChoice {
+    /// Round-robin position (`round-robin`, `sticky`, `locality`).
+    pub counter: AtomicU64,
+    /// `weighted` state, reset when the candidate list changes.
+    pub swrr: Mutex<Swrr>,
+}
+
+/// Choice state of one service, per family. Shared by every DNS client of
+/// the daemon, kept across reloads, dropped with the service.
 #[derive(Debug, Default)]
 pub struct RoundRobin {
-    v4: AtomicU64,
-    v6: AtomicU64,
+    v4: FamilyChoice,
+    v6: FamilyChoice,
 }
 
 impl RoundRobin {
-    pub fn for_family(&self, family: Family) -> &AtomicU64 {
+    pub fn for_family(&self, family: Family) -> &FamilyChoice {
         match family {
             Family::V4 => &self.v4,
             Family::V6 => &self.v6,
@@ -53,6 +72,8 @@ pub struct LiveView {
     /// Services by name. Names are already normalized (lowercase, no
     /// trailing dot) by config parsing, so lookups lowercase the query only.
     pub services: HashMap<String, LiveService>,
+    /// Top-level `site` of the config, for `locality`.
+    pub site: Option<String>,
 }
 
 /// Shared handle; cheap to clone.
@@ -66,7 +87,7 @@ impl LiveState {
 
     /// Replace every service, keeping the round-robin position of services
     /// that stay.
-    pub(crate) fn replace(&self, mut services: HashMap<String, LiveService>) {
+    pub(crate) fn replace(&self, mut services: HashMap<String, LiveService>, site: Option<String>) {
         let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
         for (name, s) in services.iter_mut() {
             if let Some(old) = v.services.get(name) {
@@ -74,6 +95,7 @@ impl LiveState {
             }
         }
         v.services = services;
+        v.site = site;
         v.ready = true;
     }
 
@@ -106,19 +128,21 @@ mod tests {
     fn replace_keeps_counters_of_kept_services_and_drops_removed() {
         let live = LiveState::default();
         assert!(!live.read().ready);
-        live.replace([svc("a"), svc("b")].into_iter().collect());
+        live.replace([svc("a"), svc("b")].into_iter().collect(), None);
         assert!(live.read().ready);
         live.read().services["a"]
             .round_robin
             .for_family(Family::V4)
+            .counter
             .store(7, Ordering::Relaxed);
-        live.replace([svc("a")].into_iter().collect());
+        live.replace([svc("a")].into_iter().collect(), None);
         let v = live.read();
         assert_eq!(v.services.len(), 1);
         assert_eq!(
             v.services["a"]
                 .round_robin
                 .for_family(Family::V4)
+                .counter
                 .load(Ordering::Relaxed),
             7
         );

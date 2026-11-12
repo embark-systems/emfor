@@ -112,9 +112,13 @@ impl Client {
         })?;
         let stale = is_stale(heartbeat, now_ms(), max);
         let cands = candidates(&record, stale)?;
-        Ok(pick(record.balance, &cands, affinity_key, || {
-            self.next(&service)
-        }))
+        Ok(pick(
+            record.balance,
+            &cands,
+            affinity_key,
+            snap.site.as_deref(),
+            || self.next(&service),
+        ))
     }
 }
 
@@ -211,9 +215,9 @@ mod tests {
                 Incompatible,
             ),
             (
-                "weighted",
+                "balance is not a string",
                 Some(
-                    serde_json::json!({"schema_version": "1", "services": [svc("api.svc.emfor", serde_json::json!({"balance": "weighted"}))]}),
+                    serde_json::json!({"schema_version": "1", "services": [svc("api.svc.emfor", serde_json::json!({"balance": 5}))]}),
                 ),
                 Ok(3000),
                 "api.svc.emfor",
@@ -337,5 +341,124 @@ mod tests {
         ]
         .into();
         assert_eq!(counts, want);
+    }
+
+    /// Lookups of `api.svc.emfor` from one client, counted per result
+    /// (errors as their code name).
+    fn counts(
+        dir: &Path,
+        site: Option<&str>,
+        on_all_down: &str,
+        backends: &[(&str, Option<&str>, &str)],
+        n: usize,
+    ) -> std::collections::BTreeMap<String, usize> {
+        let bes: Vec<serde_json::Value> = backends
+            .iter()
+            .map(|(id, site, state)| {
+                let (ip, port) = id.split_once(':').unwrap();
+                serde_json::json!({"id": id, "ip": ip, "port": port.parse::<u16>().unwrap(),
+                                   "site": site, "state": state, "checked_at": 1, "reason": null})
+            })
+            .collect();
+        let raw = match site {
+            Some(s) => serde_json::json!({"meta/site": s}),
+            None => serde_json::json!({}),
+        };
+        let store = serde_json::json!({"schema_version": "1", "heartbeat": "fresh", "raw": raw,
+            "services": [svc("api.svc.emfor", serde_json::json!({"balance": "locality",
+                "on_all_down": on_all_down, "backends": bes}))]});
+        let path = dir.join(format!("locality-{}.mdb", rand_suffix()));
+        emfor_fixture::write_store(&store, 3000, emfor_fixture::now_ms(), &path).unwrap();
+        let c = Client::new(path, Ok(3000));
+        let mut out = std::collections::BTreeMap::new();
+        for _ in 0..n {
+            let k = match c.lookup("api.svc.emfor", Some("user-42")) {
+                Ok(a) => a,
+                Err(e) => e.code.as_str().to_string(),
+            };
+            *out.entry(k).or_insert(0) += 1;
+        }
+        out
+    }
+
+    fn rand_suffix() -> u64 {
+        use std::sync::atomic::AtomicU64;
+        static N: AtomicU64 = AtomicU64::new(0);
+        N.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Spec "Locality prefers backends in the host's site", every row of
+    /// the locality-outcomes example plus the local-site-healthy scenario.
+    #[test]
+    fn locality_outcomes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b, c) = ("10.0.0.11:8080", "10.0.0.12:8080", "10.0.0.13:8080");
+        let m = |pairs: &[(&str, usize)]| -> std::collections::BTreeMap<String, usize> {
+            pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+        };
+        assert_eq!(
+            counts(
+                dir.path(),
+                Some("dc1"),
+                "open",
+                &[
+                    (a, Some("dc1"), "healthy"),
+                    (b, Some("dc1"), "healthy"),
+                    (c, Some("dc2"), "healthy")
+                ],
+                4
+            ),
+            m(&[(a, 2), (b, 2)])
+        );
+        assert_eq!(
+            counts(
+                dir.path(),
+                Some("dc1"),
+                "open",
+                &[(a, Some("dc1"), "unhealthy"), (c, Some("dc2"), "healthy")],
+                2
+            ),
+            m(&[(c, 2)])
+        );
+        assert_eq!(
+            counts(
+                dir.path(),
+                Some("dc1"),
+                "open",
+                &[(a, Some("dc1"), "unhealthy"), (c, Some("dc2"), "unhealthy")],
+                2
+            ),
+            m(&[(a, 2)])
+        );
+        assert_eq!(
+            counts(
+                dir.path(),
+                Some("dc1"),
+                "closed",
+                &[(a, Some("dc1"), "unhealthy"), (c, Some("dc2"), "unhealthy")],
+                1
+            ),
+            m(&[("ALL_DOWN", 1)])
+        );
+        assert_eq!(
+            counts(
+                dir.path(),
+                None,
+                "open",
+                &[(a, Some("dc1"), "healthy"), (c, Some("dc2"), "healthy")],
+                2
+            ),
+            m(&[(a, 1), (c, 1)])
+        );
+        assert_eq!(
+            counts(
+                dir.path(),
+                Some("dc3"),
+                "open",
+                &[(a, Some("dc1"), "healthy"), (c, None, "healthy")],
+                2
+            ),
+            m(&[(a, 1), (c, 1)])
+        );
     }
 }

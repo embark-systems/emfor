@@ -51,7 +51,7 @@ fn every_store_writes_and_coverage_is_complete() {
         }
         for l in case["lookups"].as_array().unwrap() {
             lookups += 1;
-            let kinds = ["expect", "expect_error", "expect_all_of"]
+            let kinds = ["expect", "expect_error", "expect_all_of", "expect_counts"]
                 .iter()
                 .filter(|k| l.get(**k).is_some())
                 .count();
@@ -71,7 +71,16 @@ fn every_store_writes_and_coverage_is_complete() {
         set(&["ALL_DOWN", "INCOMPATIBLE", "NOT_FOUND", "UNAVAILABLE"])
     );
     assert!(
-        set(&["round-robin", "sticky", "failover", "(absent)"]).is_subset(&balances),
+        set(&[
+            "round-robin",
+            "sticky",
+            "failover",
+            "weighted",
+            "locality",
+            "some-future-method",
+            "(absent)"
+        ])
+        .is_subset(&balances),
         "{balances:?}"
     );
     assert_eq!(on_all_down, set(&["closed", "open"]));

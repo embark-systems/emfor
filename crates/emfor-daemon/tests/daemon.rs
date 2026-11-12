@@ -303,7 +303,14 @@ fn invalid_config_at_startup_exits_two_without_store() {
 fn example_config_is_valid() {
     let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/emfor.toml");
     let text = std::fs::read_to_string(&example).unwrap();
-    for line in ["[dns]", "balance = \"failover\"", "dns_ttl = "] {
+    for line in [
+        "[dns]",
+        "site = ",
+        "balance = \"failover\"",
+        "balance = \"weighted\"",
+        "balance = \"locality\"",
+        "dns_ttl = ",
+    ] {
         assert!(
             text.lines().any(|l| l.starts_with(line)),
             "example shows {line} uncommented"
@@ -322,7 +329,7 @@ fn example_config_is_valid() {
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
-        "config ok: 2 services, 5 backends"
+        "config ok: 4 services, 11 backends"
     );
 }
 

@@ -127,6 +127,22 @@ pub struct Backend {
     /// Normalized backend string (`ip:port`, IPv6 as `[addr]:port`).
     pub id: String,
     pub addr: SocketAddr,
+    /// `weight`, 1 to 100 (default 1); used by `weighted`.
+    pub weight: u32,
+    /// Lowercased `site` label; used by `locality`.
+    pub site: Option<String>,
+}
+
+impl Backend {
+    /// A backend with weight 1 and no site.
+    pub fn new(addr: SocketAddr) -> Backend {
+        Backend {
+            id: addr.to_string(),
+            addr,
+            weight: 1,
+            site: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +171,8 @@ impl ServiceConfig {
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Top-level `site`, lowercased: the data centre this host is in.
+    pub site: Option<String>,
     pub store: StoreConfig,
     pub log: LogConfig,
     pub dns: Option<DnsConfig>,
@@ -254,6 +272,20 @@ pub fn normalize_service_name(name: &str) -> String {
     let lower = name.to_ascii_lowercase();
     lower.strip_suffix('.').map(str::to_string).unwrap_or(lower)
 }
+
+/// A site label: 1-63 characters of [a-z0-9-], not starting or ending with `-`.
+fn valid_site(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= 63
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+const SITE_RULE: &str =
+    "invalid site label: 1-63 characters of [a-z0-9-], not starting or ending with -";
 
 fn valid_service_name(name: &str) -> bool {
     !name.is_empty()
@@ -374,8 +406,11 @@ impl Validator {
         self.unknown_keys(
             root,
             "",
-            &["store", "log", "dns", "defaults", "plugins", "services"],
+            &[
+                "site", "store", "log", "dns", "defaults", "plugins", "services",
+            ],
         );
+        let site = self.site(root, "");
         self.plugins(root);
         let store = self.store(root);
         let log = self.log(root);
@@ -420,6 +455,7 @@ impl Validator {
         }
         services.sort_by(|a, b| a.name.cmp(&b.name));
         Config {
+            site,
             store,
             log,
             dns,
@@ -654,13 +690,26 @@ impl Validator {
                 "round-robin" => p.balance = Some(Balance::RoundRobin),
                 "sticky" => p.balance = Some(Balance::Sticky),
                 "failover" => p.balance = Some(Balance::Failover),
+                "weighted" => p.balance = Some(Balance::Weighted),
+                "locality" => p.balance = Some(Balance::Locality),
                 _ => self.err(
                     key_path(parent, "balance"),
-                    "balance must be round-robin, sticky, or failover",
+                    "balance must be round-robin, sticky, failover, weighted, or locality",
                 ),
             }
         }
         p
+    }
+
+    /// An optional `site` label, lowercased.
+    fn site(&mut self, t: &toml::Table, parent: &str) -> Option<String> {
+        let s = self.string(t, parent, "site")?.to_ascii_lowercase();
+        if valid_site(&s) {
+            Some(s)
+        } else {
+            self.err(key_path(parent, "site"), SITE_RULE);
+            None
+        }
     }
 
     /// A DNS TTL: whole seconds from 0s to 3600s.
@@ -774,7 +823,10 @@ impl Validator {
             }
             Some(toml::Value::Array(a)) => a,
             Some(_) => {
-                self.err(&bpath, "must be an array of \"ip:port\" strings");
+                self.err(
+                    &bpath,
+                    "must be an array of \"ip:port\" strings or { addr, weight, site } tables",
+                );
                 return None;
             }
         };
@@ -783,16 +835,46 @@ impl Validator {
         let mut seen = HashSet::new();
         for (i, item) in items.iter().enumerate() {
             let ipath = format!("{bpath}[{i}]");
-            let Some(s) = item.as_str() else {
-                self.err(ipath, "must be a string");
-                continue;
+            let (s, weight, site) = match item {
+                toml::Value::String(s) => (s.as_str(), 1, None),
+                toml::Value::Table(bt) => {
+                    self.unknown_keys(bt, &ipath, &["addr", "weight", "site"]);
+                    let weight = match bt.get("weight") {
+                        None => 1,
+                        Some(toml::Value::Integer(w)) if (1..=100).contains(w) => *w as u32,
+                        Some(_) => {
+                            self.err(key_path(&ipath, "weight"), "weight must be from 1 to 100");
+                            1
+                        }
+                    };
+                    let site = self.site(bt, &ipath);
+                    match bt.get("addr") {
+                        Some(toml::Value::String(a)) => (a.as_str(), weight, site),
+                        Some(_) => {
+                            self.err(key_path(&ipath, "addr"), "must be a string");
+                            continue;
+                        }
+                        None => {
+                            self.err(&ipath, "backend table needs addr");
+                            continue;
+                        }
+                    }
+                }
+                _ => {
+                    self.err(ipath, "must be a string or a table");
+                    continue;
+                }
             };
             match s.parse::<SocketAddr>() {
                 Ok(addr) if addr.port() != 0 => {
                     if !seen.insert(addr) {
                         self.err(ipath, format!("duplicate backend \"{s}\""));
                     } else {
-                        out.push(Backend { id: addr.to_string(), addr });
+                        out.push(Backend {
+                            weight,
+                            site,
+                            ..Backend::new(addr)
+                        });
                     }
                 }
                 _ => self.err(
@@ -994,11 +1076,41 @@ backends = ["10.0.0.1:80"]
                 Some("must be an IP literal with port"),
             ),
             ("backends = [\"[2001:db8::1]:8080\"]\n", None),
+            (
+                "backends = [{ addr = \"10.0.0.1:80\", weight = 3, site = \"dc1\" }]\n",
+                None,
+            ),
+            (
+                "backends = [{ weight = 3 }]\n",
+                Some("backend table needs addr"),
+            ),
+            (
+                "backends = [{ addr = \"10.0.0.1:80\", wieght = 3 }]\n",
+                Some("unknown key"),
+            ),
+            (
+                "backends = [{ addr = \"10.0.0.1:80\", weight = 0 }]\n",
+                Some("weight must be from 1 to 100"),
+            ),
+            (
+                "backends = [{ addr = \"10.0.0.1:80\", weight = 101 }]\n",
+                Some("weight must be from 1 to 100"),
+            ),
+            (
+                "backends = [\"10.0.0.1:80\", { addr = \"10.0.0.1:80\" }]\n",
+                Some("duplicate backend"),
+            ),
+            (
+                "backends = [{ addr = \"10.0.0.1:80\", site = \"dc_1\" }]\n",
+                Some("invalid site label"),
+            ),
+            ("balance = \"weighted\"\n", None),
+            ("balance = \"locality\"\n", None),
             ("chekc = \"tcp\"\n", Some("unknown key")),
             ("check = \"redis\"\n", Some("unknown checker `redis`")),
             (
                 "balance = \"least-conn\"\n",
-                Some("balance must be round-robin, sticky, or failover"),
+                Some("balance must be round-robin, sticky, failover, weighted, or locality"),
             ),
             (
                 "dns_ttl = \"1500ms\"\n",
@@ -1024,6 +1136,49 @@ backends = ["10.0.0.1:80"]
                 (r, _) => panic!("{lines:?}: unexpected {r:?}"),
             }
         }
+    }
+
+    #[test]
+    fn top_level_site() {
+        let svc = "[services.a]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n";
+        assert_eq!(parse_ok(svc).site, None);
+        assert_eq!(
+            parse_ok(&format!("site = \"DC-1\"\n{svc}")).site.as_deref(),
+            Some("dc-1")
+        );
+        let e = parse_err(&format!("site = \"-dc1\"\n{svc}"));
+        assert!(
+            e.iter()
+                .any(|e| e.path == "site" && e.message.contains("invalid site label")),
+            "{e:?}"
+        );
+    }
+
+    #[test]
+    fn mixed_backend_forms() {
+        let c = parse_ok(
+            "[services.a]\ncheck = \"tcp\"\nbackends = [\"10.0.0.10:8080\", { addr = \"10.0.0.11:8080\", weight = 3, site = \"DC1\" }]\n",
+        );
+        let b = &c.services[0].backends;
+        assert_eq!(
+            (b[0].id.as_str(), b[0].weight, b[0].site.as_deref()),
+            ("10.0.0.10:8080", 1, None)
+        );
+        assert_eq!(
+            (b[1].id.as_str(), b[1].weight, b[1].site.as_deref()),
+            ("10.0.0.11:8080", 3, Some("dc1"))
+        );
+    }
+
+    #[test]
+    fn backend_table_error_paths() {
+        let e = parse_err(
+            "[services.a]\ncheck = \"tcp\"\nbackends = [{ addr = \"10.0.0.1:80\", weight = 0 }]\n",
+        );
+        assert!(
+            e.iter().any(|e| e.path == "services.a.backends[0].weight"),
+            "{e:?}"
+        );
     }
 
     #[test]

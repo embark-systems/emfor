@@ -9,12 +9,13 @@
 //! ```
 //!
 //! with `EMFOR_STORE` and `EMFOR_MAX_STALENESS` set for the case. The program
-//! does `count` lookups in one process and prints one line per lookup:
+//! does `count` lookups (the length of `expect_all_of`, the sum of
+//! `expect_counts`, or 1) in one process and prints one line per lookup:
 //! `OK <address>` or `ERR <CODE> <message>`. A run that takes longer than the
 //! timeout (default 10 s) is killed and fails. Exits 1 if any lookup fails its
 //! expectation, 2 on a usage or setup error.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -49,7 +50,12 @@ impl Run<'_> {
             .and_then(Value::as_str)
             .unwrap_or("");
         let all_of = lookup.get("expect_all_of").and_then(Value::as_array);
-        let count = all_of.map_or(1, Vec::len);
+        let counts = lookup.get("expect_counts").and_then(Value::as_object);
+        let count = match (all_of, counts) {
+            (Some(a), _) => a.len(),
+            (None, Some(c)) => c.values().filter_map(Value::as_u64).sum::<u64>() as usize,
+            (None, None) => 1,
+        };
         let what = format!("{what}, lookup {lookup}");
         let answers = match self.answers(store, staleness, name, key, count) {
             Ok(a) => a,
@@ -78,6 +84,20 @@ impl Run<'_> {
                 Some(g) if g == want => None,
                 _ => Some(format!("want all of {want:?}, got {answers:?}")),
             }
+        } else if let Some(want) = counts {
+            let want: BTreeMap<&str, u64> = want
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_u64().unwrap_or(0)))
+                .collect();
+            let mut got: BTreeMap<&str, u64> = BTreeMap::new();
+            let mut errors = false;
+            for a in &answers {
+                match a {
+                    Answer::Ok(s) => *got.entry(s.as_str()).or_default() += 1,
+                    Answer::Err(..) => errors = true,
+                }
+            }
+            (errors || got != want).then(|| format!("want counts {want:?}, got {answers:?}"))
         } else {
             Some("lookup has no expectation".into())
         };
@@ -158,6 +178,24 @@ impl Run<'_> {
     }
 }
 
+/// `expect_counts`, when present, must map addresses to positive integers;
+/// anything else is a setup error, not a lookup failure.
+fn check_counts(what: &str, lookup: &Value) -> Result<(), String> {
+    let Some(c) = lookup.get("expect_counts") else {
+        return Ok(());
+    };
+    let ok = c
+        .as_object()
+        .is_some_and(|m| !m.is_empty() && m.values().all(|v| v.as_u64().is_some_and(|n| n > 0)));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what}: expect_counts must map addresses to positive integers, got {c}"
+        ))
+    }
+}
+
 fn read_json(path: &Path) -> Result<Value, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
@@ -214,6 +252,7 @@ fn run(args: &[String]) -> Result<bool, String> {
             None => format!("{max_ms}ms"),
         };
         for lookup in case["lookups"].as_array().into_iter().flatten() {
+            check_counts(&what, lookup)?;
             r.check(&what, &store, &staleness, lookup);
         }
     }

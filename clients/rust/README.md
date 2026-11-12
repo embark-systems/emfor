@@ -27,6 +27,11 @@ pub enum ErrorCode { Unavailable, Incompatible, NotFound, AllDown }
 - `name` is the service name, such as `api.svc.emfor`. Case and one
   trailing dot are ignored.
 - The result is the backend's `ip:port`, or `[ip]:port` for IPv6.
+- The service's `balance` decides the backend: `round-robin` (in turn),
+  `sticky`, `failover` (first healthy in config order), `weighted` (in
+  proportion to backend weights) or `locality` (backends in the host's site
+  first). A `balance` this library does not know, written by a newer daemon,
+  is treated as `round-robin`.
 - `affinity_key` is used only by services with `balance = "sticky"`: the same
   key gets the same backend while that backend is healthy. Other services
   ignore it.

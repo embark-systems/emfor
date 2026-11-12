@@ -109,7 +109,7 @@ pub unsafe extern "C" fn emfor_lookup(
             Ok(addr) if addr.len() < out_len => {
                 // SAFETY: `out` has `out_len` > `addr.len()` writable bytes.
                 unsafe {
-                    std::ptr::copy_nonoverlapping(addr.as_ptr(), out as *mut u8, addr.len());
+                    std::ptr::copy_nonoverlapping(addr.as_ptr(), out.cast::<u8>(), addr.len());
                     *out.add(addr.len()) = 0;
                 }
                 emfor_status::EMFOR_OK

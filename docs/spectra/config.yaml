@@ -23,6 +23,11 @@ context: |
     round-robin（預設；DNS 全域輪流，client 僅程序內輪流、起點隨機）、
     sticky（有 affinity_key 用 rendezvous hashing，MD5 前 4 bytes big-endian；無 key 含 DNS 改用 round-robin）、
     failover（設定檔順序中第一台健康的後端）。round-robin 與 failover 忽略 affinity_key。
+    emfor-balance-2 新增：weighted（後端 weight 1–100，預設 1；每 W 次挑選各後端剛好 weight 次，
+    W 為候選權重總和；client 用輪流計數器對 W 取餘數落在累積權重區間，DNS 用 smooth weighted round-robin）、
+    locality（設定檔最上層 site 為本機機房，daemon 寫入 meta/site；後端可設 site；健康篩選後優先同 site 的後端，
+    沒有就用全部，再以 round-robin 挑選）。後端可寫成字串或 { addr, weight, site } 表格。
+    client 讀到不認得的 balance 值時改用 round-robin（忽略 affinity_key），不回 INCOMPATIBLE。
   - DNS（emfor-dns）：只回答自己負責的網域，不轉發其他網域；由本機 resolver 依網域轉發過來，
     emfor 不當整台機器的 DNS，掛掉時只影響自己的網域。
     [dns] 區段存在才啟用；listen 預設 ["127.0.0.1:5300"]（不用 5353：那是 mDNS，macOS 與 avahi 會佔用）、可列多個位址；UDP 與 TCP；
@@ -79,16 +84,18 @@ context: |
   Docker / Kubernetes 的 DNS 部署（容器內 DNS 路徑不同，需另行設計）。
 
   後續規劃（已決定要做、尚未排入 change；用語見 LANGUAGE.md「分配方式的值」）：
-  - balance = "random"：健康後端中均勻隨機。
-  - balance = "fastest"：最近一次檢查延遲最低；LMDB 需記錄檢查延遲，並設計防止所有 client 湧向同一台的分散機制。
-  - balance = "weighted"：後端可設 weight，依比例挑選。
-  - balance = "zone"：後端可加標籤，client 需知道自己所在機房，優先挑同機房後端。
-  - DNS SRV 記錄：需為每台後端產生名稱（例如 b0.api.svc.emfor）作為 SRV 目標，讓支援的程式取得 port。
+  - balance = "fastest"（延後）：最近一次檢查延遲最低；LMDB 需記錄檢查延遲，並設計防止所有 client 湧向同一台的分散機制，
+    需先實驗再決定。
+  - DNS SRV 記錄（emfor-dns-srv，排在 emfor-balance-2 之後）：回答在服務名稱本身，也接受 _<任意>._tcp.<服務名稱>；
+    回傳全部候選後端（failover 依設定順序給 priority、weighted 對應 SRV weight、round-robin 與 locality 同 priority 輪換順序，
+    locality 同 site 的 priority 較高）；target 用 IP 推出的名稱（例如 10-0-0-11.api.svc.emfor），A/AAAA 放 additional 區段。
+  不做：balance = "random"（client 的 round-robin 起點本來就隨機，效果幾乎相同）。
   - DNS port 一致性警告：服務在 DNS 網域內但後端 port 不一致時，daemon 啟動與重載時發 warn（經 DNS 只能拿到 IP）。
 
   變更拆分：emfor-core（已完成）→ emfor-dns（含 balance 設定欄位、LMDB 欄位、DNS 端行為、resolver 部署文件、FreeBSD CI 與 rc.d 範例）
   → emfor-plugins（已完成）→ emfor-clients（相容性驗證、client-lookup 規格、共用測試資料、Rust client 與 cargo-c 產出的 libemfor）
-  → emfor-clients-2（Go、Python、Perl、PHP 包裝 libemfor）→ 後續規劃中的分配方式。
+  → emfor-clients-2（Go、Python、Perl、PHP 包裝 libemfor）→ emfor-balance-2（weighted、locality、不認得的 balance 改用 round-robin）
+  → emfor-dns-srv。
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.

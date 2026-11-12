@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use emfor_format::{
-    BackendRecord, Balance, HealthState, KEY_HEARTBEAT, KEY_SCHEMA_VERSION, KEY_STARTED_AT,
-    OnAllDown, SCHEMA_VERSION, SERVICE_KEY_PREFIX, ServiceRecord, service_key,
+    BackendRecord, Balance, HealthState, KEY_HEARTBEAT, KEY_SCHEMA_VERSION, KEY_SITE,
+    KEY_STARTED_AT, OnAllDown, SCHEMA_VERSION, SERVICE_KEY_PREFIX, ServiceRecord, service_key,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::MissedTickBehavior;
@@ -90,6 +90,8 @@ pub enum WriterMsg {
     /// Services not listed are deleted.
     SetLayout {
         fresh_start: bool,
+        /// Top-level `site`: written to `meta/site`, which is deleted when `None`.
+        site: Option<String>,
         services: Vec<ServiceLayout>,
     },
     /// Flush, write `meta/heartbeat = "0"`, and stop.
@@ -156,7 +158,7 @@ fn spawn_inner<S: Sink>(
             tokio::select! {
                 msg = rx.recv() => match msg {
                     Some(WriterMsg::Update(u)) => w.update(u),
-                    Some(WriterMsg::SetLayout { fresh_start, services }) => w.set_layout(fresh_start, services),
+                    Some(WriterMsg::SetLayout { fresh_start, site, services }) => w.set_layout(fresh_start, site, services),
                     Some(WriterMsg::Shutdown(done)) => {
                         w.shutdown();
                         let _ = done.send(());
@@ -192,7 +194,12 @@ impl<S: Sink> Writer<S> {
         }
     }
 
-    fn set_layout(&mut self, fresh_start: bool, services: Vec<ServiceLayout>) {
+    fn set_layout(
+        &mut self,
+        fresh_start: bool,
+        site: Option<String>,
+        services: Vec<ServiceLayout>,
+    ) {
         let mut ops = Vec::new();
         if fresh_start {
             self.records.clear();
@@ -233,9 +240,14 @@ impl<S: Sink> Writer<S> {
                 .backends
                 .iter()
                 .map(|b| {
-                    old.as_ref()
+                    let mut rec = old
+                        .as_ref()
                         .and_then(|o| o.backends.iter().find(|ob| ob.id == b.id).cloned())
-                        .unwrap_or_else(|| fresh_backend(b))
+                        .unwrap_or_else(|| fresh_backend(b));
+                    // Health state carries over; weight and site follow the config.
+                    rec.weight = b.weight;
+                    rec.site = b.site.clone();
+                    rec
                 })
                 .collect();
             let mut rec = ServiceRecord {
@@ -251,7 +263,11 @@ impl<S: Sink> Writer<S> {
             self.records.insert(s.name.clone(), rec);
             self.dirty.insert(s.name);
         }
-        self.live.replace(live);
+        ops.push(match &site {
+            Some(s) => Op::Put(KEY_SITE.into(), s.clone()),
+            None => Op::Delete(KEY_SITE.into()),
+        });
+        self.live.replace(live, site);
         self.flush(ops);
     }
 
@@ -296,6 +312,8 @@ fn fresh_backend(b: &Backend) -> BackendRecord {
         id: b.id.clone(),
         ip: b.addr.ip().to_string(),
         port: b.addr.port(),
+        weight: b.weight,
+        site: b.site.clone(),
         state: HealthState::Unknown,
         checked_at: None,
         reason: None,
@@ -310,10 +328,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn be(id: &str) -> Backend {
-        Backend {
-            id: id.into(),
-            addr: id.parse().unwrap(),
-        }
+        Backend::new(id.parse().unwrap())
     }
 
     fn layout(name: &str, ids: &[&str], generation: u64, reset: bool) -> ServiceLayout {
@@ -368,6 +383,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn host_site_written_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: Some("dc1".into()),
+            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(store.get(KEY_SITE).unwrap().as_deref(), Some("dc1"));
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![layout("a", &["10.0.0.1:80"], 0, false)],
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(store.get(KEY_SITE).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn weight_and_site_written_and_reloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
+        let mut l = layout("api.svc.emfor", &["10.0.0.11:8080"], 0, true);
+        l.balance = Balance::Weighted;
+        l.backends[0].weight = 3;
+        l.backends[0].site = Some("dc1".into());
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![l.clone()],
+        })
+        .unwrap();
+        tx.send(upd(
+            "api.svc.emfor",
+            "10.0.0.11:8080",
+            HealthState::Healthy,
+            true,
+        ))
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let json = store.get(&service_key("api.svc.emfor")).unwrap().unwrap();
+        assert!(json.contains(r#""weight":3,"site":"dc1""#), "{json}");
+        // Reload changing the weight: the record follows, health carries over.
+        l.reset = false;
+        l.backends[0].weight = 4;
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![l],
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let rec = record(&store, "api.svc.emfor");
+        assert_eq!(rec.backends[0].weight, 4);
+        assert_eq!(rec.backends[0].state, HealthState::Healthy);
+    }
+
+    #[tokio::test]
     async fn heartbeat_advances() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
@@ -375,6 +455,7 @@ mod tests {
         spawn(store.clone(), rx);
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
+            site: None,
             services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
         })
         .unwrap();
@@ -395,6 +476,7 @@ mod tests {
         spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
+            site: None,
             services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
         })
         .unwrap();
@@ -429,6 +511,7 @@ mod tests {
             let ids = ["10.0.0.1:80", "10.0.0.2:80"];
             tx.send(WriterMsg::SetLayout {
                 fresh_start: true,
+                site: None,
                 services: vec![layout("a", &ids, 0, true)],
             })
             .unwrap();
@@ -454,6 +537,7 @@ mod tests {
         spawn_with_tick(sink, rx, Duration::from_millis(300));
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
+            site: None,
             services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
         })
         .unwrap();
@@ -488,6 +572,7 @@ mod tests {
         l.dns_ttl = Some(5);
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
+            site: None,
             services: vec![l],
         })
         .unwrap();
@@ -504,6 +589,7 @@ mod tests {
         }
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
+            site: None,
             services: vec![],
         })
         .unwrap();
@@ -522,6 +608,7 @@ mod tests {
         let h = spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
+            site: None,
             services: vec![layout("a", &["10.0.0.1:80"], 5, true)],
         })
         .unwrap();

@@ -30,11 +30,12 @@
 | 標準用語 | 英文 / 識別字 | 定義 | 避免使用 |
 | --- | --- | --- | --- |
 | 查詢 | `emfor_lookup(名稱, affinity_key?)` | client 唯一的對外呼叫，傳入服務名稱，回傳一個後端的 `ip:port` 字串（即 LMDB 後端記錄的 `id`，IPv6 為 `[ip]:port`）。設定只透過環境變數 `EMFOR_STORE`、`EMFOR_MAX_STALENESS` 覆寫預設值。 | pick、resolve |
-| 錯誤碼 | `UNAVAILABLE` / `INCOMPATIBLE` / `NOT_FOUND` / `ALL_DOWN` | 查詢失敗的原因，各語言共用：LMDB 打不開或 lock 格式不符（`libemfor` 與 daemon 版本不同）／格式版本或記錄無法解析／查無服務／沒有健康後端且 `on_all_down = "closed"`。各語言依自身慣例回報（回傳碼、`Result`、`error`、exception）。 | `STALE`（心跳過期不是獨立錯誤） |
+| 錯誤碼 | `UNAVAILABLE` / `INCOMPATIBLE` / `NOT_FOUND` / `ALL_DOWN` | 查詢失敗的原因，各語言共用：LMDB 打不開或 lock 格式不符（`libemfor` 與 daemon 版本不同）／格式版本或記錄無法解析（不認得的 `balance` 字串不算，改用 `round-robin`）／查無服務／沒有健康後端且 `on_all_down = "closed"`。各語言依自身慣例回報（回傳碼、`Result`、`error`、exception）。 | `STALE`（心跳過期不是獨立錯誤） |
 | 黏著鍵 | `affinity_key` | 由應用程式從 cookie、header 等處取出的值；同一個 key 在後端健康時永遠分到同一台後端。無狀態：原本的後端恢復健康後，key 會回到它身上。 | **`weight_condition`**（已棄用，容易誤解為權重比例） |
 | 分配方式 | `balance` | 每個服務在設定檔指定的挑選後端方式，daemon 寫進 LMDB 服務記錄，client 與 DNS 都依它挑選。值見下表「分配方式的值」。 | 分配規則、策略、algorithm |
 | 黏著分配演算法 | rendezvous hashing（HRW） | `sticky` 使用：對每台候選後端計算 `MD5(key + 後端識別)` 前 4 位元組（big-endian uint32），取最大者。為跨語言規格，帶版本號。 | consistent hash ring、ketama |
-| 權重 | weight | 依比例挑選後端的設定，供 `weighted` 使用。**第一版不支援**；不要與 `affinity_key` 混用。 | — |
+| 權重 | weight | 每台後端的整數 1–100（預設 1），寫成後端表格 `{ addr = "...", weight = 3 }`，只有 `weighted` 使用。不要與 `affinity_key` 混用。 | — |
+| 機房 | `site` | 資料中心的標籤（`[a-z0-9-]`，1–63 字元，讀入時轉小寫）。設定檔最上層的 `site` 是本機所在機房，daemon 寫進 LMDB 的 `meta/site`，DNS 與 client 都讀它；後端表格的 `site` 是該後端所在機房。只有 `locality` 使用。 | zone（保留給 DNS 負責網域）、datacenter、region |
 
 ### 分配方式的值
 
@@ -43,10 +44,11 @@
 | `round-robin` | 在健康後端間輪流。DNS 由 daemon 做全域輪流；client 只能在單一程序內輪流（起點隨機），因為 client 唯讀 LMDB、程序間沒有共用計數器。忽略 `affinity_key`。**預設值。** | 第一版 |
 | `sticky` | 有 `affinity_key` 時用 rendezvous hashing 固定分到同一台；沒有 key 時（含 DNS）改用 `round-robin`。 | 第一版 |
 | `failover` | 永遠回設定檔順序中第一台健康的後端，掛了才換下一台。忽略 `affinity_key`。 | 第一版 |
-| `random` | 從健康後端中均勻隨機挑選。 | 規劃中（client 端與 `round-robin` 差異小） |
-| `fastest` | 挑最近一次檢查延遲最低的後端；LMDB 需記錄檢查延遲，並設計避免所有 client 同時湧向同一台的分散機制。 | 規劃中 |
-| `weighted` | 依後端 `weight` 比例挑選。 | 規劃中 |
-| `zone` | 優先挑與 client 同機房（標籤相符）的後端，沒有才挑其他。後端需能加標籤，client 需知道自己所在機房。 | 規劃中 |
+| `weighted` | 依後端 `weight` 比例挑選：候選後端不變時，每 W 次挑選（W 為候選權重總和）各後端剛好被挑 `weight` 次。client 用程序內輪流計數器對 W 取餘數落在累積權重區間；DNS 用 smooth weighted round-robin，回答順序交錯。忽略 `affinity_key`。 | emfor-balance-2 |
+| `locality` | 依健康狀態與 `on_all_down` 選出候選後，優先留下 `site` 與本機 `site` 相同的後端，沒有就用全部候選，再以 `round-robin` 挑選。本機未設 `site` 時等同 `round-robin`。忽略 `affinity_key`。 | emfor-balance-2 |
+| `fastest` | 挑最近一次檢查延遲最低的後端；LMDB 需記錄檢查延遲，並設計避免所有 client 同時湧向同一台的分散機制。 | 規劃中（延後，需先實驗） |
+
+client 讀到不認得的 `balance` 值（較新版 daemon 寫入的）時，改用 `round-robin` 並忽略 `affinity_key`，不回 `INCOMPATIBLE`。
 
 全部後端不健康且 `on_all_down = "open"` 時，以同一種分配方式從所有後端中挑選。不存在 least-connections：流量不經過 emfor，無從得知連線數。
 
@@ -56,3 +58,5 @@
 - 查詢回傳值「後端 IP」→ `ip:port`：同一服務的後端 port 可以不同，只回 IP 會讓應用程式連錯 port；`ip:port` 與設定檔、LMDB `id` 相同。經 DNS 仍只能得到 IP（SRV 屬後續規劃）。
 - 「分配規則」→ 分配方式（`balance`）：原本只有黏著與隨機兩種固定行為，現在改為每個服務在設定檔選擇的方式；rendezvous hashing 改稱黏著分配演算法，只屬於 `sticky`。
 - client 讀 LMDB 的方式「各語言用自己的 LMDB 套件」→ `libemfor`：相容性驗證發現系統 liblmdb 與 PHP dba 的 lock 格式和 daemon 不同，讀不了 store。
+- 分配方式 `zone` → `locality`，機房標籤稱 `site`：`zone` 已是 DNS 負責網域（`[dns] zone`）的名稱，兩者容易混淆。
+- 移除規劃中的分配方式 `random`：client 的 `round-robin` 起點本來就是隨機的，跨程序看起來與均勻隨機幾乎相同，不值得多一個選項。

@@ -17,6 +17,8 @@ pub const KEY_SCHEMA_VERSION: &str = "meta/schema_version";
 pub const KEY_HEARTBEAT: &str = "meta/heartbeat";
 /// Daemon start time in Unix milliseconds, decimal string.
 pub const KEY_STARTED_AT: &str = "meta/started_at";
+/// The host's site label (config top-level `site`); absent when not set.
+pub const KEY_SITE: &str = "meta/site";
 /// Prefix of service record keys: `svc/<service name>`.
 pub const SERVICE_KEY_PREFIX: &str = "svc/";
 
@@ -72,6 +74,14 @@ pub enum Balance {
     Sticky,
     /// First candidate in config order.
     Failover,
+    /// In proportion to backend weights.
+    Weighted,
+    /// Candidates in the host's site first, then in turn.
+    Locality,
+    /// A value this reader does not know (written by a newer daemon). Readers
+    /// treat it as round-robin; the daemon never writes it.
+    #[serde(other)]
+    Unknown,
 }
 
 impl Balance {
@@ -80,6 +90,9 @@ impl Balance {
             Balance::RoundRobin => "round-robin",
             Balance::Sticky => "sticky",
             Balance::Failover => "failover",
+            Balance::Weighted => "weighted",
+            Balance::Locality => "locality",
+            Balance::Unknown => "unknown",
         }
     }
 }
@@ -91,11 +104,21 @@ pub struct BackendRecord {
     pub id: String,
     pub ip: String,
     pub port: u16,
+    /// Weight for `weighted`, 1 to 100; missing in records from older daemons.
+    #[serde(default = "default_weight")]
+    pub weight: u32,
+    /// Site label for `locality`; `None` when the backend has none.
+    #[serde(default)]
+    pub site: Option<String>,
     pub state: HealthState,
     /// Unix milliseconds when the last check finished; `None` before the first check.
     pub checked_at: Option<u64>,
     /// Message of the last `down` or `error` result; `None` after an `up`.
     pub reason: Option<String>,
+}
+
+fn default_weight() -> u32 {
+    1
 }
 
 /// Value stored at `svc/<name>`.
@@ -136,6 +159,8 @@ mod tests {
                 id: "[2001:db8::5]:5432".into(),
                 ip: "2001:db8::5".into(),
                 port: 5432,
+                weight: 1,
+                site: None,
                 state: HealthState::Healthy,
                 checked_at: Some(1762905600123),
                 reason: None,
@@ -148,7 +173,7 @@ mod tests {
         let json = serde_json::to_string(&db_example()).unwrap();
         assert_eq!(
             json,
-            r#"{"name":"db.svc.emfor","on_all_down":"closed","balance":"round-robin","all_down":false,"backends":[{"id":"[2001:db8::5]:5432","ip":"2001:db8::5","port":5432,"state":"healthy","checked_at":1762905600123,"reason":null}]}"#
+            r#"{"name":"db.svc.emfor","on_all_down":"closed","balance":"round-robin","all_down":false,"backends":[{"id":"[2001:db8::5]:5432","ip":"2001:db8::5","port":5432,"weight":1,"site":null,"state":"healthy","checked_at":1762905600123,"reason":null}]}"#
         );
     }
 
@@ -181,10 +206,34 @@ mod tests {
             (Balance::RoundRobin, "\"round-robin\""),
             (Balance::Sticky, "\"sticky\""),
             (Balance::Failover, "\"failover\""),
+            (Balance::Weighted, "\"weighted\""),
+            (Balance::Locality, "\"locality\""),
         ] {
             assert_eq!(serde_json::to_string(&b).unwrap(), s);
             assert_eq!(format!("\"{}\"", b.as_str()), s);
         }
+    }
+
+    #[test]
+    fn unknown_balance_parses() {
+        let b: Balance = serde_json::from_str("\"some-future-method\"").unwrap();
+        assert_eq!(b, Balance::Unknown);
+    }
+
+    #[test]
+    fn older_backend_object_reads_weight_1_and_no_site() {
+        let json = r#"{"id":"10.0.0.1:80","ip":"10.0.0.1","port":80,"state":"healthy","checked_at":null,"reason":null,"zone_hint":"x"}"#;
+        let b: BackendRecord = serde_json::from_str(json).unwrap();
+        assert_eq!((b.weight, b.site), (1, None));
+    }
+
+    #[test]
+    fn weight_and_site_serialize() {
+        let mut rec = db_example();
+        rec.backends[0].weight = 3;
+        rec.backends[0].site = Some("dc1".into());
+        let json = serde_json::to_string(&rec).unwrap();
+        assert!(json.contains(r#""weight":3,"site":"dc1""#), "{json}");
     }
 
     #[test]

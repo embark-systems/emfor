@@ -11,11 +11,14 @@ data" of the emfor-clients change.
   value that the runner passes through the client's own parser instead of
   `max_staleness_ms`), and `lookups`. Each lookup has `name`, an optional
   `affinity_key`, and exactly one of `expect` (an `ip:port`), `expect_error`
-  (`UNAVAILABLE`, `INCOMPATIBLE`, `NOT_FOUND` or `ALL_DOWN`) or
+  (`UNAVAILABLE`, `INCOMPATIBLE`, `NOT_FOUND` or `ALL_DOWN`),
   `expect_all_of` (call the lookup that many times in a row; the results, as
-  a set, equal the list).
+  a set, equal the list) or `expect_counts` (an object `{address: count}`;
+  call the lookup the sum of the counts in a row; each address appears
+  exactly its count and nothing else appears, errors included).
 - `store.heartbeat` is `fresh`, `stale` (now minus twice the maximum
-  staleness), `zero` or `missing`; `store.raw` holds keys written verbatim.
+  staleness), `zero` or `missing`; `store.raw` holds keys written verbatim,
+  such as `meta/site` for `locality` or malformed records.
 - `sticky-v1.json`: rendezvous hash vectors (`hashes`: key, id, big-endian
   u32 of the first 4 bytes of MD5(key ++ id)) and pick vectors (`picks`).
   Generated with Python's hashlib.
@@ -42,7 +45,7 @@ For each case it writes the store, then runs the program once per lookup:
 | Environment | `EMFOR_STORE` = the case's store; `EMFOR_MAX_STALENESS` = the case's `max_staleness`, or `<max_staleness_ms>ms` |
 | Exit status | `0`; any other status, or running past the time limit (default 10 s), fails every lookup of that run |
 
-`count` is the length of `expect_all_of`, or 1. Each pick vector becomes a
+`count` is the length of `expect_all_of`, the sum of `expect_counts`, or 1. Each pick vector becomes a
 sticky service `pick-<i>.svc.emfor` in one extra store and is looked up with
 its key. The hash vectors are checked only by the Rust runner, since no other
 interface exposes the hash. The driver prints a summary and exits 1 if any
