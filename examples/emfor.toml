@@ -16,6 +16,14 @@ lock_file_mode = "0666"
 [log]
 level = "info"
 
+# DNS server for programs without an emfor client. Remove this table to turn
+# it off. The host's resolver forwards the zone here; see
+# docs/deploy/dns-resolver.md. Changing listen requires a restart.
+[dns]
+listen = ["127.0.0.1:5300"]  # not 5353: that is mDNS
+zone = "svc.emfor"           # only services named under the zone resolve
+ttl = "1s"                   # whole seconds, 0s to 3600s
+
 # Built-in defaults, shown here explicitly. Any service can override them.
 [defaults]
 interval = "2s"        # time between the end of one check and the start of the next
@@ -24,18 +32,21 @@ rise = 2               # consecutive passes before a backend is healthy
 fall = 3               # consecutive failures before a backend is unhealthy
 jitter = "10%"         # random +/- spread of interval, 0% to 50%
 on_all_down = "open"   # "open": readers still pick a backend; "closed": readers fail
+balance = "round-robin" # "round-robin", "sticky" (by affinity key), or "failover"
 
 # A plain TCP service: a backend is up when it accepts a connection.
 [services."db.svc.emfor"]
 check = "tcp"
 backends = ["10.0.1.5:5432", "10.0.1.6:5432"]
 on_all_down = "closed"
+balance = "failover"   # always the first healthy backend in this order
 
 # An HTTP service, checked every second.
 [services."api.svc.emfor"]
 check = "http"
 backends = ["10.0.0.11:8080", "10.0.0.12:8080", "[2001:db8::11]:8080"]
 interval = "1s"
+dns_ttl = "5s"         # overrides [dns] ttl for this service
 
 [services."api.svc.emfor".check_options]
 path = "/healthz"

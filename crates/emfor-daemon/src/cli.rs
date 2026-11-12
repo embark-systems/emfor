@@ -5,13 +5,15 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, reload};
 
 use crate::checker::Registry;
-use crate::config::{self, Config, ConfigError, DEFAULT_CONFIG_PATH};
+use crate::config::{self, Config, ConfigError, DEFAULT_CONFIG_PATH, DnsConfig, in_zone};
+use crate::dns::{self, DnsSettings};
+use crate::live::LiveState;
 use crate::store::Store;
 use crate::supervisor::Supervisor;
 use crate::writer::{self, WriterMsg};
@@ -89,12 +91,22 @@ type LogHandle = reload::Handle<EnvFilter, tracing_subscriber::Registry>;
 fn init_logging(level: &str) -> Option<LogHandle> {
     let from_env = EnvFilter::try_from_default_env().ok();
     let env_set = from_env.is_some();
-    let (filter, handle) = reload::Layer::new(from_env.unwrap_or_else(|| EnvFilter::new(level)));
+    let (filter, handle) = reload::Layer::new(from_env.unwrap_or_else(|| log_filter(level)));
     let _ = tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .try_init();
     (!env_set).then_some(handle)
+}
+
+/// Filter for `[log] level`. The hickory DNS crates log every query at
+/// `info`, so they are capped at `warn` (or the configured level when it is
+/// stricter). `RUST_LOG` bypasses this.
+fn log_filter(level: &str) -> EnvFilter {
+    let hickory = if level == "error" { "error" } else { "warn" };
+    EnvFilter::new(format!(
+        "{level},hickory_server={hickory},hickory_proto={hickory},hickory_net={hickory}"
+    ))
 }
 
 fn log_config_errors(path: &Path, errors: &[ConfigError]) {
@@ -130,8 +142,35 @@ async fn run(
         return ExitCode::from(EXIT_STARTUP);
     };
 
+    let live = LiveState::default();
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dns_settings = |d: &DnsConfig| DnsSettings {
+        zone: d.zone.clone(),
+        ttl: d.ttl,
+        serial: started as u32,
+    };
+    let mut dns_server = None;
+    let mut dns_tx = None;
+    if let Some(d) = &config.dns {
+        let (stx, srx) = watch::channel(dns_settings(d));
+        match dns::serve(&d.listen, dns::Handler::new(live.clone(), srx)).await {
+            Ok(server) => dns_server = Some(server),
+            Err(e) => {
+                tracing::error!("cannot start DNS server: {e}");
+                return ExitCode::from(EXIT_STARTUP);
+            }
+        }
+        dns_tx = Some(stx);
+        let addrs: Vec<String> = d.listen.iter().map(|a| a.to_string()).collect();
+        tracing::info!("DNS server for zone {} on {}", d.zone, addrs.join(", "));
+    }
+    warn_outside_zone(&config);
+
     let (tx, rx) = mpsc::unbounded_channel();
-    let writer = writer::spawn(store, rx);
+    let writer = writer::spawn_live(store, rx, live);
     let mut supervisor = Supervisor::start(&config, tx.clone());
     tracing::info!(
         "emfor started: {} services, {} backends, store {}",
@@ -148,7 +187,7 @@ async fn run(
                     Ok(new) => {
                         if new.log != current.log {
                             match &log {
-                                Some(h) => match h.reload(EnvFilter::new(&new.log.level)) {
+                                Some(h) => match h.reload(log_filter(&new.log.level)) {
                                     Ok(()) => tracing::info!("log level set to {}", new.log.level),
                                     Err(e) => tracing::error!("cannot change log level: {e}"),
                                 },
@@ -156,6 +195,10 @@ async fn run(
                             }
                         }
                         supervisor.reload(&new);
+                        if let (Some(tx), Some(d)) = (&dns_tx, &new.dns) {
+                            tx.send_replace(dns_settings(d));
+                        }
+                        warn_outside_zone(&new);
                         tracing::info!("config reloaded: {} services, {} backends", new.services.len(), new.backend_count());
                         current = new;
                     }
@@ -171,6 +214,11 @@ async fn run(
     }
 
     tracing::info!("shutting down");
+    if let Some(mut server) = dns_server
+        && let Err(e) = server.shutdown_gracefully().await
+    {
+        tracing::debug!("DNS server shutdown: {e}");
+    }
     supervisor.stop();
     let (done_tx, done_rx) = oneshot::channel();
     let _ = tx.send(WriterMsg::Shutdown(done_tx));
@@ -179,8 +227,22 @@ async fn run(
     ExitCode::from(EXIT_OK)
 }
 
-/// Load the config again. A changed `[store]` table is an error, reported
-/// together with every other validation error.
+/// One `warn` line per service that DNS cannot answer for.
+fn warn_outside_zone(config: &Config) {
+    let Some(d) = &config.dns else { return };
+    for s in &config.services {
+        if !in_zone(&s.name, &d.zone) {
+            tracing::warn!(
+                "service {} is outside DNS zone {} and cannot be resolved via DNS",
+                s.name,
+                d.zone
+            );
+        }
+    }
+}
+
+/// Load the config again. A changed `[store]` table or `[dns] listen` is an
+/// error, reported together with every other validation error.
 fn reload(path: &Path, current: &Config, registry: &Registry) -> Result<Config, Vec<ConfigError>> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         vec![ConfigError {
@@ -190,17 +252,27 @@ fn reload(path: &Path, current: &Config, registry: &Registry) -> Result<Config, 
     })?;
     let parsed = config::parse(&text, registry);
     let store_changed = config::parse_store(&text).is_some_and(|s| s != current.store);
-    let store_error = ConfigError {
-        path: "store".into(),
-        message: "store settings require restart".into(),
-    };
-    match (parsed, store_changed) {
-        (Ok(new), false) => Ok(new),
-        (Ok(_), true) => Err(vec![store_error]),
-        (Err(mut errors), true) => {
-            errors.push(store_error);
+    let current_listen = current.dns.as_ref().map(|d| d.listen.clone());
+    let listen_changed = config::parse_dns_listen(&text).is_some_and(|l| l != current_listen);
+    let mut restart_errors = Vec::new();
+    if store_changed {
+        restart_errors.push(ConfigError {
+            path: "store".into(),
+            message: "store settings require restart".into(),
+        });
+    }
+    if listen_changed {
+        restart_errors.push(ConfigError {
+            path: "dns.listen".into(),
+            message: "dns listen settings require restart".into(),
+        });
+    }
+    match parsed {
+        Ok(new) if restart_errors.is_empty() => Ok(new),
+        Ok(_) => Err(restart_errors),
+        Err(mut errors) => {
+            errors.extend(restart_errors);
             Err(errors)
         }
-        (Err(errors), false) => Err(errors),
     }
 }

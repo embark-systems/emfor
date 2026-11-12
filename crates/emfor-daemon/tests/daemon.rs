@@ -302,6 +302,13 @@ fn invalid_config_at_startup_exits_two_without_store() {
 #[test]
 fn example_config_is_valid() {
     let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/emfor.toml");
+    let text = std::fs::read_to_string(&example).unwrap();
+    for line in ["[dns]", "balance = \"failover\"", "dns_ttl = "] {
+        assert!(
+            text.lines().any(|l| l.starts_with(line)),
+            "example shows {line} uncommented"
+        );
+    }
     let out = Command::new(cargo_bin("emfor"))
         .args(["--check-config", "--config"])
         .arg(&example)
@@ -415,4 +422,26 @@ fn service_record_with_healthy_and_unhealthy_backends() {
     );
     assert_eq!(rec.backends[0].reason, None);
     assert!(rec.backends[1].reason.is_some());
+}
+
+#[test]
+fn balance_written_from_config_and_changed_on_reload() {
+    use emfor_format::Balance;
+    let (_l, addr) = listener();
+    let svc = tcp_service("api.svc.emfor", &addr);
+    let d = start(&format!("{svc}balance = \"failover\"\n"));
+    let r = Reader::open(&d.store());
+    wait_for(|| r.service("api.svc.emfor").is_some());
+    let rec = r.get("svc/api.svc.emfor").unwrap();
+    assert!(
+        rec.contains(r#""on_all_down":"open","balance":"failover","all_down""#),
+        "{rec}"
+    );
+    std::fs::write(
+        d.config(),
+        format!("{}{svc}balance = \"sticky\"\n", store_header(d.dir.path())),
+    )
+    .unwrap();
+    d.signal(Signal::SIGHUP);
+    wait_for(|| r.service("api.svc.emfor").unwrap().balance == Balance::Sticky);
 }

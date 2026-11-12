@@ -1,0 +1,42 @@
+name: CI
+
+# Disabled for now: runs only when started by hand from the Actions tab
+# (or `gh workflow run CI`). Restore push / pull_request to turn it back on.
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - name: dnsmasq recipe
+        run: tests/resolver/run.sh dnsmasq
+      - name: unbound recipe
+        run: tests/resolver/run.sh unbound
+      - name: systemd-resolved recipe
+        run: tests/resolver/resolved.sh
+
+  freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.3"
+          usesh: true
+          prepare: pkg install -y rust
+          run: |
+            rustc --version
+            cargo test --workspace
+            sh tests/resolver/freebsd.sh
