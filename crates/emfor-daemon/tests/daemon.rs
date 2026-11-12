@@ -344,6 +344,7 @@ fn example_config_is_valid() {
         "balance = \"weighted\"",
         "balance = \"locality\"",
         "dns_ttl = ",
+        "expect = ",
     ] {
         assert!(
             text.lines().any(|l| l.starts_with(line)),
@@ -363,7 +364,7 @@ fn example_config_is_valid() {
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
-        "config ok: 4 services, 11 backends"
+        "config ok: 6 services, 15 backends"
     );
 }
 

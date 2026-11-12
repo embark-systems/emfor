@@ -1396,7 +1396,7 @@ backends = ["10.0.0.1:80"]
             &self,
             _: &toml::Table,
         ) -> Result<Arc<dyn Checker>, Vec<crate::checker::OptionError>> {
-            Ok(Arc::new(crate::checker::tcp::TcpChecker))
+            crate::checker::tcp::TcpFactory.validate(&toml::Table::new())
         }
     }
 

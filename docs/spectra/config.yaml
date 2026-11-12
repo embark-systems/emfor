@@ -57,6 +57,10 @@ context: |
     systemd-resolved、macOS 手動驗證並註明驗證版本。
   - 檢查器統一介面（validate / check），結果 up / down / error，error 不算後端失敗。
     tcp、http、exec 內建；外部外掛為常駐子程序，stdin/stdout 逐行 JSON，帶握手與協定版本。
+    tcp（emfor-tcp-expect）：可選 send（連上後送出，TOML 字串原樣送出）與 expect（回應須含此子字串，位元組比對）；
+    只設 expect 為歡迎訊息模式；send 無 expect、expect 為空或超過 16384 位元組為設定錯誤；最多讀 16384 位元組，
+    符合即關閉；對方關閉或讀滿仍未符合為 down，原因 expect: got "<前 64 位元組，escape_ascii>"；寫入失敗 send: 、讀取失敗 expect: 。
+    不做 regex、TLS（另由 emfor-tcp-tls 處理）、多步驟、二進位比對。
   - 外掛（emfor-plugins）：
     exec：command 為陣列、不經 shell，每次檢查起一個程序，EMFOR_IP / EMFOR_PORT / EMFOR_SERVICE 環境變數；
     結束碼採 Nagios 慣例：0 up、1/2 down（原因取 stdout 第一行）、3 以上或被 signal 終止或無法執行為 error；
@@ -117,7 +121,8 @@ context: |
   → emfor-plugins（已完成）→ emfor-clients（相容性驗證、client-lookup 規格、共用測試資料、Rust client 與 cargo-c 產出的 libemfor）
   → emfor-clients-2（Go、Python、Perl、PHP 包裝 libemfor）→ emfor-balance-2（weighted、locality、不認得的 balance 改用 round-robin）
   → emfor-dns-srv → emfor-dns-port-warning → emfor-balance-fastest（fastest、latency_us、pool）
-  → emfor-check-plugins（emfor-check 的 redis、mysql、pgsql 外掛與 emfor-plugin crate）。
+  → emfor-check-plugins（emfor-check 的 redis、mysql、pgsql 外掛與 emfor-plugin crate）
+  → emfor-tcp-expect（tcp 檢查的 send / expect）。
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.

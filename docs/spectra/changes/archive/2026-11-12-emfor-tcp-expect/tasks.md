@@ -1,0 +1,14 @@
+## 1. tcp 檢查器
+
+- [x] 1.1 依「單步驟 send 與 expect 選項」與「跳脫交給 TOML 字串」實作 "TCP checker" 的選項驗證：`TcpFactory::validate` 接受 `send`、`expect`（其他鍵仍為 `unknown key`），在驗證時建好 `send` 與 `expect` 的位元組（原樣使用 TOML 字串的 UTF-8 位元組，不另做跳脫），並回報 design Implementation Contract 表中的五種錯誤（鍵與訊息完全一致）；沒有選項時建出的檢查器行為與現在相同。驗證：`crates/emfor-daemon/src/checker/tcp.rs` 新增的單元測試涵蓋 spec "Invalid send and expect options" 表的五列，以及 `send = ""` 加 `expect` 視同只有 `expect`；原有 `rejects_any_option` 通過。
+- [x] 1.2 依「expect 用子字串位元組比對」、「讀取上限 16384 位元組」、「不符合時的原因帶前 64 位元組」與「送出或讀取出錯的原因前綴」實作 "TCP checker" 的檢查 [after: 1.1]：有 `expect` 時連上後寫入 `send`、累積讀取最多 16384 位元組、跨 read 搜尋 `expect`，符合即 up 並關閉；EOF 或讀滿未符合為 down `expect: got "<前 64 位元組 escape_ascii>"`；寫入失敗 `send: `、讀取失敗 `expect: `，本機資源錯誤仍為 error。驗證：以本機假伺服器的單元測試涵蓋 spec 情境 "Banner matches"（SMTP `220`）、"Request and response match"（伺服器收到的正好是 `stats\r\n` 7 個位元組）、"Expected text split across reads"（`+PO`、50 ms、`NG\r\n`）、"Backend closes without the expected text"（表中四種原因）、"Too much data without the expected text"（送滿 16384 位元組且不關閉，在 `timeout` 之前回 down）、"Silent backend"（經 `run_check` 得到 `timeout`）；原有 `listening_backend_is_up`、`closed_port_is_down_refused` 通過。
+
+## 2. 文件與檢查
+
+- [x] 2.1 文件 [after: 1.2]：`examples/emfor.toml` 加上兩個 tcp 範例（只設 `expect = "220"` 的 SMTP 歡迎訊息、`send = "stats\r\n"` 加 `expect = "STAT pid"` 的 memcached），並在註解說明符合後直接關閉連線、16384 位元組上限與原因格式；`docs/spectra/config.yaml` 的檢查器段落記錄 tcp 的 `send` / `expect`，並在 change 串接加上 emfor-tcp-expect。驗證：`crates/emfor-daemon/tests/daemon.rs` 的 `example_config_is_valid`（會驗證範例設定）在檢查清單加入以 `expect = ` 開頭的行、並把預期輸出 `config ok: 4 services, 11 backends` 改成新增服務後的數量後通過，並對照 spec 與 design 審閱內容。
+- [x] 2.2 執行本機檢查 [after: 2.1]：macOS 與 Debian 映像 `emfor-clients-test` 中 `cargo fmt --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`cargo test --workspace --all-features` 通過；Docker 中 `tests/resolver/run.sh dnsmasq`、`tests/resolver/run.sh unbound`、`tests/plugins/run.sh` 通過。指令與結果記在本 task 的完成紀錄。
+  - 完成紀錄（2026-11-12）：macOS：`cargo fmt --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` 通過，`cargo test --workspace --all-features` 全部通過（37 個測試套件）。Debian 映像 `emfor-clients-test`：fmt、clippy 通過，`cargo test --workspace --all-features` 全部通過（37 個測試套件）。Docker：`tests/resolver/run.sh dnsmasq`、`tests/resolver/run.sh unbound`、`tests/plugins/run.sh` 通過。tcp 單元測試 12 個（新增 8 個）。範例設定新增 `smtp.svc.emfor`、`memcache.svc.emfor` 兩個服務，`example_config_is_valid` 的預期輸出改為 `config ok: 6 services, 15 backends`。另修改 `crates/emfor-daemon/src/config.rs` 的測試替身：`TcpChecker` 不再是無欄位的結構，改用 `TcpFactory.validate` 建立。
+
+## Change notes
+
+- verify 建議補測試（2026-11-12）：新增 `read_failure_is_expect_reason`（後端接受後立刻送 RST，只讀模式的讀取錯誤原因以 `expect: ` 開頭、不是 `expect: got`）與 `write_failure_is_send_reason`（`send` 為 8 MiB，寫入途中收到 RST，原因以 `send: ` 開頭）。驗證：tcp 單元測試 14 個，在 macOS 與 Debian 映像各連跑 30 次全部通過；Debian 映像 clippy 通過，`cargo test --workspace --all-features` 全部通過（37 個測試套件）。

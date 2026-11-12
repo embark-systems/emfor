@@ -50,6 +50,25 @@ backends = ["10.0.1.5:5432", "10.0.1.6:5432"]
 on_all_down = "closed"
 balance = "failover"   # always the first healthy backend in this order
 
+# A TCP service checked by its greeting: up when the backend's first bytes
+# contain expect. The checker reads at most 16384 bytes, then closes the
+# connection right away (no QUIT). A miss is down with a reason such as
+# expect: got "421 too busy\r\n" (the first 64 bytes received).
+[services."smtp.svc.emfor"]
+check = "tcp"
+backends = ["10.0.6.11:25", "10.0.6.12:25"]
+check_options = { expect = "220" }
+
+# send is written after connecting, then the response must contain expect.
+# TOML escapes such as \r\n are sent as those bytes.
+[services."memcache.svc.emfor"]
+check = "tcp"
+backends = ["10.0.7.11:11211", "10.0.7.12:11211"]
+
+[services."memcache.svc.emfor".check_options]
+send = "stats\r\n"
+expect = "STAT pid"
+
 # An HTTP service, checked every second.
 [services."api.svc.emfor"]
 check = "http"
