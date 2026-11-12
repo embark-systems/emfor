@@ -11,13 +11,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use emfor_format::{
-    BackendRecord, HealthState, KEY_HEARTBEAT, KEY_SCHEMA_VERSION, KEY_STARTED_AT, OnAllDown,
-    SCHEMA_VERSION, SERVICE_KEY_PREFIX, ServiceRecord, service_key,
+    BackendRecord, Balance, HealthState, KEY_HEARTBEAT, KEY_SCHEMA_VERSION, KEY_STARTED_AT,
+    OnAllDown, SCHEMA_VERSION, SERVICE_KEY_PREFIX, ServiceRecord, service_key,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::MissedTickBehavior;
 
 use crate::config::Backend;
+use crate::live::{LiveService, LiveState, LiveView};
 use crate::schedule::{BackendUpdate, unix_ms};
 use crate::store::{Store, delete_prefix};
 
@@ -71,6 +72,9 @@ impl Sink for Arc<Store> {
 pub struct ServiceLayout {
     pub name: Arc<str>,
     pub on_all_down: OnAllDown,
+    pub balance: Balance,
+    /// Per-service override of `[dns] ttl`, in seconds.
+    pub dns_ttl: Option<u32>,
     pub backends: Vec<Backend>,
     /// Updates from tasks of any other generation are dropped.
     pub generation: u64,
@@ -100,6 +104,8 @@ struct Writer<S: Sink> {
     pending: Vec<Op>,
     /// Services whose record changed since the last commit.
     dirty: BTreeSet<Arc<str>>,
+    /// Updated before every commit attempt.
+    live: LiveState,
 }
 
 /// Spawn the writer task. It runs until it receives [`WriterMsg::Shutdown`]
@@ -111,10 +117,28 @@ pub fn spawn<S: Sink>(
     spawn_with_tick(sink, rx, Duration::from_secs(1))
 }
 
+/// Like [`spawn`], also keeping `live` in line with the records.
+pub fn spawn_live<S: Sink>(
+    sink: S,
+    rx: mpsc::UnboundedReceiver<WriterMsg>,
+    live: LiveState,
+) -> tokio::task::JoinHandle<()> {
+    spawn_inner(sink, rx, Duration::from_secs(1), live)
+}
+
 pub fn spawn_with_tick<S: Sink>(
+    sink: S,
+    rx: mpsc::UnboundedReceiver<WriterMsg>,
+    tick: Duration,
+) -> tokio::task::JoinHandle<()> {
+    spawn_inner(sink, rx, tick, LiveState::default())
+}
+
+fn spawn_inner<S: Sink>(
     sink: S,
     mut rx: mpsc::UnboundedReceiver<WriterMsg>,
     tick: Duration,
+    live: LiveState,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut w = Writer {
@@ -123,6 +147,7 @@ pub fn spawn_with_tick<S: Sink>(
             generations: BTreeMap::new(),
             pending: Vec::new(),
             dirty: BTreeSet::new(),
+            live,
         };
         // First tick one period from now: start-up already writes a heartbeat.
         let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + tick, tick);
@@ -160,6 +185,7 @@ impl<S: Sink> Writer<S> {
         b.checked_at = Some(u.checked_at);
         b.reason = u.reason;
         rec.refresh_all_down();
+        self.live.set_record(rec);
         self.dirty.insert(u.service.clone());
         if u.transition.is_some() {
             self.flush(Vec::new());
@@ -194,6 +220,7 @@ impl<S: Sink> Writer<S> {
             self.dirty.remove(&name);
             ops.push(Op::Delete(service_key(&name)));
         }
+        let mut view = LiveView::default();
         for s in services {
             let old = if s.reset {
                 None
@@ -212,14 +239,23 @@ impl<S: Sink> Writer<S> {
             let mut rec = ServiceRecord {
                 name: s.name.to_string(),
                 on_all_down: s.on_all_down,
+                balance: s.balance,
                 all_down: true,
                 backends,
             };
             rec.refresh_all_down();
+            view.services.insert(
+                s.name.to_string(),
+                LiveService {
+                    record: rec.clone(),
+                    dns_ttl: s.dns_ttl,
+                },
+            );
             self.generations.insert(s.name.clone(), s.generation);
             self.records.insert(s.name.clone(), rec);
             self.dirty.insert(s.name);
         }
+        self.live.replace(view);
         self.flush(ops);
     }
 
@@ -288,6 +324,8 @@ mod tests {
         ServiceLayout {
             name: name.into(),
             on_all_down: OnAllDown::Open,
+            balance: Balance::RoundRobin,
+            dns_ttl: None,
             backends: ids.iter().map(|i| be(i)).collect(),
             generation,
             reset,
@@ -439,6 +477,44 @@ mod tests {
             record(&store, "a").backends[0].state,
             HealthState::Healthy,
             "retried at next tick"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_state_updated_before_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let live = LiveState::default();
+        let (tx, rx) = mpsc::unbounded_channel();
+        // Hour-long tick: an update without a transition is not committed.
+        spawn_inner(store.clone(), rx, Duration::from_secs(3600), live.clone());
+        let mut l = layout("a", &["10.0.0.1:80"], 0, true);
+        l.dns_ttl = Some(5);
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            services: vec![l],
+        })
+        .unwrap();
+        tx.send(upd("a", "10.0.0.1:80", HealthState::Healthy, false))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        {
+            let v = live.read();
+            let s = &v.services["a"];
+            assert_eq!(s.record.backends[0].state, HealthState::Healthy);
+            assert!(!s.record.all_down);
+            assert_eq!(s.dns_ttl, Some(5));
+            assert_eq!(record(&store, "a").backends[0].state, HealthState::Unknown);
+        }
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            services: vec![],
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            live.read().services.is_empty(),
+            "removed service leaves live state"
         );
     }
 

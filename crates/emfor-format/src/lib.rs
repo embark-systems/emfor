@@ -61,6 +61,29 @@ pub enum OnAllDown {
     Closed,
 }
 
+/// How one backend of a service is chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Balance {
+    /// Candidates in turn.
+    #[default]
+    RoundRobin,
+    /// Same backend for the same affinity key; round-robin without a key.
+    Sticky,
+    /// First candidate in config order.
+    Failover,
+}
+
+impl Balance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Balance::RoundRobin => "round-robin",
+            Balance::Sticky => "sticky",
+            Balance::Failover => "failover",
+        }
+    }
+}
+
 /// One backend inside a [`ServiceRecord`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackendRecord {
@@ -80,6 +103,9 @@ pub struct BackendRecord {
 pub struct ServiceRecord {
     pub name: String,
     pub on_all_down: OnAllDown,
+    /// Missing in records written before this field existed; reads as round-robin.
+    #[serde(default)]
+    pub balance: Balance,
     /// `true` when no backend is [`HealthState::Healthy`].
     pub all_down: bool,
     /// Backends in config order.
@@ -104,6 +130,7 @@ mod tests {
         ServiceRecord {
             name: "db.svc.emfor".into(),
             on_all_down: OnAllDown::Closed,
+            balance: Balance::RoundRobin,
             all_down: false,
             backends: vec![BackendRecord {
                 id: "[2001:db8::5]:5432".into(),
@@ -121,7 +148,7 @@ mod tests {
         let json = serde_json::to_string(&db_example()).unwrap();
         assert_eq!(
             json,
-            r#"{"name":"db.svc.emfor","on_all_down":"closed","all_down":false,"backends":[{"id":"[2001:db8::5]:5432","ip":"2001:db8::5","port":5432,"state":"healthy","checked_at":1762905600123,"reason":null}]}"#
+            r#"{"name":"db.svc.emfor","on_all_down":"closed","balance":"round-robin","all_down":false,"backends":[{"id":"[2001:db8::5]:5432","ip":"2001:db8::5","port":5432,"state":"healthy","checked_at":1762905600123,"reason":null}]}"#
         );
     }
 
@@ -139,6 +166,25 @@ mod tests {
         let rec: ServiceRecord = serde_json::from_str(json).unwrap();
         assert_eq!(rec.backends[0].state, HealthState::Unknown);
         assert_eq!(rec.backends[0].checked_at, None);
+    }
+
+    #[test]
+    fn missing_balance_reads_as_round_robin() {
+        let json = r#"{"name":"a","on_all_down":"open","all_down":true,"backends":[]}"#;
+        let rec: ServiceRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(rec.balance, Balance::RoundRobin);
+    }
+
+    #[test]
+    fn balance_values_serialize() {
+        for (b, s) in [
+            (Balance::RoundRobin, "\"round-robin\""),
+            (Balance::Sticky, "\"sticky\""),
+            (Balance::Failover, "\"failover\""),
+        ] {
+            assert_eq!(serde_json::to_string(&b).unwrap(), s);
+            assert_eq!(format!("\"{}\"", b.as_str()), s);
+        }
     }
 
     #[test]

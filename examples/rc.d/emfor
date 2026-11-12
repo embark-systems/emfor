@@ -1,0 +1,55 @@
+#!/bin/sh
+#
+# Example FreeBSD rc.d script for the emfor daemon. Copy it to
+# /usr/local/etc/rc.d/emfor (mode 0555) and enable it with:
+#
+#   sysrc emfor_enable=YES
+#
+# Settings in /etc/rc.conf:
+#   emfor_enable  YES to start at boot (default NO)
+#   emfor_config  config file (default /usr/local/etc/emfor/emfor.toml)
+#   emfor_user    user to run as (default root). A dedicated user is better:
+#                 it needs write access to the directory of [store] path and
+#                 nothing else, since the default DNS port 5300 is unprivileged.
+#
+# "service emfor reload" sends SIGHUP: the config is re-read and applied only
+# if it is fully valid. [store] and [dns] listen changes need a restart.
+
+# PROVIDE: emfor
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="emfor"
+rcvar="emfor_enable"
+load_rc_config "$name"
+
+: "${emfor_enable:=NO}"
+: "${emfor_config:=/usr/local/etc/emfor/emfor.toml}"
+: "${emfor_user:=root}"
+
+pidfile="/var/run/${name}.pid"
+procname="/usr/local/bin/emfor"
+command="/usr/sbin/daemon"
+# -p: pid file of emfor itself, so reload and stop signal the daemon directly.
+# -S -T: send emfor's log output (stderr) to syslog with tag "emfor".
+command_args="-p ${pidfile} -S -T ${name} -u ${emfor_user} ${procname} --config ${emfor_config}"
+required_files="${emfor_config}"
+extra_commands="reload configtest"
+sig_reload="HUP"
+start_precmd="emfor_precmd"
+configtest_cmd="emfor_configtest"
+
+emfor_configtest()
+{
+	"${procname}" --check-config --config "${emfor_config}"
+}
+
+emfor_precmd()
+{
+	# Refuse to start with an invalid config; errors go to stderr.
+	emfor_configtest >/dev/null
+}
+
+run_rc_command "$1"

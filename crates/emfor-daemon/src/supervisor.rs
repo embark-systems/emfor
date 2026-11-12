@@ -113,6 +113,8 @@ impl Supervisor {
             layouts.push(ServiceLayout {
                 name: name.clone(),
                 on_all_down: new.settings.on_all_down,
+                balance: new.settings.balance,
+                dns_ttl: new.dns_ttl,
                 backends: new.backends.clone(),
                 generation,
                 reset,

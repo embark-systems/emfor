@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use emfor_format::OnAllDown;
+use emfor_format::{Balance, OnAllDown};
 
 use crate::checker::{Checker, Registry};
 
@@ -66,6 +66,34 @@ impl Default for LogConfig {
     }
 }
 
+/// The `[dns]` table. The DNS server runs only when it is present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DnsConfig {
+    pub listen: Vec<SocketAddr>,
+    /// Normalized zone name, without trailing dot.
+    pub zone: String,
+    /// Seconds.
+    pub ttl: u32,
+}
+
+impl Default for DnsConfig {
+    fn default() -> Self {
+        Self {
+            listen: vec![SocketAddr::from(([127, 0, 0, 1], 5300))],
+            zone: "svc.emfor".into(),
+            ttl: 1,
+        }
+    }
+}
+
+/// True when `name` equals `zone` or is under it. Both normalized.
+pub fn in_zone(name: &str, zone: &str) -> bool {
+    name == zone
+        || name
+            .strip_suffix(zone)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
 /// Effective check settings of a service.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Settings {
@@ -76,6 +104,7 @@ pub struct Settings {
     /// Fraction of `interval`, 0.0 to 0.5.
     pub jitter: f64,
     pub on_all_down: OnAllDown,
+    pub balance: Balance,
 }
 
 impl Default for Settings {
@@ -87,6 +116,7 @@ impl Default for Settings {
             fall: 3,
             jitter: 0.10,
             on_all_down: OnAllDown::Open,
+            balance: Balance::RoundRobin,
         }
     }
 }
@@ -107,6 +137,8 @@ pub struct ServiceConfig {
     pub checker: Arc<dyn Checker>,
     pub settings: Settings,
     pub backends: Vec<Backend>,
+    /// Per-service override of `[dns] ttl`, in seconds.
+    pub dns_ttl: Option<u32>,
 }
 
 impl ServiceConfig {
@@ -120,6 +152,7 @@ impl ServiceConfig {
 pub struct Config {
     pub store: StoreConfig,
     pub log: LogConfig,
+    pub dns: Option<DnsConfig>,
     /// Sorted by name.
     pub services: Vec<ServiceConfig>,
 }
@@ -166,6 +199,16 @@ pub fn parse_store(text: &str) -> Option<StoreConfig> {
     let mut v = Validator::default();
     let store = v.store(&root);
     v.errors.is_empty().then_some(store)
+}
+
+/// Parse only `[dns] listen`: `Some(None)` without a `[dns]` table,
+/// `Some(Some(addrs))` with one, `None` when the TOML is unreadable or the
+/// table itself is invalid. Used on reload like [`parse_store`].
+pub fn parse_dns_listen(text: &str) -> Option<Option<Vec<SocketAddr>>> {
+    let root: toml::Table = text.parse().ok()?;
+    let mut v = Validator::default();
+    let dns = v.dns(&root);
+    v.errors.is_empty().then(|| dns.map(|d| d.listen))
 }
 
 /// Lowercase and strip one trailing dot.
@@ -215,6 +258,7 @@ struct PartialSettings {
     fall: Option<u32>,
     jitter: Option<f64>,
     on_all_down: Option<OnAllDown>,
+    balance: Option<Balance>,
 }
 
 impl PartialSettings {
@@ -226,6 +270,7 @@ impl PartialSettings {
             fall: self.fall.unwrap_or(base.fall),
             jitter: self.jitter.unwrap_or(base.jitter),
             on_all_down: self.on_all_down.unwrap_or(base.on_all_down),
+            balance: self.balance.unwrap_or(base.balance),
         }
     }
 }
@@ -237,6 +282,7 @@ const SETTING_KEYS: &[&str] = &[
     "fall",
     "jitter",
     "on_all_down",
+    "balance",
 ];
 
 #[derive(Default)]
@@ -283,9 +329,10 @@ impl Validator {
     }
 
     fn root(&mut self, root: &toml::Table, registry: &Registry) -> Config {
-        self.unknown_keys(root, "", &["store", "log", "defaults", "services"]);
+        self.unknown_keys(root, "", &["store", "log", "dns", "defaults", "services"]);
         let store = self.store(root);
         let log = self.log(root);
+        let dns = self.dns(root);
 
         let defaults_table = self.table(root, "defaults");
         let defaults_partial = match defaults_table {
@@ -328,8 +375,57 @@ impl Validator {
         Config {
             store,
             log,
+            dns,
             services,
         }
+    }
+
+    fn dns(&mut self, root: &toml::Table) -> Option<DnsConfig> {
+        let t = self.table(root, "dns")?;
+        let mut dns = DnsConfig::default();
+        self.unknown_keys(t, "dns", &["listen", "zone", "ttl"]);
+        match t.get("listen") {
+            None => {}
+            Some(toml::Value::Array(a)) if a.is_empty() => {
+                self.err("dns.listen", "listen must not be empty")
+            }
+            Some(toml::Value::Array(a)) => {
+                let mut out = Vec::new();
+                for (i, item) in a.iter().enumerate() {
+                    let ipath = format!("dns.listen[{i}]");
+                    match item.as_str().map(str::parse::<SocketAddr>) {
+                        Some(Ok(addr)) if addr.port() != 0 => {
+                            if out.contains(&addr) {
+                                self.err(ipath, format!("duplicate listen address \"{addr}\""));
+                            } else {
+                                out.push(addr);
+                            }
+                        }
+                        _ => self.err(
+                            ipath,
+                            "listen address must be an IP literal with port: IPv4:port or [IPv6]:port, port 1-65535",
+                        ),
+                    }
+                }
+                dns.listen = out;
+            }
+            Some(_) => self.err("dns.listen", "must be an array of \"ip:port\" strings"),
+        }
+        if let Some(z) = self.string(t, "dns", "zone") {
+            let zone = normalize_service_name(z);
+            if valid_service_name(&zone) {
+                dns.zone = zone;
+            } else {
+                self.err(
+                    "dns.zone",
+                    "invalid zone name: labels of [a-z0-9-], 1-63 characters each, 253 characters total",
+                );
+            }
+        }
+        if let Some(ttl) = self.dns_seconds(t, "dns", "ttl") {
+            dns.ttl = ttl;
+        }
+        Some(dns)
     }
 
     fn store(&mut self, root: &toml::Table) -> StoreConfig {
@@ -464,7 +560,35 @@ impl Validator {
                 ),
             }
         }
+        if let Some(s) = self.string(t, parent, "balance") {
+            match s {
+                "round-robin" => p.balance = Some(Balance::RoundRobin),
+                "sticky" => p.balance = Some(Balance::Sticky),
+                "failover" => p.balance = Some(Balance::Failover),
+                _ => self.err(
+                    key_path(parent, "balance"),
+                    "balance must be round-robin, sticky, or failover",
+                ),
+            }
+        }
         p
+    }
+
+    /// A DNS TTL: whole seconds from 0s to 3600s.
+    fn dns_seconds(&mut self, t: &toml::Table, parent: &str, key: &str) -> Option<u32> {
+        let d = self.duration(t, parent, key)?;
+        if d.subsec_nanos() != 0 {
+            self.err(
+                key_path(parent, key),
+                format!("{key} must be whole seconds"),
+            );
+            None
+        } else if d.as_secs() > 3600 {
+            self.err(key_path(parent, key), format!("{key} above 3600s"));
+            None
+        } else {
+            Some(d.as_secs() as u32)
+        }
     }
 
     fn service(
@@ -475,7 +599,7 @@ impl Validator {
         defaults: &Settings,
         registry: &Registry,
     ) -> Option<ServiceConfig> {
-        let mut allowed = vec!["check", "backends", "check_options"];
+        let mut allowed = vec!["check", "backends", "check_options", "dns_ttl"];
         allowed.extend_from_slice(SETTING_KEYS);
         self.unknown_keys(t, path, &allowed);
 
@@ -491,6 +615,7 @@ impl Validator {
         }
 
         let backends = self.backends(t, path);
+        let dns_ttl = self.dns_seconds(t, path, "dns_ttl");
 
         let check_options = match t.get("check_options") {
             None => toml::Table::new(),
@@ -535,6 +660,7 @@ impl Validator {
             checker,
             settings,
             backends: backends?,
+            dns_ttl,
         })
     }
 
@@ -618,17 +744,33 @@ backends = ["10.0.0.1:80"]
     #[test]
     fn effective_settings_resolution() {
         // Rows of the "effective settings resolution" example.
-        let rows: &[(&str, &str, u64, u32)] = &[
-            ("", "", 2, 3),
-            ("[defaults]\ninterval = \"5s\"\n", "", 5, 3),
+        let rr = Balance::RoundRobin;
+        let rows: &[(&str, &str, u64, u32, Balance)] = &[
+            ("", "", 2, 3, rr),
+            ("[defaults]\ninterval = \"5s\"\n", "", 5, 3, rr),
             (
                 "[defaults]\ninterval = \"5s\"\nfall = 5\n",
                 "interval = \"1s\"\n",
                 1,
                 5,
+                rr,
+            ),
+            (
+                "[defaults]\nbalance = \"failover\"\n",
+                "",
+                2,
+                3,
+                Balance::Failover,
+            ),
+            (
+                "[defaults]\nbalance = \"failover\"\n",
+                "balance = \"sticky\"\n",
+                2,
+                3,
+                Balance::Sticky,
             ),
         ];
-        for (defaults, svc_extra, interval, fall) in rows {
+        for (defaults, svc_extra, interval, fall, balance) in rows {
             let c = parse_ok(&format!("{defaults}{SVC}{svc_extra}"));
             let s = &c.services[0].settings;
             assert_eq!(
@@ -637,6 +779,7 @@ backends = ["10.0.0.1:80"]
                 "{defaults:?} {svc_extra:?}"
             );
             assert_eq!(s.fall, *fall);
+            assert_eq!(s.balance, *balance, "{defaults:?} {svc_extra:?}");
         }
     }
 
@@ -651,6 +794,29 @@ backends = ["10.0.0.1:80"]
         assert_eq!((s.rise, s.fall), (2, 3));
         assert!((s.jitter - 0.10).abs() < 1e-9);
         assert_eq!(s.on_all_down, OnAllDown::Open);
+        assert_eq!(s.balance, Balance::RoundRobin);
+    }
+
+    #[test]
+    fn service_balance_overrides_default() {
+        let c = parse_ok(&format!(
+            "[defaults]\nbalance = \"failover\"\n{SVC}balance = \"round-robin\"\n[services.b]\ncheck = \"tcp\"\nbackends = [\"10.0.0.2:80\"]\n"
+        ));
+        assert_eq!(c.services[0].name, "api.svc.emfor");
+        assert_eq!(c.services[0].settings.balance, Balance::RoundRobin);
+        assert_eq!(c.services[1].settings.balance, Balance::Failover);
+    }
+
+    #[test]
+    fn dns_ttl_is_per_service_only() {
+        let c = parse_ok(&format!("{SVC}dns_ttl = \"5s\"\n"));
+        assert_eq!(c.services[0].dns_ttl, Some(5));
+        assert_eq!(parse_ok(SVC).services[0].dns_ttl, None);
+        let e = parse_err(&format!("[defaults]\ndns_ttl = \"5s\"\n{SVC}"));
+        assert_eq!(e[0].path, "defaults.dns_ttl");
+        assert_eq!(e[0].message, "unknown key");
+        assert!(parse_ok(&format!("{SVC}dns_ttl = \"0s\"\n")).services[0].dns_ttl == Some(0));
+        assert!(parse_ok(&format!("{SVC}dns_ttl = \"1h\"\n")).services[0].dns_ttl == Some(3600));
     }
 
     #[test]
@@ -733,6 +899,15 @@ backends = ["10.0.0.1:80"]
             ("backends = [\"[2001:db8::1]:8080\"]\n", None),
             ("chekc = \"tcp\"\n", Some("unknown key")),
             ("check = \"redis\"\n", Some("unknown checker `redis`")),
+            (
+                "balance = \"least-conn\"\n",
+                Some("balance must be round-robin, sticky, or failover"),
+            ),
+            (
+                "dns_ttl = \"1500ms\"\n",
+                Some("dns_ttl must be whole seconds"),
+            ),
+            ("dns_ttl = \"2h\"\n", Some("dns_ttl above 3600s")),
         ];
         for (lines, expected) in rows {
             let mut svc = String::from("[services.\"api.svc.emfor\"]\n");
@@ -784,6 +959,72 @@ backends = ["10.0.0.1:80"]
         let s = parse_store("[store]\npath = \"/tmp/y.mdb\"\n[services.a]\nrise = 0\n").unwrap();
         assert_eq!(s.path, PathBuf::from("/tmp/y.mdb"));
         assert_eq!(parse_store("[store]\nfile_mode = \"999\"\n"), None);
+        assert_eq!(parse_dns_listen("[services.a]\nrise = 0\n"), Some(None));
+        assert_eq!(
+            parse_dns_listen("[dns]\n[services.a]\nrise = 0\n"),
+            Some(Some(DnsConfig::default().listen))
+        );
+        assert_eq!(parse_dns_listen("[dns]\nlisten = []\n"), None);
+    }
+
+    #[test]
+    fn dns_table() {
+        assert_eq!(parse_ok(SVC).dns, None);
+        assert_eq!(
+            parse_ok(&format!("[dns]\n{SVC}")).dns,
+            Some(DnsConfig::default())
+        );
+        let c = parse_ok(&format!(
+            "[dns]\nlisten = [\"127.0.0.1:53\", \"[::1]:5300\"]\nzone = \"SVC.Emfor.\"\nttl = \"30s\"\n{SVC}"
+        ));
+        let d = c.dns.unwrap();
+        assert_eq!(
+            d.listen,
+            [
+                "127.0.0.1:53".parse().unwrap(),
+                "[::1]:5300".parse().unwrap()
+            ]
+        );
+        assert_eq!(d.zone, "svc.emfor");
+        assert_eq!(d.ttl, 30);
+        let rows: &[(&str, &str, &str)] = &[
+            ("ttl = \"2h\"", "dns.ttl", "ttl above 3600s"),
+            ("ttl = \"1500ms\"", "dns.ttl", "ttl must be whole seconds"),
+            ("listen = []", "dns.listen", "listen must not be empty"),
+            (
+                "listen = [\"localhost:5300\"]",
+                "dns.listen[0]",
+                "listen address must be an IP literal with port",
+            ),
+            (
+                "listen = [\"127.0.0.1:0\"]",
+                "dns.listen[0]",
+                "listen address must be an IP literal with port",
+            ),
+            (
+                "listen = [\"127.0.0.1:53\", \"127.0.0.1:53\"]",
+                "dns.listen[1]",
+                "duplicate listen address",
+            ),
+            ("zone = \"svc..emfor\"", "dns.zone", "invalid zone name"),
+            ("zones = \"x\"", "dns.zones", "unknown key"),
+        ];
+        for (line, path, frag) in rows {
+            let e = parse_err(&format!("[dns]\n{line}\n{SVC}"));
+            assert!(
+                e.iter()
+                    .any(|e| e.path == *path && e.message.contains(frag)),
+                "{line}: {e:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn zone_membership() {
+        assert!(in_zone("svc.emfor", "svc.emfor"));
+        assert!(in_zone("a.b.svc.emfor", "svc.emfor"));
+        assert!(!in_zone("xsvc.emfor", "svc.emfor"));
+        assert!(!in_zone("db.internal", "svc.emfor"));
     }
 
     #[test]

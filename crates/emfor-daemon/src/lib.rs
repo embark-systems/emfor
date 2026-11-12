@@ -4,7 +4,10 @@
 pub mod checker;
 pub mod cli;
 pub mod config;
+pub mod dns;
+pub mod live;
 pub mod schedule;
+pub mod select;
 pub mod state;
 pub mod store;
 pub mod supervisor;

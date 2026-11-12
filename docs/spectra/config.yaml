@@ -22,7 +22,7 @@ context: |
     failover（設定檔順序中第一台健康的後端）。round-robin 與 failover 忽略 affinity_key。
   - DNS（emfor-dns）：只回答自己負責的網域，不轉發其他網域；由本機 resolver 依網域轉發過來，
     emfor 不當整台機器的 DNS，掛掉時只影響自己的網域。
-    [dns] 區段存在才啟用；listen 預設 ["127.0.0.1:5353"]、可列多個位址；UDP 與 TCP；
+    [dns] 區段存在才啟用；listen 預設 ["127.0.0.1:5300"]（不用 5353：那是 mDNS，macOS 與 avahi 會佔用）、可列多個位址；UDP 與 TCP；
     zone 可設定，預設 "svc.emfor"，只有名稱在 zone 底下的服務能用 DNS 查到。
     A（IPv4 後端）與 AAAA（IPv6 後端），各自依 balance 挑選，每次回一個 IP；
     TTL 預設 1 秒，每個服務可覆寫。資料直接讀 daemon 記憶體中的狀態，不經 LMDB。
