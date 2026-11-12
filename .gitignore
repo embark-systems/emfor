@@ -1,0 +1,4 @@
+# Spectra app data
+.spectra/
+/target
+docs/spectra/.vector-search.db*
