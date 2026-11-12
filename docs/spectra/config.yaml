@@ -14,20 +14,53 @@ context: |
   - 對外介面只有兩條：本機 LMDB（給 client）與只聽 127.0.0.1 的 DNS（給沒有 client 的程式）。不做 HTTP API / gRPC。
   - LMDB 由 daemon 單獨寫入：單一檔案（MDB_NOSUBDIR）、只用預設資料庫、UTF-8 key（svc/<服務名>）+ JSON value，
     含 meta/schema_version、全域心跳、每筆 checked_at。daemon 重啟不沿用舊狀態。
-  - client 只提供 emfor_lookup(名稱, affinity_key?) → IP；有 key 用 rendezvous hashing（MD5 前 4 bytes big-endian），
-    無 key 隨機；fork 後自動重新開啟 LMDB；心跳過期回報狀態未知。
-  - DNS 每次回一個 IP、輪流挑選、TTL 1–5 秒，不支援 affinity_key。
+  - client 只提供 emfor_lookup(名稱, affinity_key?) → IP；fork 後自動重新開啟 LMDB；心跳過期回報狀態未知。
+  - 分配方式由設定檔決定：每個服務（或 [defaults]）設 balance，daemon 寫入 LMDB 服務記錄的 "balance" 欄位
+    （直接加進格式版本 1，不升版），client 與 DNS 都依它挑選。第一版的值：
+    round-robin（預設；DNS 全域輪流，client 僅程序內輪流、起點隨機）、
+    sticky（有 affinity_key 用 rendezvous hashing，MD5 前 4 bytes big-endian；無 key 含 DNS 改用 round-robin）、
+    failover（設定檔順序中第一台健康的後端）。round-robin 與 failover 忽略 affinity_key。
+  - DNS（emfor-dns）：只回答自己負責的網域，不轉發其他網域；由本機 resolver 依網域轉發過來，
+    emfor 不當整台機器的 DNS，掛掉時只影響自己的網域。
+    [dns] 區段存在才啟用；listen 預設 ["127.0.0.1:5353"]、可列多個位址；UDP 與 TCP；
+    zone 可設定，預設 "svc.emfor"，只有名稱在 zone 底下的服務能用 DNS 查到。
+    A（IPv4 後端）與 AAAA（IPv6 後端），各自依 balance 挑選，每次回一個 IP；
+    TTL 預設 1 秒，每個服務可覆寫。資料直接讀 daemon 記憶體中的狀態，不經 LMDB。
+    回應：zone 以外 REFUSED；zone 內查無服務 NXDOMAIN（附 SOA）；服務無該 IP 版本的後端回空答案（NODATA）；
+    全部不健康且 on_all_down = "closed" 回 SERVFAIL；"open" 時從所有後端挑選。
+    重載：zone、ttl 可重載；listen 變更需重啟（同 [store]）。
+    交付部署文件 docs/deploy/dns-resolver.md：dnsmasq、unbound（含 FreeBSD local_unbound，需 domain-insecure
+    與 do-not-query-localhost: no）、systemd-resolved、macOS /etc/resolver；每節附直接查 emfor 與經系統 resolver
+    查詢的驗證指令，以及快取（最短快取時間、負快取）注意事項。dnsmasq 與 unbound 的設定以容器自動測試驗證；
+    systemd-resolved、macOS 手動驗證並註明驗證版本。
   - 檢查器統一介面（validate / check），結果 up / down / error，error 不算後端失敗。
     tcp、http、exec 內建；外部外掛為常駐子程序，stdin/stdout 逐行 JSON，帶握手與協定版本。
   - 設定：全域 [defaults] + 每個服務覆寫（interval、timeout、rise、fall、jitter、on_all_down）；
     check_options 交給檢查器驗證；SIGHUP 重載時全部驗證通過才套用。
   - 全部不健康時預設 open（照樣回傳並標記 all_down），可依服務改 closed。
+  - LMDB 退場機制：在 emfor-clients 第一個任務判斷。PHP dba 讀不到（FFI 補救在正式環境不可用），
+    或鎖機制不相容（無法讓 client 用與 daemon 相同編譯選項的 liblmdb）時，改用 SQLite WAL
+    （kv 表沿用現有 key 與 JSON、schema_version 升 2，daemon 新增 SQLite 版 Sink）；效能不構成退場理由。
+    完整判斷步驟寫在 emfor-clients 的 design.md。
+
+  支援平台：Linux 與 FreeBSD 為正式部署平台（daemon 與所有 client 都要在兩者上通過測試，CI 含 FreeBSD VM），
+  macOS 僅作開發用。FreeBSD 附 rc.d 範例（不做打包）。emfor-clients 的第一個驗證項目：各語言 client 與 daemon
+  在 Linux、FreeBSD、macOS 上使用相同的 LMDB 鎖機制（liblmdb 編譯選項不一致會造成鎖不相容），與 PHP dba 驗證並列。
 
   跨語言相容規格（皆帶版本號，以共用測試資料把關）：LMDB 資料格式、外掛訊息格式、affinity_key 分配演算法。
 
-  第一版不做：多台 emfor 同步、stick-table、權重比例挑選、DNS 名稱帶條件、發佈到套件庫。
+  第一版不做：多台 emfor 同步、stick-table、DNS 名稱帶條件、DNS 轉發其他網域、發佈到套件庫、
+  Docker / Kubernetes 的 DNS 部署（容器內 DNS 路徑不同，需另行設計）。
 
-  變更拆分：emfor-core → emfor-dns → emfor-plugins → emfor-clients。
+  後續規劃（已決定要做、尚未排入 change；用語見 LANGUAGE.md「分配方式的值」）：
+  - balance = "random"：健康後端中均勻隨機。
+  - balance = "fastest"：最近一次檢查延遲最低；LMDB 需記錄檢查延遲，並設計防止所有 client 湧向同一台的分散機制。
+  - balance = "weighted"：後端可設 weight，依比例挑選。
+  - balance = "zone"：後端可加標籤，client 需知道自己所在機房，優先挑同機房後端。
+  - DNS SRV 記錄：需為每台後端產生名稱（例如 b0.api.svc.emfor）作為 SRV 目標，讓支援的程式取得 port。
+
+  變更拆分：emfor-core（已完成）→ emfor-dns（含 balance 設定欄位、LMDB 欄位、DNS 端行為、resolver 部署文件、FreeBSD CI 與 rc.d 範例）→ emfor-plugins
+  → emfor-clients（含 client 端 balance 行為）→ 後續規劃中的分配方式。
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
