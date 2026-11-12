@@ -1,5 +1,6 @@
 //! Command line entry point: `emfor [--config <path>] [--check-config]`.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -185,7 +186,7 @@ async fn run(
         let addrs: Vec<String> = d.listen.iter().map(|a| a.to_string()).collect();
         tracing::info!("DNS server for zone {} on {}", d.zone, addrs.join(", "));
     }
-    warn_outside_zone(&config);
+    warn_dns(&config);
 
     let (tx, rx) = mpsc::unbounded_channel();
     let writer = writer::spawn_live(store, rx, live);
@@ -220,7 +221,7 @@ async fn run(
                         if let (Some(tx), Some(d)) = (&dns_tx, &new.dns) {
                             tx.send_replace(dns_settings(d));
                         }
-                        warn_outside_zone(&new);
+                        warn_dns(&new);
                         tracing::info!("config reloaded: {} services, {} backends", new.services.len(), new.backend_count());
                         current = new;
                     }
@@ -248,6 +249,39 @@ async fn run(
     let _ = done_rx.await;
     let _ = writer.await;
     ExitCode::from(EXIT_OK)
+}
+
+/// DNS warnings for a loaded config: services outside the zone, and
+/// services in the zone whose backends use different ports.
+fn warn_dns(config: &Config) {
+    warn_outside_zone(config);
+    for m in port_warnings(config) {
+        tracing::warn!("{m}");
+    }
+}
+
+/// One message per service under the DNS zone whose backends (both address
+/// families together) do not share one port: A/AAAA answers carry no port.
+fn port_warnings(config: &Config) -> Vec<String> {
+    let Some(d) = &config.dns else {
+        return Vec::new();
+    };
+    config
+        .services
+        .iter()
+        .filter(|s| in_zone(&s.name, &d.zone))
+        .filter_map(|s| {
+            let ports: BTreeSet<u16> = s.backends.iter().map(|b| b.addr.port()).collect();
+            (ports.len() > 1).then(|| {
+                let list: Vec<String> = ports.iter().map(u16::to_string).collect();
+                format!(
+                    "service {} has backends on different ports ({}); DNS A/AAAA answers carry no port, so use SRV records or an emfor client to get the port",
+                    s.name,
+                    list.join(", ")
+                )
+            })
+        })
+        .collect()
 }
 
 /// One `warn` line per service that DNS cannot answer for.
@@ -323,4 +357,83 @@ async fn load(
         }
     };
     (prepared, result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::checker::Registry;
+
+    fn warnings(dns: bool, name: &str, backends: &[&str]) -> Vec<String> {
+        let list: Vec<String> = backends.iter().map(|b| format!("\"{b}\"")).collect();
+        let text = format!(
+            "{}[services.\"{name}\"]\ncheck = \"tcp\"\nbackends = [{}]\n",
+            if dns {
+                "[dns]\nzone = \"svc.emfor\"\n\n"
+            } else {
+                ""
+            },
+            list.join(", ")
+        );
+        let config =
+            config::parse(&text, &Registry::builtin()).unwrap_or_else(|e| panic!("errors: {e:?}"));
+        port_warnings(&config)
+    }
+
+    /// Example "which services are reported".
+    #[test]
+    fn which_services_are_reported() {
+        type Row<'a> = (bool, &'a str, &'a [&'a str], Option<&'a str>);
+        let rows: &[Row] = &[
+            (
+                true,
+                "api.svc.emfor",
+                &["10.0.0.11:8080", "10.0.0.12:8081"],
+                Some("8080, 8081"),
+            ),
+            (
+                true,
+                "api.svc.emfor",
+                &["10.0.0.12:9000", "10.0.0.11:8080", "10.0.0.13:8080"],
+                Some("8080, 9000"),
+            ),
+            (
+                true,
+                "api.svc.emfor",
+                &["10.0.0.11:8080", "[2001:db8::11]:8080"],
+                None,
+            ),
+            (
+                true,
+                "api.svc.emfor",
+                &["10.0.0.11:8080", "[2001:db8::11]:8443"],
+                Some("8080, 8443"),
+            ),
+            (
+                true,
+                "db.internal",
+                &["10.0.0.21:5432", "10.0.0.22:5433"],
+                None,
+            ),
+            (
+                false,
+                "api.svc.emfor",
+                &["10.0.0.11:8080", "10.0.0.12:8081"],
+                None,
+            ),
+        ];
+        for (dns, name, backends, want) in rows {
+            let got = warnings(*dns, name, backends);
+            match want {
+                None => assert!(got.is_empty(), "{name} {backends:?}: {got:?}"),
+                Some(ports) => {
+                    assert_eq!(got.len(), 1, "{name} {backends:?}: {got:?}");
+                    let m = &got[0];
+                    assert!(m.contains(name), "{m}");
+                    assert!(m.contains(&format!("({ports})")), "{m}");
+                    assert!(m.contains("SRV") && m.contains("port"), "{m}");
+                }
+            }
+        }
+    }
 }

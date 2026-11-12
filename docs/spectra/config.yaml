@@ -45,6 +45,9 @@ context: |
     target 名稱本身可查 A/AAAA（不論健康狀態）；A/AAAA 放 additional 區段。
     UDP 上限為 client 的 EDNS 大小限制在 512–1232（無 EDNS 為 512）：放不下先整批拿掉 additional（不設 TC），
     SRV 本身放不下才截斷並設 TC（由 emfor 自行截斷，保留 OPT 記錄）。
+    port 一致性警告（emfor-dns-port-warning）：zone 內服務的後端 port 不一致時（兩種 IP 版本合併計算），
+    daemon 啟動與重載成功後各發一行 warn，列出服務名稱與各 port，提醒 A/AAAA 不帶 port、需改用 SRV 或 client；
+    zone 外的服務只有原本的 zone 外警告；不影響回答、設定有效性與 --check-config。
     交付部署文件 docs/deploy/dns-resolver.md：dnsmasq、unbound（含 FreeBSD local_unbound，需 domain-insecure
     與 do-not-query-localhost: no）、systemd-resolved、macOS /etc/resolver；每節附直接查 emfor 與經系統 resolver
     查詢的驗證指令，以及快取（最短快取時間、負快取）注意事項。dnsmasq 與 unbound 的設定以容器自動測試驗證；
@@ -98,12 +101,11 @@ context: |
   - balance = "fastest"（延後）：最近一次檢查延遲最低；LMDB 需記錄檢查延遲，並設計防止所有 client 湧向同一台的分散機制，
     需先實驗再決定。
   不做：balance = "random"（client 的 round-robin 起點本來就隨機，效果幾乎相同）。
-  - DNS port 一致性警告：服務在 DNS 網域內但後端 port 不一致時，daemon 啟動與重載時發 warn（A/AAAA 只能拿到 IP；要 port 需改用 SRV）。
 
   變更拆分：emfor-core（已完成）→ emfor-dns（含 balance 設定欄位、LMDB 欄位、DNS 端行為、resolver 部署文件、FreeBSD CI 與 rc.d 範例）
   → emfor-plugins（已完成）→ emfor-clients（相容性驗證、client-lookup 規格、共用測試資料、Rust client 與 cargo-c 產出的 libemfor）
   → emfor-clients-2（Go、Python、Perl、PHP 包裝 libemfor）→ emfor-balance-2（weighted、locality、不認得的 balance 改用 round-robin）
-  → emfor-dns-srv。
+  → emfor-dns-srv → emfor-dns-port-warning。
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.

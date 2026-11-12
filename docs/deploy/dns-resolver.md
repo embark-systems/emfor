@@ -25,6 +25,8 @@ drill -p 5300 api.svc.emfor @127.0.0.1           # FreeBSD
 
 Expect `status: NOERROR`, the `aa` flag, and one A record. `REFUSED` means the name is outside the zone. `NXDOMAIN` means no service has that name. If the daemon logged `service ... is outside DNS zone ...`, that service has to be renamed into the zone before DNS can find it.
 
+If the daemon logged `service ... has backends on different ports (...)`, that service's backends do not all listen on the same port. An A or AAAA answer carries only the address, so a program that resolves the name must already know the port and gets it wrong for some backends. Use SRV records (see [SRV records](#srv-records)) or an emfor client, both of which return the port, or give the backends one port.
+
 ## dnsmasq
 
 File: `/etc/dnsmasq.d/emfor.conf`. On Debian and Ubuntu, `conf-dir=/etc/dnsmasq.d` is enabled by default.

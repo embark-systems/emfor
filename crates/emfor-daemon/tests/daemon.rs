@@ -145,6 +145,40 @@ fn wait_for(mut cond: impl FnMut() -> bool) {
     panic!("condition not met within 10s");
 }
 
+/// A port that is free for UDP and TCP on 127.0.0.1 at the time of the call.
+fn free_port() -> u16 {
+    loop {
+        let u = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let p = u.local_addr().unwrap().port();
+        if TcpListener::bind(("127.0.0.1", p)).is_ok() {
+            return p;
+        }
+    }
+}
+
+/// Start with a `[dns]` table on a free port. Tests run in parallel, so
+/// another test can take the port between `free_port` and the daemon's bind;
+/// then try again with a new port.
+fn start_dns(services: &str) -> (Daemon, String) {
+    for _ in 0..5 {
+        let dns = format!("[dns]\nlisten = [\"127.0.0.1:{}\"]\n\n", free_port());
+        let mut d = start(&format!("{dns}{services}"));
+        std::thread::sleep(Duration::from_millis(200));
+        if d.running() {
+            return (d, dns);
+        }
+        let mut err = String::new();
+        d.child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut err)
+            .unwrap();
+        assert!(err.contains("Address already in use"), "{err}");
+    }
+    panic!("no free DNS port after 5 tries");
+}
+
 fn listener() -> (TcpListener, String) {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let a = l.local_addr().unwrap().to_string();
@@ -380,6 +414,113 @@ fn reload_reports_store_change_together_with_other_errors() {
     assert_eq!(code, 0);
     assert!(err.contains("rise must be at least 1"), "{err}");
     assert!(err.contains("store settings require restart"), "{err}");
+}
+
+/// Spec scenario "Mixed ports in the zone": a warning at startup naming both
+/// ports, and A queries still answered.
+#[test]
+fn startup_reports_backends_on_different_ports() {
+    use hickory_proto::op::{Message, Query};
+    use hickory_proto::rr::{Name, RecordType};
+    let (_l1, a1) = listener();
+    let (_l2, a2) = listener();
+    let svc = tcp_service("api.svc.emfor", &a1).replace(
+        &format!("backends = [\"{a1}\"]"),
+        &format!("backends = [\"{a1}\", \"{a2}\"]"),
+    );
+    let (d, dns) = start_dns(&svc);
+    let dns_port: u16 = dns
+        .split(':')
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut q = Message::query();
+    q.add_query(Query::query(
+        Name::from_ascii("api.svc.emfor.").unwrap(),
+        RecordType::A,
+    ));
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let mut answered = false;
+    for _ in 0..20 {
+        sock.send_to(&q.to_vec().unwrap(), ("127.0.0.1", dns_port))
+            .unwrap();
+        let mut buf = [0u8; 512];
+        if let Ok(n) = sock.recv(&mut buf) {
+            let m = Message::from_vec(&buf[..n]).unwrap();
+            if m.answers.len() == 1 {
+                answered = true;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let (code, err) = d.stop();
+    assert_eq!(code, 0, "{err}");
+    assert!(answered, "no A answer: {err}");
+    let mut ports: Vec<u16> = [&a1, &a2]
+        .iter()
+        .map(|a| a.rsplit_once(':').unwrap().1.parse().unwrap())
+        .collect();
+    ports.sort();
+    let line = err
+        .lines()
+        .find(|l| l.contains("different ports"))
+        .unwrap_or_else(|| panic!("no port warning: {err}"));
+    assert!(
+        line.contains("WARN") && line.contains("api.svc.emfor"),
+        "{line}"
+    );
+    assert!(
+        line.contains(&format!("({}, {})", ports[0], ports[1])),
+        "{line}"
+    );
+}
+
+/// Spec scenario "Reload reports the new config": no port warning while all
+/// backends share a port, a warning naming both ports after a reload adds
+/// a backend on another port.
+#[test]
+fn reload_reports_backends_on_different_ports() {
+    let (_l, addr) = listener();
+    let (d, dns) = start_dns(&tcp_service("api.svc.emfor", &addr));
+    let port = addr.rsplit_once(':').unwrap().1;
+    let other = if port == "9090" { "9091" } else { "9090" };
+    let cfg = format!(
+        "{}{dns}{}",
+        store_header(d.dir.path()),
+        tcp_service("api.svc.emfor", &addr).replace(
+            &format!("backends = [\"{addr}\"]"),
+            &format!("backends = [\"{addr}\", \"127.0.0.2:{other}\"]")
+        )
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    std::fs::write(d.config(), cfg).unwrap();
+    d.signal(Signal::SIGHUP);
+    std::thread::sleep(Duration::from_millis(500));
+    let (code, err) = d.stop();
+    assert_eq!(code, 0, "{err}");
+    let mut ports = [port.parse::<u16>().unwrap(), other.parse().unwrap()];
+    ports.sort();
+    let warn_lines: Vec<&str> = err
+        .lines()
+        .filter(|l| l.contains("different ports"))
+        .collect();
+    assert_eq!(warn_lines.len(), 1, "{err}");
+    let line = warn_lines[0];
+    assert!(line.contains("WARN"), "{line}");
+    assert!(line.contains("api.svc.emfor"), "{line}");
+    assert!(
+        line.contains(&format!("({}, {})", ports[0], ports[1])),
+        "{line}"
+    );
+    let reloaded = err.find("config reloaded").expect("reload logged");
+    assert!(err.find("different ports").unwrap() < reloaded, "{err}");
 }
 
 #[test]
