@@ -1,5 +1,8 @@
-//! The plugins behind the `emfor-check` executable.
+//! The plugins behind the `emfor-check` executable: redis, mysql, pgsql
+//! and ldap.
 
+mod ber;
+mod ldap;
 mod mysql;
 pub mod net;
 pub mod options;
@@ -15,6 +18,7 @@ pub enum Kind {
     Redis,
     Mysql,
     Pgsql,
+    Ldap,
 }
 
 impl Kind {
@@ -24,6 +28,7 @@ impl Kind {
             "redis" => Some(Kind::Redis),
             "mysql" => Some(Kind::Mysql),
             "pgsql" => Some(Kind::Pgsql),
+            "ldap" => Some(Kind::Ldap),
             _ => None,
         }
     }
@@ -34,6 +39,7 @@ impl Kind {
             Kind::Redis => "redis",
             Kind::Mysql => "mysql",
             Kind::Pgsql => "pgsql",
+            Kind::Ldap => "ldap",
         }
     }
 }
@@ -80,6 +86,7 @@ impl Plugin for Service {
             Kind::Redis => redis::check(&req, &settings).await,
             Kind::Mysql => mysql::check(&req, &settings).await,
             Kind::Pgsql => pgsql::check(&req, &settings).await,
+            Kind::Ldap => ldap::check(&req, &settings).await,
         }
     }
 }

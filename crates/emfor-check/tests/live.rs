@@ -1,4 +1,4 @@
-//! `emfor-check` against real redis, MariaDB and PostgreSQL servers.
+//! `emfor-check` against real redis, MariaDB, PostgreSQL and OpenLDAP servers.
 //!
 //! Ignored by default: these tests need the servers that
 //! tests/plugins/inside.sh starts in the `emfor-plugins-test` container
@@ -13,10 +13,14 @@
 //! | 3307 | MariaDB with `read_only = 1`, no TLS |
 //! | 5432 | PostgreSQL primary, TLS available, user `emfor`, database `app` |
 //! | 5433 | PostgreSQL standby of 5432, no TLS |
+//! | 389 | OpenLDAP, StartTLS available, `cn=monitor,dc=example,dc=org` |
+//! | 636 | the same OpenLDAP, LDAPS |
+//! | 3389 | OpenLDAP without TLS |
 //!
 //! Server certificates are for `db.test`, signed by `$EMFOR_LIVE_DIR/ca.pem`;
 //! `$EMFOR_LIVE_DIR/good.pass` holds the password, `bad.pass` a wrong one.
-//! Nothing listens on 6399, 3399 and 5499.
+//! Nothing listens on 6399, 3399, 5499 and 3899. The LDAP administrator is
+//! `cn=admin,dc=example,dc=org` with password `admin-pw`.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -228,4 +232,52 @@ fn pgsql_live() {
     );
     up(p.check(5433, db(json!({}))));
     tls_cases(&mut p, db, 5432, 5433);
+}
+
+#[test]
+#[ignore = "needs the emfor-plugins-test container"]
+fn ldap_live() {
+    const MONITOR: &str = "cn=monitor,dc=example,dc=org";
+    let mut p = Plugin::start("ldap");
+    up(p.check(389, json!({})));
+    up(p.check(389, opts(MONITOR, "good.pass", json!({}))));
+    assert_eq!(
+        p.check(389, opts(MONITOR, "bad.pass", json!({}))),
+        ("down".into(), "auth: 49 invalidCredentials".into())
+    );
+    down(p.check(3899, json!({})), "connect: ");
+
+    // LDAPS on 636: right name, wrong name, verification off, and TLS
+    // against the plaintext port 389.
+    tls_cases(&mut p, |t| opts(MONITOR, "good.pass", t), 636, 389);
+
+    // StartTLS on 389.
+    let starttls = |name: &str| {
+        opts(
+            MONITOR,
+            "good.pass",
+            json!({"starttls": true, "server_name": name, "ca_file": file("ca.pem")}),
+        )
+    };
+    up(p.check(389, starttls("db.test")));
+    down(p.check(389, starttls("nope.test")), "tls: ");
+    down(
+        p.check(3389, starttls("db.test")),
+        "tls: StartTLS refused: ",
+    );
+
+    // Rotate the password on the server and in the file; no reload.
+    let rotate = Command::new("ldappasswd")
+        .args(["-x", "-H", "ldap://127.0.0.1:389"])
+        .args(["-D", "cn=admin,dc=example,dc=org", "-w", "admin-pw"])
+        .args(["-s", "rotated-pw", MONITOR])
+        .output()
+        .unwrap();
+    assert!(rotate.status.success(), "{rotate:?}");
+    let rotated = dir().join("ldap-rotated.pass");
+    std::fs::write(&rotated, "s3cret\n").unwrap();
+    let o = json!({"user": MONITOR, "password_file": rotated.to_str().unwrap()});
+    down(p.check(389, o.clone()), "auth: 49 invalidCredentials");
+    std::fs::write(&rotated, "rotated-pw\n").unwrap();
+    up(p.check(389, o));
 }

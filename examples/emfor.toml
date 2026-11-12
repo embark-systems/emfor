@@ -140,7 +140,7 @@ backends = [
 # speaking line-delimited JSON on stdin/stdout. See
 # docs/plugins/protocol-v1.md. The plugin validates check_options itself.
 # emfor-check is the plugin that ships with emfor; its argument picks
-# redis, mysql or pgsql. See docs/deploy/plugins.md for every option.
+# redis, mysql, pgsql or ldap. See docs/deploy/plugins.md for every option.
 # Commented out because emfor-check is not installed on a fresh host.
 #
 # [plugins."redis"]
@@ -154,3 +154,16 @@ backends = [
 # user = "emfor"
 # password_file = "/etc/emfor/redis.pass"   # never the password itself
 # role = "master"                           # only the master is healthy
+#
+# [plugins."ldap"]
+# command = ["/usr/local/libexec/emfor-check", "ldap"]
+#
+# [services."directory.svc.emfor"]
+# check = "ldap"
+# backends = ["10.0.4.1:389", "10.0.4.2:389"]
+#
+# [services."directory.svc.emfor".check_options]
+# user = "cn=monitor,dc=example,dc=org"     # a DN; leave out for an anonymous bind
+# password_file = "/etc/emfor/ldap.pass"
+# starttls = true                           # or tls = true on port 636
+# server_name = "ldap.example.org"

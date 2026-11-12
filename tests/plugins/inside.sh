@@ -1,6 +1,6 @@
 #!/bin/sh
-# Runs inside the emfor-plugins-test container: start redis, MariaDB and
-# PostgreSQL as crates/emfor-check/tests/live.rs describes, run those tests,
+# Runs inside the emfor-plugins-test container: start redis, MariaDB,
+# PostgreSQL and OpenLDAP as crates/emfor-check/tests/live.rs describes, run those tests,
 # then run the emfor daemon with the pgsql plugin.
 set -eu
 
@@ -114,6 +114,50 @@ done
 i=0
 until redis-cli -p 6380 ROLE | head -1 | grep -qx slave; do
     i=$((i + 1)); [ $i -lt 60 ] || fail "redis replica did not start"; sleep 0.5
+done
+
+step "openldap"
+LDAP_TOP="dc=example,dc=org"
+for n in 1 2; do
+    mkdir -p "$D/ldap$n"
+    {
+        echo "include /etc/ldap/schema/core.schema"
+        echo "pidfile $D/slapd$n.pid"
+        echo "argsfile $D/slapd$n.args"
+        echo "modulepath /usr/lib/ldap"
+        echo "moduleload back_mdb"
+        if [ $n = 1 ]; then
+            echo "TLSCertificateFile $D/server.crt"
+            echo "TLSCertificateKeyFile $D/server.key"
+            echo "TLSCACertificateFile $D/ca.pem"
+        fi
+        echo "database mdb"
+        echo "suffix \"$LDAP_TOP\""
+        echo "rootdn \"cn=admin,$LDAP_TOP\""
+        echo "rootpw admin-pw"
+        echo "directory $D/ldap$n"
+    } > "$D/slapd$n.conf"
+done
+slapd -f "$D/slapd1.conf" -h "ldap://127.0.0.1:389/ ldaps://127.0.0.1:636/"
+slapd -f "$D/slapd2.conf" -h "ldap://127.0.0.1:3389/"
+for port in 389 3389; do
+    i=0
+    until ldapsearch -x -H "ldap://127.0.0.1:$port" -b "" -s base >/dev/null 2>&1; do
+        i=$((i + 1)); [ $i -lt 60 ] || fail "slapd on $port did not start"; sleep 0.5
+    done
+    ldapadd -x -H "ldap://127.0.0.1:$port" -D "cn=admin,$LDAP_TOP" -w admin-pw >/dev/null <<LDIF
+dn: $LDAP_TOP
+objectClass: dcObject
+objectClass: organization
+dc: example
+o: example
+
+dn: cn=monitor,$LDAP_TOP
+objectClass: person
+cn: monitor
+sn: monitor
+userPassword: s3cret
+LDIF
 done
 
 step "emfor-check against the servers"

@@ -74,7 +74,7 @@ context: |
     當掉時重啟，退避 1 秒起倍增、上限 30 秒，期間檢查回 error。
     載入、重載、--check-config 都實際啟動外掛並請它驗證 check_options；無法啟動、握手失敗、驗證逾時（5 秒）
     皆為設定錯誤。外掛超過 timeout_ms 未回覆算 error（外掛應自行在期限內回 down），不算後端失敗。
-  - 內附外掛（emfor-check-plugins）：emfor-check 一個執行檔，第一個參數選 redis / mysql / pgsql；
+  - 內附外掛（emfor-check-plugins）：emfor-check 一個執行檔，第一個參數選 redis / mysql / pgsql / ldap；
     crates/emfor-plugin 處理 protocol 1（emfor-check 與其他 Rust 外掛共用）。每次檢查開新連線；
     redis PING（有密碼先 AUTH）、mysql 與 pgsql 登入後 SELECT 1；role：redis master/replica（ROLE）、
     mysql primary（@@global.read_only = 0）、pgsql primary（pg_is_in_recovery() 為 false），可搭配 failover。
@@ -84,6 +84,12 @@ context: |
     query: / role is …（down）；password_file: / ca_file: 讀不到為 error。驅動只連結進 emfor-check。
     實機測試 tests/plugins/run.sh（Debian 映像 emfor-plugins-test：redis、MariaDB、PostgreSQL 各含主從與 TLS），
     列入本機檢查；mysql 只以 MariaDB 驗證。
+  - ldap 外掛（emfor-check-ldap）：emfor-check ldap 做 LDAPv3 simple bind（無 user 為匿名，user 為 DN 並需
+    password_file），resultCode 0 為 up，之後送 unbind 並關閉；不做 SASL、搜尋、role。BER 自己寫（ber.rs），
+    不新增相依，回應上限 65536 位元組。tls = true 為 LDAPS；starttls = true（僅 ldap，與 tls 互斥）先明文送
+    StartTLS ExtendedRequest 再以 emfor-tls 握手，TLS 相關鍵需要 tls 或 starttls。原因：auth: <code> <name>[: 診斷]、
+    tls: StartTLS refused: <code> <name>、格式錯誤或 Notice of Disconnection 為 query:。實機測試用 OpenLDAP slapd
+    （389 StartTLS、636 LDAPS、3389 無 TLS）。
   - client（emfor-clients）：emfor_lookup(名稱, affinity_key?) 回傳 "ip:port"（LMDB 後端 id，IPv6 為 [ip]:port）；
     錯誤碼 UNAVAILABLE（LMDB 打不開／lock 格式不符）、INCOMPATIBLE（版本或 JSON 無法解析）、NOT_FOUND、ALL_DOWN，
     各語言依慣例回報。心跳過期（預設 max_staleness 3 秒）或歸零時所有後端視為未知，依 on_all_down 處理，
@@ -126,7 +132,8 @@ context: |
   → emfor-clients-2（Go、Python、Perl、PHP 包裝 libemfor）→ emfor-balance-2（weighted、locality、不認得的 balance 改用 round-robin）
   → emfor-dns-srv → emfor-dns-port-warning → emfor-balance-fastest（fastest、latency_us、pool）
   → emfor-check-plugins（emfor-check 的 redis、mysql、pgsql 外掛與 emfor-plugin crate）
-  → emfor-tcp-expect（tcp 檢查的 send / expect）→ emfor-tcp-tls（tcp 檢查的 TLS 與 emfor-tls crate）。
+  → emfor-tcp-expect（tcp 檢查的 send / expect）→ emfor-tcp-tls（tcp 檢查的 TLS 與 emfor-tls crate）
+  → emfor-check-ldap（emfor-check 的 ldap 外掛）。
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.

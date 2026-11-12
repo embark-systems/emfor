@@ -1,0 +1,18 @@
+## 1. ldap 外掛
+
+- [x] 1.1 依「user 與 password_file 必須一起設定」實作 "Plugin selection by argument" 與 "Check options validation" 的 ldap 部分：`Kind::Ldap` 讓 `emfor-check ldap` 握手回 `name` `ldap`；`options.rs` 接受 `starttls`（僅 ldap）、ldap 的 `user` / `password_file` 互相要求、`tls` 與 `starttls` 互斥、TLS 相關鍵需要 `tls = true or starttls = true`、`database` 與 `role` 對 ldap 為未知鍵；其他外掛的驗證訊息不變。驗證：`options.rs` 的驗證表測試加入 spec 範例中 ldap 的八列與 redis `starttls` 一列並通過；`tests/cli.rs` 新增 `emfor-check ldap` 握手測試並通過。
+- [x] 1.2 依「自己寫 BER 編解碼」實作 LDAPMessage 的編碼（BindRequest、StartTLS ExtendedRequest、UnbindRequest）與解碼（讀出 messageID、protocolOp、resultCode、diagnosticMessage；長度短格式與最多 4 位元組的長格式；不定長度、截斷、超過 65536 位元組為錯誤）。驗證：單元測試確認匿名 BindRequest 為 `30 0c 02 01 01 60 07 02 01 03 04 00 80 00`，並涵蓋帶 DN 與密碼的 bind、StartTLS、unbind 的固定位元組，以及長格式長度、截斷、超長與不定長度；完成紀錄記下不含測試的行數。
+  - 完成紀錄（2026-11-12）：`crates/emfor-check/src/ber.rs` 不含測試 265 行（含註解）；BER 單元測試全部通過，沒有新增依賴。
+- [x] 1.3 依「只做 simple bind」、「LDAPS 與 StartTLS 都支援」與「resultCode 名稱照 RFC 4511」實作 "LDAP check" 與 "TLS connections" 的 StartTLS [after: 1.1, 1.2]：連線（LDAPS 用 `net::open`；StartTLS 先明文、ExtendedRequest、再握手，把 `net::open` 的握手拆成可單獨呼叫的函式，或在 `emfor-tcp-tls` 已完成時使用 emfor-tls 的握手）→ bind → 成功時 unbind 並關閉；原因依 design Implementation Contract。驗證：以本機假伺服器的單元測試涵蓋 spec 的 "Anonymous bind"、"Wrong LDAP password" 原因表四列、"StartTLS refused"（`tls: StartTLS refused: 2 protocolError` 且未送出 bind）、"Malformed response"；emfor-check 既有單元測試通過。
+  - 完成紀錄（2026-11-12）：`ldap.rs` 單元測試 8 個（匿名 bind 並 unbind、帳密 bind、原因表四列、StartTLS 被拒且未送 bind、StartTLS 後以 TLS bind、格式錯誤與 messageID 不符、Notice of Disconnection、伺服器先關閉）全部通過；`cargo test -p emfor-check` 46 個單元測試與 `tests/cli.rs` 通過，clippy `-D warnings` 通過。
+
+## 2. 實機測試
+
+- [x] 2.1 依「實機測試用 slapd」擴充 `tests/plugins/` [after: 1.3]：先向使用者確認後重建 `emfor-plugins-test` 映像（Dockerfile 加入 slapd 與 ldap-utils）；`inside.sh` 啟動 389/636 的主實例（`db.test` 憑證、`dc=example,dc=org`、帶密碼的 `cn=monitor`）與 3389 的無 TLS 實例；`crates/emfor-check/tests/live.rs` 新增 `ldap_live`，涵蓋 design 驗收列出的十二種情況，原因不含密碼。驗證：`tests/plugins/run.sh` 全部通過，完成紀錄記下映像大小與結果。
+  - 完成紀錄（2026-11-12）：經使用者同意重建 `emfor-plugins-test`（Dockerfile 加入 `slapd`、`ldap-utils`，以 `DEBIAN_FRONTEND=noninteractive` 安裝）；映像 1,012,731,288 位元組，重建前 1,004,416,495 位元組，增加約 8.3 MB。`inside.sh` 以 slapd.conf 啟動 389/636（`db.test` 憑證）與 3389（無 TLS），兩者都有 `dc=example,dc=org` 與 `cn=monitor`；沒有監聽的 port 用 3899（3399 已給 mysql 用）。`tests/plugins/run.sh` 通過，`ldap_live` 十二種情況與 redis、mysql、pgsql 實機測試全部通過，密碼輪替以 `ldappasswd` 進行。
+
+## 3. 文件與檢查
+
+- [x] 3.1 文件 [after: 2.1]：`docs/deploy/plugins.md` 的外掛表加入 `ldap`，選項表加入 `starttls` 與 ldap 欄位，新增 ldap 一節（匿名與帳密 bind、LDAPS 與 StartTLS、建議用專用帳號與 TLS、resultCode 原因、只以 OpenLDAP 驗證）；`examples/emfor.toml` 加入註解掉的 `[plugins."ldap"]` 與服務範例；`docs/spectra/config.yaml` 的內附外掛段落加入 ldap，並在 change 串接加上 emfor-check-ldap。驗證：`crates/emfor-daemon/tests/daemon.rs` 的 `example_config_is_valid` 通過，並對照 spec 與 design 審閱內容。
+- [x] 3.2 執行本機檢查 [after: 3.1]：macOS 與 Debian 映像 `emfor-clients-test` 中 `cargo fmt --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`cargo test --workspace --all-features` 通過；`cargo tree -p emfor-check -e normal` 與變更前相比沒有新增套件；Docker 中 `tests/resolver/run.sh dnsmasq`、`tests/resolver/run.sh unbound`、`tests/plugins/run.sh` 通過。指令與結果記在本 task 的完成紀錄。
+  - 完成紀錄（2026-11-12）：macOS：`cargo fmt --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` 通過，`cargo test --workspace --all-features` 39 個測試套件全部通過。Debian 映像 `emfor-clients-test`：fmt、clippy 通過，`cargo test --workspace --all-features` 39 個測試套件全部通過、沒有失敗。`cargo tree -p emfor-check -e normal` 與 HEAD 的 worktree 比對完全相同（199 個套件），`Cargo.lock` 未變。Docker：`tests/resolver/run.sh dnsmasq`、`tests/resolver/run.sh unbound`、`tests/plugins/run.sh` 通過。

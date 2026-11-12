@@ -1,6 +1,7 @@
-//! `emfor-check`: emfor checker plugins for redis, MySQL and PostgreSQL.
+//! `emfor-check`: emfor checker plugins for redis, MySQL, PostgreSQL and
+//! LDAP.
 //!
-//! Usage: `emfor-check redis|mysql|pgsql`. The argument picks the plugin;
+//! Usage: `emfor-check redis|mysql|pgsql|ldap`. The argument picks the plugin;
 //! the process then speaks plugin protocol 1 on stdin and stdout
 //! (docs/plugins/protocol-v1.md). See docs/deploy/plugins.md.
 
@@ -15,7 +16,7 @@ fn main() -> ExitCode {
         _ => None,
     };
     let Some(kind) = kind else {
-        eprintln!("usage: emfor-check redis|mysql|pgsql");
+        eprintln!("usage: emfor-check redis|mysql|pgsql|ldap");
         return ExitCode::from(2);
     };
     // The drivers build their own rustls configurations from the process

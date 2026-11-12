@@ -1,4 +1,4 @@
-//! `check_options` shared by the redis, mysql and pgsql plugins.
+//! `check_options` shared by the redis, mysql, pgsql and ldap plugins.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::Kind;
 
-/// Options every plugin accepts.
+/// Options every plugin accepts (`role` is not one of ldap's).
 const COMMON: &[&str] = &[
     "user",
     "password_file",
@@ -40,7 +40,8 @@ impl Role {
     }
 }
 
-/// TLS settings; present only with `tls = true`.
+/// TLS settings; present only with `tls = true` (or, for ldap,
+/// `starttls = true`).
 pub use emfor_tls::TlsSettings;
 
 /// Validated `check_options`.
@@ -50,6 +51,9 @@ pub struct Settings {
     pub password_file: Option<PathBuf>,
     pub role: Option<Role>,
     pub tls: Option<TlsSettings>,
+    /// ldap: upgrade a plaintext connection with StartTLS (`tls` then holds
+    /// the TLS settings).
+    pub starttls: bool,
     pub database: Option<String>,
 }
 
@@ -75,7 +79,9 @@ fn parse_with(
 ) -> Result<Settings, Vec<OptionError>> {
     let mut errors = Vec::new();
     for key in options.keys() {
-        let known = COMMON.contains(&key.as_str()) || (kind == Kind::Pgsql && key == "database");
+        let known = (COMMON.contains(&key.as_str()) && !(kind == Kind::Ldap && key == "role"))
+            || (kind == Kind::Pgsql && key == "database")
+            || (kind == Kind::Ldap && key == "starttls");
         if !known {
             errors.push(OptionError::new(key, "unknown key"));
         }
@@ -88,7 +94,7 @@ fn parse_with(
         None
     };
     let required: &[(&str, &Option<String>)] = match kind {
-        Kind::Redis => &[],
+        Kind::Redis | Kind::Ldap => &[],
         Kind::Mysql => &[("user", &user)],
         Kind::Pgsql => &[("user", &user), ("database", &database)],
     };
@@ -115,9 +121,21 @@ fn parse_with(
     if kind == Kind::Redis && user.is_some() && !options.contains_key("password_file") {
         errors.push(OptionError::new("user", "requires password_file"));
     }
+    // An ldap bind with a DN and no password is an "unauthenticated bind",
+    // which servers often accept like an anonymous one.
+    if kind == Kind::Ldap {
+        if options.contains_key("user") && !options.contains_key("password_file") {
+            errors.push(OptionError::new("user", "requires password_file"));
+        }
+        if options.contains_key("password_file") && !options.contains_key("user") {
+            errors.push(OptionError::new("password_file", "requires user"));
+        }
+    }
 
     let role = match options.get("role") {
+        // ldap has no role; the key was reported as unknown.
         None => None,
+        Some(_) if kind == Kind::Ldap => None,
         Some(v) => {
             let role = match (kind, v.as_str()) {
                 (Kind::Redis, Some("master")) => Some(Role::Master),
@@ -129,6 +147,7 @@ fn parse_with(
                 let message = match kind {
                     Kind::Redis => "must be one of master, replica",
                     Kind::Mysql | Kind::Pgsql => "must be primary",
+                    Kind::Ldap => unreachable!("ldap role is skipped above"),
                 };
                 errors.push(OptionError::new("role", message));
             }
@@ -137,6 +156,10 @@ fn parse_with(
     };
 
     let tls_on = boolean(options, "tls", false, &mut errors);
+    let starttls = kind == Kind::Ldap && boolean(options, "starttls", false, &mut errors);
+    if tls_on && starttls {
+        errors.push(OptionError::new("starttls", "conflicts with tls"));
+    }
     let verify = boolean(options, "tls_verify", true, &mut errors);
     let server_name = non_empty_string(options, "server_name", &mut errors);
     let server_name = match server_name {
@@ -160,10 +183,15 @@ fn parse_with(
             None
         }
     };
-    if !tls_on {
+    if !tls_on && !starttls {
+        let message = if kind == Kind::Ldap {
+            "requires tls = true or starttls = true"
+        } else {
+            "requires tls = true"
+        };
         for key in ["tls_verify", "server_name", "ca_file"] {
             if options.contains_key(key) {
-                errors.push(OptionError::new(key, "requires tls = true"));
+                errors.push(OptionError::new(key, message));
             }
         }
     }
@@ -173,7 +201,8 @@ fn parse_with(
             user,
             password_file,
             role,
-            tls: tls_on.then_some(TlsSettings {
+            starttls,
+            tls: (tls_on || starttls).then_some(TlsSettings {
                 verify,
                 server_name,
                 ca_file,
@@ -320,6 +349,7 @@ mod tests {
         let empty = f.write("empty", b"\n");
         let missing = f.missing();
         let not_pem = f.write("not-pem.txt", b"hello\n");
+        let pass = f.write("ldap.pass", b"s3cret\n");
         let rows: Vec<(Kind, Value, Errors)> = vec![
             (Kind::Mysql, json!({}), one("user", "missing required key")),
             (
@@ -381,6 +411,47 @@ mod tests {
                 Kind::Redis,
                 json!({"timeout": 1}),
                 one("timeout", "unknown key"),
+            ),
+            (
+                Kind::Redis,
+                json!({"starttls": true}),
+                one("starttls", "unknown key"),
+            ),
+            (Kind::Ldap, json!({}), Vec::new()),
+            (
+                Kind::Ldap,
+                json!({"user": "cn=monitor,dc=example,dc=org"}),
+                one("user", "requires password_file"),
+            ),
+            (
+                Kind::Ldap,
+                json!({"password_file": pass}),
+                one("password_file", "requires user"),
+            ),
+            (
+                Kind::Ldap,
+                json!({"tls": true, "starttls": true}),
+                one("starttls", "conflicts with tls"),
+            ),
+            (
+                Kind::Ldap,
+                json!({"server_name": "ldap.internal"}),
+                one("server_name", "requires tls = true or starttls = true"),
+            ),
+            (
+                Kind::Ldap,
+                json!({"starttls": "yes"}),
+                one("starttls", "must be a boolean"),
+            ),
+            (
+                Kind::Ldap,
+                json!({"role": "primary"}),
+                one("role", "unknown key"),
+            ),
+            (
+                Kind::Ldap,
+                json!({"database": "dc=example"}),
+                one("database", "unknown key"),
             ),
         ];
         for (kind, options, want) in rows {
