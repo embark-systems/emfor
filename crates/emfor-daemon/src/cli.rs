@@ -158,8 +158,10 @@ fn log_config_errors(path: &Path, errors: &[ConfigError]) {
     }
 }
 
-/// Backend state history left by earlier runs, by service name. Values that
-/// do not parse are logged and dropped.
+/// Backend state history left by earlier runs, by service name. A value that
+/// does not parse is logged and loaded as empty, so the writer deletes it.
+/// When the keys cannot be read at all, none is loaded and the writer
+/// leaves them as they are.
 fn load_history(store: &Store) -> BTreeMap<String, ServiceHistory> {
     let stored = match store.prefix(HIST_KEY_PREFIX) {
         Ok(s) => s,
@@ -170,12 +172,12 @@ fn load_history(store: &Store) -> BTreeMap<String, ServiceHistory> {
     };
     stored
         .into_iter()
-        .filter_map(|(key, value)| match serde_json::from_str(&value) {
-            Ok(h) => Some((key[HIST_KEY_PREFIX.len()..].to_owned(), h)),
-            Err(e) => {
+        .map(|(key, value)| {
+            let h = serde_json::from_str(&value).unwrap_or_else(|e| {
                 tracing::warn!("discarding {key}: {e}");
-                None
-            }
+                ServiceHistory::default()
+            });
+            (key[HIST_KEY_PREFIX.len()..].to_owned(), h)
         })
         .collect()
 }

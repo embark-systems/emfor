@@ -248,8 +248,8 @@ impl<S: Sink> Writer<S> {
             ops.push(Op::Put(KEY_STARTED_AT.into(), unix_ms().to_string()));
             ops.push(Op::Put(KEY_HEARTBEAT.into(), unix_ms().to_string()));
             ops.push(Op::DeletePrefix(SERVICE_KEY_PREFIX.into()));
-            // Kept history is pruned below and written back in full.
-            ops.push(Op::DeletePrefix(HIST_KEY_PREFIX.into()));
+            // History is pruned key by key below, never by prefix: a key the
+            // caller could not read is left alone rather than lost.
         }
         let wanted: BTreeSet<Arc<str>> = services.iter().map(|s| s.name.clone()).collect();
         let removed: Vec<Arc<str>> = self
@@ -273,9 +273,7 @@ impl<S: Sink> Writer<S> {
         for name in unconfigured {
             self.histories.remove(&name);
             self.hist_dirty.remove(&name);
-            if !fresh_start {
-                ops.push(Op::Delete(hist_key(&name)));
-            }
+            ops.push(Op::Delete(hist_key(&name)));
         }
         let mut live = std::collections::HashMap::new();
         for s in services {
@@ -288,6 +286,7 @@ impl<S: Sink> Writer<S> {
             };
             if let Some(h) = self.histories.get_mut(&s.name) {
                 let pruned = h.retain(|id| s.backends.iter().any(|b| b.id == id));
+                // At start, also rewrite (or delete, when empty) every loaded key.
                 if pruned || fresh_start {
                     self.hist_dirty.insert(s.name.clone());
                 }
@@ -760,6 +759,54 @@ mod tests {
             [10, 20, 30],
             "retried at next tick"
         );
+    }
+
+    /// History the caller could not read is not loaded and stays in the
+    /// store; history loaded as empty (it did not parse) is deleted.
+    #[tokio::test]
+    async fn unread_history_left_alone_and_empty_history_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let mut kept = ServiceHistory::default();
+        kept.push(
+            "10.0.0.11:8080",
+            HistoryEntry {
+                at: 1,
+                from: HealthState::Healthy,
+                to: HealthState::Unhealthy,
+                reason: None,
+            },
+        );
+        let kept_json = serde_json::to_string(&kept).unwrap();
+        commit_to_store(
+            &store,
+            &[
+                Op::Put("hist/api.svc.emfor".into(), kept_json.clone()),
+                Op::Put("hist/bad.svc.emfor".into(), "not json".into()),
+                Op::Put("hist/gone.svc.emfor".into(), "not json".into()),
+            ],
+        )
+        .unwrap();
+        // As cli loads them: api unread, the two others did not parse.
+        let loaded = BTreeMap::from([
+            ("bad.svc.emfor".to_owned(), ServiceHistory::default()),
+            ("gone.svc.emfor".to_owned(), ServiceHistory::default()),
+        ]);
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_live(store.clone(), rx, LiveState::default(), loaded);
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![
+                layout("api.svc.emfor", &["10.0.0.11:8080"], 0, true),
+                layout("bad.svc.emfor", &["10.0.0.2:80"], 0, true),
+            ],
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(store.get("hist/api.svc.emfor").unwrap(), Some(kept_json));
+        assert_eq!(store.get("hist/bad.svc.emfor").unwrap(), None);
+        assert_eq!(store.get("hist/gone.svc.emfor").unwrap(), None);
     }
 
     #[tokio::test]

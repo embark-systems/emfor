@@ -308,8 +308,12 @@ fn reload_rejects_listen_change_and_applies_balance_and_ttl() {
     assert_ne!(picks[0], picks[1], "round-robin alternates: {picks:?}");
     assert_eq!(picks[0], picks[2]);
 
-    // Listen change: rejected, still answering on the old port.
-    let other = free_port();
+    // Listen change: rejected, still answering on the old port. Hold the
+    // new port for the rest of the test: tests run in parallel and also
+    // serve api.svc.emfor, so another daemon could otherwise bind it and
+    // answer there. Holding it, our own silent socket gets the question.
+    let held = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let other = held.local_addr().unwrap().port();
     d.write_config(&format!(
         "{}{}",
         dns_table(other),
