@@ -186,8 +186,10 @@ fn healthy_backend_over_udp_and_tcp() {
     assert!(matches!(m.authorities[0].data, RData::SOA(_)));
     let m = ask(port, "example.com", RecordType::A).unwrap();
     assert_eq!(m.metadata.response_code, ResponseCode::Refused);
-    let (code, _) = d.stop();
+    let (code, err) = d.stop();
     assert_eq!(code, 0);
+    // Queries are not logged one by one at the default level.
+    assert!(!err.contains("hickory_server"), "{err}");
 }
 
 #[test]

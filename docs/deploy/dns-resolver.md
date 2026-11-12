@@ -134,7 +134,24 @@ dscacheutil -q host -a name api.svc.emfor        # through the system resolver
 
 `dig` and `nslookup` bypass `/etc/resolver`, so test the system path with `dscacheutil`, `ping`, or the application itself.
 
-Verified manually on: not yet verified.
+Verified manually on macOS 27.2.1 (build 26B131), 2026-11-12, against a daemon running with the default `[dns]` settings:
+
+```
+$ scutil --dns
+resolver #8
+  domain   : svc.emfor
+  nameserver[0] : 127.0.0.1
+  port     : 5300
+  flags    : Request A records, Request AAAA records
+
+$ dscacheutil -q host -a name api.svc.emfor
+name: api.svc.emfor
+ip_address: 127.0.0.1
+```
+
+`dscacheutil -q host -a name nope.svc.emfor` printed nothing (NXDOMAIN). `ping api.svc.emfor` resolved to the same address.
+
+On macOS the mDNS responder holds UDP 5353, which is why the default port is 5300.
 
 ## Caching
 

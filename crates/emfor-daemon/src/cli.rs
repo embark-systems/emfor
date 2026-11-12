@@ -91,12 +91,22 @@ type LogHandle = reload::Handle<EnvFilter, tracing_subscriber::Registry>;
 fn init_logging(level: &str) -> Option<LogHandle> {
     let from_env = EnvFilter::try_from_default_env().ok();
     let env_set = from_env.is_some();
-    let (filter, handle) = reload::Layer::new(from_env.unwrap_or_else(|| EnvFilter::new(level)));
+    let (filter, handle) = reload::Layer::new(from_env.unwrap_or_else(|| log_filter(level)));
     let _ = tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .try_init();
     (!env_set).then_some(handle)
+}
+
+/// Filter for `[log] level`. The hickory DNS crates log every query at
+/// `info`, so they are capped at `warn` (or the configured level when it is
+/// stricter). `RUST_LOG` bypasses this.
+fn log_filter(level: &str) -> EnvFilter {
+    let hickory = if level == "error" { "error" } else { "warn" };
+    EnvFilter::new(format!(
+        "{level},hickory_server={hickory},hickory_proto={hickory},hickory_net={hickory}"
+    ))
 }
 
 fn log_config_errors(path: &Path, errors: &[ConfigError]) {
@@ -177,7 +187,7 @@ async fn run(
                     Ok(new) => {
                         if new.log != current.log {
                             match &log {
-                                Some(h) => match h.reload(EnvFilter::new(&new.log.level)) {
+                                Some(h) => match h.reload(log_filter(&new.log.level)) {
                                     Ok(()) => tracing::info!("log level set to {}", new.log.level),
                                     Err(e) => tracing::error!("cannot change log level: {e}"),
                                 },
