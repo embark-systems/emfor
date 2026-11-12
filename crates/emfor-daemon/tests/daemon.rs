@@ -375,13 +375,21 @@ fn backend_goes_unhealthy_and_recovers() {
     let d = start(&tcp_service("api.svc.emfor", &addr));
     let r = Reader::open(&d.store());
     let state = || r.service("api.svc.emfor").map(|s| s.backends[0].state);
+    let latency = || {
+        r.service("api.svc.emfor")
+            .and_then(|s| s.backends[0].latency_us)
+    };
     wait_for(|| state() == Some(HealthState::Healthy));
     assert!(!r.service("api.svc.emfor").unwrap().all_down);
+    // Spec "Check latency": a number after up checks (committed by the next
+    // heartbeat at the latest), null once the backend is unhealthy.
+    wait_for(|| latency().is_some());
 
     drop(l);
     wait_for(|| state() == Some(HealthState::Unhealthy));
     let rec = r.service("api.svc.emfor").unwrap();
     assert!(rec.all_down);
+    assert_eq!(rec.backends[0].latency_us, None);
     assert!(
         rec.backends[0]
             .reason
@@ -394,6 +402,7 @@ fn backend_goes_unhealthy_and_recovers() {
     let _l2 = TcpListener::bind(&addr).unwrap();
     wait_for(|| state() == Some(HealthState::Healthy));
     assert_eq!(r.service("api.svc.emfor").unwrap().backends[0].reason, None);
+    wait_for(|| latency().is_some());
     let (code, _) = d.stop();
     assert_eq!(code, 0);
 }
@@ -592,4 +601,74 @@ fn balance_written_from_config_and_changed_on_reload() {
     .unwrap();
     d.signal(Signal::SIGHUP);
     wait_for(|| r.service("api.svc.emfor").unwrap().balance == Balance::Sticky);
+}
+
+fn fastest_service(name: &str, check: &str, backends: &[&str]) -> String {
+    let list: Vec<String> = backends.iter().map(|b| format!("\"{b}\"")).collect();
+    format!(
+        "[services.\"{name}\"]\ncheck = \"{check}\"\nbalance = \"fastest\"\nbackends = [{}]\ninterval = \"200ms\"\ntimeout = \"150ms\"\nrise = 1\nfall = 1\njitter = \"0%\"\n\n",
+        list.join(", ")
+    )
+}
+
+/// HTTP backend answering every request with 200 after `delay`.
+fn http_backend(delay: Duration) -> String {
+    use std::io::Write;
+    let (l, addr) = listener();
+    std::thread::spawn(move || {
+        for conn in l.incoming() {
+            let Ok(mut s) = conn else { continue };
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf);
+                std::thread::sleep(delay);
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            });
+        }
+    });
+    addr
+}
+
+#[test]
+fn fastest_pool_follows_health() {
+    let (l, addr) = listener();
+    let d = start(&fastest_service("api.svc.emfor", "tcp", &[&addr]));
+    let r = Reader::open(&d.store());
+    let pool = || r.service("api.svc.emfor").and_then(|s| s.pool);
+    wait_for(|| pool() == Some(vec![addr.clone()]));
+    assert_eq!(
+        r.service("api.svc.emfor").unwrap().balance,
+        emfor_format::Balance::Fastest
+    );
+    drop(l);
+    wait_for(|| pool() == Some(vec![]));
+    let (code, _) = d.stop();
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn fastest_pool_excludes_slow_backend() {
+    let fast = http_backend(Duration::ZERO);
+    let slow = http_backend(Duration::from_millis(30));
+    let d = start(&fastest_service("api.svc.emfor", "http", &[&fast, &slow]));
+    let r = Reader::open(&d.store());
+    let ready = || {
+        r.service("api.svc.emfor").is_some_and(|s| {
+            s.backends
+                .iter()
+                .all(|b| b.state == HealthState::Healthy && b.latency_us.is_some())
+        })
+    };
+    wait_for(ready);
+    // Commits of pool-only changes follow the heartbeat; watch for 2 s.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        let s = r.service("api.svc.emfor").unwrap();
+        assert_eq!(s.pool, Some(vec![fast.clone()]), "{s:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let (code, _) = d.stop();
+    assert_eq!(code, 0);
 }

@@ -119,6 +119,7 @@ mod tests {
         let record = ServiceRecord {
             name: name.into(),
             on_all_down: OnAllDown::Open,
+            pool: None,
             balance: Balance::RoundRobin,
             all_down: true,
             backends: vec![],

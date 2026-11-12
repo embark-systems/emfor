@@ -77,6 +77,7 @@ fn every_store_writes_and_coverage_is_complete() {
             "failover",
             "weighted",
             "locality",
+            "fastest",
             "some-future-method",
             "(absent)"
         ])

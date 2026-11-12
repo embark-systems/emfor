@@ -40,7 +40,8 @@ fall = 3               # consecutive failures before a backend is unhealthy
 jitter = "10%"         # random +/- spread of interval, 0% to 50%
 on_all_down = "open"   # "open": readers still pick a backend; "closed": readers fail
 balance = "round-robin" # "round-robin", "sticky" (by affinity key), "failover",
-                        # "weighted" (by backend weight) or "locality" (same site first)
+                        # "weighted" (by backend weight), "locality" (same site first)
+                        # or "fastest" (backends whose checks answer fastest, in turn)
 
 # A plain TCP service: a backend is up when it accepts a connection.
 [services."db.svc.emfor"]

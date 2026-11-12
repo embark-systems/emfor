@@ -82,7 +82,7 @@ tests:
 
 The daemon SHALL reject a config that violates any of these rules and SHALL report every violation, each prefixed with its TOML path:
 
-- `interval` at least 100ms; `timeout` greater than zero and not greater than `interval` (equal is allowed, because checks of one backend run one after another and cannot overlap); `rise` at least 1; `fall` at least 1; `jitter` from 0% to 50%; `on_all_down` is `open` or `closed`; `balance` is `round-robin`, `sticky`, `failover`, `weighted`, or `locality`; `dns_ttl` is a whole number of seconds from 0s to 3600s.
+- `interval` at least 100ms; `timeout` greater than zero and not greater than `interval` (equal is allowed, because checks of one backend run one after another and cannot overlap); `rise` at least 1; `fall` at least 1; `jitter` from 0% to 50%; `on_all_down` is `open` or `closed`; `balance` is `round-robin`, `sticky`, `failover`, `weighted`, `locality`, or `fastest`; `dns_ttl` is a whole number of seconds from 0s to 3600s.
 - `backends` is non-empty; every entry is a string or a table; a string, and a table's `addr`, is `IPv4:port` or `[IPv6]:port` with port 1–65535; a table has `addr` and no keys other than `addr`, `weight`, `site`; `weight` is an integer from 1 to 100; no `addr` repeats within a service.
 - The top-level `site` and every backend `site` are, after ASCII lowercasing, 1 to 63 characters of `[a-z0-9-]` that do not start or end with `-`.
 - `check` names a registered checker and `check_options` passes that checker's validation.
@@ -116,7 +116,8 @@ The daemon SHALL reject a config that violates any of these rules and SHALL repo
 | `chekc` (typo key) | `"tcp"` | error: unknown key |
 | `check` | `"redis"` | error: unknown checker `redis` |
 | `balance` | `"weighted"` | ok |
-| `balance` | `"least-conn"` | error: balance must be round-robin, sticky, failover, weighted, or locality |
+| `balance` | `"fastest"` | ok |
+| `balance` | `"least-conn"` | error: balance must be round-robin, sticky, failover, weighted, locality, or fastest |
 | `dns_ttl` | `"1500ms"` | error: dns_ttl must be whole seconds |
 | `[dns] ttl` | `"2h"` | error: ttl above 3600s |
 | `[dns] listen` | `[]` | error: listen must not be empty |
@@ -126,11 +127,31 @@ The daemon SHALL reject a config that violates any of these rules and SHALL repo
 
 
 <!-- @trace
-source: emfor-balance-2
+source: emfor-balance-fastest
 updated: 2026-11-12
 code:
+  - crates/emfor-format/src/lib.rs
+  - crates/emfor-daemon/src/select.rs
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/dns.rs
+  - clients/c/README.md
+  - crates/emfor-daemon/src/config.rs
+  - examples/emfor.toml
   - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - crates/emfor-daemon/src/checker/mod.rs
+  - clients/rust/src/client.rs
+  - .spectra.yaml
+  - tests/conformance/v1/cases.json
+  - crates/emfor-daemon/src/state.rs
+  - crates/emfor-daemon/src/checker/http.rs
+  - crates/emfor-daemon/src/schedule.rs
+  - clients/rust/README.md
+  - crates/emfor-daemon/src/live.rs
+  - crates/emfor-daemon/src/writer.rs
+tests:
+  - crates/emfor-daemon/tests/dns.rs
+  - tools/emfor-fixture/tests/conformance_data.rs
+  - crates/emfor-daemon/tests/daemon.rs
 -->
 
 ---

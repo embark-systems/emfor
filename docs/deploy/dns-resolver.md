@@ -173,7 +173,10 @@ An SRV answer lists every backend that may be used: the healthy ones, or all of 
 | `failover` | 0, 1, 2, … in config order (the first healthy backend gets 0) | 1 | config order |
 | `weighted` | 0 | the backend's `weight` | config order |
 | `locality` | 0 for backends in the host's `site`, 1 for the others (all 0 when none matches) | 1 | rotates on every query |
+| `fastest` | 0 for backends in the service's `pool` (the fast backends), 1 for the others (all 0 when the pool is empty) | 1 | rotates on every query |
 | `round-robin`, `sticky`, any other value | 0 | 1 | rotates on every query |
+
+For `fastest`, a backend's speed is the duration of its health check as measured from this host, smoothed over many checks; choose a check that resembles real traffic. A and AAAA answers for a `fastest` service rotate over the pool's backends of that family, or over every candidate when the pool has none.
 
 SRV clients try the lowest priority first and pick by weight within a priority. Clients that just take the first record still spread out, because the order rotates.
 

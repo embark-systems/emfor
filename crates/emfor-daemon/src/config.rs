@@ -692,9 +692,10 @@ impl Validator {
                 "failover" => p.balance = Some(Balance::Failover),
                 "weighted" => p.balance = Some(Balance::Weighted),
                 "locality" => p.balance = Some(Balance::Locality),
+                "fastest" => p.balance = Some(Balance::Fastest),
                 _ => self.err(
                     key_path(parent, "balance"),
-                    "balance must be round-robin, sticky, failover, weighted, or locality",
+                    "balance must be round-robin, sticky, failover, weighted, locality, or fastest",
                 ),
             }
         }
@@ -1106,11 +1107,20 @@ backends = ["10.0.0.1:80"]
             ),
             ("balance = \"weighted\"\n", None),
             ("balance = \"locality\"\n", None),
+            ("balance = \"fastest\"\n", None),
+            (
+                "balance = \"random\"\n",
+                Some(
+                    "balance must be round-robin, sticky, failover, weighted, locality, or fastest",
+                ),
+            ),
             ("chekc = \"tcp\"\n", Some("unknown key")),
             ("check = \"redis\"\n", Some("unknown checker `redis`")),
             (
                 "balance = \"least-conn\"\n",
-                Some("balance must be round-robin, sticky, failover, weighted, or locality"),
+                Some(
+                    "balance must be round-robin, sticky, failover, weighted, locality, or fastest",
+                ),
             ),
             (
                 "dns_ttl = \"1500ms\"\n",

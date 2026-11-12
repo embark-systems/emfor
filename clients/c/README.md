@@ -56,8 +56,8 @@ A buffer of `EMFOR_ADDR_MAX` bytes always fits. `affinity_key` may be NULL;
 it is used only by services with `balance = "sticky"`, where the same key
 gets the same backend while that backend is healthy. The service's `balance`
 decides the backend: `round-robin`, `sticky`, `failover`, `weighted` (in
-proportion to backend weights) or `locality` (backends in the host's site
-first); a `balance` the library does not know is treated as `round-robin`.
+proportion to backend weights), `locality` (backends in the host's site
+first) or `fastest` (in turn over the backends the daemon lists as fast); a `balance` the library does not know is treated as `round-robin`.
 
 On failure `out` is left unchanged, and the status says why:
 

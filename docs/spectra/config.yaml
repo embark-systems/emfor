@@ -27,6 +27,9 @@ context: |
     W 為候選權重總和；client 用輪流計數器對 W 取餘數落在累積權重區間，DNS 用 smooth weighted round-robin）、
     locality（設定檔最上層 site 為本機機房，daemon 寫入 meta/site；後端可設 site；健康篩選後優先同 site 的後端，
     沒有就用全部，再以 round-robin 挑選）。後端可寫成字串或 { addr, weight, site } 表格。
+    emfor-balance-fastest 新增：fastest（daemon 量每次 up 檢查的時間，新樣本權重 0.05 的指數移動平均寫成後端 latency_us；
+    健康且有延遲的後端中，延遲 ≤ max(最低 × 1.5, 最低 + 1 ms) 進入快組、> max(最低 × 2, 最低 + 2 ms) 才離開；
+    快組寫成服務記錄的 pool（只有 fastest 服務有），client 與 DNS 在 pool 裡輪流，pool 空或心跳過期時等同 round-robin）。
     client 讀到不認得的 balance 值時改用 round-robin（忽略 affinity_key），不回 INCOMPATIBLE。
   - DNS（emfor-dns）：只回答自己負責的網域，不轉發其他網域；由本機 resolver 依網域轉發過來，
     emfor 不當整台機器的 DNS，掛掉時只影響自己的網域。
@@ -39,7 +42,7 @@ context: |
     重載：zone、ttl 可重載；listen 變更需重啟（同 [store]）。
     SRV（emfor-dns-srv）：回答在服務名稱本身與 _<任意>._tcp.<服務名稱>（_tcp.<服務名稱> 為空節點、不支援 _udp）；
     回傳全部候選後端（兩種 IP 版本合併判斷健康；全部不健康 closed 回 SERVFAIL），balance 對應 SRV：
-    failover 依候選順序給 priority 0、1、2…；weighted 的 SRV weight = 後端 weight；locality 同 site priority 0、其他 1；
+    failover 依候選順序給 priority 0、1、2…；weighted 的 SRV weight = 後端 weight；locality 同 site priority 0、其他 1；fastest 的 pool 成員 priority 0、其他 1；
     round-robin、sticky、不認得的值同 priority 並輪換順序（每個服務一個獨立的 SRV 計數器）。
     target 由 IP 推出：IPv4 如 10-0-0-11.<服務名稱>，IPv6 用完整 8 組 4 位數（如 2001-0db8-0000-0000-0000-0000-0000-0011），
     target 名稱本身可查 A/AAAA（不論健康狀態）；A/AAAA 放 additional 區段。
@@ -98,14 +101,12 @@ context: |
   Docker / Kubernetes 的 DNS 部署（容器內 DNS 路徑不同，需另行設計）。
 
   後續規劃（已決定要做、尚未排入 change；用語見 LANGUAGE.md「分配方式的值」）：
-  - balance = "fastest"（延後）：最近一次檢查延遲最低；LMDB 需記錄檢查延遲，並設計防止所有 client 湧向同一台的分散機制，
-    需先實驗再決定。
   不做：balance = "random"（client 的 round-robin 起點本來就隨機，效果幾乎相同）。
 
   變更拆分：emfor-core（已完成）→ emfor-dns（含 balance 設定欄位、LMDB 欄位、DNS 端行為、resolver 部署文件、FreeBSD CI 與 rc.d 範例）
   → emfor-plugins（已完成）→ emfor-clients（相容性驗證、client-lookup 規格、共用測試資料、Rust client 與 cargo-c 產出的 libemfor）
   → emfor-clients-2（Go、Python、Perl、PHP 包裝 libemfor）→ emfor-balance-2（weighted、locality、不認得的 balance 改用 round-robin）
-  → emfor-dns-srv → emfor-dns-port-warning。
+  → emfor-dns-srv → emfor-dns-port-warning → emfor-balance-fastest（fastest、latency_us、pool）。
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.

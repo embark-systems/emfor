@@ -53,6 +53,31 @@ pub fn candidates(rec: &ServiceRecord, stale: bool) -> Result<Vec<&BackendRecord
     }
 }
 
+/// `fastest`: the candidates listed in the daemon's `pool`, when the store
+/// is fresh and the pool names at least one of them; otherwise all
+/// candidates (the service then behaves as `round-robin`). The client never
+/// judges backends itself.
+pub fn pool_candidates<'a>(
+    rec: &ServiceRecord,
+    candidates: Vec<&'a BackendRecord>,
+    stale: bool,
+) -> Vec<&'a BackendRecord> {
+    let pool = match (&rec.pool, rec.balance, stale) {
+        (Some(pool), Balance::Fastest, false) => pool,
+        _ => return candidates,
+    };
+    let listed: Vec<&BackendRecord> = candidates
+        .iter()
+        .copied()
+        .filter(|b| pool.contains(&b.id))
+        .collect();
+    if listed.is_empty() {
+        candidates
+    } else {
+        listed
+    }
+}
+
 /// Rendezvous hash version 1: the first 4 bytes of MD5(key ++ id) as a
 /// big-endian u32.
 pub fn rendezvous_hash(key: &str, id: &str) -> u32 {
@@ -139,6 +164,7 @@ mod tests {
             state,
             checked_at: Some(1),
             reason: None,
+            latency_us: None,
         }
     }
 
@@ -152,6 +178,7 @@ mod tests {
             on_all_down,
             balance,
             all_down: false,
+            pool: None,
             backends,
         }
     }
@@ -336,5 +363,48 @@ mod tests {
             .map(|n| pick(b, &refs, Some("user-42"), None, || n))
             .collect();
         assert_eq!(got.len(), 2);
+    }
+
+    /// Four lookups with counter values 0..4 through the client's path.
+    fn fastest_picks(r: &ServiceRecord, stale: bool, n: u64) -> Vec<String> {
+        (0..n)
+            .map(|i| {
+                let c = pool_candidates(r, candidates(r, stale).unwrap(), stale);
+                pick(r.balance, &c, Some("user-42"), None, || i)
+            })
+            .collect()
+    }
+
+    fn fastest_rec(pool: Option<&[&str]>) -> ServiceRecord {
+        let mut r = rec(
+            Balance::Fastest,
+            OnAllDown::Open,
+            API.iter().map(|id| be(id, Healthy)).collect(),
+        );
+        r.pool = pool.map(|p| p.iter().map(|s| s.to_string()).collect());
+        r
+    }
+
+    #[test]
+    fn fastest_lookups_stay_in_the_pool() {
+        let r = fastest_rec(Some(&API[..2]));
+        assert_eq!(
+            fastest_picks(&r, false, 4),
+            [API[0], API[1], API[0], API[1]]
+        );
+    }
+
+    #[test]
+    fn fastest_stale_heartbeat_ignores_the_pool() {
+        let r = fastest_rec(Some(&API[..2]));
+        assert_eq!(fastest_picks(&r, true, 3), API);
+    }
+
+    #[test]
+    fn fastest_missing_empty_or_unknown_pool_is_round_robin() {
+        for pool in [None, Some(&[][..]), Some(&["10.9.9.9:80"][..])] {
+            let r = fastest_rec(pool);
+            assert_eq!(fastest_picks(&r, false, 2), [API[0], API[1]], "{pool:?}");
+        }
     }
 }

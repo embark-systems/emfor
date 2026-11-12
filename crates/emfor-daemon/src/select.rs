@@ -122,16 +122,22 @@ pub fn select(
     let ip = match record.balance {
         Balance::Failover => c[0].0,
         Balance::Weighted => c[smooth_weighted(&choice.swrr, &c)].0,
-        Balance::Locality => {
-            let local: Vec<IpAddr> = c
+        // Candidates in the host's site, or in the daemon's pool, in turn;
+        // all candidates in turn when none of them qualifies.
+        Balance::Locality | Balance::Fastest => {
+            let pool = record.pool.as_deref().unwrap_or_default();
+            let preferred: Vec<IpAddr> = c
                 .iter()
-                .filter(|(_, b)| site.is_some() && b.site.as_deref() == site)
+                .filter(|(_, b)| match record.balance {
+                    Balance::Locality => site.is_some() && b.site.as_deref() == site,
+                    _ => pool.contains(&b.id),
+                })
                 .map(|(ip, _)| *ip)
                 .collect();
-            if local.is_empty() {
+            if preferred.is_empty() {
                 c[next(c.len())].0
             } else {
-                local[next(local.len())]
+                preferred[next(preferred.len())]
             }
         }
         // No affinity key on this path: sticky behaves as round-robin.
@@ -190,12 +196,18 @@ pub fn srv_targets(
                 .map(|b| target(*b, 0, u16::try_from(b.1.weight).unwrap_or(u16::MAX)))
                 .collect()
         }
-        Balance::Locality => {
-            let local = |b: &BackendRecord| site.is_some() && b.site.as_deref() == site;
-            let any_local = c.iter().any(|(_, b)| local(b));
+        // Local (or pool) candidates priority 0, others 1; all 0 when none
+        // qualifies. Stable sort keeps the rotation within each priority.
+        Balance::Locality | Balance::Fastest => {
+            let pool = record.pool.as_deref().unwrap_or_default();
+            let preferred = |b: &BackendRecord| match record.balance {
+                Balance::Locality => site.is_some() && b.site.as_deref() == site,
+                _ => pool.contains(&b.id),
+            };
+            let any = c.iter().any(|(_, b)| preferred(b));
             let mut list: Vec<SrvTarget> = rotated()
                 .into_iter()
-                .map(|b| target(b, u16::from(any_local && !local(b.1)), 1))
+                .map(|b| target(b, u16::from(any && !preferred(b.1)), 1))
                 .collect();
             list.sort_by_key(|t| t.priority);
             list
@@ -223,6 +235,7 @@ mod tests {
             on_all_down,
             balance,
             all_down: true,
+            pool: None,
             backends: backends
                 .iter()
                 .map(|(ip, state)| BackendRecord {
@@ -234,6 +247,7 @@ mod tests {
                     state: *state,
                     checked_at: None,
                     reason: None,
+                    latency_us: None,
                 })
                 .collect(),
         };
@@ -576,7 +590,11 @@ mod tests {
         r.backends = backends
             .iter()
             .map(|(ip, port, state, weight, site)| BackendRecord {
-                id: format!("{ip}:{port}"),
+                id: if ip.contains(':') {
+                    format!("[{ip}]:{port}")
+                } else {
+                    format!("{ip}:{port}")
+                },
                 ip: ip.to_string(),
                 port: *port,
                 weight: *weight,
@@ -584,6 +602,7 @@ mod tests {
                 state: *state,
                 checked_at: None,
                 reason: None,
+                latency_us: None,
             })
             .collect();
         r.refresh_all_down();
@@ -779,5 +798,108 @@ mod tests {
         }
         assert_eq!(rr.srv.load(Ordering::Relaxed), 3);
         assert_eq!(rr.for_family(Family::V4).counter.load(Ordering::Relaxed), 0);
+    }
+
+    fn fastest(backends: &[(&str, HealthState)], pool: &[&str]) -> ServiceRecord {
+        let mut r = rec(backends, OnAllDown::Open, Balance::Fastest);
+        r.pool = Some(pool.iter().map(|ip| format!("{ip}:80")).collect());
+        r
+    }
+
+    fn four_a(r: &ServiceRecord) -> Vec<Selection> {
+        let c = FamilyChoice::default();
+        (0..4).map(|_| select(r, Family::V4, &c, None)).collect()
+    }
+
+    #[test]
+    fn fastest_backends_preferred() {
+        let r = fastest(
+            &[
+                ("10.0.0.1", Healthy),
+                ("10.0.0.2", Healthy),
+                ("10.0.0.3", Healthy),
+            ],
+            &["10.0.0.1", "10.0.0.2"],
+        );
+        let (a, b) = (chosen("10.0.0.1"), chosen("10.0.0.2"));
+        assert_eq!(four_a(&r), [a, b, a, b]);
+    }
+
+    #[test]
+    fn fastest_empty_pool_rotates_over_all() {
+        let r = fastest(&[("10.0.0.1", Healthy), ("10.0.0.2", Healthy)], &[]);
+        let got = four_a(&r);
+        assert_ne!(got[0], got[1]);
+        let mut missing = rec(
+            &[("10.0.0.1", Healthy), ("10.0.0.2", Healthy)],
+            OnAllDown::Open,
+            Balance::Fastest,
+        );
+        missing.pool = None;
+        assert_eq!(four_a(&missing), got);
+    }
+
+    #[test]
+    fn fastest_all_down_open() {
+        let r = fastest(&[("10.0.0.1", Unhealthy), ("10.0.0.2", Unhealthy)], &[]);
+        let (a, b) = (chosen("10.0.0.1"), chosen("10.0.0.2"));
+        assert_eq!(four_a(&r), [a, b, a, b]);
+    }
+
+    #[test]
+    fn fastest_pool_without_the_family() {
+        let r = fastest(
+            &[("10.0.0.1", Healthy), ("2001:db8::1", Healthy)],
+            &["2001:db8::1"],
+        );
+        // The ids built by `rec` are `<ip>:80`; the pool names the IPv6 one.
+        let a = chosen("10.0.0.1");
+        assert_eq!(four_a(&r)[..2], [a, a]);
+    }
+
+    #[test]
+    fn srv_fastest_priorities() {
+        let mut r = srv_rec(
+            &[
+                ("10.0.0.11", 8080, Healthy, 1, None),
+                ("10.0.0.12", 8080, Healthy, 1, None),
+                ("2001:db8::11", 8080, Healthy, 1, None),
+            ],
+            OnAllDown::Open,
+            Balance::Fastest,
+        );
+        r.pool = Some(vec!["10.0.0.11:8080".into(), "[2001:db8::11]:8080".into()]);
+        let n = AtomicU64::new(0);
+        let mut firsts = BTreeSet::new();
+        for _ in 0..3 {
+            let l = srv(&r, &n, None).unwrap();
+            assert_eq!(l.len(), 3);
+            let fast: BTreeSet<&str> = l[..2].iter().map(|t| t.0.as_str()).collect();
+            assert_eq!(fast, BTreeSet::from(["10.0.0.11", "2001:db8::11"]));
+            assert!(l[..2].iter().all(|t| t.2 == 0 && t.3 == 1));
+            assert_eq!(l[2], row("10.0.0.12", 8080, 1, 1));
+            firsts.insert(l[0].0.clone());
+        }
+        assert_eq!(firsts.len(), 2, "rotation spreads the pool");
+    }
+
+    #[test]
+    fn srv_fastest_empty_pool_all_priority_0() {
+        let mut r = srv_rec(
+            &[
+                ("10.0.0.11", 8080, Healthy, 1, None),
+                ("10.0.0.12", 8080, Healthy, 1, None),
+            ],
+            OnAllDown::Open,
+            Balance::Fastest,
+        );
+        for pool in [Some(vec![]), None] {
+            r.pool = pool;
+            let l = srv(&r, &AtomicU64::new(0), None).unwrap();
+            assert_eq!(
+                l,
+                [row("10.0.0.11", 8080, 0, 1), row("10.0.0.12", 8080, 0, 1)]
+            );
+        }
     }
 }

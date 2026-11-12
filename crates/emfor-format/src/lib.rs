@@ -78,6 +78,9 @@ pub enum Balance {
     Weighted,
     /// Candidates in the host's site first, then in turn.
     Locality,
+    /// Candidates in the daemon's `pool` (the fast backends) in turn; all
+    /// candidates in turn when the pool has none of them.
+    Fastest,
     /// A value this reader does not know (written by a newer daemon). Readers
     /// treat it as round-robin; the daemon never writes it.
     #[serde(other)]
@@ -92,6 +95,7 @@ impl Balance {
             Balance::Failover => "failover",
             Balance::Weighted => "weighted",
             Balance::Locality => "locality",
+            Balance::Fastest => "fastest",
             Balance::Unknown => "unknown",
         }
     }
@@ -115,6 +119,11 @@ pub struct BackendRecord {
     pub checked_at: Option<u64>,
     /// Message of the last `down` or `error` result; `None` after an `up`.
     pub reason: Option<String>,
+    /// Smoothed duration of up checks in microseconds; `None` before the
+    /// first up check, after the backend turned unhealthy, and in records
+    /// from older daemons.
+    #[serde(default)]
+    pub latency_us: Option<u64>,
 }
 
 fn default_weight() -> u32 {
@@ -133,6 +142,10 @@ pub struct ServiceRecord {
     pub all_down: bool,
     /// Backends in config order.
     pub backends: Vec<BackendRecord>,
+    /// Ids of the fast backends in config order, decided by the daemon.
+    /// Written only for `fastest` services; a missing pool reads as empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<Vec<String>>,
 }
 
 impl ServiceRecord {
@@ -164,7 +177,9 @@ mod tests {
                 state: HealthState::Healthy,
                 checked_at: Some(1762905600123),
                 reason: None,
+                latency_us: Some(1834),
             }],
+            pool: None,
         }
     }
 
@@ -173,7 +188,7 @@ mod tests {
         let json = serde_json::to_string(&db_example()).unwrap();
         assert_eq!(
             json,
-            r#"{"name":"db.svc.emfor","on_all_down":"closed","balance":"round-robin","all_down":false,"backends":[{"id":"[2001:db8::5]:5432","ip":"2001:db8::5","port":5432,"weight":1,"site":null,"state":"healthy","checked_at":1762905600123,"reason":null}]}"#
+            r#"{"name":"db.svc.emfor","on_all_down":"closed","balance":"round-robin","all_down":false,"backends":[{"id":"[2001:db8::5]:5432","ip":"2001:db8::5","port":5432,"weight":1,"site":null,"state":"healthy","checked_at":1762905600123,"reason":null,"latency_us":1834}]}"#
         );
     }
 
@@ -208,6 +223,7 @@ mod tests {
             (Balance::Failover, "\"failover\""),
             (Balance::Weighted, "\"weighted\""),
             (Balance::Locality, "\"locality\""),
+            (Balance::Fastest, "\"fastest\""),
         ] {
             assert_eq!(serde_json::to_string(&b).unwrap(), s);
             assert_eq!(format!("\"{}\"", b.as_str()), s);
@@ -224,7 +240,7 @@ mod tests {
     fn older_backend_object_reads_weight_1_and_no_site() {
         let json = r#"{"id":"10.0.0.1:80","ip":"10.0.0.1","port":80,"state":"healthy","checked_at":null,"reason":null,"zone_hint":"x"}"#;
         let b: BackendRecord = serde_json::from_str(json).unwrap();
-        assert_eq!((b.weight, b.site), (1, None));
+        assert_eq!((b.weight, b.site, b.latency_us), (1, None, None));
     }
 
     #[test]
@@ -234,6 +250,24 @@ mod tests {
         rec.backends[0].site = Some("dc1".into());
         let json = serde_json::to_string(&rec).unwrap();
         assert!(json.contains(r#""weight":3,"site":"dc1""#), "{json}");
+    }
+
+    #[test]
+    fn pool_written_only_when_set() {
+        let mut rec = db_example();
+        assert!(!serde_json::to_string(&rec).unwrap().contains("pool"));
+        rec.balance = Balance::Fastest;
+        rec.pool = Some(vec!["[2001:db8::5]:5432".into()]);
+        let json = serde_json::to_string(&rec).unwrap();
+        assert!(
+            json.ends_with(r#""latency_us":1834}],"pool":["[2001:db8::5]:5432"]}"#),
+            "{json}"
+        );
+        let missing: ServiceRecord = serde_json::from_str(
+            r#"{"name":"a","on_all_down":"open","balance":"fastest","all_down":true,"backends":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(missing.pool, None);
     }
 
     #[test]

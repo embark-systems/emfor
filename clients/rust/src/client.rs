@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use emfor_format::{SCHEMA_VERSION, ServiceRecord, service_key};
 
-use crate::select::{candidates, is_stale, normalize, pick};
+use crate::select::{candidates, is_stale, normalize, pick, pool_candidates};
 use crate::store::Env;
 use crate::{Error, ErrorCode};
 
@@ -111,7 +111,7 @@ impl Client {
             )
         })?;
         let stale = is_stale(heartbeat, now_ms(), max);
-        let cands = candidates(&record, stale)?;
+        let cands = pool_candidates(&record, candidates(&record, stale)?, stale);
         Ok(pick(
             record.balance,
             &cands,

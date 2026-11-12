@@ -392,3 +392,59 @@ fn reload_adding_dns_table_requires_restart() {
     let (_, err) = d.stop();
     assert!(err.contains("dns listen settings require restart"), "{err}");
 }
+
+/// HTTP backend answering every request with 200 after `delay`.
+fn http_backend(delay: Duration) -> u16 {
+    let (l, _) = backend_listener();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for conn in l.incoming() {
+            let Ok(mut s) = conn else { continue };
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf);
+                std::thread::sleep(delay);
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            });
+        }
+    });
+    port
+}
+
+/// (port, priority) of every SRV answer.
+fn srv_ports(m: &Message) -> Vec<(u16, u16)> {
+    m.answers
+        .iter()
+        .filter_map(|r| match &r.data {
+            RData::SRV(s) => Some((s.port, s.priority)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn fastest_srv_gives_slow_backend_priority_1() {
+    let fast = http_backend(Duration::ZERO);
+    let slow = http_backend(Duration::from_millis(30));
+    let port = free_port();
+    let svc = service(
+        "api.svc.emfor",
+        &[&format!("127.0.0.1:{fast}"), &format!("127.0.0.1:{slow}")],
+        "balance = \"fastest\"\n",
+    )
+    .replace("check = \"tcp\"", "check = \"http\"")
+    .replace("timeout = \"100ms\"", "timeout = \"150ms\"");
+    let d = spawn(&format!("{}{svc}", dns_table(port)));
+    let want = vec![(fast, 0), (slow, 1)];
+    wait_for(|| ask(port, "api.svc.emfor", RecordType::SRV).is_some_and(|m| srv_ports(&m) == want));
+    // Every later answer keeps the order, whatever the rotation.
+    for _ in 0..5 {
+        let m = ask(port, "api.svc.emfor", RecordType::SRV).unwrap();
+        assert_eq!(srv_ports(&m), want);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let (code, _) = d.stop();
+    assert_eq!(code, 0);
+}

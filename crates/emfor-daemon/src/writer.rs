@@ -2,8 +2,10 @@
 //!
 //! All store writes go through one task fed by one channel, so layout changes
 //! (start, reload) and check results are applied in the order they were sent.
-//! A health state change is committed immediately; `checked_at` / `reason`
-//! changes and the heartbeat are committed once per second. A failed commit is
+//! A health state change is committed immediately; `checked_at` / `reason` /
+//! `latency_us` / `pool` changes and the heartbeat are committed once per
+//! second. For `fastest` services the writer recomputes `pool` on every
+//! update and layout change, so the store and the live state agree. A failed commit is
 //! logged and retried at the next tick.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,6 +22,7 @@ use tokio::time::MissedTickBehavior;
 use crate::config::Backend;
 use crate::live::{LiveService, LiveState};
 use crate::schedule::{BackendUpdate, unix_ms};
+use crate::state::fast_pool;
 use crate::store::{Store, delete_prefix};
 
 /// One store operation.
@@ -186,7 +189,9 @@ impl<S: Sink> Writer<S> {
         b.state = u.state;
         b.checked_at = Some(u.checked_at);
         b.reason = u.reason;
+        b.latency_us = u.latency_us;
         rec.refresh_all_down();
+        refresh_pool(rec);
         self.live.set_record(rec);
         self.dirty.insert(u.service.clone());
         if u.transition.is_some() {
@@ -256,8 +261,10 @@ impl<S: Sink> Writer<S> {
                 balance: s.balance,
                 all_down: true,
                 backends,
+                pool: old.and_then(|o| o.pool),
             };
             rec.refresh_all_down();
+            refresh_pool(&mut rec);
             live.insert(s.name.to_string(), LiveService::new(rec.clone(), s.dns_ttl));
             self.generations.insert(s.name.clone(), s.generation);
             self.records.insert(s.name.clone(), rec);
@@ -307,6 +314,13 @@ impl<S: Sink> Writer<S> {
     }
 }
 
+/// Recompute `pool` of a `fastest` service from its backends and the
+/// previous pool (ids no longer configured drop out); other services have none.
+fn refresh_pool(rec: &mut ServiceRecord) {
+    rec.pool = (rec.balance == Balance::Fastest)
+        .then(|| fast_pool(&rec.backends, rec.pool.as_deref().unwrap_or_default()));
+}
+
 fn fresh_backend(b: &Backend) -> BackendRecord {
     BackendRecord {
         id: b.id.clone(),
@@ -317,6 +331,7 @@ fn fresh_backend(b: &Backend) -> BackendRecord {
         state: HealthState::Unknown,
         checked_at: None,
         reason: None,
+        latency_us: None,
     }
 }
 
@@ -351,6 +366,7 @@ mod tests {
             state,
             checked_at: 1,
             reason: None,
+            latency_us: None,
             transition: transition.then_some(Transition {
                 from: HealthState::Unknown,
                 to: state,
@@ -620,5 +636,149 @@ mod tests {
         h.await.unwrap();
         assert_eq!(record(&store, "a").backends[0].state, HealthState::Unknown);
         assert_eq!(store.get(KEY_HEARTBEAT).unwrap().as_deref(), Some("0"));
+    }
+
+    fn updl(id: &str, state: HealthState, latency_us: Option<u64>, transition: bool) -> WriterMsg {
+        let WriterMsg::Update(mut u) = upd("f", id, state, transition) else {
+            unreachable!()
+        };
+        u.latency_us = latency_us;
+        WriterMsg::Update(u)
+    }
+
+    fn fastest(ids: &[&str]) -> ServiceLayout {
+        let mut l = layout("f", ids, 0, true);
+        l.balance = Balance::Fastest;
+        l
+    }
+
+    /// Writer with an hour-long tick; returns the sender and the live state.
+    fn start_fastest(
+        store: Arc<Store>,
+        ids: &[&str],
+    ) -> (mpsc::UnboundedSender<WriterMsg>, LiveState) {
+        let live = LiveState::default();
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_inner(store, rx, Duration::from_secs(3600), live.clone());
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![fastest(ids)],
+        })
+        .unwrap();
+        (tx, live)
+    }
+
+    fn live_pool(live: &LiveState) -> Vec<String> {
+        live.read().services["f"]
+            .record
+            .pool
+            .clone()
+            .expect("fastest has a pool")
+    }
+
+    #[tokio::test]
+    async fn nearly_equal_backends_are_fast() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let ids = ["10.0.0.1:80", "10.0.0.2:80", "10.0.0.3:80"];
+        let (tx, _live) = start_fastest(store.clone(), &ids);
+        for (id, l) in ids.iter().zip([2000, 2800, 5000]) {
+            tx.send(updl(id, HealthState::Healthy, Some(l), true))
+                .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            record(&store, "f").pool.unwrap(),
+            ["10.0.0.1:80", "10.0.0.2:80"]
+        );
+    }
+
+    #[tokio::test]
+    async fn fast_backend_near_the_edge_stays_fast() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let ids = ["10.0.0.1:80", "10.0.0.2:80"];
+        let (tx, live) = start_fastest(store.clone(), &ids);
+        tx.send(updl(ids[0], HealthState::Healthy, Some(2000), true))
+            .unwrap();
+        tx.send(updl(ids[1], HealthState::Healthy, Some(2900), true))
+            .unwrap();
+        tx.send(updl(ids[1], HealthState::Healthy, Some(3500), false))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(live_pool(&live), ids);
+        // A reload keeping the backends keeps the membership.
+        let mut l = fastest(&ids);
+        l.reset = false;
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![l],
+        })
+        .unwrap();
+        tx.send(updl(ids[1], HealthState::Healthy, Some(4000), false))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(live_pool(&live), ids);
+        tx.send(updl(ids[1], HealthState::Healthy, Some(4001), false))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(live_pool(&live), [ids[0]]);
+        // Pool-only changes wait for the heartbeat; the store still has both.
+        assert_eq!(record(&store, "f").pool.unwrap(), ids);
+    }
+
+    #[tokio::test]
+    async fn missing_latency_is_not_fast() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let ids = ["10.0.0.1:80", "10.0.0.2:80"];
+        let (tx, live) = start_fastest(store, &ids);
+        tx.send(updl(ids[0], HealthState::Healthy, Some(900), true))
+            .unwrap();
+        tx.send(updl(ids[1], HealthState::Healthy, None, true))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(live_pool(&live), [ids[0]]);
+    }
+
+    #[tokio::test]
+    async fn pool_written_for_a_fastest_service() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
+        let mut f = layout("api.svc.emfor", &["10.0.0.11:8080"], 0, true);
+        f.balance = Balance::Fastest;
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![f, layout("rr.svc.emfor", &["10.0.0.12:8080"], 0, true)],
+        })
+        .unwrap();
+        let send = |state, latency_us, from| {
+            tx.send(WriterMsg::Update(BackendUpdate {
+                service: "api.svc.emfor".into(),
+                generation: 0,
+                backend_id: "10.0.0.11:8080".into(),
+                state,
+                checked_at: 1,
+                reason: None,
+                latency_us,
+                transition: Some(Transition { from, to: state }),
+            }))
+            .unwrap();
+        };
+        send(HealthState::Healthy, Some(1500), HealthState::Unknown);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let json = store.get(&service_key("api.svc.emfor")).unwrap().unwrap();
+        assert!(json.ends_with(r#""pool":["10.0.0.11:8080"]}"#), "{json}");
+        send(HealthState::Unhealthy, None, HealthState::Healthy);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let json = store.get(&service_key("api.svc.emfor")).unwrap().unwrap();
+        assert!(json.ends_with(r#""pool":[]}"#), "{json}");
+        let rr = store.get(&service_key("rr.svc.emfor")).unwrap().unwrap();
+        assert!(!rr.contains("pool"), "{rr}");
     }
 }

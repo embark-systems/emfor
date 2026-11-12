@@ -9,9 +9,9 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use crate::checker::{CheckRequest, Checker, run_check};
+use crate::checker::{CheckRequest, CheckResult, Checker, run_check};
 use crate::config::{Backend, Settings};
-use crate::state::{BackendHealth, Thresholds, Transition};
+use crate::state::{BackendHealth, Thresholds, Transition, next_latency};
 use crate::writer::WriterMsg;
 
 /// Result of one finished check, sent to the store writer.
@@ -27,6 +27,8 @@ pub struct BackendUpdate {
     pub checked_at: u64,
     pub reason: Option<String>,
     pub transition: Option<Transition>,
+    /// Smoothed up-check latency in microseconds (see [`next_latency`]).
+    pub latency_us: Option<u64>,
 }
 
 pub fn unix_ms() -> u64 {
@@ -63,12 +65,18 @@ pub fn spawn_backend(
     tokio::spawn(async move {
         let mut rng = StdRng::from_rng(&mut rand::rng());
         let mut health = BackendHealth::new();
+        let mut latency_us: Option<u64> = None;
         let first = first_delay(settings.borrow().interval, &mut rng);
         tokio::time::sleep(first).await;
         loop {
             let s = *settings.borrow();
             let req = CheckRequest::new(service.clone(), backend.addr, s.timeout);
+            // One-time setup (an HTTP client) happens here, outside the
+            // timed part, so it does not inflate the first latency sample.
+            checker.prepare(backend.addr);
+            let started = Instant::now();
             let result = run_check(checker.as_ref(), req).await;
+            let sample_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
             let thresholds = Thresholds {
                 rise: s.rise,
                 fall: s.fall,
@@ -76,6 +84,16 @@ pub fn spawn_backend(
             };
             let transition = health.apply(&result, Instant::now(), thresholds);
             let reason = result.reason().map(str::to_string);
+            if matches!(result, CheckResult::Up) {
+                tracing::debug!(
+                    service = %service,
+                    backend = %backend.id,
+                    sample_us,
+                    "check of {} {} passed in {sample_us} us",
+                    service, backend.id,
+                );
+            }
+            latency_us = next_latency(latency_us, &result, sample_us, transition);
             if let Some(t) = transition {
                 tracing::info!(
                     service = %service,
@@ -95,6 +113,7 @@ pub fn spawn_backend(
                 checked_at: unix_ms(),
                 reason,
                 transition,
+                latency_us,
             };
             if updates.send(WriterMsg::Update(update)).is_err() {
                 return; // writer gone: daemon is shutting down

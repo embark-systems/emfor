@@ -840,7 +840,7 @@ The repository SHALL contain conformance data under `tests/conformance/v1/`: `ca
 #### Scenario: Data covers every requirement
 
 - **WHEN** the cases are listed by the requirement they exercise
-- **THEN** each requirement in this capability except thread and fork safety, the C library sharing the daemon's LMDB, and the language wrappers has at least one case, and the four error codes, the five balance methods, an unknown balance value, both `on_all_down` settings and all four heartbeat forms (fresh, stale, zero, missing) each appear in at least one case
+- **THEN** each requirement in this capability except thread and fork safety, the C library sharing the daemon's LMDB, and the language wrappers has at least one case, and the four error codes, the six balance methods, an unknown balance value, both `on_all_down` settings and all four heartbeat forms (fresh, stale, zero, missing) each appear in at least one case
 
 #### Scenario: Driver detects a wrong answer
 
@@ -864,11 +864,31 @@ The repository SHALL contain conformance data under `tests/conformance/v1/`: `ca
 
 
 <!-- @trace
-source: emfor-balance-2
+source: emfor-balance-fastest
 updated: 2026-11-12
 code:
+  - crates/emfor-format/src/lib.rs
+  - crates/emfor-daemon/src/select.rs
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/dns.rs
+  - clients/c/README.md
+  - crates/emfor-daemon/src/config.rs
+  - examples/emfor.toml
   - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - crates/emfor-daemon/src/checker/mod.rs
+  - clients/rust/src/client.rs
+  - .spectra.yaml
+  - tests/conformance/v1/cases.json
+  - crates/emfor-daemon/src/state.rs
+  - crates/emfor-daemon/src/checker/http.rs
+  - crates/emfor-daemon/src/schedule.rs
+  - clients/rust/README.md
+  - crates/emfor-daemon/src/live.rs
+  - crates/emfor-daemon/src/writer.rs
+tests:
+  - crates/emfor-daemon/tests/dns.rs
+  - tools/emfor-fixture/tests/conformance_data.rs
+  - crates/emfor-daemon/tests/daemon.rs
 -->
 
 ---
@@ -1053,4 +1073,52 @@ updated: 2026-11-12
 code:
   - docs/deploy/dns-resolver.md
   - examples/rc.d/emfor
+-->
+
+---
+### Requirement: Fastest lookups rotate over the daemon's pool
+
+For a service with `balance = "fastest"`, when the client sees the store as fresh and the record's `pool` lists at least one `id` of a backend in the record, the client SHALL choose among those backends, in config order, by the round-robin counter as for `round-robin`. Otherwise (stale heartbeat, missing or empty `pool`, or no listed `id` matching a backend) the client SHALL choose exactly as for `round-robin`, including the all-down rules. The client SHALL NOT read `latency_us` or judge backends itself, and the affinity key SHALL be ignored.
+
+#### Scenario: Lookups stay in the pool
+
+- **WHEN** a fresh `fastest` service has healthy `10.0.0.11:8080`, `10.0.0.12:8080` and `10.0.0.13:8080` and `pool` `["10.0.0.11:8080", "10.0.0.12:8080"]`, and one process makes four lookups
+- **THEN** `10.0.0.11:8080` and `10.0.0.12:8080` are each returned twice and `10.0.0.13:8080` never
+
+#### Scenario: Stale heartbeat ignores the pool
+
+- **WHEN** the same service's heartbeat is stale and `on_all_down = "open"`, and one process makes three lookups
+- **THEN** each of the three backends is returned once
+
+#### Scenario: Missing or empty pool
+
+- **WHEN** a fresh `fastest` service with two healthy backends has no `pool` key, or has `"pool":[]`, and one process makes two lookups
+- **THEN** the two lookups return different backends and neither fails
+
+<!-- @trace
+source: emfor-balance-fastest
+updated: 2026-11-12
+code:
+  - crates/emfor-format/src/lib.rs
+  - crates/emfor-daemon/src/select.rs
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/dns.rs
+  - clients/c/README.md
+  - crates/emfor-daemon/src/config.rs
+  - examples/emfor.toml
+  - docs/deploy/dns-resolver.md
+  - crates/emfor-daemon/src/checker/mod.rs
+  - clients/rust/src/client.rs
+  - .spectra.yaml
+  - tests/conformance/v1/cases.json
+  - crates/emfor-daemon/src/state.rs
+  - crates/emfor-daemon/src/checker/http.rs
+  - crates/emfor-daemon/src/schedule.rs
+  - clients/rust/README.md
+  - crates/emfor-daemon/src/live.rs
+  - crates/emfor-daemon/src/writer.rs
+tests:
+  - crates/emfor-daemon/tests/dns.rs
+  - tools/emfor-fixture/tests/conformance_data.rs
+  - crates/emfor-daemon/tests/daemon.rs
 -->

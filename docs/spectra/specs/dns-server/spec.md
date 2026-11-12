@@ -188,6 +188,7 @@ For an SRV query on a service name or on one of its SRV owner names, the server 
 - `failover`: priority equals the candidate's position among the candidates (0 for the first), weight 1, config order.
 - `weighted`: priority 0, weight equals the backend's `weight`, config order.
 - `locality`: priority 0 for candidates whose `site` equals the host's `site` and 1 for the others; priority 0 for every candidate when the host has no `site` or no candidate matches it. Weight 1. Order is the rotated candidate list, stably sorted by priority.
+- `fastest`: priority 0 for candidates in the service's pool (as defined by the backend-selection requirement "Fast membership decided by the daemon") and 1 for the others; priority 0 for every candidate when the pool is empty. Weight 1. Order is the rotated candidate list, stably sorted by priority.
 - `round-robin`, `sticky`, and any value the daemon does not recognize: priority 0, weight 1, order is the rotated candidate list.
 
 The rotated candidate list SHALL start at position `n mod len` and wrap around, where `n` is a per-service SRV counter that starts at 0 when the service is first configured, increases by one on every SRV answer for that service, is kept across reloads for services that stay, and is independent of the A and AAAA choice state.
@@ -222,6 +223,11 @@ The additional section SHALL contain one A or AAAA record per distinct target na
 | dc3 | dc1, dc2 | 0, 0 |
 | none | dc1, dc2 | 0, 0 |
 
+#### Scenario: Fastest priorities
+
+- **WHEN** a `fastest` service has healthy backends `10.0.0.11:8080`, `10.0.0.12:8080` and `[2001:db8::11]:8080` in config order, and its pool is `10.0.0.11:8080` and `[2001:db8::11]:8080`
+- **THEN** each SRV answer lists `10-0-0-11.api.svc.emfor.` and `2001-0db8-0000-0000-0000-0000-0000-0011.api.svc.emfor.` with priority 0 first and `10-0-0-12.api.svc.emfor.` with priority 1 last
+
 #### Scenario: Both families listed
 
 - **WHEN** a `round-robin` service `api.svc.emfor` has healthy backends `10.0.0.11:8080` and `[2001:db8::11]:8080`
@@ -254,11 +260,31 @@ The additional section SHALL contain one A or AAAA record per distinct target na
 
 
 <!-- @trace
-source: emfor-dns-srv
+source: emfor-balance-fastest
 updated: 2026-11-12
 code:
+  - crates/emfor-format/src/lib.rs
+  - crates/emfor-daemon/src/select.rs
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/dns.rs
+  - clients/c/README.md
+  - crates/emfor-daemon/src/config.rs
+  - examples/emfor.toml
   - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - crates/emfor-daemon/src/checker/mod.rs
+  - clients/rust/src/client.rs
+  - .spectra.yaml
+  - tests/conformance/v1/cases.json
+  - crates/emfor-daemon/src/state.rs
+  - crates/emfor-daemon/src/checker/http.rs
+  - crates/emfor-daemon/src/schedule.rs
+  - clients/rust/README.md
+  - crates/emfor-daemon/src/live.rs
+  - crates/emfor-daemon/src/writer.rs
+tests:
+  - crates/emfor-daemon/tests/dns.rs
+  - tools/emfor-fixture/tests/conformance_data.rs
+  - crates/emfor-daemon/tests/daemon.rs
 -->
 
 ---

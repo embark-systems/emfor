@@ -260,6 +260,11 @@ impl Checker for HttpChecker {
         })
     }
 
+    fn prepare(&self, target: SocketAddr) {
+        // A build error is reported by the check that follows.
+        let _ = self.client_for(target);
+    }
+
     fn forget(&self, target: SocketAddr) {
         self.clients.lock().unwrap().remove(&target);
     }
@@ -421,8 +426,14 @@ path = "/healthz""#,
             opts: parse_options(&toml::Table::new()).unwrap(),
             clients: Mutex::new(HashMap::new()),
         };
+        c.prepare(addr);
+        assert_eq!(
+            c.clients.lock().unwrap().len(),
+            1,
+            "prepare builds the client"
+        );
         assert_eq!(c.check(req(addr)).await, CheckResult::Up);
-        assert_eq!(c.clients.lock().unwrap().len(), 1);
+        assert_eq!(c.clients.lock().unwrap().len(), 1, "check reuses it");
         c.forget(addr);
         assert!(c.clients.lock().unwrap().is_empty());
     }

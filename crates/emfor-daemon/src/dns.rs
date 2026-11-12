@@ -436,6 +436,7 @@ mod tests {
             on_all_down,
             balance,
             all_down: true,
+            pool: None,
             backends: backends
                 .iter()
                 .map(|(ip, state)| BackendRecord {
@@ -447,6 +448,7 @@ mod tests {
                     state: *state,
                     checked_at: None,
                     reason: None,
+                    latency_us: None,
                 })
                 .collect(),
         };
@@ -847,6 +849,7 @@ mod tests {
                     state: *state,
                     checked_at: None,
                     reason: None,
+                    latency_us: None,
                 }
             })
             .collect();

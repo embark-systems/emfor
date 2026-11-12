@@ -63,6 +63,12 @@ pub trait Checker: Send + Sync + fmt::Debug {
         CheckResult::Down("timeout".into())
     }
 
+    /// Set up per-backend resources (for example an HTTP client) ahead of a
+    /// check, so one-time setup is not counted in the check's latency.
+    /// Called before every check; must be cheap once the resources exist.
+    /// Errors are left for the check itself to report.
+    fn prepare(&self, _target: SocketAddr) {}
+
     /// Release per-backend resources. Called when a reload removes `target`
     /// from a service whose checker is kept.
     fn forget(&self, _target: SocketAddr) {}
