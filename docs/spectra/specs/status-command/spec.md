@@ -31,10 +31,8 @@ source: emfor-status
 updated: 2026-11-13
 code:
   - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/build/prefix.rs
   - crates/emfor-daemon/Cargo.toml
   - docs/deploy/daemon.md
-  - crates/emfor-daemon/build.rs
   - crates/emfor-daemon/src/cli.rs
   - crates/emfor-daemon/src/status.rs
   - crates/emfor-daemon/src/config.rs
@@ -206,10 +204,8 @@ source: emfor-status
 updated: 2026-11-13
 code:
   - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/build/prefix.rs
   - crates/emfor-daemon/Cargo.toml
   - docs/deploy/daemon.md
-  - crates/emfor-daemon/build.rs
   - crates/emfor-daemon/src/cli.rs
   - crates/emfor-daemon/src/status.rs
   - crates/emfor-daemon/src/config.rs

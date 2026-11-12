@@ -17,9 +17,59 @@ use crate::checker::exec::parse_command;
 use crate::checker::{Checker, Registry};
 
 /// The config file read when `--config` is absent: `/etc/emfor/emfor.toml`,
-/// or `<EMFOR_PREFIX>/etc/emfor/emfor.toml` when built with `EMFOR_PREFIX`
-/// (see build.rs).
-pub const DEFAULT_CONFIG_PATH: &str = env!("EMFOR_DEFAULT_CONFIG_PATH");
+/// or `<EMFOR_PREFIX>/etc/emfor/emfor.toml` when built with `EMFOR_PREFIX`.
+/// Fixed at compile time; rustc records the variable, so changing it
+/// rebuilds the crate.
+pub const DEFAULT_CONFIG_PATH: &str = {
+    const PREFIX: &str = match prefix_dir(option_env!("EMFOR_PREFIX")) {
+        Ok(p) => p,
+        // A const panic can pass a `&str` through but cannot format the
+        // bad value, so the message does not show it.
+        Err(e) => panic!("{}", e),
+    };
+    // `format!` is not available in a const; copy the two parts by hand.
+    const LEN: usize = PREFIX.len() + CONFIG_SUFFIX.len();
+    const BYTES: [u8; LEN] = {
+        let (p, s) = (PREFIX.as_bytes(), CONFIG_SUFFIX.as_bytes());
+        let mut out = [0u8; LEN];
+        let mut i = 0;
+        while i < LEN {
+            out[i] = if i < p.len() { p[i] } else { s[i - p.len()] };
+            i += 1;
+        }
+        out
+    };
+    match std::str::from_utf8(&BYTES) {
+        Ok(path) => path,
+        // Two `&str` joined are always valid UTF-8.
+        Err(_) => unreachable!(),
+    }
+};
+
+/// What `DEFAULT_CONFIG_PATH` appends to the install prefix.
+const CONFIG_SUFFIX: &str = "/etc/emfor/emfor.toml";
+
+/// The install prefix to put before `CONFIG_SUFFIX` for an `EMFOR_PREFIX`
+/// value (`None` when unset): `""` for unset, empty, `/` or `/usr`, any
+/// other absolute path without one trailing `/`. A relative prefix is an
+/// error.
+const fn prefix_dir(prefix: Option<&str>) -> Result<&str, &'static str> {
+    let Some(p) = prefix else { return Ok("") };
+    if p.is_empty() {
+        return Ok("");
+    }
+    if p.as_bytes()[0] != b'/' {
+        return Err("EMFOR_PREFIX must be an absolute path");
+    }
+    let p = match p.as_bytes() {
+        [.., b'/'] => p.split_at(p.len() - 1).0,
+        _ => p,
+    };
+    match p.as_bytes() {
+        b"" | b"/usr" => Ok(""),
+        _ => Ok(p),
+    }
+}
 
 /// One validation problem, located by TOML path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -971,10 +1021,6 @@ fn parse_size(s: &str) -> Option<usize> {
 }
 
 #[cfg(test)]
-#[path = "../build/prefix.rs"]
-mod prefix;
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1529,20 +1575,23 @@ backends = ["10.0.0.1:80"]
         assert_eq!(parse_ok(SVC).services[0].checker_id, "tcp");
     }
 
+    /// The `EMFOR_PREFIX` rule behind `DEFAULT_CONFIG_PATH`.
     #[test]
     fn prefix_to_default_config_path() {
-        use super::prefix::default_config_path as path;
         for (prefix, want) in [
             (None, "/etc/emfor/emfor.toml"),
+            (Some(""), "/etc/emfor/emfor.toml"),
+            (Some("/"), "/etc/emfor/emfor.toml"),
             (Some("/usr"), "/etc/emfor/emfor.toml"),
+            (Some("/usr/"), "/etc/emfor/emfor.toml"),
             (Some("/usr/local"), "/usr/local/etc/emfor/emfor.toml"),
             (Some("/usr/local/"), "/usr/local/etc/emfor/emfor.toml"),
             (Some("/opt/emfor"), "/opt/emfor/etc/emfor/emfor.toml"),
-            (Some(""), "/etc/emfor/emfor.toml"),
         ] {
-            assert_eq!(path(prefix).unwrap(), want, "{prefix:?}");
+            let dir = prefix_dir(prefix).unwrap();
+            assert_eq!(format!("{dir}{CONFIG_SUFFIX}"), want, "{prefix:?}");
         }
-        let err = path(Some("usr/local")).unwrap_err();
+        let err = prefix_dir(Some("usr/local")).unwrap_err();
         assert!(err.contains("EMFOR_PREFIX"), "{err}");
     }
 }
