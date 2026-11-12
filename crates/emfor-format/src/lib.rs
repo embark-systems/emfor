@@ -27,6 +27,17 @@ pub fn service_key(name: &str) -> String {
     format!("{SERVICE_KEY_PREFIX}{name}")
 }
 
+/// Prefix of backend state history keys: `hist/<service name>`. Only
+/// `emfor status` reads them; clients ignore them like any unknown key.
+pub const HIST_KEY_PREFIX: &str = "hist/";
+/// Most transitions kept per backend.
+pub const HISTORY_LIMIT: usize = 20;
+
+/// Store key for a service's backend state history.
+pub fn hist_key(name: &str) -> String {
+    format!("{HIST_KEY_PREFIX}{name}")
+}
+
 /// Health state of a backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -158,6 +169,48 @@ impl ServiceRecord {
     }
 }
 
+/// One health state transition caused by a check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    /// `checked_at` of the check that caused the transition.
+    pub at: u64,
+    pub from: HealthState,
+    pub to: HealthState,
+    /// The backend's `reason` after that check.
+    pub reason: Option<String>,
+}
+
+/// Value stored at `hist/<name>`: per backend id, transitions oldest first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceHistory {
+    pub backends: std::collections::BTreeMap<String, Vec<HistoryEntry>>,
+}
+
+impl ServiceHistory {
+    /// Append `entry` to backend `id`, dropping the oldest past [`HISTORY_LIMIT`].
+    pub fn push(&mut self, id: &str, entry: HistoryEntry) {
+        let entries = self.backends.entry(id.to_owned()).or_default();
+        entries.push(entry);
+        if entries.len() > HISTORY_LIMIT {
+            let excess = entries.len() - HISTORY_LIMIT;
+            entries.drain(..excess);
+        }
+    }
+
+    /// Keep only backends for which `keep` returns true and that have
+    /// entries. Returns whether anything was removed.
+    pub fn retain(&mut self, mut keep: impl FnMut(&str) -> bool) -> bool {
+        let before = self.backends.len();
+        self.backends
+            .retain(|id, entries| !entries.is_empty() && keep(id));
+        self.backends.len() != before
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.backends.values().all(Vec::is_empty)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +326,50 @@ mod tests {
     #[test]
     fn service_key_format() {
         assert_eq!(service_key("api.svc.emfor"), "svc/api.svc.emfor");
+        assert_eq!(hist_key("api.svc.emfor"), "hist/api.svc.emfor");
+    }
+
+    fn entry(at: u64) -> HistoryEntry {
+        HistoryEntry {
+            at,
+            from: HealthState::Healthy,
+            to: HealthState::Unhealthy,
+            reason: Some("connect: Connection refused".into()),
+        }
+    }
+
+    #[test]
+    fn history_serializes_spec_shape() {
+        let mut h = ServiceHistory::default();
+        h.push("10.0.0.12:8080", entry(1762905600123));
+        assert_eq!(
+            serde_json::to_string(&h).unwrap(),
+            r#"{"backends":{"10.0.0.12:8080":[{"at":1762905600123,"from":"healthy","to":"unhealthy","reason":"connect: Connection refused"}]}}"#
+        );
+        let back: ServiceHistory =
+            serde_json::from_str(&serde_json::to_string(&h).unwrap()).unwrap();
+        assert_eq!(back, h);
+    }
+
+    #[test]
+    fn history_capped_at_20() {
+        let mut h = ServiceHistory::default();
+        for at in 1..=21 {
+            h.push("10.0.0.11:8080", entry(at));
+        }
+        let ats: Vec<u64> = h.backends["10.0.0.11:8080"].iter().map(|e| e.at).collect();
+        assert_eq!(ats, (2..=21).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn history_retain_drops_unlisted_and_empty_backends() {
+        let mut h = ServiceHistory::default();
+        h.push("10.0.0.11:8080", entry(1));
+        h.push("10.0.0.99:8080", entry(2));
+        h.backends.insert("10.0.0.12:8080".into(), Vec::new());
+        assert!(h.retain(|id| id != "10.0.0.99:8080"));
+        assert_eq!(h.backends.keys().collect::<Vec<_>>(), ["10.0.0.11:8080"]);
+        assert!(!h.retain(|_| true));
+        assert!(!h.is_empty());
     }
 }

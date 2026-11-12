@@ -40,7 +40,7 @@ db.svc.emfor  failover  on_all_down=open  ALL DOWN
 
 - **daemon line**: `running` while the heartbeat is at most 3 seconds old; `stale` when it is older (the daemon hangs or is gone without a clean shutdown); `stopped` after a clean shutdown. The services shown are what the daemon last wrote; with a stale or stopped daemon, do not trust them.
 - **service line**: the `balance`, `on_all_down`, and `ALL DOWN` when no backend is healthy.
-- **backend lines**: health state after `rise` / `fall`, time since the last check finished (`never` before the first), the smoothed check latency (`-` when the backend is not healthy), `pool` for the fast backends of a `fastest` service, and the message of the last failed check. The message is cleared by the next passing check, which can happen before the backend counts as healthy again (`rise`).
+- **backend lines**: health state after `rise` / `fall`, time since the last check finished (`never` before the first), the smoothed check latency (`-` when the backend is not healthy), `pool` for the fast backends of a `fastest` service, `FLAPPING (<n> changes in 10m)` for a flapping backend (see [State history](#state-history)), and the message of the last failed check. The message is cleared by the next passing check, which can happen before the backend counts as healthy again (`rise`).
 
 On a terminal the states are colored; set `NO_COLOR` to turn that off. Piped output has no escape sequences.
 
@@ -50,8 +50,9 @@ On a terminal the states are colored; set `NO_COLOR` to turn that off. Piped out
 | --- | --- |
 | `--config <path>` | Config file to take `[store] path` from |
 | `--service <name>` | Show one service |
-| `--json` | One JSON object: `store`, `daemon` (`running`, `stale`, `stopped`), `heartbeat_ms`, `heartbeat_age_ms`, `started_at_ms`, `site`, and `services` (the store's service records as written) |
+| `--json` | One JSON object: `store`, `daemon` (`running`, `stale`, `stopped`), `heartbeat_ms`, `heartbeat_age_ms`, `started_at_ms`, `site`, `services` (the store's service records as written), `history` (service name → its `hist/` value as written) and `flapping` (`[{"service", "backend", "changes"}]`) |
 | `--watch` | Redraw every second until Ctrl-C; needs a terminal, not with `--json` |
+| `--history` | List each backend's recorded state changes, newest first; not with `--json` or `--watch` |
 
 ### Exit status
 
@@ -61,16 +62,34 @@ On a terminal the states are colored; set `NO_COLOR` to turn that off. Piped out
 | 1 | The daemon is stale or stopped, or a shown service is `ALL DOWN` |
 | 2 | The config or store cannot be read, the store has another format version, or `--service` names no service |
 
-A single unhealthy backend does not change the status: failing over is the daemon's job. This makes `emfor status` usable as a monitoring check as it is, for example from cron or a Nagios-style plugin; add `--service` to alert on one service only.
+A single unhealthy or flapping backend does not change the status: failing over is the daemon's job. This makes `emfor status` usable as a monitoring check as it is, for example from cron or a Nagios-style plugin; add `--service` to alert on one service only.
 
 ### Watching
 
-`emfor status --watch` redraws every second. When a backend's state or failure message changes, or a service turns `ALL DOWN` or back, that row is shown in reverse video for one frame. Below the services it lists the last 10 state changes it has seen since it started, newest first:
+`emfor status --watch` redraws every second. When a backend's state or failure message changes, or a service turns `ALL DOWN` or back, that row is shown in reverse video for one frame. Below the services it lists the last 10 changes, newest first: backend state changes from the stored [state history](#state-history), so changes from before `--watch` started are shown too, and daemon state changes it has seen since it started. Changes from an earlier day carry the date:
 
 ```
 recent changes:
   14:03:12 api.svc.emfor 10.0.0.12:8080 healthy -> unhealthy
   14:01:40 daemon stopped -> running
+  2026-11-12 23:50:00 api.svc.emfor 10.0.0.12:8080 unhealthy -> healthy
 ```
 
-The store keeps only the current state, so changes from before `--watch` started are not shown; use the daemon's log for history.
+### State history
+
+For each service the daemon keeps a `hist/<service>` key next to `svc/<service>`, holding the last 20 state changes of each backend that a check caused, written in the same transaction as the record. Resets to `unknown` (at start, or when `check` / `check_options` change on reload) are not recorded. The history survives restarts; at start and on reload the daemon drops the history of services and backends no longer in the config, and a value it cannot parse is logged as a warning and dropped. Clients and the DNS server do not read these keys. Each entry is about 90 bytes, so a service with 10 backends uses at most about 18 KB.
+
+```console
+$ emfor status --history --service api.svc.emfor
+store: /var/lib/emfor/state.mdb
+daemon: running, heartbeat 0.4s ago, up 3h12m, site tpe1
+
+api.svc.emfor
+  10.0.0.11:8080
+    no changes recorded
+  10.0.0.12:8080
+    2026-11-13 14:03:12 healthy -> unhealthy  connect: Connection refused
+    2026-11-13 14:02:50 unknown -> healthy
+```
+
+A backend with 5 or more changes between `healthy` and `unhealthy` in the last 10 minutes is flapping: `emfor status` marks its line with `FLAPPING (<n> changes in 10m)` and `--json` lists it under `flapping`. This is for display only; it changes neither the exit status nor what the daemon does.

@@ -6,7 +6,7 @@
 //! time go through pure functions for the text, JSON, exit status and the
 //! `--watch` comparison.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::io::{IsTerminal, Write};
 use std::path::Path;
@@ -14,8 +14,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use emfor_format::{
-    HealthState, KEY_HEARTBEAT, KEY_SCHEMA_VERSION, KEY_SITE, KEY_STARTED_AT, SCHEMA_VERSION,
-    SERVICE_KEY_PREFIX, ServiceRecord,
+    HIST_KEY_PREFIX, HealthState, HistoryEntry, KEY_HEARTBEAT, KEY_SCHEMA_VERSION, KEY_SITE,
+    KEY_STARTED_AT, SCHEMA_VERSION, SERVICE_KEY_PREFIX, ServiceHistory, ServiceRecord,
 };
 use heed::types::Str;
 use heed::{Database, Env, EnvFlags, EnvOpenOptions, WithoutTls};
@@ -28,6 +28,10 @@ use crate::schedule::unix_ms;
 pub const STALE_AFTER_MS: u64 = 3000;
 /// How many state changes `--watch` lists.
 const WATCH_CHANGES: usize = 10;
+/// A backend with at least this many healthy/unhealthy changes within
+/// [`FLAP_WINDOW_MS`] is flapping.
+pub const FLAP_THRESHOLD: usize = 5;
+pub const FLAP_WINDOW_MS: u64 = 600_000;
 
 const EXIT_PROBLEM: u8 = 1;
 const EXIT_FAILURE: u8 = 2;
@@ -43,6 +47,9 @@ pub struct StatusArgs {
     /// Redraw every second until interrupted (needs a terminal).
     #[arg(long)]
     pub watch: bool,
+    /// List each backend's recorded state changes, newest first.
+    #[arg(long, conflicts_with_all = ["json", "watch"])]
+    pub history: bool,
 }
 
 /// What one read transaction found in the store.
@@ -54,6 +61,8 @@ pub struct Snapshot {
     pub site: Option<String>,
     /// In name order.
     pub services: Vec<ServiceRecord>,
+    /// Backend state history by service name; unreadable values are left out.
+    pub history: BTreeMap<String, ServiceHistory>,
 }
 
 /// Whether the daemon is updating the store.
@@ -163,11 +172,23 @@ impl Reader {
             services.push(record);
         }
         services.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut history = BTreeMap::new();
+        for item in self.db.prefix_iter(&rtxn, HIST_KEY_PREFIX).map_err(lmdb)? {
+            let (key, value) = item.map_err(lmdb)?;
+            // Display only: a damaged history must not hide the state.
+            if let Ok(h) = serde_json::from_str::<ServiceHistory>(value) {
+                history.insert(key[HIST_KEY_PREFIX.len()..].to_owned(), h);
+            }
+        }
+        // Only listed services: a key left behind (for example by an older
+        // daemon, which does not prune history) is not shown.
+        history.retain(|name, _| services.iter().any(|s| s.name == *name));
         Ok(Snapshot {
             heartbeat_ms,
             started_at_ms,
             site,
             services,
+            history,
         })
     }
 }
@@ -182,6 +203,7 @@ pub fn filter(mut snap: Snapshot, name: Option<&str>) -> Result<Snapshot, Failur
     if snap.services.is_empty() {
         return Err(Failure(format!("service {name} not found")));
     }
+    snap.history.retain(|n, _| *n == want);
     Ok(snap)
 }
 
@@ -194,6 +216,35 @@ pub fn exit_status(snap: &Snapshot, now_ms: u64) -> u8 {
     } else {
         0
     }
+}
+
+/// How many of `entries` go between healthy and unhealthy (either way) at
+/// most [`FLAP_WINDOW_MS`] before `now_ms`.
+pub fn flap_count(entries: &[HistoryEntry], now_ms: u64) -> usize {
+    use HealthState::{Healthy, Unhealthy};
+    entries
+        .iter()
+        .filter(|e| matches!((e.from, e.to), (Healthy, Unhealthy) | (Unhealthy, Healthy)))
+        .filter(|e| now_ms.saturating_sub(e.at) <= FLAP_WINDOW_MS)
+        .count()
+}
+
+/// The flapping backends of `snap` as (service, backend id, changes), in
+/// service name order and then store order.
+pub fn flapping(snap: &Snapshot, now_ms: u64) -> Vec<(String, String, usize)> {
+    let mut out = Vec::new();
+    for svc in &snap.services {
+        let Some(h) = snap.history.get(&svc.name) else {
+            continue;
+        };
+        for b in &svc.backends {
+            let n = h.backends.get(&b.id).map_or(0, |e| flap_count(e, now_ms));
+            if n >= FLAP_THRESHOLD {
+                out.push((svc.name.clone(), b.id.clone(), n));
+            }
+        }
+    }
+    out
 }
 
 /// `0.8s`, `1m01s`, `3h12m`, `2d03h`.
@@ -257,15 +308,8 @@ fn reverse(line: &str) -> String {
     )
 }
 
-/// The text output, one string per line. Rows in `marked` are shown in
-/// reverse video.
-pub fn text(
-    snap: &Snapshot,
-    store: &Path,
-    now_ms: u64,
-    style: Style,
-    marked: &HashSet<Row>,
-) -> Vec<String> {
+/// The `store:` and `daemon:` lines.
+fn header(snap: &Snapshot, store: &Path, now_ms: u64, style: Style) -> Vec<String> {
     let mut lines = vec![format!("store: {}", store.display())];
     let (daemon, hb_age) = daemon_state(snap.heartbeat_ms, now_ms);
     let mut line = format!("daemon: {}", daemon.as_str());
@@ -283,6 +327,20 @@ pub fn text(
     } else {
         lines.push(paint(style, RED, &line));
     }
+    lines
+}
+
+/// The text output, one string per line. Rows in `marked` are shown in
+/// reverse video.
+pub fn text(
+    snap: &Snapshot,
+    store: &Path,
+    now_ms: u64,
+    style: Style,
+    marked: &HashSet<Row>,
+) -> Vec<String> {
+    let mut lines = header(snap, store, now_ms, style);
+    let flaps = flapping(snap, now_ms);
 
     // Backend cells: id, state, checked, latency, pool; reason unpadded.
     let rows: Vec<Vec<[String; 5]>> = snap
@@ -359,6 +417,13 @@ pub fn text(
                     padded
                 });
             }
+            if let Some((.., n)) = flaps
+                .iter()
+                .find(|(name, id, _)| *name == svc.name && *id == backend.id)
+            {
+                let marker = format!("FLAPPING ({n} changes in 10m)");
+                parts.push(paint(style, YELLOW, &marker));
+            }
             if let Some(r) = &backend.reason {
                 parts.push(r.clone());
             }
@@ -383,30 +448,62 @@ pub fn json(snap: &Snapshot, store: &Path, now_ms: u64) -> serde_json::Value {
         "started_at_ms": snap.started_at_ms,
         "site": snap.site,
         "services": snap.services,
+        "history": snap.history,
+        "flapping": flapping(snap, now_ms)
+            .into_iter()
+            .map(|(service, backend, changes)| {
+                serde_json::json!({"service": service, "backend": backend, "changes": changes})
+            })
+            .collect::<Vec<_>>(),
     })
+}
+
+/// `--history`: the header, then each backend's changes newest first.
+pub fn history_text(snap: &Snapshot, store: &Path, now_ms: u64, style: Style) -> Vec<String> {
+    let mut lines = header(snap, store, now_ms, style);
+    for svc in &snap.services {
+        lines.push(String::new());
+        lines.push(svc.name.clone());
+        let h = snap.history.get(&svc.name);
+        for b in &svc.backends {
+            lines.push(format!("  {}", b.id));
+            let entries = h
+                .and_then(|h| h.backends.get(&b.id))
+                .map_or(&[][..], Vec::as_slice);
+            if entries.is_empty() {
+                lines.push("    no changes recorded".to_owned());
+            }
+            for e in entries.iter().rev() {
+                let mut l = format!("    {} {} -> {}", datetime(e.at), e.from, e.to);
+                if let Some(r) = &e.reason {
+                    write!(l, "  {r}").unwrap();
+                }
+                lines.push(l);
+            }
+        }
+    }
+    lines
 }
 
 /// What `--watch` remembers between frames.
 #[derive(Debug, Default)]
 pub struct Watch {
     prev: Option<(Daemon, Snapshot)>,
-    changes: VecDeque<String>,
+    /// Daemon state changes seen during this run: (Unix ms, text), newest first.
+    daemon_changes: VecDeque<(u64, String)>,
 }
 
 impl Watch {
     /// Compare `snap` with the previous frame: returns the rows to
-    /// highlight and records health state changes (and daemon state
-    /// changes), labelled with `clock`.
-    pub fn update(&mut self, snap: &Snapshot, now_ms: u64, clock: &str) -> HashSet<Row> {
+    /// highlight and records daemon state changes at `now_ms`.
+    pub fn update(&mut self, snap: &Snapshot, now_ms: u64) -> HashSet<Row> {
         let mut marked = HashSet::new();
         let (daemon, _) = daemon_state(snap.heartbeat_ms, now_ms);
         if let Some((prev_daemon, prev)) = self.prev.take() {
             if prev_daemon != daemon {
-                self.push(format!(
-                    "{clock} daemon {} -> {}",
-                    prev_daemon.as_str(),
-                    daemon.as_str()
-                ));
+                let line = format!("daemon {} -> {}", prev_daemon.as_str(), daemon.as_str());
+                self.daemon_changes.push_front((now_ms, line));
+                self.daemon_changes.truncate(WATCH_CHANGES);
             }
             for svc in &snap.services {
                 let Some(old) = prev.services.iter().find(|s| s.name == svc.name) else {
@@ -422,12 +519,6 @@ impl Watch {
                     if ob.state != b.state || ob.reason != b.reason {
                         marked.insert(Row::Backend(svc.name.clone(), b.id.clone()));
                     }
-                    if ob.state != b.state {
-                        self.push(format!(
-                            "{clock} {} {} {} -> {}",
-                            svc.name, b.id, ob.state, b.state
-                        ));
-                    }
                 }
             }
         }
@@ -435,27 +526,74 @@ impl Watch {
         marked
     }
 
-    fn push(&mut self, line: String) {
-        self.changes.push_front(line);
-        self.changes.truncate(WATCH_CHANGES);
-    }
-
-    /// Recorded changes, newest first.
-    pub fn changes(&self) -> impl Iterator<Item = &str> {
-        self.changes.iter().map(String::as_str)
+    /// The most recent changes, newest first: backend changes from the
+    /// stored history of the last snapshot read, merged with the daemon
+    /// changes seen during this run. Changes from before the local day of
+    /// `now_ms` carry the date.
+    pub fn changes(&self, now_ms: u64) -> Vec<String> {
+        let mut all: Vec<(u64, String)> = self.daemon_changes.iter().cloned().collect();
+        if let Some((_, snap)) = &self.prev {
+            for (name, h) in &snap.history {
+                for (id, entries) in &h.backends {
+                    all.extend(
+                        entries
+                            .iter()
+                            .map(|e| (e.at, format!("{name} {id} {} -> {}", e.from, e.to))),
+                    );
+                }
+            }
+        }
+        // Stable: equal times keep daemon changes first.
+        all.sort_by_key(|a| std::cmp::Reverse(a.0));
+        let today = local(now_ms).map(|t| t.0);
+        all.into_iter()
+            .take(WATCH_CHANGES)
+            .map(|(at, line)| match local(at) {
+                Some((date, time)) if Some(&date) != today.as_ref() => {
+                    format!("{date} {time} {line}")
+                }
+                _ => format!("{} {line}", clock(at)),
+            })
+            .collect()
     }
 }
 
-/// `HH:MM:SS` in local time.
-fn clock(now_ms: u64) -> String {
-    let t = (now_ms / 1000) as libc::time_t;
+/// Local (`YYYY-MM-DD`, `HH:MM:SS`) of Unix milliseconds.
+fn local(ms: u64) -> Option<(String, String)> {
+    let t = (ms / 1000) as libc::time_t;
     // SAFETY: localtime_r only writes into `tm`.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
-        let s = now_ms / 1000 % 86400;
-        return format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60);
+        return None;
     }
-    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+    Some((
+        format!(
+            "{:04}-{:02}-{:02}",
+            tm.tm_year + 1900,
+            tm.tm_mon + 1,
+            tm.tm_mday
+        ),
+        format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec),
+    ))
+}
+
+/// `HH:MM:SS` in local time (UTC when the local time is unknown).
+fn clock(ms: u64) -> String {
+    match local(ms) {
+        Some((_, time)) => time,
+        None => {
+            let s = ms / 1000 % 86400;
+            format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+        }
+    }
+}
+
+/// `YYYY-MM-DD HH:MM:SS` in local time.
+fn datetime(ms: u64) -> String {
+    match local(ms) {
+        Some((date, time)) => format!("{date} {time}"),
+        None => format!("@{} {}", ms / 1000, clock(ms)),
+    }
 }
 
 fn style_for_terminal() -> Style {
@@ -498,9 +636,12 @@ pub fn main(config_path: &Path, args: &StatusArgs) -> ExitCode {
         } else {
             Style::default()
         };
-        text(&snap, &store.path, now, style, &HashSet::new())
-            .iter()
-            .try_for_each(|l| writeln!(out, "{l}"))
+        let lines = if args.history {
+            history_text(&snap, &store.path, now, style)
+        } else {
+            text(&snap, &store.path, now, style, &HashSet::new())
+        };
+        lines.iter().try_for_each(|l| writeln!(out, "{l}"))
     };
     if written.is_err() {
         return ExitCode::from(EXIT_FAILURE);
@@ -551,7 +692,7 @@ fn watch(store: &StoreConfig, service: Option<&str>) -> ExitCode {
             let read = read.and_then(|s| filter(s, service));
             let mut lines = match &read {
                 Ok(snap) => {
-                    let marked = state.update(snap, now, &clock(now));
+                    let marked = state.update(snap, now);
                     text(snap, &store.path, now, style, &marked)
                 }
                 Err(Failure(message)) => vec![
@@ -559,7 +700,7 @@ fn watch(store: &StoreConfig, service: Option<&str>) -> ExitCode {
                     paint(style, RED, &format!("error: {message}")),
                 ],
             };
-            let changes: Vec<&str> = state.changes().collect();
+            let changes = state.changes(now);
             if !changes.is_empty() {
                 lines.push(String::new());
                 lines.push("recent changes:".to_owned());
@@ -633,8 +774,47 @@ mod tests {
             started_at_ms: Some(NOW - 3_600_000),
             site: Some("tpe1".into()),
             services,
+            history: BTreeMap::new(),
         }
     }
+
+    use HealthState::{Healthy, Unhealthy, Unknown};
+
+    fn entry(ago_ms: u64, from: HealthState, to: HealthState) -> HistoryEntry {
+        HistoryEntry {
+            at: NOW - ago_ms,
+            from,
+            to,
+            reason: (to == Unhealthy).then(|| "connect: Connection refused".to_owned()),
+        }
+    }
+
+    /// Alternating healthy/unhealthy entries at the given ages, oldest first.
+    fn alternating(ages_ms: &[u64]) -> Vec<HistoryEntry> {
+        let mut ages = ages_ms.to_vec();
+        ages.sort_unstable_by(|a, b| b.cmp(a));
+        ages.iter()
+            .enumerate()
+            .map(|(i, &a)| {
+                if i % 2 == 0 {
+                    entry(a, Healthy, Unhealthy)
+                } else {
+                    entry(a, Unhealthy, Healthy)
+                }
+            })
+            .collect()
+    }
+
+    fn with_history(mut s: Snapshot, svc: &str, id: &str, entries: Vec<HistoryEntry>) -> Snapshot {
+        s.history
+            .entry(svc.to_owned())
+            .or_default()
+            .backends
+            .insert(id.to_owned(), entries);
+        s
+    }
+
+    const MIN: u64 = 60_000;
 
     fn render(s: &Snapshot) -> Vec<String> {
         text(
@@ -807,20 +987,26 @@ mod tests {
     fn watch_marks_changes_and_lists_transitions() {
         let mut w = Watch::default();
         let before = snap(Some(100), vec![api()]);
-        assert!(w.update(&before, NOW, "14:03:11").is_empty());
+        assert!(w.update(&before, NOW).is_empty());
 
         // Only ages move: nothing to highlight.
         let mut later = before.clone();
         later.services[0].backends[0].checked_at = Some(NOW);
         later.services[0].backends[0].latency_us = Some(1500);
-        assert!(w.update(&later, NOW, "14:03:12").is_empty());
+        assert!(w.update(&later, NOW).is_empty());
 
         let mut down = later.clone();
         let b = &mut down.services[0].backends[0];
         b.state = HealthState::Unhealthy;
         b.reason = Some("connect: Connection refused".into());
         down.services[0].all_down = true;
-        let marked = w.update(&down, NOW, "14:03:12");
+        let down = with_history(
+            down,
+            "api.svc.emfor",
+            "10.0.0.11:8080",
+            vec![entry(1000, Healthy, Unhealthy)],
+        );
+        let marked = w.update(&down, NOW);
         assert_eq!(
             marked,
             HashSet::from([
@@ -829,8 +1015,11 @@ mod tests {
             ])
         );
         assert_eq!(
-            w.changes().next(),
-            Some("14:03:12 api.svc.emfor 10.0.0.11:8080 healthy -> unhealthy")
+            w.changes(NOW).first().map(String::as_str),
+            Some(&*format!(
+                "{} api.svc.emfor 10.0.0.11:8080 healthy -> unhealthy",
+                clock(NOW - 1000)
+            ))
         );
         let lines = text(&down, Path::new("/s"), NOW, Style::default(), &marked);
         assert!(
@@ -855,30 +1044,239 @@ mod tests {
         // The daemon stops: a daemon change, newest first.
         let mut stopped = down.clone();
         stopped.heartbeat_ms = 0;
-        w.update(&stopped, NOW, "14:03:13");
+        w.update(&stopped, NOW + 1000);
         assert_eq!(
-            w.changes().next(),
-            Some("14:03:13 daemon running -> stopped")
+            w.changes(NOW + 1000).first().map(String::as_str),
+            Some(&*format!("{} daemon running -> stopped", clock(NOW + 1000)))
         );
     }
 
     #[test]
     fn watch_keeps_the_last_ten_changes() {
         let mut w = Watch::default();
-        let mut s = snap(Some(100), vec![api()]);
-        w.update(&s, NOW, "00:00:00");
-        for i in 0..12 {
-            let b = &mut s.services[0].backends[0];
-            b.state = if i % 2 == 0 {
-                HealthState::Unhealthy
-            } else {
-                HealthState::Healthy
-            };
-            w.update(&s, NOW, &format!("00:00:{i:02}"));
-        }
-        let changes: Vec<_> = w.changes().collect();
+        let ages: Vec<u64> = (1..=12).map(|i| i * 1000).collect();
+        let s = with_history(
+            snap(Some(100), vec![api()]),
+            "api.svc.emfor",
+            "10.0.0.11:8080",
+            alternating(&ages),
+        );
+        w.update(&s, NOW);
+        let changes = w.changes(NOW);
         assert_eq!(changes.len(), 10);
-        assert!(changes[0].starts_with("00:00:11 "), "{changes:?}");
-        assert!(changes[9].starts_with("00:00:02 "), "{changes:?}");
+        assert!(changes[0].starts_with(&clock(NOW - 1000)), "{changes:?}");
+        assert!(changes[9].starts_with(&clock(NOW - 10_000)), "{changes:?}");
+    }
+
+    /// Spec "Status watch mode", example "merged change list", and scenario
+    /// "Earlier changes shown at start".
+    #[test]
+    fn watch_merges_history_and_daemon_changes() {
+        let yesterday = NOW - 2 * 86_400_000;
+        let mut s = snap(Some(100), vec![api()]);
+        let h = s.history.entry("api.svc.emfor".into()).or_default();
+        h.backends.insert(
+            "10.0.0.12:8080".into(),
+            vec![
+                HistoryEntry {
+                    at: yesterday,
+                    ..entry(0, Healthy, Unhealthy)
+                },
+                entry(45 * MIN, Unhealthy, Healthy),
+            ],
+        );
+        let mut w = Watch::default();
+        w.update(&s, NOW - 5000);
+        // The first frame already lists the stored changes.
+        assert_eq!(w.changes(NOW - 5000).len(), 2);
+        s.heartbeat_ms = NOW - 5000;
+        w.update(&s, NOW);
+        assert_eq!(
+            w.changes(NOW),
+            [
+                format!("{} daemon running -> stale", clock(NOW)),
+                format!(
+                    "{} api.svc.emfor 10.0.0.12:8080 unhealthy -> healthy",
+                    clock(NOW - 45 * MIN)
+                ),
+                format!(
+                    "{} api.svc.emfor 10.0.0.12:8080 healthy -> unhealthy",
+                    datetime(yesterday)
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn datetime_format() {
+        let d = datetime(NOW);
+        let b = d.as_bytes();
+        assert_eq!(d.len(), 19, "{d}");
+        assert_eq!(
+            (b[4], b[7], b[10], b[13], b[16]),
+            (b'-', b'-', b' ', b':', b':')
+        );
+        assert!(d.ends_with(&clock(NOW)));
+    }
+
+    /// Spec "Flapping backends", example "counting rule".
+    #[test]
+    fn flap_counting_rule() {
+        let mut unknown_first = alternating(&[2 * MIN, 3 * MIN, 4 * MIN, 5 * MIN]);
+        unknown_first.push(entry(MIN, Unknown, Healthy));
+        let cases = [
+            (
+                alternating(&[MIN, 2 * MIN, 3 * MIN, 4 * MIN, 5 * MIN]),
+                Some(5),
+            ),
+            (alternating(&[MIN, 2 * MIN, 3 * MIN, 4 * MIN]), None),
+            (unknown_first, None),
+            (
+                alternating(&[MIN, 2 * MIN, 3 * MIN, 4 * MIN, 10 * MIN + 1000]),
+                None,
+            ),
+            (
+                alternating(&[MIN, 2 * MIN, 3 * MIN, 4 * MIN, 10 * MIN]),
+                Some(5),
+            ),
+        ];
+        for (i, (entries, want)) in cases.into_iter().enumerate() {
+            let s = with_history(
+                snap(Some(100), vec![api()]),
+                "api.svc.emfor",
+                "10.0.0.12:8080",
+                entries,
+            );
+            let got = flapping(&s, NOW).first().map(|f| f.2);
+            assert_eq!(got, want, "row {}", i + 1);
+            let line = render(&s)[5].clone();
+            match want {
+                Some(n) => assert!(
+                    line.contains(&format!("-      FLAPPING ({n} changes in 10m)  connect:")),
+                    "{line}"
+                ),
+                None => assert!(!line.contains("FLAPPING"), "{line}"),
+            }
+        }
+        // No history: not flapping.
+        assert!(flapping(&snap(Some(100), vec![api()]), NOW).is_empty());
+    }
+
+    /// Spec "Flapping backends", scenarios "Backend marked as flapping" and
+    /// "Flapping does not change the exit status".
+    #[test]
+    fn flapping_keeps_the_exit_status() {
+        let ages: Vec<u64> = (1..=6).map(|i| i * 80_000).collect();
+        let base = snap(Some(100), vec![api()]);
+        let flappy = with_history(
+            base.clone(),
+            "api.svc.emfor",
+            "10.0.0.11:8080",
+            alternating(&ages),
+        );
+        assert!(render(&flappy)[4].contains("FLAPPING (6 changes in 10m)"));
+        assert_eq!(exit_status(&flappy, NOW), 0);
+        assert_eq!(exit_status(&flappy, NOW), exit_status(&base, NOW));
+    }
+
+    /// Spec "Status filtering and JSON output": `history` and `flapping`.
+    #[test]
+    fn json_history_and_flapping() {
+        let ages: Vec<u64> = (1..=6).map(|i| i * 80_000).collect();
+        let db = service("db.svc.emfor", false, vec![]);
+        let s = with_history(
+            snap(Some(100), vec![api(), db]),
+            "api.svc.emfor",
+            "10.0.0.12:8080",
+            alternating(&ages),
+        );
+        let v = json(&s, Path::new("/s.mdb"), NOW);
+        assert_eq!(
+            v["history"]["api.svc.emfor"],
+            serde_json::to_value(&s.history["api.svc.emfor"]).unwrap()
+        );
+        assert_eq!(
+            v["flapping"],
+            json!([{"service": "api.svc.emfor", "backend": "10.0.0.12:8080", "changes": 6}])
+        );
+        let only_db = json(
+            &filter(s, Some("db.svc.emfor")).unwrap(),
+            Path::new("/s.mdb"),
+            NOW,
+        );
+        assert_eq!(only_db["history"], json!({}));
+        assert_eq!(only_db["flapping"], json!([]));
+        let none = json(&snap(Some(100), vec![api()]), Path::new("/s.mdb"), NOW);
+        assert_eq!(
+            (&none["history"], &none["flapping"]),
+            (&json!({}), &json!([]))
+        );
+    }
+
+    /// Spec "Status history output", scenario "History of one service".
+    #[test]
+    fn history_of_one_service() {
+        let up = NOW - 22_000;
+        let s = with_history(
+            snap(Some(100), vec![api()]),
+            "api.svc.emfor",
+            "10.0.0.12:8080",
+            vec![
+                HistoryEntry {
+                    at: up,
+                    from: Unknown,
+                    to: Healthy,
+                    reason: None,
+                },
+                entry(0, Healthy, Unhealthy),
+            ],
+        );
+        let lines = history_text(&s, Path::new("/s.mdb"), NOW, Style::default());
+        assert_eq!(
+            lines[2..],
+            [
+                "".to_owned(),
+                "api.svc.emfor".to_owned(),
+                "  10.0.0.11:8080".to_owned(),
+                "    no changes recorded".to_owned(),
+                "  10.0.0.12:8080".to_owned(),
+                format!(
+                    "    {} healthy -> unhealthy  connect: Connection refused",
+                    datetime(NOW)
+                ),
+                format!("    {} unknown -> healthy", datetime(up)),
+            ]
+        );
+        assert!(lines[1].starts_with("daemon: running"));
+    }
+
+    /// Spec "Status reads the store read-only" with history: what one read
+    /// returns; a damaged value and the history of a service without a
+    /// record are left out.
+    #[test]
+    fn reader_reads_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::store::tests::cfg(dir.path());
+        let store = crate::store::Store::open(&cfg).unwrap();
+        let mut h = ServiceHistory::default();
+        h.push("10.0.0.12:8080", entry(0, Healthy, Unhealthy));
+        let rec = serde_json::to_string(&api()).unwrap();
+        let hist = serde_json::to_string(&h).unwrap();
+        store
+            .write(|txn, db| {
+                db.put(txn, KEY_SCHEMA_VERSION, "1")?;
+                db.put(txn, KEY_HEARTBEAT, "1")?;
+                db.put(txn, "svc/api.svc.emfor", &rec)?;
+                db.put(txn, "hist/api.svc.emfor", &hist)?;
+                db.put(txn, "hist/old.svc.emfor", "not json")?;
+                db.put(txn, "hist/gone.svc.emfor", &hist)?;
+                Ok(())
+            })
+            .unwrap();
+        // heed refuses a second open of the same file with other flags.
+        drop(store);
+        let snap = Reader::open(&cfg).unwrap().read().unwrap();
+        assert_eq!(snap.history.keys().collect::<Vec<_>>(), ["api.svc.emfor"]);
+        assert_eq!(snap.history["api.svc.emfor"], h);
     }
 }

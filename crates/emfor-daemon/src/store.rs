@@ -130,6 +130,17 @@ impl Store {
         Ok(self.db.get(&rtxn, key)?.map(str::to_string))
     }
 
+    /// Every key starting with `prefix` and its value, from one read transaction.
+    pub fn prefix(&self, prefix: &str) -> heed::Result<BTreeMap<String, String>> {
+        let rtxn = self.env.read_txn()?;
+        let mut out = BTreeMap::new();
+        for item in self.db.prefix_iter(&rtxn, prefix)? {
+            let (k, v) = item?;
+            out.insert(k.to_string(), v.to_string());
+        }
+        Ok(out)
+    }
+
     /// Every key and value, for tests and debugging.
     pub fn dump(&self) -> heed::Result<BTreeMap<String, String>> {
         let rtxn = self.env.read_txn()?;
@@ -163,6 +174,26 @@ pub(crate) mod tests {
             map_size: 4 << 20,
             ..StoreConfig::default()
         }
+    }
+
+    #[test]
+    fn prefix_returns_only_matching_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&cfg(dir.path())).unwrap();
+        store
+            .write(|txn, db| {
+                db.put(txn, "hist/a", "1")?;
+                db.put(txn, "hist/b", "2")?;
+                db.put(txn, "svc/a", "3")?;
+                db.put(txn, "histx", "4")?;
+                Ok(())
+            })
+            .unwrap();
+        let got = store.prefix("hist/").unwrap();
+        assert_eq!(
+            got.into_iter().collect::<Vec<_>>(),
+            [("hist/a".into(), "1".into()), ("hist/b".into(), "2".into())]
+        );
     }
 
     #[test]

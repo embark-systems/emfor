@@ -1,10 +1,11 @@
 //! Command line entry point: `emfor [--config <path>] [--check-config]`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
+use emfor_format::{HIST_KEY_PREFIX, ServiceHistory};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing_subscriber::layer::SubscriberExt;
@@ -157,6 +158,28 @@ fn log_config_errors(path: &Path, errors: &[ConfigError]) {
     }
 }
 
+/// Backend state history left by earlier runs, by service name. Values that
+/// do not parse are logged and dropped.
+fn load_history(store: &Store) -> BTreeMap<String, ServiceHistory> {
+    let stored = match store.prefix(HIST_KEY_PREFIX) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("cannot read state history, starting without it: {e}");
+            return BTreeMap::new();
+        }
+    };
+    stored
+        .into_iter()
+        .filter_map(|(key, value)| match serde_json::from_str(&value) {
+            Ok(h) => Some((key[HIST_KEY_PREFIX.len()..].to_owned(), h)),
+            Err(e) => {
+                tracing::warn!("discarding {key}: {e}");
+                None
+            }
+        })
+        .collect()
+}
+
 async fn run(
     config_path: PathBuf,
     config: Config,
@@ -207,7 +230,8 @@ async fn run(
     warn_dns(&config);
 
     let (tx, rx) = mpsc::unbounded_channel();
-    let writer = writer::spawn_live(store, rx, live);
+    let history = load_history(&store);
+    let writer = writer::spawn_live(store, rx, live, history);
     let mut supervisor = Supervisor::start(&config, tx.clone());
     tracing::info!(
         "emfor started: {} services, {} backends, store {}",

@@ -7,14 +7,20 @@
 //! second. For `fastest` services the writer recomputes `pool` on every
 //! update and layout change, so the store and the live state agree. A failed commit is
 //! logged and retried at the next tick.
+//!
+//! Every health state change is also appended to the service's
+//! `hist/<name>` history in the same transaction. History survives restarts:
+//! the caller hands the stored history to [`spawn_live`], and layout changes
+//! prune it to the configured services and backends.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use emfor_format::{
-    BackendRecord, Balance, HealthState, KEY_HEARTBEAT, KEY_SCHEMA_VERSION, KEY_SITE,
-    KEY_STARTED_AT, OnAllDown, SCHEMA_VERSION, SERVICE_KEY_PREFIX, ServiceRecord, service_key,
+    BackendRecord, Balance, HIST_KEY_PREFIX, HealthState, HistoryEntry, KEY_HEARTBEAT,
+    KEY_SCHEMA_VERSION, KEY_SITE, KEY_STARTED_AT, OnAllDown, SCHEMA_VERSION, SERVICE_KEY_PREFIX,
+    ServiceHistory, ServiceRecord, hist_key, service_key,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::MissedTickBehavior;
@@ -109,6 +115,10 @@ struct Writer<S: Sink> {
     pending: Vec<Op>,
     /// Services whose record changed since the last commit.
     dirty: BTreeSet<Arc<str>>,
+    /// Backend state history per service.
+    histories: BTreeMap<Arc<str>, ServiceHistory>,
+    /// Services whose history changed since the last commit.
+    hist_dirty: BTreeSet<Arc<str>>,
     /// Updated before every commit attempt.
     live: LiveState,
 }
@@ -122,13 +132,15 @@ pub fn spawn<S: Sink>(
     spawn_with_tick(sink, rx, Duration::from_secs(1))
 }
 
-/// Like [`spawn`], also keeping `live` in line with the records.
+/// Like [`spawn`], also keeping `live` in line with the records and
+/// starting from `history`, the backend state history read from the store.
 pub fn spawn_live<S: Sink>(
     sink: S,
     rx: mpsc::UnboundedReceiver<WriterMsg>,
     live: LiveState,
+    history: BTreeMap<String, ServiceHistory>,
 ) -> tokio::task::JoinHandle<()> {
-    spawn_inner(sink, rx, Duration::from_secs(1), live)
+    spawn_inner(sink, rx, Duration::from_secs(1), live, history)
 }
 
 pub fn spawn_with_tick<S: Sink>(
@@ -136,7 +148,7 @@ pub fn spawn_with_tick<S: Sink>(
     rx: mpsc::UnboundedReceiver<WriterMsg>,
     tick: Duration,
 ) -> tokio::task::JoinHandle<()> {
-    spawn_inner(sink, rx, tick, LiveState::default())
+    spawn_inner(sink, rx, tick, LiveState::default(), BTreeMap::new())
 }
 
 fn spawn_inner<S: Sink>(
@@ -144,6 +156,7 @@ fn spawn_inner<S: Sink>(
     mut rx: mpsc::UnboundedReceiver<WriterMsg>,
     tick: Duration,
     live: LiveState,
+    history: BTreeMap<String, ServiceHistory>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut w = Writer {
@@ -153,6 +166,11 @@ fn spawn_inner<S: Sink>(
             pending: Vec::new(),
             dirty: BTreeSet::new(),
             live,
+            histories: history
+                .into_iter()
+                .map(|(name, h)| (Arc::from(name), h))
+                .collect(),
+            hist_dirty: BTreeSet::new(),
         };
         // First tick one period from now: start-up already writes a heartbeat.
         let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + tick, tick);
@@ -190,11 +208,23 @@ impl<S: Sink> Writer<S> {
         b.checked_at = Some(u.checked_at);
         b.reason = u.reason;
         b.latency_us = u.latency_us;
+        let reason = b.reason.clone();
         rec.refresh_all_down();
         refresh_pool(rec);
         self.live.set_record(rec);
         self.dirty.insert(u.service.clone());
-        if u.transition.is_some() {
+        if let Some(t) = u.transition {
+            let entry = HistoryEntry {
+                at: u.checked_at,
+                from: t.from,
+                to: t.to,
+                reason,
+            };
+            self.histories
+                .entry(u.service.clone())
+                .or_default()
+                .push(&u.backend_id, entry);
+            self.hist_dirty.insert(u.service.clone());
             self.flush(Vec::new());
         }
     }
@@ -218,6 +248,8 @@ impl<S: Sink> Writer<S> {
             ops.push(Op::Put(KEY_STARTED_AT.into(), unix_ms().to_string()));
             ops.push(Op::Put(KEY_HEARTBEAT.into(), unix_ms().to_string()));
             ops.push(Op::DeletePrefix(SERVICE_KEY_PREFIX.into()));
+            // Kept history is pruned below and written back in full.
+            ops.push(Op::DeletePrefix(HIST_KEY_PREFIX.into()));
         }
         let wanted: BTreeSet<Arc<str>> = services.iter().map(|s| s.name.clone()).collect();
         let removed: Vec<Arc<str>> = self
@@ -232,6 +264,19 @@ impl<S: Sink> Writer<S> {
             self.dirty.remove(&name);
             ops.push(Op::Delete(service_key(&name)));
         }
+        let unconfigured: Vec<Arc<str>> = self
+            .histories
+            .keys()
+            .filter(|n| !wanted.contains(*n))
+            .cloned()
+            .collect();
+        for name in unconfigured {
+            self.histories.remove(&name);
+            self.hist_dirty.remove(&name);
+            if !fresh_start {
+                ops.push(Op::Delete(hist_key(&name)));
+            }
+        }
         let mut live = std::collections::HashMap::new();
         for s in services {
             // Config parsing normalizes names; the live view relies on it.
@@ -241,6 +286,12 @@ impl<S: Sink> Writer<S> {
             } else {
                 self.records.remove(&s.name)
             };
+            if let Some(h) = self.histories.get_mut(&s.name) {
+                let pruned = h.retain(|id| s.backends.iter().any(|b| b.id == id));
+                if pruned || fresh_start {
+                    self.hist_dirty.insert(s.name.clone());
+                }
+            }
             let backends = s
                 .backends
                 .iter()
@@ -296,18 +347,35 @@ impl<S: Sink> Writer<S> {
                 ops.push(Op::Put(service_key(name), json));
             }
         }
+        for name in &self.hist_dirty {
+            match self.histories.get(name).filter(|h| !h.is_empty()) {
+                Some(h) => {
+                    let json = serde_json::to_string(h).expect("history serializes");
+                    ops.push(Op::Put(hist_key(name), json));
+                }
+                None => ops.push(Op::Delete(hist_key(name))),
+            }
+        }
         if ops.is_empty() {
             return;
         }
         match self.sink.commit(&ops) {
-            Ok(()) => self.dirty.clear(),
+            Ok(()) => {
+                self.dirty.clear();
+                self.hist_dirty.clear();
+            }
             Err(e) => {
                 tracing::error!("state store commit failed, retrying at next heartbeat: {e}");
-                // Keep everything except service puts (dirty records are re-rendered) and
-                // stale heartbeats (a fresh one is written next tick).
+                // Keep everything except service and history puts (dirty records and
+                // histories are re-rendered) and stale heartbeats (a fresh one is
+                // written next tick).
                 self.pending = ops
                     .into_iter()
-                    .filter(|op| !matches!(op, Op::Put(k, _) if k.starts_with(SERVICE_KEY_PREFIX) || k == KEY_HEARTBEAT))
+                    .filter(|op| {
+                        !matches!(op, Op::Put(k, _) if k.starts_with(SERVICE_KEY_PREFIX)
+                            || k.starts_with(HIST_KEY_PREFIX)
+                            || k == KEY_HEARTBEAT)
+                    })
                     .collect();
             }
         }
@@ -539,6 +607,268 @@ mod tests {
         }
     }
 
+    fn trans(
+        service: &str,
+        id: &str,
+        from: HealthState,
+        to: HealthState,
+        at: u64,
+        reason: Option<&str>,
+    ) -> WriterMsg {
+        WriterMsg::Update(BackendUpdate {
+            service: service.into(),
+            generation: 0,
+            backend_id: id.into(),
+            state: to,
+            checked_at: at,
+            reason: reason.map(str::to_owned),
+            latency_us: None,
+            transition: Some(Transition { from, to }),
+        })
+    }
+
+    fn history(store: &Store, name: &str) -> Option<ServiceHistory> {
+        store
+            .get(&hist_key(name))
+            .unwrap()
+            .map(|v| serde_json::from_str(&v).unwrap())
+    }
+
+    fn ats(h: &ServiceHistory, id: &str) -> Vec<u64> {
+        h.backends[id].iter().map(|e| e.at).collect()
+    }
+
+    /// Records every committed batch, then commits it to the store.
+    struct Recording {
+        inner: Arc<Store>,
+        commits: Arc<std::sync::Mutex<Vec<Vec<Op>>>>,
+    }
+    impl Sink for Recording {
+        fn commit(&mut self, ops: &[Op]) -> Result<(), String> {
+            self.commits.lock().unwrap().push(ops.to_vec());
+            self.inner.commit(ops)
+        }
+    }
+
+    #[tokio::test]
+    async fn transition_recorded_with_its_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let commits = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Recording {
+            inner: store.clone(),
+            commits: commits.clone(),
+        };
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_with_tick(sink, rx, Duration::from_secs(3600));
+        let ids = ["10.0.0.11:8080", "10.0.0.12:8080"];
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![layout("api.svc.emfor", &ids, 0, true)],
+        })
+        .unwrap();
+        tx.send(trans(
+            "api.svc.emfor",
+            "10.0.0.12:8080",
+            HealthState::Healthy,
+            HealthState::Unhealthy,
+            1762905600123,
+            Some("connect: Connection refused"),
+        ))
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let last = commits.lock().unwrap().last().cloned().unwrap();
+        let hist = last
+            .iter()
+            .find_map(|op| match op {
+                Op::Put(k, v) if k == "hist/api.svc.emfor" => Some(v.clone()),
+                _ => None,
+            })
+            .expect("history written");
+        assert!(
+            last.iter()
+                .any(|op| matches!(op, Op::Put(k, _) if k == "svc/api.svc.emfor")),
+            "same commit as the record"
+        );
+        assert_eq!(
+            hist,
+            r#"{"backends":{"10.0.0.12:8080":[{"at":1762905600123,"from":"healthy","to":"unhealthy","reason":"connect: Connection refused"}]}}"#
+        );
+
+        // An update without a transition, and a reset, add no entry.
+        let n = commits.lock().unwrap().len();
+        tx.send(upd(
+            "api.svc.emfor",
+            "10.0.0.12:8080",
+            HealthState::Unhealthy,
+            false,
+        ))
+        .unwrap();
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![layout("api.svc.emfor", &ids, 0, true)],
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let commits = commits.lock().unwrap();
+        assert!(
+            commits[n..].iter().flatten().all(
+                |op| !matches!(op, Op::Put(k, _) | Op::Delete(k) if k.starts_with(HIST_KEY_PREFIX))
+            ),
+            "{:?}",
+            &commits[n..]
+        );
+        let h = history(&store, "api.svc.emfor").unwrap();
+        assert_eq!(ats(&h, "10.0.0.12:8080"), [1762905600123]);
+    }
+
+    #[tokio::test]
+    async fn failed_commit_retries_latest_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let fail_next = Arc::new(AtomicUsize::new(0));
+        let sink = Failing {
+            inner: store.clone(),
+            fail_next: fail_next.clone(),
+        };
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_with_tick(sink, rx, Duration::from_millis(300));
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        fail_next.store(1, Ordering::SeqCst);
+        let (h, u) = (HealthState::Healthy, HealthState::Unhealthy);
+        tx.send(trans("a", "10.0.0.1:80", HealthState::Unknown, h, 10, None))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(history(&store, "a"), None, "first commit failed");
+        tx.send(trans("a", "10.0.0.1:80", h, u, 20, Some("refused")))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(ats(&history(&store, "a").unwrap(), "10.0.0.1:80"), [10, 20]);
+        fail_next.store(1, Ordering::SeqCst);
+        tx.send(trans("a", "10.0.0.1:80", u, h, 30, None)).unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(
+            ats(&history(&store, "a").unwrap(), "10.0.0.1:80"),
+            [10, 20, 30],
+            "retried at next tick"
+        );
+    }
+
+    #[tokio::test]
+    async fn history_kept_and_pruned_on_start_and_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let entry = |at| HistoryEntry {
+            at,
+            from: HealthState::Healthy,
+            to: HealthState::Unhealthy,
+            reason: None,
+        };
+        let mut api = ServiceHistory::default();
+        for at in 1..=3 {
+            api.push("10.0.0.11:8080", entry(at));
+        }
+        api.push("10.0.0.99:8080", entry(4));
+        let mut old = ServiceHistory::default();
+        old.push("10.0.0.1:80", entry(5));
+        // As left by the previous run.
+        commit_to_store(
+            &store,
+            &[
+                Op::Put(
+                    "hist/api.svc.emfor".into(),
+                    serde_json::to_string(&api).unwrap(),
+                ),
+                Op::Put(
+                    "hist/old.svc.emfor".into(),
+                    serde_json::to_string(&old).unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        let loaded = BTreeMap::from([
+            ("api.svc.emfor".to_owned(), api),
+            ("old.svc.emfor".to_owned(), old),
+        ]);
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_live(store.clone(), rx, LiveState::default(), loaded);
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![
+                layout(
+                    "api.svc.emfor",
+                    &["10.0.0.11:8080", "10.0.0.12:8080"],
+                    0,
+                    true,
+                ),
+                layout("db.svc.emfor", &["10.0.0.2:5432"], 0, true),
+            ],
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(history(&store, "old.svc.emfor"), None);
+        let h = history(&store, "api.svc.emfor").unwrap();
+        assert_eq!(h.backends.keys().collect::<Vec<_>>(), ["10.0.0.11:8080"]);
+        assert_eq!(ats(&h, "10.0.0.11:8080"), [1, 2, 3]);
+        assert!(
+            record(&store, "api.svc.emfor")
+                .backends
+                .iter()
+                .all(|b| b.state == HealthState::Unknown)
+        );
+
+        // Reload: a removed backend's entries and a removed service's key go.
+        tx.send(trans(
+            "db.svc.emfor",
+            "10.0.0.2:5432",
+            HealthState::Unknown,
+            HealthState::Healthy,
+            6,
+            None,
+        ))
+        .unwrap();
+        tx.send(trans(
+            "api.svc.emfor",
+            "10.0.0.12:8080",
+            HealthState::Unknown,
+            HealthState::Healthy,
+            7,
+            None,
+        ))
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(history(&store, "db.svc.emfor").is_some());
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![layout("api.svc.emfor", &["10.0.0.12:8080"], 0, false)],
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(history(&store, "db.svc.emfor"), None);
+        let h = history(&store, "api.svc.emfor").unwrap();
+        assert_eq!(h.backends.keys().collect::<Vec<_>>(), ["10.0.0.12:8080"]);
+
+        // Removing the last backend with history deletes the key.
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![layout("api.svc.emfor", &["10.0.0.13:8080"], 0, false)],
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(history(&store, "api.svc.emfor"), None);
+    }
+
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn failed_commit_is_logged_and_retried() {
@@ -583,7 +913,13 @@ mod tests {
         let live = LiveState::default();
         let (tx, rx) = mpsc::unbounded_channel();
         // Hour-long tick: an update without a transition is not committed.
-        spawn_inner(store.clone(), rx, Duration::from_secs(3600), live.clone());
+        spawn_inner(
+            store.clone(),
+            rx,
+            Duration::from_secs(3600),
+            live.clone(),
+            BTreeMap::new(),
+        );
         let mut l = layout("a", &["10.0.0.1:80"], 0, true);
         l.dns_ttl = Some(5);
         tx.send(WriterMsg::SetLayout {
@@ -659,7 +995,13 @@ mod tests {
     ) -> (mpsc::UnboundedSender<WriterMsg>, LiveState) {
         let live = LiveState::default();
         let (tx, rx) = mpsc::unbounded_channel();
-        spawn_inner(store, rx, Duration::from_secs(3600), live.clone());
+        spawn_inner(
+            store,
+            rx,
+            Duration::from_secs(3600),
+            live.clone(),
+            BTreeMap::new(),
+        );
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,

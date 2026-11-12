@@ -8,7 +8,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::cargo_bin;
-use emfor_format::{HealthState, ServiceRecord};
+use emfor_format::{HealthState, ServiceHistory, ServiceRecord};
 use heed::types::Str;
 use heed::{Database, Env, EnvFlags, EnvOpenOptions, WithoutTls};
 use nix::sys::signal::{Signal, kill};
@@ -113,7 +113,10 @@ fn tcp_service(name: &str, addr: &str) -> String {
 }
 
 fn start(services: &str) -> Daemon {
-    let dir = tempfile::tempdir().unwrap();
+    start_in(tempfile::tempdir().unwrap(), services)
+}
+
+fn start_in(dir: tempfile::TempDir, services: &str) -> Daemon {
     let cfg = dir.path().join("emfor.toml");
     std::fs::write(&cfg, format!("{}{services}", store_header(dir.path()))).unwrap();
     let child = Command::new(cargo_bin("emfor"))
@@ -367,6 +370,46 @@ fn example_config_is_valid() {
         String::from_utf8_lossy(&out.stdout).trim(),
         "config ok: 7 services, 17 backends"
     );
+}
+
+/// Write `pairs` into a store at `path` (created if missing) before the
+/// daemon runs, as a previous run would have left them.
+fn seed_store(path: &Path, pairs: &[(&str, &str)]) {
+    let env = unsafe {
+        let mut o = EnvOpenOptions::new().read_txn_without_tls();
+        o.flags(EnvFlags::NO_SUB_DIR).map_size(4 << 20);
+        o.open(path).unwrap()
+    };
+    let mut wtxn = env.write_txn().unwrap();
+    let db: Database<Str, Str> = env.create_database(&mut wtxn, None).unwrap();
+    for (k, v) in pairs {
+        db.put(&mut wtxn, k, v).unwrap();
+    }
+    wtxn.commit().unwrap();
+}
+
+/// Spec state-store "Backend state history", scenario "Unparseable history
+/// discarded".
+#[test]
+fn unparseable_history_discarded_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_store(
+        &dir.path().join("state.mdb"),
+        &[("hist/api.svc.emfor", "not json")],
+    );
+    let (_l, addr) = listener();
+    let d = start_in(dir, &tcp_service("api.svc.emfor", &addr));
+    let r = Reader::open(&d.store());
+    wait_for(|| {
+        r.get("hist/api.svc.emfor")
+            .and_then(|v| serde_json::from_str::<ServiceHistory>(&v).ok())
+            .is_some_and(|h| h.backends.contains_key(&addr))
+    });
+    let h: ServiceHistory = serde_json::from_str(&r.get("hist/api.svc.emfor").unwrap()).unwrap();
+    assert_eq!(h.backends[&addr][0].from, HealthState::Unknown);
+    let (code, err) = d.stop();
+    assert_eq!(code, 0);
+    assert!(err.contains("discarding hist/api.svc.emfor"), "{err}");
 }
 
 /// Acceptance: a backend that stops accepting connections becomes unhealthy
@@ -819,4 +862,89 @@ fn status_watch_needs_a_terminal() {
     std::fs::write(&cfg, "").unwrap();
     let (code, _, err) = status(&cfg, &["--watch"]);
     assert_eq!((code, err.trim()), (2, "--watch needs a terminal"));
+}
+
+/// Spec status-command "Status history output", scenario "History with
+/// watch refused".
+#[test]
+fn status_history_refuses_watch_and_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    std::fs::write(&cfg, "").unwrap();
+    for other in ["--watch", "--json"] {
+        let (code, _, err) = status(&cfg, &["--history", other]);
+        assert_eq!(code, 2, "{err}");
+        assert!(err.contains("cannot be used with"), "{err}");
+    }
+}
+
+/// Spec state-store "Backend state history", scenario "History kept across
+/// a restart", and status-command "Status history output".
+#[test]
+fn history_kept_across_a_restart() {
+    let (l, addr) = listener();
+    let mut d = start(&tcp_service("api.svc.emfor", &addr));
+    let r = Reader::open(&d.store());
+    let state = || r.service("api.svc.emfor").map(|s| s.backends[0].state);
+    wait_for(|| state() == Some(HealthState::Healthy));
+    drop(l);
+    wait_for(|| state() == Some(HealthState::Unhealthy));
+    let before: ServiceHistory =
+        serde_json::from_str(&r.get("hist/api.svc.emfor").unwrap()).unwrap();
+    let transitions: Vec<_> = before.backends[&addr]
+        .iter()
+        .map(|e| (e.from, e.to))
+        .collect();
+    assert_eq!(
+        transitions,
+        [
+            (HealthState::Unknown, HealthState::Healthy),
+            (HealthState::Healthy, HealthState::Unhealthy)
+        ]
+    );
+    drop(r);
+
+    // Restart on the same directory.
+    d.signal(Signal::SIGTERM);
+    assert!(d.child.wait().unwrap().success());
+    let dir = std::mem::replace(&mut d.dir, tempfile::tempdir().unwrap());
+    let services = std::fs::read_to_string(dir.path().join("emfor.toml"))
+        .unwrap()
+        .split_once("\n\n")
+        .unwrap()
+        .1
+        .to_owned();
+    let d = start_in(dir, &services);
+    let r = Reader::open(&d.store());
+    wait_for(|| r.get("meta/heartbeat").is_some_and(|h| h != "0"));
+    let after: ServiceHistory =
+        serde_json::from_str(&r.get("hist/api.svc.emfor").unwrap()).unwrap();
+    assert_eq!(after.backends[&addr][..2], before.backends[&addr][..]);
+
+    let (code, out, err) = status(&d.config(), &["--history"]);
+    assert_eq!(code, 1, "backend down: {out}{err}");
+    let lines: Vec<&str> = out.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| *l == format!("  {addr}"))
+        .unwrap_or_else(|| panic!("{out}"));
+    // Newest first; the restarted daemon may already have added
+    // `unknown -> unhealthy` above the earlier changes.
+    let block: Vec<&str> = lines[at + 1..]
+        .iter()
+        .take_while(|l| l.starts_with("    "))
+        .copied()
+        .collect();
+    let down = block
+        .iter()
+        .position(|l| l.contains(" healthy -> unhealthy  "));
+    let up = block
+        .iter()
+        .position(|l| l.ends_with(" unknown -> healthy"));
+    assert!(matches!((down, up), (Some(d), Some(u)) if d < u), "{out}");
+
+    let (_, out, _) = status(&d.config(), &["--json"]);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v["history"]["api.svc.emfor"]["backends"][&addr].is_array());
+    assert_eq!(v["flapping"], serde_json::json!([]));
 }

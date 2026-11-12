@@ -115,9 +115,13 @@ context: |
   - 狀態指令（emfor-status）：emfor status 唯讀開 store（先確認檔案存在，不取 writer lock），只讀設定檔的 [store]；
     顯示 daemon（心跳超過 3 秒為 stale、0 為 stopped）、各服務 balance / on_all_down / ALL DOWN、各後端狀態、
     檢查年齡、latency_us、fastest 的 pool 與最後失敗原因。--service、--json；結束碼 0 正常、1 daemon 沒在更新或
-    顯示的服務 all down、2 讀不到設定或 store。--watch 每秒重畫、反白變化、列最近 10 筆轉換（只含執行期間），
+    顯示的服務 all down、2 讀不到設定或 store。--watch 每秒重畫、反白變化、列最近 10 筆轉換（後端轉換取自 store 歷史，daemon 狀態變化只含執行期間），
     不用 TUI 套件。設定檔預設路徑由 build.rs 依編譯時的 EMFOR_PREFIX 決定（未設或 /usr 為 /etc/emfor/emfor.toml，
     其他為 <prefix>/etc/emfor/emfor.toml），不依作業系統；store 與 client 預設不變。
+    狀態歷史（emfor-status-history）：hist/<服務> 存每台後端最近 20 筆由檢查造成的轉換（at/from/to/reason），
+    與 svc/ 記錄同一交易寫入，跨重啟保留、啟動與 reload 時修剪；client 與 DNS 不讀。emfor status 以
+    10 分鐘內 healthy↔unhealthy 5 次以上判定抖動，標 FLAPPING，只顯示、不影響結束碼；--history 列出歷史，
+    --json 多 history 與 flapping。
 
   支援平台：Linux 與 FreeBSD 為正式部署平台（daemon 與所有 client 都要在兩者上通過測試），
   GitHub Actions CI（含 FreeBSD VM）為選用、手動觸發，不擋 change 完成或 archive；以本機驗證為準
