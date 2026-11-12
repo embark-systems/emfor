@@ -53,6 +53,16 @@ every backend counts as unhealthy and the service's `on_all_down` decides:
 | `NOT_FOUND` | No such service. |
 | `ALL_DOWN` | No healthy backend, and `on_all_down = "closed"`. |
 
+## Getting the package
+
+```bash
+go get github.com/embark-systems/emfor/clients/go@v0.1.0
+```
+
+The package's versions are tags `clients/go/vX.Y.Z`, one for each emfor
+release with the same number. Use the version of the emfor release whose
+`libemfor` you install.
+
 ## Installing libemfor
 
 This wrapper calls `libemfor`, the C library built from
