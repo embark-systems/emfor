@@ -7,9 +7,11 @@ use std::net::IpAddr;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
-use emfor_format::ServiceRecord;
+use emfor_format::{HealthState, ServiceRecord};
 
+use crate::schedule::CheckOutcome;
 use crate::select::Family;
+use crate::state::Transition;
 
 /// Smooth weighted round-robin state for one candidate list.
 #[derive(Debug, Default)]
@@ -76,6 +78,52 @@ pub struct LiveView {
     pub services: HashMap<String, LiveService>,
     /// Top-level `site` of the config, for `locality`.
     pub site: Option<String>,
+    /// Check and transition counts per (service, backend id) since the
+    /// backend appeared in the running daemon.
+    pub counters: HashMap<(String, String), BackendCounters>,
+    /// Failed state store commits since the daemon started.
+    pub commit_failures: u64,
+    /// `meta/started_at` of this run, Unix milliseconds.
+    pub started_at_ms: u64,
+}
+
+/// Counts for one backend, indexed by [`BackendCounters::outcome_index`]
+/// and [`BackendCounters::state_index`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BackendCounters {
+    /// Checks with result up, down, error.
+    pub checks: [u64; 3],
+    /// Transitions to unknown, healthy, unhealthy.
+    pub transitions: [u64; 3],
+}
+
+impl BackendCounters {
+    pub const OUTCOMES: [(CheckOutcome, &'static str); 3] = [
+        (CheckOutcome::Up, "up"),
+        (CheckOutcome::Down, "down"),
+        (CheckOutcome::Error, "error"),
+    ];
+    pub const STATES: [HealthState; 3] = [
+        HealthState::Unknown,
+        HealthState::Healthy,
+        HealthState::Unhealthy,
+    ];
+
+    pub fn outcome_index(o: CheckOutcome) -> usize {
+        match o {
+            CheckOutcome::Up => 0,
+            CheckOutcome::Down => 1,
+            CheckOutcome::Error => 2,
+        }
+    }
+
+    pub fn state_index(s: HealthState) -> usize {
+        match s {
+            HealthState::Unknown => 0,
+            HealthState::Healthy => 1,
+            HealthState::Unhealthy => 2,
+        }
+    }
 }
 
 /// Shared handle; cheap to clone.
@@ -88,7 +136,8 @@ impl LiveState {
     }
 
     /// Replace every service, keeping the round-robin position of services
-    /// that stay.
+    /// that stay and the counters of backends that stay; new backends start
+    /// at 0 and removed ones lose theirs.
     pub(crate) fn replace(&self, mut services: HashMap<String, LiveService>, site: Option<String>) {
         let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
         for (name, s) in services.iter_mut() {
@@ -96,16 +145,50 @@ impl LiveState {
                 s.round_robin = old.round_robin.clone();
             }
         }
+        let mut counters = HashMap::new();
+        for (name, s) in &services {
+            for b in &s.record.backends {
+                let key = (name.clone(), b.id.clone());
+                let c = v.counters.get(&key).copied().unwrap_or_default();
+                counters.insert(key, c);
+            }
+        }
+        v.counters = counters;
         v.services = services;
         v.site = site;
         v.ready = true;
     }
 
-    pub(crate) fn set_record(&self, record: &ServiceRecord) {
+    /// Store `record` after one check of `backend`, counting its outcome
+    /// and transition under the same lock.
+    pub(crate) fn update_backend(
+        &self,
+        record: &ServiceRecord,
+        backend: &str,
+        outcome: CheckOutcome,
+        transition: Option<Transition>,
+    ) {
         let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
         if let Some(s) = v.services.get_mut(&record.name) {
             s.record = record.clone();
         }
+        let key = (record.name.clone(), backend.to_owned());
+        if let Some(c) = v.counters.get_mut(&key) {
+            c.checks[BackendCounters::outcome_index(outcome)] += 1;
+            if let Some(t) = transition {
+                c.transitions[BackendCounters::state_index(t.to)] += 1;
+            }
+        }
+    }
+
+    pub(crate) fn count_commit_failure(&self) {
+        let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
+        v.commit_failures += 1;
+    }
+
+    pub(crate) fn set_started_at(&self, ms: u64) {
+        let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
+        v.started_at_ms = ms;
     }
 }
 

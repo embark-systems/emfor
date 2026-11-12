@@ -461,6 +461,7 @@ mod tests {
             ready: true,
             services: services.into_iter().collect(),
             site: None,
+            ..LiveView::default()
         }
     }
 

@@ -96,6 +96,7 @@ The daemon SHALL reject a config that violates any of these rules and SHALL repo
 - The top-level `site` and every backend `site` are, after ASCII lowercasing, 1 to 63 characters of `[a-z0-9-]` that do not start or end with `-`.
 - `check` names a registered checker and `check_options` passes that checker's validation.
 - `[dns] listen` is a non-empty array of `IPv4:port` or `[IPv6]:port` with port 1–65535 and no repeats; `[dns] zone` follows the service name rules after the same normalization; `[dns] ttl` is a whole number of seconds from 0s to 3600s.
+- `[metrics] listen` is a non-empty array of `IPv4:port` or `[IPv6]:port` with port 1–65535 and no repeats; `[metrics]` has no keys other than `listen`.
 - No unknown keys anywhere in the file.
 
 #### Scenario: Multiple errors reported together
@@ -133,34 +134,28 @@ The daemon SHALL reject a config that violates any of these rules and SHALL repo
 | `[dns] listen` | `["localhost:5300"]` | error: listen address must be an IP literal with port |
 | `[dns] zone` | `"svc..emfor"` | error: invalid zone name |
 | `[dns] zone` | `"SVC.Emfor."` | ok, normalized to `svc.emfor` |
+| `[metrics] listen` | `[]` | error: listen must not be empty |
+| `[metrics] listen` | `["localhost:5301"]` | error: listen address must be an IP literal with port |
+| `[metrics] listen` | `["127.0.0.1:5301", "127.0.0.1:5301"]` | error: duplicate listen address |
+| `[metrics] path` | `"/m"` | error: unknown key |
 
 
 <!-- @trace
-source: emfor-balance-fastest
-updated: 2026-11-12
+source: emfor-metrics
+updated: 2026-11-13
 code:
-  - crates/emfor-format/src/lib.rs
-  - crates/emfor-daemon/src/select.rs
-  - clients/rust/src/select.rs
-  - crates/emfor-daemon/src/dns.rs
-  - clients/c/README.md
-  - crates/emfor-daemon/src/config.rs
   - examples/emfor.toml
-  - docs/deploy/dns-resolver.md
-  - crates/emfor-daemon/src/checker/mod.rs
-  - clients/rust/src/client.rs
-  - .spectra.yaml
-  - tests/conformance/v1/cases.json
-  - crates/emfor-daemon/src/state.rs
-  - crates/emfor-daemon/src/checker/http.rs
-  - crates/emfor-daemon/src/schedule.rs
-  - clients/rust/README.md
+  - crates/emfor-daemon/src/lib.rs
   - crates/emfor-daemon/src/live.rs
+  - crates/emfor-daemon/src/config.rs
+  - docs/deploy/daemon.md
+  - crates/emfor-daemon/src/dns.rs
+  - crates/emfor-daemon/src/schedule.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - crates/emfor-daemon/src/cli.rs
   - crates/emfor-daemon/src/writer.rs
 tests:
-  - crates/emfor-daemon/tests/dns.rs
-  - tools/emfor-fixture/tests/conformance_data.rs
-  - crates/emfor-daemon/tests/daemon.rs
+  - crates/emfor-daemon/tests/metrics.rs
 -->
 
 ---
@@ -247,7 +242,7 @@ tests:
 ---
 ### Requirement: Reload on SIGHUP applies only a fully valid config
 
-On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes validation, the daemon SHALL apply it. If any validation error exists, the daemon SHALL log every error at `error` level and continue running the previous config unchanged. A change to any key in the `[store]` table SHALL be a validation error on reload. A change to `[dns] listen`, including adding or removing the `[dns]` table, SHALL be a validation error on reload with the message "dns listen settings require restart". Changes to `[dns] zone`, `[dns] ttl`, `dns_ttl`, and `balance` SHALL take effect on reload.
+On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes validation, the daemon SHALL apply it. If any validation error exists, the daemon SHALL log every error at `error` level and continue running the previous config unchanged. A change to any key in the `[store]` table SHALL be a validation error on reload. A change to `[dns] listen`, including adding or removing the `[dns]` table, SHALL be a validation error on reload with the message "dns listen settings require restart". A change to `[metrics] listen`, including adding or removing the `[metrics]` table, SHALL be a validation error on reload with the message "metrics listen settings require restart". Changes to `[dns] zone`, `[dns] ttl`, `dns_ttl`, and `balance` SHALL take effect on reload.
 
 #### Scenario: Valid reload adds a service
 
@@ -274,12 +269,28 @@ On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes v
 - **WHEN** a service with healthy backends 10.0.0.1 and 10.0.0.2 changes from `balance = "round-robin"` to `balance = "failover"` and the daemon receives `SIGHUP`
 - **THEN** every following A query for that service returns 10.0.0.1
 
+#### Scenario: Metrics listen change requires restart
+
+- **WHEN** the daemon runs with `[metrics] listen = ["127.0.0.1:5301"]`, the config file is changed to `["127.0.0.1:5302"]`, and the daemon receives `SIGHUP`
+- **THEN** the reload is rejected with the error "metrics listen settings require restart" and `GET /metrics` keeps answering on 127.0.0.1:5301
+
+
 <!-- @trace
-source: emfor-dns
-updated: 2026-11-12
+source: emfor-metrics
+updated: 2026-11-13
 code:
-  - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - examples/emfor.toml
+  - crates/emfor-daemon/src/lib.rs
+  - crates/emfor-daemon/src/live.rs
+  - crates/emfor-daemon/src/config.rs
+  - docs/deploy/daemon.md
+  - crates/emfor-daemon/src/dns.rs
+  - crates/emfor-daemon/src/schedule.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - crates/emfor-daemon/src/cli.rs
+  - crates/emfor-daemon/src/writer.rs
+tests:
+  - crates/emfor-daemon/tests/metrics.rs
 -->
 
 ---

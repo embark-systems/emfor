@@ -26,6 +26,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::MissedTickBehavior;
 
 use crate::config::Backend;
+#[cfg(test)]
+use crate::live::BackendCounters;
 use crate::live::{LiveService, LiveState};
 use crate::schedule::{BackendUpdate, unix_ms};
 use crate::state::fast_pool;
@@ -211,7 +213,8 @@ impl<S: Sink> Writer<S> {
         let reason = b.reason.clone();
         rec.refresh_all_down();
         refresh_pool(rec);
-        self.live.set_record(rec);
+        self.live
+            .update_backend(rec, &u.backend_id, u.outcome, u.transition);
         self.dirty.insert(u.service.clone());
         if let Some(t) = u.transition {
             let entry = HistoryEntry {
@@ -245,7 +248,9 @@ impl<S: Sink> Writer<S> {
                 KEY_SCHEMA_VERSION.into(),
                 SCHEMA_VERSION.to_string(),
             ));
-            ops.push(Op::Put(KEY_STARTED_AT.into(), unix_ms().to_string()));
+            let started = unix_ms();
+            self.live.set_started_at(started);
+            ops.push(Op::Put(KEY_STARTED_AT.into(), started.to_string()));
             ops.push(Op::Put(KEY_HEARTBEAT.into(), unix_ms().to_string()));
             ops.push(Op::DeletePrefix(SERVICE_KEY_PREFIX.into()));
             // History is pruned key by key below, never by prefix: a key the
@@ -365,6 +370,7 @@ impl<S: Sink> Writer<S> {
             }
             Err(e) => {
                 tracing::error!("state store commit failed, retrying at next heartbeat: {e}");
+                self.live.count_commit_failure();
                 // Keep everything except service and history puts (dirty records and
                 // histories are re-rendered) and stale heartbeats (a fresh one is
                 // written next tick).
@@ -434,6 +440,7 @@ mod tests {
             checked_at: 1,
             reason: None,
             latency_us: None,
+            outcome: crate::schedule::CheckOutcome::Up,
             transition: transition.then_some(Transition {
                 from: HealthState::Unknown,
                 to: state,
@@ -622,6 +629,11 @@ mod tests {
             checked_at: at,
             reason: reason.map(str::to_owned),
             latency_us: None,
+            outcome: if to == HealthState::Healthy {
+                crate::schedule::CheckOutcome::Up
+            } else {
+                crate::schedule::CheckOutcome::Down
+            },
             transition: Some(Transition { from, to }),
         })
     }
@@ -916,6 +928,143 @@ mod tests {
         assert_eq!(history(&store, "api.svc.emfor"), None);
     }
 
+    fn checked(
+        service: &str,
+        id: &str,
+        generation: u64,
+        outcome: crate::schedule::CheckOutcome,
+        transition: Option<(HealthState, HealthState)>,
+    ) -> WriterMsg {
+        let state = transition.map_or(HealthState::Unknown, |t| t.1);
+        WriterMsg::Update(BackendUpdate {
+            service: service.into(),
+            generation,
+            backend_id: id.into(),
+            state,
+            checked_at: 1,
+            reason: None,
+            latency_us: None,
+            outcome,
+            transition: transition.map(|(from, to)| Transition { from, to }),
+        })
+    }
+
+    fn counters(live: &LiveState, service: &str, id: &str) -> Option<BackendCounters> {
+        live.read()
+            .counters
+            .get(&(service.to_owned(), id.to_owned()))
+            .copied()
+    }
+
+    /// Spec metrics-endpoint "Check and transition counters".
+    #[tokio::test]
+    async fn counts_checks_and_transitions() {
+        use crate::schedule::CheckOutcome::{Down, Up};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let live = LiveState::default();
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_inner(
+            store,
+            rx,
+            Duration::from_secs(3600),
+            live.clone(),
+            BTreeMap::new(),
+        );
+        let id = "10.0.0.11:8080";
+        let svc = "api.svc.emfor";
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![layout(svc, &[id], 1, true)],
+        })
+        .unwrap();
+        let (h, u) = (HealthState::Healthy, HealthState::Unhealthy);
+        for m in [
+            checked(svc, id, 1, Up, None),
+            checked(svc, id, 1, Up, Some((HealthState::Unknown, h))),
+            checked(svc, id, 1, Down, None),
+            checked(svc, id, 1, Down, None),
+            checked(svc, id, 1, Down, Some((h, u))),
+            // From a task replaced by a reload: not counted.
+            checked(svc, id, 0, Up, Some((u, h))),
+        ] {
+            tx.send(m).unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let c = counters(&live, svc, id).unwrap();
+        assert_eq!(c.checks, [2, 3, 0], "up, down, error");
+        assert_eq!(c.transitions, [0, 1, 1], "unknown, healthy, unhealthy");
+        assert!(live.read().started_at_ms > 0);
+
+        // A reset (check changed) keeps the counters.
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![layout(svc, &[id], 2, true)],
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(counters(&live, svc, id).unwrap().checks, [2, 3, 0]);
+
+        // Removed, then added back: from 0.
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![layout(svc, &["10.0.0.12:8080"], 3, false)],
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(counters(&live, svc, id), None);
+        assert_eq!(
+            counters(&live, svc, "10.0.0.12:8080"),
+            Some(BackendCounters::default())
+        );
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![layout(svc, &[id, "10.0.0.12:8080"], 4, false)],
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(counters(&live, svc, id), Some(BackendCounters::default()));
+    }
+
+    /// Spec metrics-endpoint "Daemon metrics", scenario "Store commit failure
+    /// counted".
+    #[tokio::test]
+    async fn commit_failures_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let fail_next = Arc::new(AtomicUsize::new(0));
+        let sink = Failing {
+            inner: store,
+            fail_next: fail_next.clone(),
+        };
+        let live = LiveState::default();
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_inner(
+            sink,
+            rx,
+            Duration::from_secs(3600),
+            live.clone(),
+            BTreeMap::new(),
+        );
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(live.read().commit_failures, 0);
+        fail_next.store(1, Ordering::SeqCst);
+        tx.send(upd("a", "10.0.0.1:80", HealthState::Healthy, true))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(live.read().commit_failures, 1);
+    }
+
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn failed_commit_is_logged_and_retried() {
@@ -1155,6 +1304,7 @@ mod tests {
                 checked_at: 1,
                 reason: None,
                 latency_us,
+                outcome: crate::schedule::CheckOutcome::Up,
                 transition: Some(Transition { from, to: state }),
             }))
             .unwrap();

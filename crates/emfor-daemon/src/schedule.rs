@@ -14,6 +14,24 @@ use crate::config::{Backend, Settings};
 use crate::state::{BackendHealth, Thresholds, Transition, next_latency};
 use crate::writer::WriterMsg;
 
+/// Which kind of result one check had, for the check counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckOutcome {
+    Up,
+    Down,
+    Error,
+}
+
+impl CheckOutcome {
+    pub fn of(result: &CheckResult) -> CheckOutcome {
+        match result {
+            CheckResult::Up => CheckOutcome::Up,
+            CheckResult::Down(_) => CheckOutcome::Down,
+            CheckResult::Error(_) => CheckOutcome::Error,
+        }
+    }
+}
+
 /// Result of one finished check, sent to the store writer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendUpdate {
@@ -27,6 +45,7 @@ pub struct BackendUpdate {
     pub checked_at: u64,
     pub reason: Option<String>,
     pub transition: Option<Transition>,
+    pub outcome: CheckOutcome,
     /// Smoothed up-check latency in microseconds (see [`next_latency`]).
     pub latency_us: Option<u64>,
 }
@@ -113,6 +132,7 @@ pub fn spawn_backend(
                 checked_at: unix_ms(),
                 reason,
                 transition,
+                outcome: CheckOutcome::of(&result),
                 latency_us,
             };
             if updates.send(WriterMsg::Update(update)).is_err() {
@@ -215,6 +235,7 @@ mod tests {
         }
         let first = update(rx.recv().await.unwrap());
         assert_eq!(first.state, HealthState::Unknown);
+        assert_eq!(first.outcome, CheckOutcome::Up);
         let second = update(rx.recv().await.unwrap());
         assert_eq!(
             second.transition,
@@ -222,6 +243,19 @@ mod tests {
                 from: HealthState::Unknown,
                 to: HealthState::Healthy
             })
+        );
+    }
+
+    #[test]
+    fn outcome_of_each_result() {
+        assert_eq!(CheckOutcome::of(&CheckResult::Up), CheckOutcome::Up);
+        assert_eq!(
+            CheckOutcome::of(&CheckResult::Down("refused".into())),
+            CheckOutcome::Down
+        );
+        assert_eq!(
+            CheckOutcome::of(&CheckResult::Error("no such file".into())),
+            CheckOutcome::Error
         );
     }
 

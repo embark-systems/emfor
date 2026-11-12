@@ -90,6 +90,20 @@ impl Default for DnsConfig {
     }
 }
 
+/// The `[metrics]` table. The metrics endpoint runs only when it is present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricsConfig {
+    pub listen: Vec<SocketAddr>,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            listen: vec![SocketAddr::from(([127, 0, 0, 1], 5301))],
+        }
+    }
+}
+
 /// True when `name` equals `zone` or is under it. Both normalized.
 pub fn in_zone(name: &str, zone: &str) -> bool {
     name == zone
@@ -179,6 +193,7 @@ pub struct Config {
     pub store: StoreConfig,
     pub log: LogConfig,
     pub dns: Option<DnsConfig>,
+    pub metrics: Option<MetricsConfig>,
     /// Sorted by name.
     pub services: Vec<ServiceConfig>,
 }
@@ -288,7 +303,18 @@ pub fn parse_dns_listen(text: &str) -> Option<Option<Vec<SocketAddr>>> {
     let Some(t) = v.table(&root, "dns") else {
         return v.errors.is_empty().then_some(None);
     };
-    let listen = v.dns_listen(t);
+    let listen = v.listen(t, "dns", DnsConfig::default().listen);
+    v.errors.is_empty().then_some(Some(listen))
+}
+
+/// Parse only `[metrics] listen`, like [`parse_dns_listen`].
+pub fn parse_metrics_listen(text: &str) -> Option<Option<Vec<SocketAddr>>> {
+    let root: toml::Table = text.parse().ok()?;
+    let mut v = Validator::default();
+    let Some(t) = v.table(&root, "metrics") else {
+        return v.errors.is_empty().then_some(None);
+    };
+    let listen = v.listen(t, "metrics", MetricsConfig::default().listen);
     v.errors.is_empty().then_some(Some(listen))
 }
 
@@ -432,7 +458,7 @@ impl Validator {
             root,
             "",
             &[
-                "site", "store", "log", "dns", "defaults", "plugins", "services",
+                "site", "store", "log", "dns", "metrics", "defaults", "plugins", "services",
             ],
         );
         let site = self.site(root, "");
@@ -440,6 +466,7 @@ impl Validator {
         let store = self.store(root);
         let log = self.log(root);
         let dns = self.dns(root);
+        let metrics = self.metrics(root);
 
         let defaults_table = self.table(root, "defaults");
         let defaults_partial = match defaults_table {
@@ -484,6 +511,7 @@ impl Validator {
             store,
             log,
             dns,
+            metrics,
             services,
         }
     }
@@ -524,17 +552,23 @@ impl Validator {
         specs
     }
 
-    /// `[dns] listen`, or the default when absent or invalid (errors recorded).
-    fn dns_listen(&mut self, t: &toml::Table) -> Vec<SocketAddr> {
+    /// `[<table>] listen`, or `default` when absent or invalid (errors recorded).
+    fn listen(
+        &mut self,
+        t: &toml::Table,
+        table: &str,
+        default: Vec<SocketAddr>,
+    ) -> Vec<SocketAddr> {
+        let path = format!("{table}.listen");
         match t.get("listen") {
             None => {}
             Some(toml::Value::Array(a)) if a.is_empty() => {
-                self.err("dns.listen", "listen must not be empty")
+                self.err(path, "listen must not be empty")
             }
             Some(toml::Value::Array(a)) => {
                 let mut out = Vec::new();
                 for (i, item) in a.iter().enumerate() {
-                    let ipath = format!("dns.listen[{i}]");
+                    let ipath = format!("{path}[{i}]");
                     match item.as_str().map(str::parse::<SocketAddr>) {
                         Some(Ok(addr)) if addr.port() != 0 => {
                             if out.contains(&addr) {
@@ -551,16 +585,24 @@ impl Validator {
                 }
                 return out;
             }
-            Some(_) => self.err("dns.listen", "must be an array of \"ip:port\" strings"),
+            Some(_) => self.err(path, "must be an array of \"ip:port\" strings"),
         }
-        DnsConfig::default().listen
+        default
+    }
+
+    fn metrics(&mut self, root: &toml::Table) -> Option<MetricsConfig> {
+        let t = self.table(root, "metrics")?;
+        self.unknown_keys(t, "metrics", &["listen"]);
+        Some(MetricsConfig {
+            listen: self.listen(t, "metrics", MetricsConfig::default().listen),
+        })
     }
 
     fn dns(&mut self, root: &toml::Table) -> Option<DnsConfig> {
         let t = self.table(root, "dns")?;
         let mut dns = DnsConfig::default();
         self.unknown_keys(t, "dns", &["listen", "zone", "ttl"]);
-        dns.listen = self.dns_listen(t);
+        dns.listen = self.listen(t, "dns", DnsConfig::default().listen);
         if let Some(z) = self.string(t, "dns", "zone") {
             let zone = normalize_service_name(z);
             if valid_service_name(&zone) {
@@ -1314,6 +1356,48 @@ backends = ["10.0.0.1:80"]
                 "{line}: {e:?}"
             );
         }
+    }
+
+    /// Spec service-config "Config validation rules": `[metrics]` rows.
+    #[test]
+    fn metrics_table() {
+        assert_eq!(parse_ok(SVC).metrics, None);
+        assert_eq!(
+            parse_ok(&format!("[metrics]\n{SVC}")).metrics,
+            Some(MetricsConfig {
+                listen: vec!["127.0.0.1:5301".parse().unwrap()]
+            })
+        );
+        let c = parse_ok(&format!("[metrics]\nlisten = [\"[::1]:9000\"]\n{SVC}"));
+        assert_eq!(c.metrics.unwrap().listen, ["[::1]:9000".parse().unwrap()]);
+        let rows: &[(&str, &str, &str)] = &[
+            ("listen = []", "metrics.listen", "listen must not be empty"),
+            (
+                "listen = [\"localhost:5301\"]",
+                "metrics.listen[0]",
+                "listen address must be an IP literal with port",
+            ),
+            (
+                "listen = [\"127.0.0.1:5301\", \"127.0.0.1:5301\"]",
+                "metrics.listen[1]",
+                "duplicate listen address",
+            ),
+            ("path = \"/m\"", "metrics.path", "unknown key"),
+        ];
+        for (line, path, frag) in rows {
+            let e = parse_err(&format!("[metrics]\n{line}\n{SVC}"));
+            assert!(
+                e.iter()
+                    .any(|e| e.path == *path && e.message.contains(frag)),
+                "{line}: {e:?}"
+            );
+        }
+        assert_eq!(parse_metrics_listen("[services.a]\nrise = 0\n"), Some(None));
+        assert_eq!(
+            parse_metrics_listen("[metrics]\nlisten = [\"127.0.0.1:9\"]\n[services.a]\nrise = 0\n"),
+            Some(Some(vec!["127.0.0.1:9".parse().unwrap()]))
+        );
+        assert_eq!(parse_metrics_listen("[metrics]\nlisten = []\n"), None);
     }
 
     #[test]

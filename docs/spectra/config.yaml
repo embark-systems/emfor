@@ -14,7 +14,7 @@ context: |
     包裝 libemfor 的動態函式庫。不使用系統 liblmdb、PHP dba 或各語言自帶的 LMDB 套件。
 
   核心決定：
-  - 對外介面只有兩條：本機 LMDB（給 client）與只聽 127.0.0.1 的 DNS（給沒有 client 的程式）。不做 HTTP API / gRPC。
+  - 對外介面：本機 LMDB（給 client）、只聽 127.0.0.1 的 DNS（給沒有 client 的程式），以及唯讀的 Prometheus /metrics。不做 HTTP API / gRPC。
   - LMDB 由 daemon 單獨寫入：單一檔案（MDB_NOSUBDIR）、只用預設資料庫、UTF-8 key（svc/<服務名>）+ JSON value，
     含 meta/schema_version、全域心跳、每筆 checked_at。daemon 重啟不沿用舊狀態。
   - client 只提供 emfor_lookup(名稱, affinity_key?) → IP；fork 後自動重新開啟 LMDB；心跳過期回報狀態未知。
@@ -55,6 +55,13 @@ context: |
     與 do-not-query-localhost: no）、systemd-resolved、macOS /etc/resolver；每節附直接查 emfor 與經系統 resolver
     查詢的驗證指令，以及快取（最短快取時間、負快取）注意事項。dnsmasq 與 unbound 的設定以容器自動測試驗證；
     systemd-resolved、macOS 手動驗證並註明驗證版本。
+  - 監控指標（emfor-metrics）：[metrics] 區段存在才啟用；listen 預設 ["127.0.0.1:5301"]（不用 9312：Prometheus
+    預設埠清單刻意保留給 Sphinx）、可列多個位址；listen 變更需重啟（同 [dns]）。自寫最小 HTTP/1.1 伺服器，只回答
+    GET /metrics（Prometheus 文字格式 0.0.4），其他路徑 404、其他方法 405、head 錯誤或超過 8192 位元組 400，
+    5 秒內沒送完 head 直接關閉，最多 16 條同時連線，每次回應後關閉連線。資料讀 daemon 記憶體中的狀態，不經 LMDB。
+    指標：後端 state（三個一熱序列）、check latency、last check timestamp、fastest 的 in_pool、服務 all_down、
+    後端 checks_total{result} 與 transitions_total{to}（後端出現於執行中 daemon 起算，reload 保留、移除即歸零）、
+    build_info、start_time、store commit failures。實測 10 台後端約 104 條序列、10.6 KB。
   - 檢查器統一介面（validate / check），結果 up / down / error，error 不算後端失敗。
     tcp、http、exec 內建；外部外掛為常駐子程序，stdin/stdout 逐行 JSON，帶握手與協定版本。
     tcp（emfor-tcp-expect）：可選 send（連上後送出，TOML 字串原樣送出）與 expect（回應須含此子字串，位元組比對）；

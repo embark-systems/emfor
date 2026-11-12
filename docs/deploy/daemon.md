@@ -93,3 +93,49 @@ api.svc.emfor
 ```
 
 A backend with 5 or more changes between `healthy` and `unhealthy` in the last 10 minutes is flapping: `emfor status` marks its line with `FLAPPING (<n> changes in 10m)` and `--json` lists it under `flapping`. This is for display only; it changes neither the exit status nor what the daemon does.
+
+## Metrics
+
+With a `[metrics]` table the daemon serves Prometheus metrics at `http://<listen>/metrics`. Without the table it opens no metrics socket.
+
+```toml
+[metrics]
+listen = ["127.0.0.1:5301"]  # the default; several addresses allowed
+```
+
+At start the daemon logs `metrics on <addresses>`. If an address cannot be bound it exits with status 1 and names the address. Changing `listen` requires a restart: a reload with a different `listen` is rejected and the old config stays.
+
+The server answers only `GET /metrics` (a query string is ignored): other paths get 404, other methods 405, and a malformed request or a request head over 8192 bytes 400. Right after start, until the daemon has set up its services, `GET /metrics` gets 503, so Prometheus records one failed scrape instead of a start time of 0 and no services. A client that has not sent its request within 5 seconds is disconnected; at most 16 connections are served at once. Every response closes the connection. The values come from the daemon's memory, the same state the DNS server answers from, not from the store.
+
+### Metrics served
+
+| Metric | Type | Labels | Value |
+| --- | --- | --- | --- |
+| `emfor_backend_state` | gauge | `service`, `backend`, `state` | 1 for the current state (`unknown`, `healthy`, `unhealthy`), 0 for the other two |
+| `emfor_backend_check_latency_seconds` | gauge | `service`, `backend` | Smoothed check latency; only while the backend has one (healthy) |
+| `emfor_backend_last_check_timestamp_seconds` | gauge | `service`, `backend` | Unix time the last check finished; after the first check |
+| `emfor_backend_in_pool` | gauge | `service`, `backend` | 1 in the pool of a `fastest` service, else 0; other services have none |
+| `emfor_service_all_down` | gauge | `service` | 1 when no backend is healthy |
+| `emfor_backend_checks_total` | counter | `service`, `backend`, `result` | Checks by result: `up`, `down`, `error` |
+| `emfor_backend_transitions_total` | counter | `service`, `backend`, `to` | State changes by new state: `unknown`, `healthy`, `unhealthy` |
+| `emfor_build_info` | gauge | `version` | Always 1 |
+| `emfor_start_time_seconds` | gauge | | Daemon start time, Unix seconds |
+| `emfor_store_commit_failures_total` | counter | | Failed store commits since start |
+
+The two counters start at 0 when a backend first appears in the running daemon, keep counting across reloads (also when `check` or `check_options` change), and start again from 0 if the backend is removed and added back. They restart with the daemon; Prometheus handles that as a counter reset.
+
+Services are listed by name and backends in config order. Measured with one service of 10 unreachable backends: 104 series and 10.6 KB per scrape, that is 10 series per backend plus 4 for the daemon and the service. A backend has no last-check series before its first check, a healthy backend adds the latency series, and a backend of a `fastest` service adds `in_pool`, so a backend has 9 to 12 series.
+
+### Scraping
+
+```yaml
+scrape_configs:
+  - job_name: emfor
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["127.0.0.1:5301"]
+```
+
+The default address is loopback only, for a Prometheus or agent on the same host. To scrape from elsewhere, listen on an address the scraper can reach and allow only the scraper's address in the host firewall: the endpoint has no authentication and no TLS, and it shows every service name and backend address.
+
+For alerting on a service, `emfor_service_all_down == 1` matches the `ALL DOWN` of `emfor status`; `sum by (service, backend) (increase(emfor_backend_transitions_total{to!="unknown"}[10m])) >= 5` is close to the `FLAPPING` mark (5 or more changes between `healthy` and `unhealthy` in 10 minutes).

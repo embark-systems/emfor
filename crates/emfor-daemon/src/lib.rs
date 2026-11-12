@@ -6,6 +6,7 @@ pub mod cli;
 pub mod config;
 pub mod dns;
 pub mod live;
+pub mod metrics;
 pub mod plugin;
 pub mod schedule;
 pub mod select;

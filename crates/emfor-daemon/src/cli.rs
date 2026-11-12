@@ -15,6 +15,7 @@ use tracing_subscriber::{EnvFilter, reload};
 use crate::config::{self, Config, ConfigError, DEFAULT_CONFIG_PATH, DnsConfig, in_zone};
 use crate::dns::{self, DnsSettings};
 use crate::live::LiveState;
+use crate::metrics;
 use crate::plugin::{PluginSet, Prepared};
 use crate::store::Store;
 use crate::supervisor::Supervisor;
@@ -230,6 +231,21 @@ async fn run(
         tracing::info!("DNS server for zone {} on {}", d.zone, addrs.join(", "));
     }
     warn_dns(&config);
+    // Kept until the daemon exits; dropping it stops the server.
+    let _metrics_server = match &config.metrics {
+        Some(m) => match metrics::serve(&m.listen, live.clone()).await {
+            Ok(server) => {
+                let addrs: Vec<String> = m.listen.iter().map(|a| a.to_string()).collect();
+                tracing::info!("metrics on {}", addrs.join(", "));
+                Some(server)
+            }
+            Err(e) => {
+                tracing::error!("cannot start metrics server: {e}");
+                return ExitCode::from(EXIT_STARTUP);
+            }
+        },
+        None => None,
+    };
 
     let (tx, rx) = mpsc::unbounded_channel();
     let history = load_history(&store);
@@ -344,9 +360,9 @@ fn warn_outside_zone(config: &Config) {
 
 /// Load a config: start its plugins (reusing running ones whose command is
 /// unchanged), then parse and validate with them on a blocking thread. On a
-/// reload (`current` set), a changed `[store]` table or `[dns] listen` is an
-/// error too. Every error is returned together. The caller commits or rolls
-/// back the returned plugins.
+/// reload (`current` set), a changed `[store]` table, `[dns] listen` or
+/// `[metrics] listen` is an error too. Every error is returned together. The
+/// caller commits or rolls back the returned plugins.
 async fn load(
     path: &Path,
     current: Option<&Config>,
@@ -389,6 +405,13 @@ async fn load(
             errors.push(ConfigError {
                 path: "dns.listen".into(),
                 message: "dns listen settings require restart".into(),
+            });
+        }
+        let current_listen = current.metrics.as_ref().map(|m| m.listen.clone());
+        if config::parse_metrics_listen(&text).is_some_and(|l| l != current_listen) {
+            errors.push(ConfigError {
+                path: "metrics.listen".into(),
+                message: "metrics listen settings require restart".into(),
             });
         }
     }

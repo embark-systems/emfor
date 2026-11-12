@@ -31,6 +31,11 @@ listen = ["127.0.0.1:5300"]  # not 5353: that is mDNS
 zone = "svc.emfor"           # only services named under the zone resolve
 ttl = "1s"                   # whole seconds, 0s to 3600s
 
+# Prometheus metrics at http://<listen>/metrics. Uncomment to turn it on;
+# see docs/deploy/daemon.md. Changing listen requires a restart.
+# [metrics]
+# listen = ["127.0.0.1:5301"]
+
 # Built-in defaults, shown here explicitly. Any service can override them.
 [defaults]
 interval = "2s"        # time between the end of one check and the start of the next
