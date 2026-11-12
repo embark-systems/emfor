@@ -180,6 +180,8 @@ fn serves_metrics() {
     ));
     d.wait_log("emfor started");
     let log = d.log();
+    // stderr is a pipe here, as under systemd: no color escape sequences.
+    assert!(!log.contains('\x1b'), "{log:?}");
     let on = log.find(&format!("metrics on {addr}")).expect(&log);
     assert!(on < log.find("emfor started").unwrap(), "{log}");
     let resp = wait_line(

@@ -133,9 +133,21 @@ fn init_logging(level: &str) -> Option<LogHandle> {
     let (filter, handle) = reload::Layer::new(from_env.unwrap_or_else(|| log_filter(level)));
     let _ = tracing_subscriber::registry()
         .with(filter)
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_ansi(log_colors()),
+        )
         .try_init();
     (!env_set).then_some(handle)
+}
+
+/// Color log lines only on a terminal without `NO_COLOR`, as `emfor
+/// status` does: under systemd, a service manager or a pipe, escape
+/// sequences end up in the journal or log file.
+fn log_colors() -> bool {
+    use std::io::IsTerminal;
+    std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none()
 }
 
 /// Filter for `[log] level`. The hickory DNS crates log every query at

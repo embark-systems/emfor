@@ -39,10 +39,16 @@ Build without `EMFOR_PREFIX` (or with `/usr`) so that `emfor status` and `emfor 
 - **Store directory**: `StateDirectory=emfor` creates `/var/lib/emfor`, owned by `emfor` with mode 0755, for the default `[store] path`. Applications that use an emfor client need to reach it; `[store] file_mode` and `lock_file_mode` decide who can read the store. Do not switch to `DynamicUser=`: its directory sits under `/var/lib/private` (mode 0700), where clients cannot reach it.
 - **Reload**: `systemctl reload emfor` runs `emfor --check-config` first and fails without signalling the daemon if the config is invalid; otherwise it sends SIGHUP. `[store]`, `[dns] listen` and `[metrics] listen` changes need `systemctl restart emfor`.
 - **Restarts**: the unit restarts the daemon after a crash, but not after exit status 1 (a listen address in use, the store held by another emfor) or 2 (invalid config), which a retry does not fix.
-- **Logs**: the daemon logs to stderr, which goes to the journal (`journalctl -u emfor`).
+- **Logs**: the daemon logs to stderr, which goes to the journal (`journalctl -u emfor`), without color escape sequences.
 - **Hardening**: the file system is read-only except `/var/lib/emfor`, there is no access to home directories or devices, and no capabilities. Plugins run under the same limits. A `[store] path` elsewhere needs `ReadWritePaths=<its directory>`; a plugin under a home directory needs `ProtectHome=` relaxed. For DNS on port 53, set `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` and `AmbientCapabilities=CAP_NET_BIND_SERVICE`.
 
-The unit passes `systemd-analyze verify` with no warnings and rates 1.7 (OK) in `systemd-analyze security`, both with systemd 257 on Debian 13. It has not been run on a live system yet.
+Checked with systemd 257 on Debian 13 (arm64), in a container running systemd as PID 1:
+
+- `systemd-analyze verify` prints no warnings, and `systemd-analyze security` rates the unit 1.7 (OK).
+- Under the hardening, the daemon checks an HTTP backend and answers on DNS and `/metrics`; a second, unprivileged user reads the store with `emfor status`.
+- `systemctl reload` applies a valid change; with an invalid config it fails and the daemon gets no SIGHUP (same PID, no `reload rejected` in its log).
+- `systemctl restart` and `stop` work; after `kill -KILL` the daemon is restarted, and when the metrics port is taken it stops with status 1 and is not restarted.
+- The journal holds plain log lines: the daemon colors its log only when stderr is a terminal and `NO_COLOR` is not set.
 
 ## emfor status
 
