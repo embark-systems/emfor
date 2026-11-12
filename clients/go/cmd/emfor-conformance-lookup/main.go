@@ -10,7 +10,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/vanillahsu/emfor/clients/go"
+	"github.com/embark-systems/emfor/clients/go"
 )
 
 func main() {

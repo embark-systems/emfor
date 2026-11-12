@@ -3,7 +3,7 @@
 Look up a healthy backend for a service in the local emfor state store.
 
 ```go
-import "github.com/vanillahsu/emfor/clients/go"
+import "github.com/embark-systems/emfor/clients/go"
 
 addr, err := emfor.Lookup("api.svc.emfor", "user-42") // "" is no key
 var e *emfor.Error

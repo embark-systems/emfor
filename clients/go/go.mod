@@ -1,3 +1,3 @@
-module github.com/vanillahsu/emfor/clients/go
+module github.com/embark-systems/emfor/clients/go
 
 go 1.22
