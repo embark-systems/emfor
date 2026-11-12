@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use emfor_format::{Balance, OnAllDown};
 
+use crate::checker::exec::parse_command;
 use crate::checker::{Checker, Registry};
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/emfor/emfor.toml";
@@ -133,6 +134,9 @@ pub struct ServiceConfig {
     /// Normalized service name.
     pub name: String,
     pub check: String,
+    /// Identity of the checker implementation: the `check` name for a
+    /// built-in, `plugin:<name>:<command as JSON>` for a plugin.
+    pub checker_id: String,
     pub check_options: toml::Table,
     pub checker: Arc<dyn Checker>,
     pub settings: Settings,
@@ -142,9 +146,10 @@ pub struct ServiceConfig {
 }
 
 impl ServiceConfig {
-    /// True when `check` or `check_options` differ, which resets backend state on reload.
+    /// True when the checker (`check`, or a plugin's `command`) or
+    /// `check_options` differ, which resets backend state on reload.
     pub fn check_changed(&self, other: &ServiceConfig) -> bool {
-        self.check != other.check || self.check_options != other.check_options
+        self.checker_id != other.checker_id || self.check_options != other.check_options
     }
 }
 
@@ -189,6 +194,35 @@ pub fn parse(text: &str, registry: &Registry) -> Result<Config, Vec<ConfigError>
     } else {
         Err(v.errors)
     }
+}
+
+/// One valid `[plugins."<name>"]` declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginSpec {
+    pub name: String,
+    pub command: Vec<String>,
+}
+
+/// Names a plugin must not take.
+const RESERVED_PLUGIN_NAMES: &[&str] = &["tcp", "http", "exec"];
+
+fn valid_plugin_name(name: &str) -> bool {
+    (1..=63).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+}
+
+/// Parse only the `[plugins]` table, without starting anything: the valid
+/// declarations, plus every declaration error. [`parse`] reports the same
+/// errors, so callers that also call `parse` use only the specs.
+pub fn parse_plugins(text: &str) -> (Vec<PluginSpec>, Vec<ConfigError>) {
+    let Ok(root) = text.parse::<toml::Table>() else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut v = Validator::default();
+    let specs = v.plugins(&root);
+    (specs, v.errors)
 }
 
 /// Parse only the `[store]` table. `None` when the TOML is unreadable or the
@@ -236,7 +270,7 @@ fn valid_service_name(name: &str) -> bool {
 }
 
 /// TOML key quoted when it is not a bare key, as in `services."api.svc.emfor"`.
-fn key_path(parent: &str, key: &str) -> String {
+pub(crate) fn key_path(parent: &str, key: &str) -> String {
     let bare = !key.is_empty()
         && key
             .bytes()
@@ -292,6 +326,10 @@ const SETTING_KEYS: &[&str] = &[
 #[derive(Default)]
 struct Validator {
     errors: Vec<ConfigError>,
+    /// Every name under `[plugins]`, valid or not. A service using one that
+    /// is not in the registry (its declaration or start failed) gets no
+    /// extra error: the plugin's own error explains it.
+    declared_plugins: HashSet<String>,
 }
 
 impl Validator {
@@ -333,7 +371,12 @@ impl Validator {
     }
 
     fn root(&mut self, root: &toml::Table, registry: &Registry) -> Config {
-        self.unknown_keys(root, "", &["store", "log", "dns", "defaults", "services"]);
+        self.unknown_keys(
+            root,
+            "",
+            &["store", "log", "dns", "defaults", "plugins", "services"],
+        );
+        self.plugins(root);
         let store = self.store(root);
         let log = self.log(root);
         let dns = self.dns(root);
@@ -382,6 +425,42 @@ impl Validator {
             dns,
             services,
         }
+    }
+
+    /// `[plugins]`: the valid declarations, sorted by name (errors recorded).
+    fn plugins(&mut self, root: &toml::Table) -> Vec<PluginSpec> {
+        let mut specs = Vec::new();
+        let Some(plugins) = self.table(root, "plugins") else {
+            return specs;
+        };
+        let ordered: BTreeMap<&String, &toml::Value> = plugins.iter().collect();
+        for (name, value) in ordered {
+            self.declared_plugins.insert(name.clone());
+            let path = key_path("plugins", name);
+            let mut ok = true;
+            if RESERVED_PLUGIN_NAMES.contains(&name.as_str()) {
+                self.err(&path, "name is reserved for a built-in checker");
+                ok = false;
+            } else if !valid_plugin_name(name) {
+                self.err(&path, "invalid plugin name: 1-63 characters of [a-z0-9_-]");
+                ok = false;
+            }
+            let toml::Value::Table(t) = value else {
+                self.err(&path, "must be a table");
+                continue;
+            };
+            let before = self.errors.len();
+            self.unknown_keys(t, &path, &["command"]);
+            match parse_command(t.get("command")) {
+                Ok(command) if ok && self.errors.len() == before => specs.push(PluginSpec {
+                    name: name.clone(),
+                    command,
+                }),
+                Ok(_) => {}
+                Err(m) => self.err(key_path(&path, "command"), m),
+            }
+        }
+        specs
     }
 
     /// `[dns] listen`, or the default when absent or invalid (errors recorded).
@@ -647,6 +726,9 @@ impl Validator {
             }
         }?;
         let Some(factory) = registry.get(&check) else {
+            if self.declared_plugins.contains(&check) {
+                return None; // the plugin's own error is reported
+            }
             self.err(
                 key_path(path, "check"),
                 format!("unknown checker `{check}`"),
@@ -658,13 +740,18 @@ impl Validator {
             Err(errs) => {
                 let opts_path = key_path(path, "check_options");
                 for e in errs {
-                    self.err(format!("{opts_path}.{}", e.key), e.message);
+                    if e.key.is_empty() {
+                        self.err(&opts_path, e.message);
+                    } else {
+                        self.err(format!("{opts_path}.{}", e.key), e.message);
+                    }
                 }
                 return None;
             }
         };
         Some(ServiceConfig {
             name,
+            checker_id: factory.checker_id(),
             check,
             check_options,
             checker,
@@ -1060,5 +1147,107 @@ backends = ["10.0.0.1:80"]
             "[services.a]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\", \"10.0.0.1:80\"]\n",
         );
         assert!(e[0].message.contains("duplicate backend"));
+    }
+
+    #[test]
+    fn plugin_declaration_validation() {
+        // Rows of the "plugin declaration validation" example; /bin/sh
+        // stands in for an existing executable.
+        let rows: &[(&str, Option<(&str, &str)>)] = &[
+            ("[plugins.\"redis\"]\ncommand = [\"/bin/sh\"]\n", None),
+            (
+                "[plugins.\"redis\"]\n",
+                Some(("plugins.redis.command", "missing required key")),
+            ),
+            (
+                "[plugins.\"redis\"]\ncommand = []\n",
+                Some(("plugins.redis.command", "must not be empty")),
+            ),
+            (
+                "[plugins.\"redis\"]\ncommand = [\"emfor-redis\"]\n",
+                Some(("plugins.redis.command", "not an absolute path")),
+            ),
+            (
+                "[plugins.\"http\"]\ncommand = [\"/bin/sh\"]\n",
+                Some(("plugins.http", "name is reserved for a built-in checker")),
+            ),
+            (
+                "[plugins.\"Redis\"]\ncommand = [\"/bin/sh\"]\n",
+                Some(("plugins.Redis", "invalid plugin name")),
+            ),
+            (
+                "[plugins.\"redis\"]\ncommand = [\"/bin/sh\"]\nargs = [\"-v\"]\n",
+                Some(("plugins.redis.args", "unknown key")),
+            ),
+        ];
+        for (text, want) in rows {
+            let (specs, errors) = parse_plugins(text);
+            match want {
+                None => {
+                    assert!(errors.is_empty(), "{text}: {errors:?}");
+                    assert_eq!(
+                        specs,
+                        vec![PluginSpec {
+                            name: "redis".into(),
+                            command: vec!["/bin/sh".into()],
+                        }]
+                    );
+                    parse_ok(text);
+                }
+                Some((path, msg)) => {
+                    assert!(specs.is_empty(), "{text}: {specs:?}");
+                    assert_eq!(errors.len(), 1, "{text}: {errors:?}");
+                    assert_eq!(errors[0].path, *path, "{text}");
+                    assert!(errors[0].message.contains(msg), "{text}: {}", errors[0]);
+                    // `parse` reports the same error, once.
+                    assert_eq!(parse_err(text), errors, "{text}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn service_using_a_broken_plugin_gets_no_extra_error() {
+        let text = "[plugins.redis]\ncommand = []\n\n[services.a]\ncheck = \"redis\"\nbackends = [\"10.0.0.1:80\"]\n";
+        let e = parse_err(text);
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(e[0].path, "plugins.redis.command");
+        // An undeclared name is still an unknown checker.
+        let e = parse_err("[services.a]\ncheck = \"redis\"\nbackends = [\"10.0.0.1:80\"]\n");
+        assert!(e[0].message.contains("unknown checker `redis`"), "{e:?}");
+    }
+
+    /// Factory standing in for a plugin with a given checker id.
+    struct FakePlugin(&'static str);
+
+    impl crate::checker::CheckerFactory for FakePlugin {
+        fn kind(&self) -> &str {
+            "redis"
+        }
+        fn checker_id(&self) -> String {
+            self.0.to_string()
+        }
+        fn validate(
+            &self,
+            _: &toml::Table,
+        ) -> Result<Arc<dyn Checker>, Vec<crate::checker::OptionError>> {
+            Ok(Arc::new(crate::checker::tcp::TcpChecker))
+        }
+    }
+
+    #[test]
+    fn plugin_command_change_is_a_check_change() {
+        let text =
+            "[services.a]\ncheck = \"redis\"\nbackends = [\"10.0.0.1:80\"]\ninterval = \"3s\"\n";
+        let with = |id: &'static str| {
+            let mut r = Registry::builtin();
+            r.register(Arc::new(FakePlugin(id)));
+            parse(text, &r).unwrap().services.remove(0)
+        };
+        let old = with("plugin:redis:[\"/a\"]");
+        assert_eq!(old.checker_id, "plugin:redis:[\"/a\"]");
+        assert!(!old.check_changed(&with("plugin:redis:[\"/a\"]")));
+        assert!(old.check_changed(&with("plugin:redis:[\"/b\"]")));
+        assert_eq!(parse_ok(SVC).services[0].checker_id, "tcp");
     }
 }

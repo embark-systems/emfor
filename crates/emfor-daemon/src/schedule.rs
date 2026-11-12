@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use crate::checker::{Checker, run_check};
+use crate::checker::{CheckRequest, Checker, run_check};
 use crate::config::{Backend, Settings};
 use crate::state::{BackendHealth, Thresholds, Transition};
 use crate::writer::WriterMsg;
@@ -67,7 +67,8 @@ pub fn spawn_backend(
         tokio::time::sleep(first).await;
         loop {
             let s = *settings.borrow();
-            let result = run_check(checker.as_ref(), backend.addr, s.timeout).await;
+            let req = CheckRequest::new(service.clone(), backend.addr, s.timeout);
+            let result = run_check(checker.as_ref(), req).await;
             let thresholds = Thresholds {
                 rise: s.rise,
                 fall: s.fall,
@@ -108,7 +109,6 @@ mod tests {
     use super::*;
     use crate::checker::CheckResult;
     use futures::future::BoxFuture;
-    use std::net::SocketAddr;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -141,7 +141,7 @@ mod tests {
     }
 
     impl Checker for Recording {
-        fn check(&self, _: SocketAddr) -> BoxFuture<'_, CheckResult> {
+        fn check(&self, _: CheckRequest) -> BoxFuture<'_, CheckResult> {
             Box::pin(async move {
                 self.starts.lock().unwrap().push(Instant::now());
                 let n = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
@@ -216,7 +216,7 @@ mod tests {
     }
 
     impl Checker for UpThenRefused {
-        fn check(&self, _: SocketAddr) -> BoxFuture<'_, CheckResult> {
+        fn check(&self, _: CheckRequest) -> BoxFuture<'_, CheckResult> {
             Box::pin(async move {
                 let left = self.ups.load(Ordering::SeqCst);
                 if left > 0 {

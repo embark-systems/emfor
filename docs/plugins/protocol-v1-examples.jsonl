@@ -1,0 +1,9 @@
+{"type":"hello","protocol":1}
+{"type":"hello","protocol":1,"name":"redis","version":"0.1.0"}
+{"type":"validate","id":1,"options":{"password_file":"/etc/emfor/redis.pass","db":0}}
+{"type":"validate","id":1,"errors":[{"key":"password_file","message":"file not found"}]}
+{"type":"validate","id":2,"errors":[]}
+{"type":"check","id":3,"service":"cache.svc.emfor","target":{"ip":"10.0.2.1","port":6379},"options":{"password_file":"/etc/emfor/redis.pass","db":0},"timeout_ms":900}
+{"type":"check","id":3,"result":"down","reason":"PONG not received"}
+{"type":"check","id":4,"result":"up"}
+{"type":"check","id":5,"result":"error","reason":"cannot read /etc/emfor/redis.pass: permission denied"}

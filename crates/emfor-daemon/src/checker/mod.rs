@@ -30,12 +30,38 @@ impl CheckResult {
     }
 }
 
+/// One check of one backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckRequest {
+    /// Service name.
+    pub service: Arc<str>,
+    /// Backend address.
+    pub target: SocketAddr,
+    /// The service's `timeout`; [`run_check`] enforces it.
+    pub timeout: Duration,
+}
+
+impl CheckRequest {
+    pub fn new(service: impl Into<Arc<str>>, target: SocketAddr, timeout: Duration) -> Self {
+        Self {
+            service: service.into(),
+            target,
+            timeout,
+        }
+    }
+}
+
 /// A configured checker that can check one backend address.
 ///
 /// The same checker is called concurrently for every backend of a service.
 /// Implementations do not need to enforce the timeout: [`run_check`] does.
 pub trait Checker: Send + Sync + fmt::Debug {
-    fn check(&self, target: SocketAddr) -> BoxFuture<'_, CheckResult>;
+    fn check(&self, req: CheckRequest) -> BoxFuture<'_, CheckResult>;
+
+    /// Result recorded when a check does not finish within its timeout.
+    fn timeout_result(&self) -> CheckResult {
+        CheckResult::Down("timeout".into())
+    }
 
     /// Release per-backend resources. Called when a reload removes `target`
     /// from a service whose checker is kept.
@@ -62,7 +88,12 @@ impl OptionError {
 /// Builds checkers of one kind from their `check_options`.
 pub trait CheckerFactory: Send + Sync {
     /// The `check` value that selects this factory, e.g. `"tcp"`.
-    fn kind(&self) -> &'static str;
+    fn kind(&self) -> &str;
+    /// Identity of the checker implementation; a service whose checker id
+    /// changes on reload starts over. Built-ins use their `kind`.
+    fn checker_id(&self) -> String {
+        self.kind().to_string()
+    }
     /// Validate `options` and build a checker. A config that validates is
     /// guaranteed to be runnable.
     fn validate(&self, options: &toml::Table) -> Result<Arc<dyn Checker>, Vec<OptionError>>;
@@ -71,7 +102,7 @@ pub trait CheckerFactory: Send + Sync {
 /// Maps `check` names to factories.
 #[derive(Clone, Default)]
 pub struct Registry {
-    factories: HashMap<&'static str, Arc<dyn CheckerFactory>>,
+    factories: HashMap<String, Arc<dyn CheckerFactory>>,
 }
 
 impl Registry {
@@ -79,16 +110,17 @@ impl Registry {
         Self::default()
     }
 
-    /// Registry with the built-in `tcp` and `http` checkers.
+    /// Registry with the built-in `tcp`, `http`, and `exec` checkers.
     pub fn builtin() -> Self {
         let mut r = Self::empty();
         r.register(Arc::new(tcp::TcpFactory));
         r.register(Arc::new(http::HttpFactory));
+        r.register(Arc::new(exec::ExecFactory));
         r
     }
 
     pub fn register(&mut self, factory: Arc<dyn CheckerFactory>) {
-        self.factories.insert(factory.kind(), factory);
+        self.factories.insert(factory.kind().to_string(), factory);
     }
 
     pub fn get(&self, kind: &str) -> Option<&Arc<dyn CheckerFactory>> {
@@ -97,15 +129,13 @@ impl Registry {
 }
 
 /// Run one check with a hard timeout. A check that has not finished within
-/// `timeout` is `Down("timeout")`.
-pub async fn run_check(
-    checker: &dyn Checker,
-    target: SocketAddr,
-    timeout: Duration,
-) -> CheckResult {
-    match tokio::time::timeout(timeout, checker.check(target)).await {
+/// `req.timeout` gets the checker's [`Checker::timeout_result`]
+/// (`Down("timeout")` unless the checker says otherwise).
+pub async fn run_check(checker: &dyn Checker, req: CheckRequest) -> CheckResult {
+    let timeout = req.timeout;
+    match tokio::time::timeout(timeout, checker.check(req)).await {
         Ok(result) => result,
-        Err(_) => CheckResult::Down("timeout".into()),
+        Err(_) => checker.timeout_result(),
     }
 }
 
@@ -122,6 +152,7 @@ pub(crate) fn reject_unknown_keys(
     }
 }
 
+pub mod exec;
 pub mod http;
 pub mod tcp;
 
@@ -133,7 +164,7 @@ mod tests {
     struct Sleepy(Duration);
 
     impl Checker for Sleepy {
-        fn check(&self, _: SocketAddr) -> BoxFuture<'_, CheckResult> {
+        fn check(&self, _: CheckRequest) -> BoxFuture<'_, CheckResult> {
             Box::pin(async move {
                 tokio::time::sleep(self.0).await;
                 CheckResult::Up
@@ -141,18 +172,27 @@ mod tests {
         }
     }
 
-    fn addr() -> SocketAddr {
-        "127.0.0.1:1".parse().unwrap()
+    /// Never finishes; times out as `error`.
+    #[derive(Debug)]
+    struct Stuck;
+
+    impl Checker for Stuck {
+        fn check(&self, _: CheckRequest) -> BoxFuture<'_, CheckResult> {
+            Box::pin(futures::future::pending())
+        }
+
+        fn timeout_result(&self) -> CheckResult {
+            CheckResult::Error("did not answer".into())
+        }
+    }
+
+    fn req(timeout: Duration) -> CheckRequest {
+        CheckRequest::new("api.svc.emfor", "127.0.0.1:1".parse().unwrap(), timeout)
     }
 
     #[tokio::test(start_paused = true)]
     async fn slow_check_is_down_timeout() {
-        let r = run_check(
-            &Sleepy(Duration::from_secs(5)),
-            addr(),
-            Duration::from_secs(1),
-        )
-        .await;
+        let r = run_check(&Sleepy(Duration::from_secs(5)), req(Duration::from_secs(1))).await;
         assert_eq!(r, CheckResult::Down("timeout".into()));
     }
 
@@ -160,11 +200,16 @@ mod tests {
     async fn fast_check_keeps_result() {
         let r = run_check(
             &Sleepy(Duration::from_millis(10)),
-            addr(),
-            Duration::from_secs(1),
+            req(Duration::from_secs(1)),
         )
         .await;
         assert_eq!(r, CheckResult::Up);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timeout_uses_checker_timeout_result() {
+        let r = run_check(&Stuck, req(Duration::from_secs(1))).await;
+        assert_eq!(r, CheckResult::Error("did not answer".into()));
     }
 
     #[test]
@@ -173,5 +218,6 @@ mod tests {
         assert!(r.get("redis").is_none());
         assert!(r.get("tcp").is_some());
         assert!(r.get("http").is_some());
+        assert!(r.get("exec").is_some());
     }
 }

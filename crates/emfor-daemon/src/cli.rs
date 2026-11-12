@@ -10,10 +10,10 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, reload};
 
-use crate::checker::Registry;
 use crate::config::{self, Config, ConfigError, DEFAULT_CONFIG_PATH, DnsConfig, in_zone};
 use crate::dns::{self, DnsSettings};
 use crate::live::LiveState;
+use crate::plugin::{PluginSet, Prepared};
 use crate::store::Store;
 use crate::supervisor::Supervisor;
 use crate::writer::{self, WriterMsg};
@@ -42,10 +42,24 @@ pub struct Cli {
 
 pub fn main() -> ExitCode {
     let cli = Cli::parse();
-    let registry = Registry::builtin();
-    let loaded = config::load(&cli.config, &registry);
+    // Loading a config starts plugins, so the runtime comes first.
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("cannot start async runtime: {e}");
+            return ExitCode::from(EXIT_STARTUP);
+        }
+    };
+    runtime.block_on(start(cli))
+}
 
+async fn start(cli: Cli) -> ExitCode {
     if cli.check_config {
+        let mut plugins = PluginSet::default();
+        let (prepared, loaded) = load(&cli.config, None, &plugins).await;
+        // Nothing keeps running after a config check.
+        plugins.commit(prepared).await;
+        plugins.stop_all().await;
         return match loaded {
             Ok(c) => {
                 println!(
@@ -64,24 +78,28 @@ pub fn main() -> ExitCode {
         };
     }
 
+    // Log at `info` while loading (plugin start lines), then switch to the
+    // configured level.
+    let log = init_logging("info");
+    let mut plugins = PluginSet::default();
+    let (prepared, loaded) = load(&cli.config, None, &plugins).await;
     let config = match loaded {
         Ok(c) => c,
         Err(errors) => {
-            init_logging("info");
+            prepared.rollback().await;
             log_config_errors(&cli.config, &errors);
             return ExitCode::from(EXIT_CONFIG);
         }
     };
-    let log = init_logging(&config.log.level);
-
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("cannot start async runtime: {e}");
-            return ExitCode::from(EXIT_STARTUP);
-        }
-    };
-    runtime.block_on(run(cli.config, config, registry, log))
+    plugins.commit(prepared).await;
+    if let Some(h) = &log
+        && let Err(e) = h.reload(log_filter(&config.log.level))
+    {
+        tracing::error!("cannot set log level: {e}");
+    }
+    let code = run(cli.config, config, &mut plugins, log).await;
+    plugins.stop_all().await;
+    code
 }
 
 type LogHandle = reload::Handle<EnvFilter, tracing_subscriber::Registry>;
@@ -123,7 +141,7 @@ fn log_config_errors(path: &Path, errors: &[ConfigError]) {
 async fn run(
     config_path: PathBuf,
     config: Config,
-    registry: Registry,
+    plugins: &mut PluginSet,
     log: Option<LogHandle>,
 ) -> ExitCode {
     let store = match Store::open(&config.store) {
@@ -183,7 +201,8 @@ async fn run(
     loop {
         tokio::select! {
             _ = hup.recv() => {
-                match reload(&config_path, &current, &registry) {
+                let (prepared, loaded) = load(&config_path, Some(&current), plugins).await;
+                match loaded {
                     Ok(new) => {
                         if new.log != current.log {
                             match &log {
@@ -195,6 +214,9 @@ async fn run(
                             }
                         }
                         supervisor.reload(&new);
+                        // After the supervisor switched checkers, so replaced
+                        // plugins are no longer used when they stop.
+                        plugins.commit(prepared).await;
                         if let (Some(tx), Some(d)) = (&dns_tx, &new.dns) {
                             tx.send_replace(dns_settings(d));
                         }
@@ -203,6 +225,7 @@ async fn run(
                         current = new;
                     }
                     Err(errors) => {
+                        prepared.rollback().await;
                         log_config_errors(&config_path, &errors);
                         tracing::error!("reload rejected; keeping the previous config");
                     }
@@ -241,38 +264,63 @@ fn warn_outside_zone(config: &Config) {
     }
 }
 
-/// Load the config again. A changed `[store]` table or `[dns] listen` is an
-/// error, reported together with every other validation error.
-fn reload(path: &Path, current: &Config, registry: &Registry) -> Result<Config, Vec<ConfigError>> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        vec![ConfigError {
-            path: String::new(),
-            message: format!("cannot read {}: {e}", path.display()),
-        }]
-    })?;
-    let parsed = config::parse(&text, registry);
-    let store_changed = config::parse_store(&text).is_some_and(|s| s != current.store);
-    let current_listen = current.dns.as_ref().map(|d| d.listen.clone());
-    let listen_changed = config::parse_dns_listen(&text).is_some_and(|l| l != current_listen);
-    let mut restart_errors = Vec::new();
-    if store_changed {
-        restart_errors.push(ConfigError {
-            path: "store".into(),
-            message: "store settings require restart".into(),
-        });
-    }
-    if listen_changed {
-        restart_errors.push(ConfigError {
-            path: "dns.listen".into(),
-            message: "dns listen settings require restart".into(),
-        });
-    }
-    match parsed {
-        Ok(new) if restart_errors.is_empty() => Ok(new),
-        Ok(_) => Err(restart_errors),
-        Err(mut errors) => {
-            errors.extend(restart_errors);
-            Err(errors)
+/// Load a config: start its plugins (reusing running ones whose command is
+/// unchanged), then parse and validate with them on a blocking thread. On a
+/// reload (`current` set), a changed `[store]` table or `[dns] listen` is an
+/// error too. Every error is returned together. The caller commits or rolls
+/// back the returned plugins.
+async fn load(
+    path: &Path,
+    current: Option<&Config>,
+    plugins: &PluginSet,
+) -> (Prepared, Result<Config, Vec<ConfigError>>) {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            let error = ConfigError {
+                path: String::new(),
+                message: format!("cannot read {}: {e}", path.display()),
+            };
+            return (Prepared::default(), Err(vec![error]));
+        }
+    };
+    let (specs, _) = config::parse_plugins(&text);
+    let mut prepared = plugins.prepare(&specs).await;
+    let registry = prepared.registry(tokio::runtime::Handle::current(), current);
+    let parsed = {
+        let text = text.clone();
+        tokio::task::spawn_blocking(move || config::parse(&text, &registry))
+            .await
+            .unwrap_or_else(|e| {
+                Err(vec![ConfigError {
+                    path: String::new(),
+                    message: format!("config validation failed: {e}"),
+                }])
+            })
+    };
+    let mut errors = std::mem::take(&mut prepared.errors);
+    if let Some(current) = current {
+        if config::parse_store(&text).is_some_and(|s| s != current.store) {
+            errors.push(ConfigError {
+                path: "store".into(),
+                message: "store settings require restart".into(),
+            });
+        }
+        let current_listen = current.dns.as_ref().map(|d| d.listen.clone());
+        if config::parse_dns_listen(&text).is_some_and(|l| l != current_listen) {
+            errors.push(ConfigError {
+                path: "dns.listen".into(),
+                message: "dns listen settings require restart".into(),
+            });
         }
     }
+    let result = match parsed {
+        Ok(new) if errors.is_empty() => Ok(new),
+        Ok(_) => Err(errors),
+        Err(mut parse_errors) => {
+            parse_errors.extend(errors);
+            Err(parse_errors)
+        }
+    };
+    (prepared, result)
 }

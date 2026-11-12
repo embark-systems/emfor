@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use reqwest::redirect::Policy;
 
 use super::tcp::is_local_io_error;
-use super::{CheckResult, Checker, CheckerFactory, OptionError, reject_unknown_keys};
+use super::{CheckRequest, CheckResult, Checker, CheckerFactory, OptionError, reject_unknown_keys};
 
 const ALLOWED: &[&str] = &[
     "path",
@@ -34,7 +34,7 @@ pub struct HttpOptions {
 }
 
 impl CheckerFactory for HttpFactory {
-    fn kind(&self) -> &'static str {
+    fn kind(&self) -> &str {
         "http"
     }
 
@@ -234,7 +234,8 @@ fn host_only(h: &str) -> &str {
 }
 
 impl Checker for HttpChecker {
-    fn check(&self, target: SocketAddr) -> BoxFuture<'_, CheckResult> {
+    fn check(&self, req: CheckRequest) -> BoxFuture<'_, CheckResult> {
+        let target = req.target;
         Box::pin(async move {
             let client = match self.client_for(target) {
                 Ok(c) => c,
@@ -297,6 +298,10 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
 
+    fn req(addr: SocketAddr) -> CheckRequest {
+        CheckRequest::new("a", addr, std::time::Duration::from_secs(1))
+    }
+
     /// Serve one fixed status per connection; send each raw request to `tx`.
     async fn server(status: u16) -> (SocketAddr, mpsc::UnboundedReceiver<String>) {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -346,7 +351,7 @@ mod tests {
         ];
         for (opts, status, down_contains) in cases {
             let (addr, _rx) = server(*status).await;
-            let r = checker(opts).check(addr).await;
+            let r = checker(opts).check(req(addr)).await;
             match down_contains {
                 None => assert_eq!(r, CheckResult::Up, "opts {opts:?} status {status}"),
                 Some(code) => match r {
@@ -364,7 +369,7 @@ mod tests {
             r#"host_header = "api.internal"
 path = "/healthz""#,
         );
-        assert_eq!(c.check(addr).await, CheckResult::Up);
+        assert_eq!(c.check(req(addr)).await, CheckResult::Up);
         let req = rx.recv().await.unwrap().to_lowercase();
         assert!(req.starts_with("get /healthz "), "request: {req}");
         assert!(req.contains("host: api.internal\r\n"), "request: {req}");
@@ -380,7 +385,11 @@ path = "/healthz""#,
         ] {
             let (addr, mut rx) = server(200).await;
             let c = checker(&format!("host_header = \"{host}\""));
-            assert_eq!(c.check(addr).await, CheckResult::Up, "host_header {host}");
+            assert_eq!(
+                c.check(req(addr)).await,
+                CheckResult::Up,
+                "host_header {host}"
+            );
             let req = rx.recv().await.unwrap().to_lowercase();
             assert!(req.contains(&format!("host: {host}\r\n")), "request: {req}");
         }
@@ -399,8 +408,7 @@ path = "/healthz""#,
         });
         let r = crate::checker::run_check(
             checker("").as_ref(),
-            addr,
-            std::time::Duration::from_millis(200),
+            CheckRequest::new("a", addr, std::time::Duration::from_millis(200)),
         )
         .await;
         assert_eq!(r, CheckResult::Down("timeout".into()));
@@ -413,7 +421,7 @@ path = "/healthz""#,
             opts: parse_options(&toml::Table::new()).unwrap(),
             clients: Mutex::new(HashMap::new()),
         };
-        assert_eq!(c.check(addr).await, CheckResult::Up);
+        assert_eq!(c.check(req(addr)).await, CheckResult::Up);
         assert_eq!(c.clients.lock().unwrap().len(), 1);
         c.forget(addr);
         assert!(c.clients.lock().unwrap().is_empty());
@@ -425,7 +433,7 @@ path = "/healthz""#,
         let addr = l.local_addr().unwrap();
         drop(l);
         assert!(matches!(
-            checker("").check(addr).await,
+            checker("").check(req(addr)).await,
             CheckResult::Down(_)
         ));
     }

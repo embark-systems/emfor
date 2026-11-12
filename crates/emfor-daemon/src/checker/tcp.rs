@@ -1,17 +1,16 @@
 //! `tcp` checker: a completed TCP connect is `up`.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use tokio::net::TcpStream;
 
-use super::{CheckResult, Checker, CheckerFactory, OptionError, reject_unknown_keys};
+use super::{CheckRequest, CheckResult, Checker, CheckerFactory, OptionError, reject_unknown_keys};
 
 pub struct TcpFactory;
 
 impl CheckerFactory for TcpFactory {
-    fn kind(&self) -> &'static str {
+    fn kind(&self) -> &str {
         "tcp"
     }
 
@@ -30,9 +29,9 @@ impl CheckerFactory for TcpFactory {
 pub struct TcpChecker;
 
 impl Checker for TcpChecker {
-    fn check(&self, target: SocketAddr) -> BoxFuture<'_, CheckResult> {
+    fn check(&self, req: CheckRequest) -> BoxFuture<'_, CheckResult> {
         Box::pin(async move {
-            match TcpStream::connect(target).await {
+            match TcpStream::connect(req.target).await {
                 Ok(stream) => {
                     drop(stream);
                     CheckResult::Up
@@ -57,7 +56,13 @@ pub(crate) fn is_local_io_error(e: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::SocketAddr;
+    use std::time::Duration;
     use tokio::net::TcpListener;
+
+    fn req(addr: SocketAddr) -> CheckRequest {
+        CheckRequest::new("a", addr, Duration::from_secs(1))
+    }
 
     fn checker(opts: &str) -> Result<Arc<dyn Checker>, Vec<OptionError>> {
         TcpFactory.validate(&opts.parse::<toml::Table>().unwrap())
@@ -67,7 +72,7 @@ mod tests {
     async fn listening_backend_is_up() {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
-        assert_eq!(checker("").unwrap().check(addr).await, CheckResult::Up);
+        assert_eq!(checker("").unwrap().check(req(addr)).await, CheckResult::Up);
     }
 
     #[tokio::test]
@@ -75,7 +80,7 @@ mod tests {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         drop(l);
-        match checker("").unwrap().check(addr).await {
+        match checker("").unwrap().check(req(addr)).await {
             CheckResult::Down(r) => assert!(r.to_lowercase().contains("refused"), "reason: {r}"),
             other => panic!("expected down, got {other:?}"),
         }

@@ -339,7 +339,7 @@ mod tests {
     impl crate::checker::Checker for Forgetful {
         fn check(
             &self,
-            _: std::net::SocketAddr,
+            _: crate::checker::CheckRequest,
         ) -> futures::future::BoxFuture<'_, crate::checker::CheckResult> {
             Box::pin(async { crate::checker::CheckResult::Up })
         }

@@ -35,6 +35,15 @@ context: |
     systemd-resolved、macOS 手動驗證並註明驗證版本。
   - 檢查器統一介面（validate / check），結果 up / down / error，error 不算後端失敗。
     tcp、http、exec 內建；外部外掛為常駐子程序，stdin/stdout 逐行 JSON，帶握手與協定版本。
+  - 外掛（emfor-plugins）：
+    exec：command 為陣列、不經 shell，每次檢查起一個程序，EMFOR_IP / EMFOR_PORT / EMFOR_SERVICE 環境變數；
+    結束碼採 Nagios 慣例：0 up、1/2 down（原因取 stdout 第一行）、3 以上或被 signal 終止或無法執行為 error；
+    逾時殺掉整個 process group，結果 down("timeout")。
+    外部外掛：每個 [plugins.<名稱>] 一個常駐子程序，所有服務共用；請求帶 id、可亂序回覆；
+    訊息 hello（協定版本 1）/ validate / check，每次 check 帶完整 options 與 timeout_ms；stderr 轉進 daemon log；
+    當掉時重啟，退避 1 秒起倍增、上限 30 秒，期間檢查回 error。
+    載入、重載、--check-config 都實際啟動外掛並請它驗證 check_options；無法啟動、握手失敗、驗證逾時（5 秒）
+    皆為設定錯誤。外掛超過 timeout_ms 未回覆算 error（外掛應自行在期限內回 down），不算後端失敗。
   - 設定：全域 [defaults] + 每個服務覆寫（interval、timeout、rise、fall、jitter、on_all_down）；
     check_options 交給檢查器驗證；SIGHUP 重載時全部驗證通過才套用。
   - 全部不健康時預設 open（照樣回傳並標記 all_down），可依服務改 closed。

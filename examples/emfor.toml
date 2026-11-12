@@ -1,5 +1,7 @@
 # Example emfor config. Validate with:
 #   emfor --check-config --config examples/emfor.toml
+# With [plugins] declared, --check-config starts the plugins to validate
+# check_options, then stops them before it exits.
 
 [store]
 path = "/var/lib/emfor/state.mdb"
@@ -53,3 +55,34 @@ path = "/healthz"
 scheme = "http"              # or "https"
 host_header = "api.internal" # optional
 expect_status = ["200-299"]  # default ["200-399"]
+
+# A Nagios-style check script, run once per check without a shell. The
+# backend is in EMFOR_IP, EMFOR_PORT and EMFOR_SERVICE. Exit 0 is up; 1 or 2
+# is down (reason: first line of stdout); any other exit code is an error,
+# which does not count against the backend. A script still running at
+# `timeout` is killed with all its children and counts as down.
+# Commented out because the script does not exist on a fresh host.
+#
+# [services."report.svc.emfor"]
+# check = "exec"
+# backends = ["10.0.3.1:5432"]
+# interval = "10s"     # exec starts a process per check; for frequent checks use a plugin
+# timeout = "5s"
+#
+# [services."report.svc.emfor".check_options]
+# command = ["/usr/local/libexec/check_pg_replication", "--max-lag", "60"]
+
+# A plugin: a long-running program, shared by every service that uses it,
+# speaking line-delimited JSON on stdin/stdout. See
+# docs/plugins/protocol-v1.md. The plugin validates check_options itself.
+# Commented out because the plugin does not exist on a fresh host.
+#
+# [plugins."redis"]
+# command = ["/usr/local/libexec/emfor-redis", "--verbose"]
+#
+# [services."cache.svc.emfor"]
+# check = "redis"      # the plugin name
+# backends = ["10.0.2.1:6379", "10.0.2.2:6379"]
+#
+# [services."cache.svc.emfor".check_options]
+# password_file = "/etc/emfor/redis.pass"
