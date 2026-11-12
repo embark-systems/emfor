@@ -77,10 +77,21 @@ mod tests {
 
     #[tokio::test]
     async fn closed_port_is_down_refused() {
-        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = l.local_addr().unwrap();
-        drop(l);
-        match checker("").unwrap().check(req(addr)).await {
+        // A test running in parallel may grab the freed port and listen on
+        // it, which makes the check Up. Try a fresh port when that happens.
+        // (Binding without listening would hold the port, but macOS drops
+        // the SYN instead of refusing it.)
+        let mut result = CheckResult::Up;
+        for _ in 0..5 {
+            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = l.local_addr().unwrap();
+            drop(l);
+            result = checker("").unwrap().check(req(addr)).await;
+            if result != CheckResult::Up {
+                break;
+            }
+        }
+        match result {
             CheckResult::Down(r) => assert!(r.to_lowercase().contains("refused"), "reason: {r}"),
             other => panic!("expected down, got {other:?}"),
         }

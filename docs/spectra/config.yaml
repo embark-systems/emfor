@@ -100,7 +100,7 @@ context: |
   第一版不做：多台 emfor 同步、stick-table、DNS 名稱帶條件、DNS 轉發其他網域、發佈到套件庫、
   Docker / Kubernetes 的 DNS 部署（容器內 DNS 路徑不同，需另行設計）。
 
-  後續規劃（已決定要做、尚未排入 change；用語見 LANGUAGE.md「分配方式的值」）：
+  後續規劃（已決定要做、尚未排入 change；用語見 LANGUAGE.md「分配方式的值」）：目前沒有。
   不做：balance = "random"（client 的 round-robin 起點本來就隨機，效果幾乎相同）。
 
   變更拆分：emfor-core（已完成）→ emfor-dns（含 balance 設定欄位、LMDB 欄位、DNS 端行為、resolver 部署文件、FreeBSD CI 與 rc.d 範例）
