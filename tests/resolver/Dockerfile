@@ -3,6 +3,10 @@ FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
+# Every workspace member must be present for cargo to load the workspace.
+COPY tools tools
+COPY clients/rust clients/rust
+COPY tests/spike/probe tests/spike/probe
 RUN cargo build --locked --bin emfor
 
 FROM debian:bookworm-slim
