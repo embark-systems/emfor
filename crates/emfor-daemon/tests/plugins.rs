@@ -617,6 +617,41 @@ fn sigterm_while_starting_stops_cleanly() {
     wait_for("plugin stopped", || pgrep(&mark).is_empty());
 }
 
+/// A SIGTERM while a reload waits on a plugin stops the daemon at once
+/// instead of after the reload (here a `validate` that never answers would
+/// hold it 5s).
+#[test]
+fn sigterm_during_a_reload_does_not_wait_for_it() {
+    let mark = marker("kept");
+    let hang = marker("validate-hang");
+    let decl = plugin_decl("fake", &[], &mark);
+    let d = Daemon::start(&format!(
+        "{decl}{}",
+        plugin_service(SVC, "fake", "up", FAST)
+    ));
+    wait_for("started", || d.log().contains("emfor started"));
+    d.rewrite(&format!(
+        "{decl}{}{}",
+        plugin_decl("hang", &["EMFOR_TEST_PLUGIN_VALIDATE_HANG=1"], &hang),
+        plugin_service("h.svc.emfor", "hang", "up", FAST)
+    ));
+    kill(Pid::from_raw(d.child.id() as i32), Signal::SIGHUP).unwrap();
+    wait_for("reload waits on validate", || {
+        !d.started_pids("hang").is_empty()
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    let asked = Instant::now();
+    let (code, log) = d.stop();
+    let took = asked.elapsed();
+    assert_eq!(code, 0, "{log}");
+    assert!(took < Duration::from_secs(3), "stopped after {took:?}");
+    assert!(log.contains("the reload is abandoned"), "{log}");
+    assert!(!log.contains("config reloaded"), "{log}");
+    wait_for("plugins stopped", || {
+        pgrep(&mark).is_empty() && pgrep(&hang).is_empty()
+    });
+}
+
 /// Spec "Plugin output line limit", oversized answer line.
 #[test]
 fn oversized_stdout_line_restarts_the_plugin() {

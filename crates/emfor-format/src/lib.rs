@@ -6,6 +6,8 @@
 //! parse this format directly, so any change here is a format change and must
 //! bump [`SCHEMA_VERSION`].
 
+pub mod rules;
+
 use serde::{Deserialize, Serialize};
 
 /// Current store format version, stored at [`KEY_SCHEMA_VERSION`].

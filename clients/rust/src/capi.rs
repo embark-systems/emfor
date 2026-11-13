@@ -34,7 +34,8 @@ thread_local! {
 }
 
 fn set_last_error(msg: &str) {
-    let c = CString::new(msg.replace('\0', " ")).expect("NUL bytes replaced");
+    // Every NUL byte is replaced, so this never falls back to the empty string.
+    let c = CString::new(msg.replace('\0', " ")).unwrap_or_default();
     LAST_ERROR.with(|e| *e.borrow_mut() = c);
 }
 

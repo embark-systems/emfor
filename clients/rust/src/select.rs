@@ -1,7 +1,7 @@
 //! Choosing a backend from a service record: staleness, candidates and the
 //! balance methods. Pure functions, so every rule is unit-tested.
 
-use emfor_format::{BackendRecord, Balance, HealthState, OnAllDown, ServiceRecord};
+use emfor_format::{BackendRecord, Balance, OnAllDown, ServiceRecord, rules};
 use md5::{Digest, Md5};
 
 use crate::{Error, ErrorCode};
@@ -24,33 +24,24 @@ pub fn is_stale(heartbeat: u64, now_ms: u64, max_ms: u64) -> bool {
 
 /// Backends to pick from, in config order.
 pub fn candidates(rec: &ServiceRecord, stale: bool) -> Result<Vec<&BackendRecord>, Error> {
-    let healthy: Vec<&BackendRecord> = if stale {
-        Vec::new()
-    } else {
-        rec.backends
-            .iter()
-            .filter(|b| b.state == HealthState::Healthy)
-            .collect()
-    };
-    if !healthy.is_empty() {
-        return Ok(healthy);
+    let all: Vec<&BackendRecord> = rec.backends.iter().collect();
+    if let Some(c) = rules::healthy_or_all(rec.on_all_down, &all, !stale, |b| b) {
+        return Ok(c);
     }
     let why = if stale {
         "the store is stale (emfor daemon not updating it)"
     } else {
         "no backend is healthy"
     };
-    match rec.on_all_down {
-        OnAllDown::Closed => Err(Error::new(
-            ErrorCode::AllDown,
-            format!("service {}: {why}, and on_all_down is closed", rec.name),
-        )),
-        OnAllDown::Open if rec.backends.is_empty() => Err(Error::new(
-            ErrorCode::AllDown,
-            format!("service {} has no backends", rec.name),
-        )),
-        OnAllDown::Open => Ok(rec.backends.iter().collect()),
-    }
+    Err(Error::new(
+        ErrorCode::AllDown,
+        match rec.on_all_down {
+            OnAllDown::Closed => {
+                format!("service {}: {why}, and on_all_down is closed", rec.name)
+            }
+            OnAllDown::Open => format!("service {} has no backends", rec.name),
+        },
+    ))
 }
 
 /// `fastest`: the candidates listed in the daemon's `pool`, when the store
@@ -62,20 +53,13 @@ pub fn pool_candidates<'a>(
     candidates: Vec<&'a BackendRecord>,
     stale: bool,
 ) -> Vec<&'a BackendRecord> {
-    let pool = match (&rec.pool, rec.balance, stale) {
-        (Some(pool), Balance::Fastest, false) => pool,
-        _ => return candidates,
-    };
-    let listed: Vec<&BackendRecord> = candidates
-        .iter()
-        .copied()
-        .filter(|b| pool.contains(&b.id))
-        .collect();
-    if listed.is_empty() {
-        candidates
-    } else {
-        listed
+    if rec.balance != Balance::Fastest || stale {
+        return candidates;
     }
+    let pool = rec.pool.as_deref();
+    rules::subset_or_all(&candidates, |b| {
+        rules::preferred(Balance::Fastest, b, None, pool)
+    })
 }
 
 /// Rendezvous hash version 1: the first 4 bytes of MD5(key ++ id) as a
@@ -115,14 +99,11 @@ pub fn pick(
         (Balance::Sticky, Some(k)) => rendezvous_index(k, candidates.iter().map(|b| b.id.as_str())),
         (Balance::Weighted, _) => weighted_index(candidates, next()),
         (Balance::Locality, _) => {
-            let local: Vec<usize> = (0..candidates.len())
-                .filter(|&i| site.is_some() && candidates[i].site.as_deref() == site)
-                .collect();
-            if local.is_empty() {
-                (next() % candidates.len() as u64) as usize
-            } else {
-                local[(next() % local.len() as u64) as usize]
-            }
+            let all: Vec<usize> = (0..candidates.len()).collect();
+            let local = rules::subset_or_all(&all, |i| {
+                rules::preferred(Balance::Locality, candidates[i], site, None)
+            });
+            local[(next() % local.len() as u64) as usize]
         }
         // round-robin, sticky without a key, and a balance this client does
         // not know (written by a newer daemon).
@@ -152,6 +133,7 @@ pub fn weighted_index(candidates: &[&BackendRecord], counter: u64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use emfor_format::HealthState;
 
     fn be(id: &str, state: HealthState) -> BackendRecord {
         let (ip, port) = id.rsplit_once(':').unwrap();

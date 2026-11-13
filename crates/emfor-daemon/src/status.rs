@@ -8,6 +8,14 @@
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt::Write as _;
+
+/// `write!` into a `String`. `fmt::Write` for `String` never returns an
+/// error, so there is nothing to handle.
+macro_rules! append {
+    ($out:expr, $($arg:tt)*) => {{
+        let _ = write!($out, $($arg)*);
+    }};
+}
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
@@ -329,18 +337,18 @@ fn header(snap: &Snapshot, store: &Path, now_ms: u64, style: Style) -> Vec<Strin
     let (daemon, hb_age) = daemon_state(snap.heartbeat_ms, now_ms);
     let mut line = format!("daemon: {}", daemon.as_str());
     if let Some(a) = hb_age {
-        write!(line, ", heartbeat {} ago", age(a)).unwrap();
+        append!(line, ", heartbeat {} ago", age(a));
     }
     if daemon == Daemon::Running {
         if let Some(started) = snap.started_at_ms {
-            write!(line, ", up {}", age(now_ms.saturating_sub(started))).unwrap();
+            append!(line, ", up {}", age(now_ms.saturating_sub(started)));
         }
         if let Some(site) = &snap.site {
-            write!(line, ", site {site}").unwrap();
+            append!(line, ", site {site}");
         }
         for (name, listen) in [("dns", &snap.dns_listen), ("metrics", &snap.metrics_listen)] {
             if let Some(listen) = listen {
-                write!(line, ", {name} {}", listen.join(" ")).unwrap();
+                append!(line, ", {name} {}", listen.join(" "));
             }
         }
         lines.push(line);
@@ -498,7 +506,7 @@ pub fn history_text(snap: &Snapshot, store: &Path, now_ms: u64, style: Style) ->
             for e in entries.iter().rev() {
                 let mut l = format!("    {} {} -> {}", datetime(e.at), e.from, e.to);
                 if let Some(r) = &e.reason {
-                    write!(l, "  {r}").unwrap();
+                    append!(l, "  {r}");
                 }
                 lines.push(l);
             }
@@ -695,11 +703,23 @@ fn watch(store: &StoreConfig, service: Option<&str>) -> ExitCode {
         let mut state = Watch::default();
         let mut reader: Result<Reader, Failure> = Err(Failure(String::new()));
         let mut tick = tokio::time::interval(Duration::from_secs(1));
-        let ctrl_c = tokio::signal::ctrl_c();
-        tokio::pin!(ctrl_c);
+        // Ctrl-C, `kill`, and a closed ssh session (SIGHUP) all end the
+        // watch and give the terminal back.
+        use tokio::signal::unix::{SignalKind, signal};
+        let (Ok(mut int), Ok(mut term), Ok(mut hup)) = (
+            signal(SignalKind::interrupt()),
+            signal(SignalKind::terminate()),
+            signal(SignalKind::hangup()),
+        ) else {
+            let _ = write!(out, "\x1b[?25h\x1b[?1049l");
+            eprintln!("cannot install signal handlers");
+            return;
+        };
         loop {
             tokio::select! {
-                _ = &mut ctrl_c => break,
+                _ = int.recv() => break,
+                _ = term.recv() => break,
+                _ = hup.recv() => break,
                 _ = tick.tick() => {}
             }
             let now = unix_ms();

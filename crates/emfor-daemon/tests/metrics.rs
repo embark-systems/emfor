@@ -207,6 +207,51 @@ fn serves_metrics() {
     assert_eq!(code, 0, "{log}");
 }
 
+/// Spec metrics-endpoint "Daemon metrics": store usage, last commit, and
+/// a plugin's up state and restarts.
+#[test]
+fn store_and_plugin_metrics() {
+    let addr = free_addr();
+    let plugin = env!("CARGO_BIN_EXE_emfor-test-plugin");
+    let d = spawn(&format!(
+        "{}[plugins.\"p\"]\ncommand = [\"{plugin}\"]\n\n[services.\"x.svc.emfor\"]\ncheck = \"p\"\nbackends = [\"10.0.2.1:6379\"]\ninterval = \"5s\"\ntimeout = \"1s\"\njitter = \"0%\"\n[services.\"x.svc.emfor\".check_options]\nmode = \"crash\"\n\n",
+        metrics_table(addr)
+    ));
+    d.wait_log("emfor started");
+    // The first check makes the plugin exit; it is started again after 1s.
+    let body = wait_line(addr, "emfor_plugin_restarts_total{plugin=\"p\"} 1");
+    assert!(body.contains("\n# TYPE emfor_plugin_up gauge\n"), "{body}");
+    assert!(body.contains("\nemfor_plugin_up{plugin=\"p\"} "), "{body}");
+    assert!(
+        body.contains("\n# TYPE emfor_plugin_restarts_total counter\n"),
+        "{body}"
+    );
+    assert!(
+        body.contains("\nemfor_store_map_size_bytes 4194304\n"),
+        "{body}"
+    );
+    let used: u64 = body
+        .lines()
+        .find_map(|l| l.strip_prefix("emfor_store_used_bytes "))
+        .expect(&body)
+        .parse()
+        .unwrap();
+    assert!(used > 0 && used <= 4194304, "{used}");
+    let last: f64 = body
+        .lines()
+        .find_map(|l| l.strip_prefix("emfor_store_last_commit_timestamp_seconds "))
+        .expect(&body)
+        .parse()
+        .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+    assert!((now - last).abs() < 5.0, "{last} vs {now}");
+    let (code, log) = d.stop();
+    assert_eq!(code, 0, "{log}");
+}
+
 /// Spec scenario "Address in use".
 #[test]
 fn address_in_use_exits_1() {
@@ -305,9 +350,10 @@ fn unhealthy_backend_and_removed_service() {
     assert_eq!(code, 0, "{log}");
 }
 
-/// One service of 10 refused backends gives 104 series once every backend
+/// One service of 10 refused backends gives 107 series once every backend
 /// is checked: 10 per backend (state 3, last check 1, checks 3,
-/// transitions 3) plus 3 for the daemon and 1 for the service. The count
+/// transitions 3) plus 6 for the daemon (3 of them for the store, once it
+/// has committed) and 1 for the service. The count
 /// in docs/deploy/daemon.md, section "Metrics served".
 #[test]
 fn series_for_ten_backends() {
@@ -330,7 +376,7 @@ fn series_for_ten_backends() {
     });
     let (_, body) = body.split_once("\r\n\r\n").unwrap();
     let series = body.lines().filter(|l| !l.starts_with('#')).count();
-    assert_eq!(series, 104, "{body}");
+    assert_eq!(series, 107, "{body}");
     let (code, log) = d.stop();
     assert_eq!(code, 0, "{log}");
 }

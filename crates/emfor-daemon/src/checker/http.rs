@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use futures::future::BoxFuture;
 use reqwest::redirect::Policy;
@@ -172,10 +172,12 @@ fn parse_status_item(item: &toml::Value) -> Result<StatusRange, String> {
 #[derive(Debug)]
 pub struct HttpChecker {
     opts: HttpOptions,
-    /// One client per backend, so that a domain `host_header` can be resolved
-    /// to that backend's address (correct SNI and certificate check) while
-    /// the connection still goes to the backend.
-    clients: Mutex<HashMap<SocketAddr, reqwest::Client>>,
+    /// With a domain `host_header`, one client per backend (key: its
+    /// address), so that the name resolves to that backend's address
+    /// (correct SNI and certificate check) while the connection still goes
+    /// to the backend. Otherwise one client shared by all backends (key:
+    /// `None`), since the URL already holds the address.
+    clients: Mutex<HashMap<Option<SocketAddr>, reqwest::Client>>,
 }
 
 impl HttpChecker {
@@ -186,21 +188,34 @@ impl HttpChecker {
     }
 
     fn client_for(&self, target: SocketAddr) -> Result<reqwest::Client, reqwest::Error> {
-        let mut clients = self.clients.lock().unwrap();
-        if let Some(c) = clients.get(&target) {
+        let name = self.host_name();
+        let key = name.map(|_| target);
+        if let Some(c) = self
+            .clients
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+        {
             return Ok(c.clone());
         }
+        // Built without the lock: building loads the TLS roots, and every
+        // backend's first check would wait on it otherwise.
         let mut b = reqwest::Client::builder()
             .redirect(Policy::none())
             .no_proxy()
             .pool_max_idle_per_host(0)
             .tls_danger_accept_invalid_certs(!self.opts.tls_verify);
-        if let Some(name) = self.host_name() {
+        if let Some(name) = name {
             b = b.resolve(name, target);
         }
         let c = b.build()?;
-        clients.insert(target, c.clone());
-        Ok(c)
+        Ok(self
+            .clients
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(key)
+            .or_insert(c)
+            .clone())
     }
 
     /// Request URL. The connection always goes to `target`: either the URL
@@ -266,7 +281,10 @@ impl Checker for HttpChecker {
     }
 
     fn forget(&self, target: SocketAddr) {
-        self.clients.lock().unwrap().remove(&target);
+        self.clients
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&Some(target));
     }
 }
 
@@ -419,23 +437,40 @@ path = "/healthz""#,
         assert_eq!(r, CheckResult::Down("timeout".into()));
     }
 
+    fn http_checker(options: &str) -> HttpChecker {
+        HttpChecker {
+            opts: parse_options(&toml::from_str(options).unwrap()).unwrap(),
+            clients: Mutex::new(HashMap::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn backends_share_one_client_without_a_host_name() {
+        let (a, _ra) = server(200).await;
+        let (b, _rb) = server(200).await;
+        let c = http_checker("host_header = \"10.0.0.1\"");
+        c.prepare(a);
+        c.prepare(b);
+        assert_eq!(c.clients.lock().unwrap().len(), 1, "one shared client");
+        assert_eq!(c.check(req(a)).await, CheckResult::Up);
+        assert_eq!(c.check(req(b)).await, CheckResult::Up);
+        assert_eq!(c.clients.lock().unwrap().len(), 1, "checks reuse it");
+        c.forget(a);
+        assert_eq!(c.clients.lock().unwrap().len(), 1, "still used by b");
+    }
+
     #[tokio::test]
     async fn forget_releases_backend_client() {
-        let (addr, _rx) = server(200).await;
-        let c = HttpChecker {
-            opts: parse_options(&toml::Table::new()).unwrap(),
-            clients: Mutex::new(HashMap::new()),
-        };
-        c.prepare(addr);
-        assert_eq!(
-            c.clients.lock().unwrap().len(),
-            1,
-            "prepare builds the client"
-        );
-        assert_eq!(c.check(req(addr)).await, CheckResult::Up);
-        assert_eq!(c.clients.lock().unwrap().len(), 1, "check reuses it");
-        c.forget(addr);
-        assert!(c.clients.lock().unwrap().is_empty());
+        let (a, _ra) = server(200).await;
+        let (b, _rb) = server(200).await;
+        let c = http_checker("host_header = \"api.example\"");
+        c.prepare(a);
+        c.prepare(b);
+        assert_eq!(c.clients.lock().unwrap().len(), 2, "one per backend");
+        assert_eq!(c.check(req(a)).await, CheckResult::Up);
+        assert_eq!(c.clients.lock().unwrap().len(), 2, "check reuses it");
+        c.forget(a);
+        assert_eq!(c.clients.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

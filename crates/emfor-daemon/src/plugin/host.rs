@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use super::protocol::{PROTOCOL, Request, Response};
+use crate::live::PluginStatus;
 
 /// How long a plugin has to answer the handshake.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -102,10 +103,12 @@ struct Shared {
     command: Vec<String>,
     conn: Mutex<Option<Conn>>,
     next_id: AtomicU64,
+    status: Arc<PluginStatus>,
 }
 
 impl Shared {
     fn set_conn(&self, conn: Option<Conn>) {
+        self.status.up.store(conn.is_some(), Ordering::Relaxed);
         *self.conn.lock().unwrap_or_else(|e| e.into_inner()) = conn;
     }
 }
@@ -144,6 +147,10 @@ impl PluginHost {
             command: command.to_vec(),
             conn: Mutex::new(Some(process.conn.clone())),
             next_id: AtomicU64::new(1),
+            status: Arc::new(PluginStatus {
+                up: true.into(),
+                restarts: 0.into(),
+            }),
         });
         let (stop, stop_rx) = watch::channel(false);
         let supervisor = tokio::spawn(supervise(shared.clone(), process, stop_rx));
@@ -160,6 +167,11 @@ impl PluginHost {
 
     pub fn command(&self) -> &[String] {
         &self.shared.command
+    }
+
+    /// Up and restart count, for `/metrics`.
+    pub fn status(&self) -> Arc<PluginStatus> {
+        self.shared.status.clone()
     }
 
     /// Process id of the running plugin, `None` while it is down.
@@ -182,7 +194,9 @@ impl PluginHost {
                 return Err(CallError::Unavailable);
             };
             let id = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
-            let line = serde_json::to_string(&build(id)).expect("requests serialize") + "\n";
+            let line = serde_json::to_string(&build(id)).expect(
+                "a Request serializes: it holds only strings, numbers and string-keyed maps",
+            ) + "\n";
             {
                 let mut waiters = lock(&conn.pending);
                 if waiters.closed {
@@ -250,9 +264,13 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
         .spawn()
         .map_err(|e| format!("plugin {name}: cannot run {program}: {e}"))?;
     let pid = child.id().unwrap_or(0);
-    let mut stdin = child.stdin.take().expect("stdin is piped");
-    let stdout = child.stdout.take().expect("stdout is piped");
-    let stderr = child.stderr.take().expect("stderr is piped");
+    let (Some(mut stdin), Some(stdout), Some(stderr)) =
+        (child.stdin.take(), child.stdout.take(), child.stderr.take())
+    else {
+        return Err(format!(
+            "plugin {name}: cannot connect to its stdin, stdout and stderr"
+        ));
+    };
 
     let log_name = name.to_string();
     tokio::spawn(async move {
@@ -282,7 +300,9 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
         // Dropping stdin here is the plugin's end of file.
     });
 
-    let hello = serde_json::to_string(&Request::Hello { protocol: PROTOCOL }).unwrap() + "\n";
+    let hello = serde_json::to_string(&Request::Hello { protocol: PROTOCOL })
+        .expect("a Request serializes: it holds only strings, numbers and string-keyed maps")
+        + "\n";
     let _ = tx.send(hello);
     let mut stdout = BufReader::new(stdout);
     let first = match tokio::time::timeout(
@@ -516,7 +536,10 @@ async fn supervise(shared: Arc<Shared>, mut process: Process, mut stop: watch::R
                 _ = stop.changed() => return,
             }
             match launch(&name, &shared.command).await {
-                Ok(p) => break p,
+                Ok(p) => {
+                    shared.status.restarts.fetch_add(1, Ordering::Relaxed);
+                    break p;
+                }
                 Err(e) => {
                     tracing::warn!(plugin = %name, "{e}");
                     delay = backoff.on_exit(Duration::ZERO);

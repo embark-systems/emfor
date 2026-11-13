@@ -10,6 +10,7 @@ use super::host::PluginHost;
 use super::{PluginFactory, plugin_checker_id};
 use crate::checker::Registry;
 use crate::config::{Config, ConfigError, PluginSpec, key_path};
+use crate::live::PluginStatus;
 
 /// Running plugins of the applied config, by name.
 #[derive(Debug, Default)]
@@ -102,6 +103,14 @@ impl PluginSet {
             .filter(|h| !self.hosts.values().any(|n| Arc::ptr_eq(n, h)))
             .collect();
         futures::future::join_all(dropped.iter().map(|h| h.stop())).await;
+    }
+
+    /// Status of each applied plugin, for `/metrics`.
+    pub fn statuses(&self) -> Vec<(String, Arc<PluginStatus>)> {
+        self.hosts
+            .iter()
+            .map(|(name, h)| (name.clone(), h.status()))
+            .collect()
     }
 
     /// Stop every plugin.

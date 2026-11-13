@@ -63,6 +63,10 @@ impl Reader {
 struct Daemon {
     child: Child,
     dir: tempfile::TempDir,
+    /// The daemon's stderr, read as it comes so a long log never fills the
+    /// pipe and blocks the daemon.
+    log: std::sync::Arc<std::sync::Mutex<String>>,
+    log_reader: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Daemon {
@@ -78,15 +82,19 @@ impl Daemon {
     /// Stop with SIGTERM and return (exit code, stderr).
     fn stop(mut self) -> (i32, String) {
         self.signal(Signal::SIGTERM);
+        let code = self.wait();
+        (code, self.log())
+    }
+    /// Wait for the daemon to exit and for its stderr to be read.
+    fn wait(&mut self) -> i32 {
         let status = self.child.wait().unwrap();
-        let mut err = String::new();
-        self.child
-            .stderr
-            .take()
-            .unwrap()
-            .read_to_string(&mut err)
-            .unwrap();
-        (status.code().unwrap_or(-1), err)
+        if let Some(r) = self.log_reader.take() {
+            r.join().unwrap();
+        }
+        status.code().unwrap_or(-1)
+    }
+    fn log(&self) -> String {
+        self.log.lock().unwrap().clone()
     }
     fn running(&mut self) -> bool {
         self.child.try_wait().unwrap().is_none()
@@ -119,7 +127,7 @@ fn start(services: &str) -> Daemon {
 fn start_in(dir: tempfile::TempDir, services: &str) -> Daemon {
     let cfg = dir.path().join("emfor.toml");
     std::fs::write(&cfg, format!("{}{services}", store_header(dir.path()))).unwrap();
-    let child = Command::new(cargo_bin("emfor"))
+    let mut child = Command::new(cargo_bin("emfor"))
         .arg("server")
         .arg("--config")
         .arg(&cfg)
@@ -128,7 +136,26 @@ fn start_in(dir: tempfile::TempDir, services: &str) -> Daemon {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let d = Daemon { child, dir };
+    let log = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let mut stderr = child.stderr.take().unwrap();
+    let sink = log.clone();
+    let log_reader = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = stderr.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            sink.lock()
+                .unwrap()
+                .push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+    });
+    let d = Daemon {
+        child,
+        dir,
+        log,
+        log_reader: Some(log_reader),
+    };
     wait_for(|| {
         d.store().exists()
             && std::fs::metadata(d.store())
@@ -171,13 +198,8 @@ fn start_dns(services: &str) -> (Daemon, String) {
         if d.running() {
             return (d, dns);
         }
-        let mut err = String::new();
-        d.child
-            .stderr
-            .take()
-            .unwrap()
-            .read_to_string(&mut err)
-            .unwrap();
+        d.wait();
+        let err = d.log();
         assert!(err.contains("Address already in use"), "{err}");
     }
     panic!("no free DNS port after 5 tries");
@@ -1107,6 +1129,74 @@ fn status_watch_needs_a_terminal() {
     std::fs::write(&cfg, "").unwrap();
     let (code, _, err) = status(&cfg, &["--watch"]);
     assert_eq!((code, err.trim()), (2, "--watch needs a terminal"));
+}
+
+/// `status --watch` gives the terminal back (main screen, cursor shown)
+/// when it is stopped by `kill` or by a closed ssh session, not only by
+/// Ctrl-C.
+#[test]
+fn status_watch_restores_the_terminal_on_term_and_hup() {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::sync::{Arc, Mutex};
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    std::fs::write(&cfg, store_header(dir.path())).unwrap();
+    for sig in [Signal::SIGTERM, Signal::SIGHUP, Signal::SIGINT] {
+        let (mut master, mut slave) = (0, 0);
+        // SAFETY: openpty fills two new descriptors, owned below.
+        let rc = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, 0);
+        let (master, slave) =
+            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        let mut child = Command::new(cargo_bin("emfor"))
+            .arg("status")
+            .arg("--config")
+            .arg(&cfg)
+            .arg("--watch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(slave))
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let reader = {
+            let seen = seen.clone();
+            let mut master = std::fs::File::from(master);
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                // Ends with EIO (Linux) or 0 once the child has exited.
+                while let Ok(n) = master.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    seen.lock().unwrap().extend_from_slice(&buf[..n]);
+                }
+            })
+        };
+        let has = |s: &[u8]| {
+            let seen = seen.lock().unwrap();
+            seen.windows(s.len()).any(|w| w == s)
+        };
+        wait_for(|| has(b"store: "));
+        kill(Pid::from_raw(child.id() as i32), sig).unwrap();
+        let status = child.wait().unwrap();
+        reader.join().unwrap();
+        assert_eq!(status.code(), Some(0), "{sig}");
+        let out = seen.lock().unwrap().clone();
+        assert!(
+            out.ends_with(b"\x1b[?25h\x1b[?1049l"),
+            "{sig}: {:?}",
+            String::from_utf8_lossy(&out[out.len().saturating_sub(40)..])
+        );
+    }
 }
 
 /// Spec status-command "Status history output", scenario "History with

@@ -6,6 +6,14 @@
 //! connection and then closes it, which is all a Prometheus scrape needs.
 
 use std::fmt::Write as _;
+
+/// `writeln!` into a `String`. `fmt::Write` for `String` never returns an
+/// error, so there is nothing to handle.
+macro_rules! put {
+    ($out:expr, $($arg:tt)*) => {{
+        let _ = writeln!($out, $($arg)*);
+    }};
+}
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -221,8 +229,8 @@ fn label(value: &str) -> String {
 }
 
 fn family(out: &mut String, name: &str, kind: &str, help: &str) {
-    writeln!(out, "# HELP {name} {help}").unwrap();
-    writeln!(out, "# TYPE {name} {kind}").unwrap();
+    put!(out, "# HELP {name} {help}");
+    put!(out, "# TYPE {name} {kind}");
 }
 
 /// The response body for `view`.
@@ -234,31 +242,84 @@ pub fn render(view: &LiveView, version: &str) -> String {
         "gauge",
         "emfor version, always 1.",
     );
-    writeln!(out, "emfor_build_info{{version=\"{}\"}} 1", label(version)).unwrap();
+    put!(out, "emfor_build_info{{version=\"{}\"}} 1", label(version));
     family(
         &mut out,
         "emfor_start_time_seconds",
         "gauge",
         "Daemon start time in Unix seconds.",
     );
-    writeln!(
+    put!(
         out,
         "emfor_start_time_seconds {}",
         seconds(view.started_at_ms)
-    )
-    .unwrap();
+    );
     family(
         &mut out,
         "emfor_store_commit_failures_total",
         "counter",
         "Failed state store commits since the daemon started.",
     );
-    writeln!(
+    put!(
         out,
         "emfor_store_commit_failures_total {}",
         view.commit_failures
-    )
-    .unwrap();
+    );
+    if view.last_commit_ms > 0 {
+        family(
+            &mut out,
+            "emfor_store_last_commit_timestamp_seconds",
+            "gauge",
+            "Unix time of the last successful state store commit.",
+        );
+        put!(
+            out,
+            "emfor_store_last_commit_timestamp_seconds {}",
+            seconds(view.last_commit_ms)
+        );
+    }
+    if let Some((used, map)) = view.store_usage {
+        family(
+            &mut out,
+            "emfor_store_used_bytes",
+            "gauge",
+            "Bytes of the state store in use; commits fail when this reaches emfor_store_map_size_bytes.",
+        );
+        put!(out, "emfor_store_used_bytes {used}");
+        family(
+            &mut out,
+            "emfor_store_map_size_bytes",
+            "gauge",
+            "Size of the state store map ([store] map_size).",
+        );
+        put!(out, "emfor_store_map_size_bytes {map}");
+    }
+    if !view.plugins.is_empty() {
+        family(
+            &mut out,
+            "emfor_plugin_up",
+            "gauge",
+            "1 while the plugin process runs and answered the handshake.",
+        );
+        for (name, s) in &view.plugins {
+            let up = u8::from(s.up.load(std::sync::atomic::Ordering::Relaxed));
+            put!(out, "emfor_plugin_up{{plugin=\"{}\"}} {up}", label(name));
+        }
+        family(
+            &mut out,
+            "emfor_plugin_restarts_total",
+            "counter",
+            "Times the plugin was started again after it exited.",
+        );
+        for (name, s) in &view.plugins {
+            let n = s.restarts.load(std::sync::atomic::Ordering::Relaxed);
+            put!(
+                out,
+                "emfor_plugin_restarts_total{{plugin=\"{}\"}} {n}",
+                label(name)
+            );
+        }
+    }
 
     let mut names: Vec<&String> = view.services.keys().collect();
     names.sort();
@@ -271,13 +332,12 @@ pub fn render(view: &LiveView, version: &str) -> String {
         "1 when no backend of the service is healthy.",
     );
     for r in &records {
-        writeln!(
+        put!(
             out,
             "emfor_service_all_down{{service=\"{}\"}} {}",
             label(&r.name),
             u8::from(r.all_down)
-        )
-        .unwrap();
+        );
     }
 
     // Every backend of every service, in that order, with its labels.
@@ -303,12 +363,11 @@ pub fn render(view: &LiveView, version: &str) -> String {
     );
     for (_, b, l) in &backends {
         for s in BackendCounters::STATES {
-            writeln!(
+            put!(
                 out,
                 "emfor_backend_state{{{l},state=\"{s}\"}} {}",
                 u8::from(b.state == s)
-            )
-            .unwrap();
+            );
         }
     }
     family(
@@ -319,12 +378,11 @@ pub fn render(view: &LiveView, version: &str) -> String {
     );
     for (_, b, l) in &backends {
         if let Some(us) = b.latency_us {
-            writeln!(
+            put!(
                 out,
                 "emfor_backend_check_latency_seconds{{{l}}} {}",
                 us as f64 / 1e6
-            )
-            .unwrap();
+            );
         }
     }
     family(
@@ -335,12 +393,11 @@ pub fn render(view: &LiveView, version: &str) -> String {
     );
     for (_, b, l) in &backends {
         if let Some(ms) = b.checked_at {
-            writeln!(
+            put!(
                 out,
                 "emfor_backend_last_check_timestamp_seconds{{{l}}} {}",
                 seconds(ms)
-            )
-            .unwrap();
+            );
         }
     }
     family(
@@ -352,7 +409,7 @@ pub fn render(view: &LiveView, version: &str) -> String {
     for (r, b, l) in &backends {
         if r.balance == Balance::Fastest {
             let in_pool = r.pool.as_ref().is_some_and(|p| p.contains(&b.id));
-            writeln!(out, "emfor_backend_in_pool{{{l}}} {}", u8::from(in_pool)).unwrap();
+            put!(out, "emfor_backend_in_pool{{{l}}} {}", u8::from(in_pool));
         }
     }
 
@@ -371,12 +428,11 @@ pub fn render(view: &LiveView, version: &str) -> String {
     for (r, b, l) in &backends {
         let c = counters(r, &b.id);
         for (o, name) in BackendCounters::OUTCOMES {
-            writeln!(
+            put!(
                 out,
                 "emfor_backend_checks_total{{{l},result=\"{name}\"}} {}",
                 c.checks[BackendCounters::outcome_index(o)]
-            )
-            .unwrap();
+            );
         }
     }
     family(
@@ -388,12 +444,11 @@ pub fn render(view: &LiveView, version: &str) -> String {
     for (r, b, l) in &backends {
         let c = counters(r, &b.id);
         for s in BackendCounters::STATES {
-            writeln!(
+            put!(
                 out,
                 "emfor_backend_transitions_total{{{l},to=\"{s}\"}} {}",
                 c.transitions[BackendCounters::state_index(s)]
-            )
-            .unwrap();
+            );
         }
     }
     out
@@ -446,6 +501,45 @@ mod tests {
             v.services.insert(r.name.clone(), LiveService::new(r, None));
         }
         v
+    }
+
+    #[test]
+    fn store_and_plugin_series() {
+        use crate::live::PluginStatus;
+        let mut v = view(vec![]);
+        let body = render(&v, "0.1.0");
+        for name in [
+            "emfor_store_last_commit_timestamp_seconds",
+            "emfor_store_used_bytes",
+            "emfor_plugin_up",
+        ] {
+            assert!(!body.contains(name), "{name} before it is known: {body}");
+        }
+        v.last_commit_ms = 1762905600500;
+        v.store_usage = Some((65536, 4194304));
+        let down = PluginStatus::default();
+        down.restarts.store(3, std::sync::atomic::Ordering::Relaxed);
+        v.plugins = vec![
+            ("redis".into(), std::sync::Arc::new(down)),
+            (
+                "my\"sql".into(),
+                std::sync::Arc::new(PluginStatus {
+                    up: true.into(),
+                    restarts: 0.into(),
+                }),
+            ),
+        ];
+        let body = render(&v, "0.1.0");
+        for line in [
+            "emfor_store_last_commit_timestamp_seconds 1762905600.500",
+            "emfor_store_used_bytes 65536",
+            "emfor_store_map_size_bytes 4194304",
+            "emfor_plugin_up{plugin=\"redis\"} 0",
+            "emfor_plugin_up{plugin=\"my\\\"sql\"} 1",
+            "emfor_plugin_restarts_total{plugin=\"redis\"} 3",
+        ] {
+            assert!(body.lines().any(|l| l == line), "{line}: {body}");
+        }
     }
 
     fn api() -> ServiceRecord {

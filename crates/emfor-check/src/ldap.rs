@@ -49,7 +49,7 @@ async fn connect(
     let tls = settings
         .tls
         .as_ref()
-        .expect("options give starttls its TLS settings");
+        .expect("the ldap options parser always sets `tls` when `starttls` is true");
     let remaining = req.timeout.saturating_sub(start.elapsed());
     let conn = emfor_tls::handshake(tcp, tls, req.ip, remaining)
         .await

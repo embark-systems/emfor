@@ -314,7 +314,8 @@ fn check_response(id: u64, outcome: CheckOutcome) -> Response<'static> {
 }
 
 fn send(tx: &mpsc::UnboundedSender<String>, response: &Response<'_>) {
-    let mut line = serde_json::to_string(response).expect("responses serialize");
+    let mut line = serde_json::to_string(response)
+        .expect("a Response serializes: it holds only strings, numbers and lists");
     line.push('\n');
     // The receiver lives until every sender is gone.
     let _ = tx.send(line);

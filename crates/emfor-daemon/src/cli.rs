@@ -89,7 +89,11 @@ pub fn main() -> ExitCode {
             return ExitCode::from(EXIT_STARTUP);
         }
     };
-    runtime.block_on(start(cli.config, check_only))
+    let code = runtime.block_on(start(cli.config, check_only));
+    // A reload abandoned at shutdown can leave a config validation running
+    // on a blocking thread, waiting up to 5s per plugin; do not wait for it.
+    runtime.shutdown_timeout(Duration::from_secs(1));
+    code
 }
 
 async fn start(config_path: PathBuf, check_only: bool) -> ExitCode {
@@ -301,7 +305,8 @@ async fn run(
 
     let (tx, rx) = mpsc::unbounded_channel();
     let history = load_history(&store);
-    let mut writer = writer::spawn_live(store, rx, live, history, listen_keys(&config));
+    let mut writer = writer::spawn_live(store, rx, live.clone(), history, listen_keys(&config));
+    live.set_plugins(plugins.statuses());
     let mut supervisor = Supervisor::start(&config, tx.clone());
     tracing::info!(
         "emfor started: {} services, {} backends, store {}",
@@ -332,7 +337,21 @@ async fn run(
                 supervisor.restart_finished();
             }
             _ = hup.recv() => {
-                let (prepared, loaded) = load(&config_path, Some(&current), plugins).await;
+                // A reload can wait seconds on plugins (start, handshake,
+                // validate); a stop request ends it there.
+                let outcome = {
+                    let reload = load(&config_path, Some(&current), plugins);
+                    tokio::pin!(reload);
+                    tokio::select! {
+                        r = &mut reload => Some(r),
+                        _ = term.recv() => None,
+                        _ = int.recv() => None,
+                    }
+                };
+                let Some((prepared, loaded)) = outcome else {
+                    tracing::info!("stop requested while reloading; the reload is abandoned");
+                    break;
+                };
                 match loaded {
                     Ok(new) => {
                         if new.log != current.log {
@@ -348,6 +367,7 @@ async fn run(
                         // After the supervisor switched checkers, so replaced
                         // plugins are no longer used when they stop.
                         plugins.commit(prepared).await;
+                        live.set_plugins(plugins.statuses());
                         if let (Some(tx), Some(d)) = (&dns_tx, &new.dns) {
                             tx.send_replace(dns_settings(d));
                         }

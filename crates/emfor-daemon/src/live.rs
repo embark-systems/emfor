@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 use emfor_format::{HealthState, ServiceRecord};
@@ -85,6 +85,21 @@ pub struct LiveView {
     pub commit_failures: u64,
     /// `meta/started_at` of this run, Unix milliseconds.
     pub started_at_ms: u64,
+    /// Unix milliseconds of the last successful store commit; 0 before one.
+    pub last_commit_ms: u64,
+    /// Bytes of the store in use and the map size, after the last commit.
+    pub store_usage: Option<(u64, u64)>,
+    /// Plugins of the applied config, by name.
+    pub plugins: Vec<(String, Arc<PluginStatus>)>,
+}
+
+/// Kept up to date by a plugin's host, read by `/metrics`.
+#[derive(Debug, Default)]
+pub struct PluginStatus {
+    /// The plugin process is running and answered the handshake.
+    pub up: AtomicBool,
+    /// Times the plugin was started again after it exited.
+    pub restarts: AtomicU64,
 }
 
 /// Counts for one backend, indexed by [`BackendCounters::outcome_index`]
@@ -184,6 +199,19 @@ impl LiveState {
     pub(crate) fn count_commit_failure(&self) {
         let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
         v.commit_failures += 1;
+    }
+
+    pub(crate) fn record_commit(&self, at_ms: u64, usage: Option<(u64, u64)>) {
+        let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
+        v.last_commit_ms = at_ms;
+        if usage.is_some() {
+            v.store_usage = usage;
+        }
+    }
+
+    pub fn set_plugins(&self, plugins: Vec<(String, Arc<PluginStatus>)>) {
+        let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
+        v.plugins = plugins;
     }
 
     pub(crate) fn set_started_at(&self, ms: u64) {

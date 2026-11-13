@@ -132,8 +132,11 @@ impl Run<'_> {
                 buf
             })
         };
-        let stdout = reader(Box::new(child.stdout.take().expect("piped")));
-        let stderr = reader(Box::new(child.stderr.take().expect("piped")));
+        let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
+            return Err(format!("cannot read the output of {}", self.program[0]));
+        };
+        let stdout = reader(Box::new(out));
+        let stderr = reader(Box::new(err));
         let start = Instant::now();
         let status = loop {
             if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {

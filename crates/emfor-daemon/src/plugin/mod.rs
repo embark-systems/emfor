@@ -72,7 +72,8 @@ impl PluginFactory {
 
 /// `checker_id` of a plugin: `plugin:<name>:<command as JSON>`.
 pub fn plugin_checker_id(name: &str, command: &[String]) -> String {
-    let command = serde_json::to_string(command).expect("strings serialize");
+    let command =
+        serde_json::to_string(command).expect("a list of strings always serializes to JSON");
     format!("plugin:{name}:{command}")
 }
 

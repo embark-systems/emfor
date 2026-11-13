@@ -50,6 +50,11 @@ pub trait Sink: Send + 'static {
     /// Free reader slots of processes that died during a lookup
     /// ([`Store::clear_stale_readers`]); returns how many were freed.
     fn clear_stale_readers(&mut self) -> Result<usize, String>;
+
+    /// [`Store::usage`], for `/metrics`; `None` when unknown.
+    fn usage(&self) -> Option<(u64, u64)> {
+        None
+    }
 }
 
 fn commit_to_store(store: &Store, ops: &[Op]) -> Result<(), String> {
@@ -77,6 +82,10 @@ impl Sink for Store {
     fn clear_stale_readers(&mut self) -> Result<usize, String> {
         Store::log_stale_readers(self).map_err(|e| e.to_string())
     }
+
+    fn usage(&self) -> Option<(u64, u64)> {
+        Some(Store::usage(self))
+    }
 }
 
 /// Shared store, so tests (and future readers in-process) can read while the writer runs.
@@ -87,6 +96,10 @@ impl Sink for Arc<Store> {
 
     fn clear_stale_readers(&mut self) -> Result<usize, String> {
         self.log_stale_readers().map_err(|e| e.to_string())
+    }
+
+    fn usage(&self) -> Option<(u64, u64)> {
+        Some(Store::usage(self))
     }
 }
 
@@ -124,6 +137,10 @@ pub enum WriterMsg {
     },
     /// Flush, write `meta/heartbeat = "0"`, and stop.
     Shutdown(oneshot::Sender<()>),
+    /// Answered once every earlier message is handled (and committed, when
+    /// handling commits), so tests wait for the writer instead of sleeping.
+    #[cfg(test)]
+    Barrier(oneshot::Sender<()>),
 }
 
 struct Writer<S: Sink> {
@@ -201,8 +218,9 @@ fn spawn_inner<S: Sink>(
     history: BTreeMap<String, ServiceHistory>,
     listen: ListenKeys,
 ) -> tokio::task::JoinHandle<()> {
-    let json =
-        |l: Option<Vec<String>>| l.map(|l| serde_json::to_string(&l).expect("strings serialize"));
+    let json = |l: Option<Vec<String>>| {
+        l.map(|l| serde_json::to_string(&l).expect("a list of strings always serializes to JSON"))
+    };
     let listen = [
         (KEY_DNS_LISTEN, json(listen.dns)),
         (KEY_METRICS_LISTEN, json(listen.metrics)),
@@ -235,6 +253,10 @@ fn spawn_inner<S: Sink>(
                         w.shutdown().await;
                         let _ = done.send(());
                         return;
+                    }
+                    #[cfg(test)]
+                    Some(WriterMsg::Barrier(done)) => {
+                        let _ = done.send(());
                     }
                     None => return,
                 },
@@ -410,9 +432,9 @@ impl<S: Sink> Writer<S> {
     }
 
     fn sink_mut(&mut self) -> &mut S {
-        self.sink
-            .as_mut()
-            .expect("the sink is back after every commit")
+        self.sink.as_mut().expect(
+            "the sink is taken only while a commit runs and is put back before flush returns",
+        )
     }
 
     /// Commit pending ops, `extra`, and every dirty service record in one transaction.
@@ -421,14 +443,15 @@ impl<S: Sink> Writer<S> {
         ops.extend(extra);
         for name in &self.dirty {
             if let Some(rec) = self.records.get(name) {
-                let json = serde_json::to_string(rec).expect("service record serializes");
+                let json = serde_json::to_string(rec).expect("a ServiceRecord serializes: it holds only strings, numbers, booleans and lists");
                 ops.push(Op::Put(service_key(name), json));
             }
         }
         for name in &self.hist_dirty {
             match self.histories.get(name).filter(|h| !h.is_empty()) {
                 Some(h) => {
-                    let json = serde_json::to_string(h).expect("history serializes");
+                    let json = serde_json::to_string(h)
+                        .expect("a ServiceHistory serializes: its maps are keyed by strings");
                     ops.push(Op::Put(hist_key(name), json));
                 }
                 None => ops.push(Op::Delete(hist_key(name))),
@@ -440,21 +463,22 @@ impl<S: Sink> Writer<S> {
         // On a blocking thread: a commit can wait for the disk (`[store]
         // sync = true`, or the kernel writing back), and must not hold up a
         // worker that serves DNS, metrics and checks meanwhile.
-        let mut sink = self
-            .sink
-            .take()
-            .expect("the sink is back after every commit");
-        let (sink, ops, result) = tokio::task::spawn_blocking(move || {
+        let mut sink = self.sink.take().expect(
+            "the sink is taken only while a commit runs and is put back before flush returns",
+        );
+        let (sink, ops, result, usage) = tokio::task::spawn_blocking(move || {
             let result = sink.commit(&ops);
-            (sink, ops, result)
+            let usage = result.as_ref().ok().and_then(|()| sink.usage());
+            (sink, ops, result, usage)
         })
         .await
-        .expect("a store commit does not panic");
+        .expect("a store commit panicked; the writer stops, and the daemon exits with status 70");
         self.sink = Some(sink);
         match result {
             Ok(()) => {
                 self.dirty.clear();
                 self.hist_dirty.clear();
+                self.live.record_commit(unix_ms(), usage);
             }
             Err(e) => {
                 tracing::error!("state store commit failed, retrying at next heartbeat: {e}");
@@ -518,6 +542,23 @@ mod tests {
             generation,
             reset,
         }
+    }
+
+    /// Poll `cond` every 20ms until it holds, failing after 5s: for what
+    /// waits on the real-time heartbeat tick.
+    async fn eventually(what: &str, mut cond: impl FnMut() -> bool) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !cond() {
+            assert!(tokio::time::Instant::now() < deadline, "timed out: {what}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Wait until the writer has handled every message sent before.
+    async fn settled(tx: &mpsc::UnboundedSender<WriterMsg>) {
+        let (done, wait) = oneshot::channel();
+        tx.send(WriterMsg::Barrier(done)).unwrap();
+        wait.await.unwrap();
     }
 
     fn upd(service: &str, id: &str, state: HealthState, transition: bool) -> WriterMsg {
@@ -668,7 +709,7 @@ mod tests {
             services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(store.get(KEY_SITE).unwrap().as_deref(), Some("dc1"));
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
@@ -676,7 +717,7 @@ mod tests {
             services: vec![layout("a", &["10.0.0.1:80"], 0, false)],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(store.get(KEY_SITE).unwrap(), None);
     }
 
@@ -719,10 +760,10 @@ mod tests {
             listen,
         );
         start(&tx, true);
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(keys(&store), want);
         start(&tx, false);
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(keys(&store), want);
         drop(tx);
         w.await.unwrap();
@@ -731,7 +772,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
         start(&tx, true);
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(keys(&store), (None, None));
     }
 
@@ -758,7 +799,7 @@ mod tests {
             true,
         ))
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         let json = store.get(&service_key("api.svc.emfor")).unwrap().unwrap();
         assert!(json.contains(r#""weight":3,"site":"dc1""#), "{json}");
         // Reload changing the weight: the record follows, health carries over.
@@ -770,7 +811,7 @@ mod tests {
             services: vec![l],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         let rec = record(&store, "api.svc.emfor");
         assert_eq!(rec.backends[0].weight, 4);
         assert_eq!(rec.backends[0].state, HealthState::Healthy);
@@ -788,11 +829,10 @@ mod tests {
             services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         let hb1: u64 = store.get(KEY_HEARTBEAT).unwrap().unwrap().parse().unwrap();
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let hb2: u64 = store.get(KEY_HEARTBEAT).unwrap().unwrap().parse().unwrap();
-        assert!(hb2 > hb1, "{hb1} -> {hb2}");
+        let hb = || -> u64 { store.get(KEY_HEARTBEAT).unwrap().unwrap().parse().unwrap() };
+        eventually("heartbeat advances", || hb() > hb1).await;
         assert_eq!(store.get(KEY_SCHEMA_VERSION).unwrap().as_deref(), Some("1"));
         assert!(store.get(KEY_STARTED_AT).unwrap().is_some());
     }
@@ -812,11 +852,11 @@ mod tests {
         // Without a transition, the change waits for the (hour-long) tick.
         tx.send(upd("a", "10.0.0.1:80", HealthState::Unknown, false))
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(record(&store, "a").backends[0].checked_at, None);
         tx.send(upd("a", "10.0.0.1:80", HealthState::Healthy, true))
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         let rec = record(&store, "a");
         assert_eq!(rec.backends[0].state, HealthState::Healthy);
         assert!(!rec.all_down);
@@ -847,7 +887,7 @@ mod tests {
             for (id, st) in ids.iter().zip(states.iter()) {
                 tx.send(upd("a", id, *st, true)).unwrap();
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            settled(&tx).await;
             assert_eq!(record(&store, "a").all_down, *expected, "{states:?}");
         }
     }
@@ -930,7 +970,7 @@ mod tests {
             Some("connect: Connection refused"),
         ))
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         let last = commits.lock().unwrap().last().cloned().unwrap();
         let hist = last
             .iter()
@@ -964,7 +1004,7 @@ mod tests {
             services: vec![layout("api.svc.emfor", &ids, 0, true)],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         let commits = commits.lock().unwrap();
         assert!(
             commits[n..].iter().flatten().all(
@@ -994,25 +1034,23 @@ mod tests {
             services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settled(&tx).await;
         fail_next.store(1, Ordering::SeqCst);
         let (h, u) = (HealthState::Healthy, HealthState::Unhealthy);
         tx.send(trans("a", "10.0.0.1:80", HealthState::Unknown, h, 10, None))
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settled(&tx).await;
         assert_eq!(history(&store, "a"), None, "first commit failed");
         tx.send(trans("a", "10.0.0.1:80", h, u, 20, Some("refused")))
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settled(&tx).await;
         assert_eq!(ats(&history(&store, "a").unwrap(), "10.0.0.1:80"), [10, 20]);
         fail_next.store(1, Ordering::SeqCst);
         tx.send(trans("a", "10.0.0.1:80", u, h, 30, None)).unwrap();
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        assert_eq!(
-            ats(&history(&store, "a").unwrap(), "10.0.0.1:80"),
-            [10, 20, 30],
-            "retried at next tick"
-        );
+        eventually("retried at next tick", || {
+            ats(&history(&store, "a").unwrap(), "10.0.0.1:80") == [10, 20, 30]
+        })
+        .await;
     }
 
     /// History the caller could not read is not loaded and stays in the
@@ -1063,7 +1101,7 @@ mod tests {
             ],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(store.get("hist/api.svc.emfor").unwrap(), Some(kept_json));
         assert_eq!(store.get("hist/bad.svc.emfor").unwrap(), None);
         assert_eq!(store.get("hist/gone.svc.emfor").unwrap(), None);
@@ -1127,7 +1165,7 @@ mod tests {
             ],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(history(&store, "old.svc.emfor"), None);
         let h = history(&store, "api.svc.emfor").unwrap();
         assert_eq!(h.backends.keys().collect::<Vec<_>>(), ["10.0.0.11:8080"]);
@@ -1158,7 +1196,7 @@ mod tests {
             None,
         ))
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert!(history(&store, "db.svc.emfor").is_some());
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
@@ -1166,7 +1204,7 @@ mod tests {
             services: vec![layout("api.svc.emfor", &["10.0.0.12:8080"], 0, false)],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(history(&store, "db.svc.emfor"), None);
         let h = history(&store, "api.svc.emfor").unwrap();
         assert_eq!(h.backends.keys().collect::<Vec<_>>(), ["10.0.0.12:8080"]);
@@ -1178,7 +1216,7 @@ mod tests {
             services: vec![layout("api.svc.emfor", &["10.0.0.13:8080"], 0, false)],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(history(&store, "api.svc.emfor"), None);
     }
 
@@ -1246,7 +1284,7 @@ mod tests {
         ] {
             tx.send(m).unwrap();
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         let c = counters(&live, svc, id).unwrap();
         assert_eq!(c.checks, [2, 3, 0], "up, down, error");
         assert_eq!(c.transitions, [0, 1, 1], "unknown, healthy, unhealthy");
@@ -1259,7 +1297,7 @@ mod tests {
             services: vec![layout(svc, &[id], 2, true)],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settled(&tx).await;
         assert_eq!(counters(&live, svc, id).unwrap().checks, [2, 3, 0]);
 
         // Removed, then added back: from 0.
@@ -1269,7 +1307,7 @@ mod tests {
             services: vec![layout(svc, &["10.0.0.12:8080"], 3, false)],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settled(&tx).await;
         assert_eq!(counters(&live, svc, id), None);
         assert_eq!(
             counters(&live, svc, "10.0.0.12:8080"),
@@ -1281,7 +1319,7 @@ mod tests {
             services: vec![layout(svc, &[id, "10.0.0.12:8080"], 4, false)],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settled(&tx).await;
         assert_eq!(counters(&live, svc, id), Some(BackendCounters::default()));
     }
 
@@ -1312,12 +1350,12 @@ mod tests {
             services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settled(&tx).await;
         assert_eq!(live.read().commit_failures, 0);
         fail_next.store(1, Ordering::SeqCst);
         tx.send(upd("a", "10.0.0.1:80", HealthState::Healthy, true))
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settled(&tx).await;
         assert_eq!(live.read().commit_failures, 1);
     }
 
@@ -1339,23 +1377,21 @@ mod tests {
             services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settled(&tx).await;
         fail_next.store(1, Ordering::SeqCst);
         tx.send(upd("a", "10.0.0.1:80", HealthState::Healthy, true))
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settled(&tx).await;
         assert_eq!(
             record(&store, "a").backends[0].state,
             HealthState::Unknown,
             "first commit failed"
         );
         assert!(logs_contain("state store commit failed"));
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        assert_eq!(
-            record(&store, "a").backends[0].state,
-            HealthState::Healthy,
-            "retried at next tick"
-        );
+        eventually("retried at next tick", || {
+            record(&store, "a").backends[0].state == HealthState::Healthy
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -1383,7 +1419,7 @@ mod tests {
         .unwrap();
         tx.send(upd("a", "10.0.0.1:80", HealthState::Healthy, false))
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         {
             let v = live.read();
             let s = &v.services["a"];
@@ -1398,7 +1434,7 @@ mod tests {
             services: vec![],
         })
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert!(
             live.read().services.is_empty(),
             "removed service leaves live state"
@@ -1483,7 +1519,7 @@ mod tests {
             tx.send(updl(id, HealthState::Healthy, Some(l), true))
                 .unwrap();
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(
             record(&store, "f").pool.unwrap(),
             ["10.0.0.1:80", "10.0.0.2:80"]
@@ -1502,7 +1538,7 @@ mod tests {
             .unwrap();
         tx.send(updl(ids[1], HealthState::Healthy, Some(3500), false))
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(live_pool(&live), ids);
         // A reload keeping the backends keeps the membership.
         let mut l = fastest(&ids);
@@ -1515,11 +1551,11 @@ mod tests {
         .unwrap();
         tx.send(updl(ids[1], HealthState::Healthy, Some(4000), false))
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(live_pool(&live), ids);
         tx.send(updl(ids[1], HealthState::Healthy, Some(4001), false))
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(live_pool(&live), [ids[0]]);
         // Pool-only changes wait for the heartbeat; the store still has both.
         assert_eq!(record(&store, "f").pool.unwrap(), ids);
@@ -1535,7 +1571,7 @@ mod tests {
             .unwrap();
         tx.send(updl(ids[1], HealthState::Healthy, None, true))
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         assert_eq!(live_pool(&live), [ids[0]]);
     }
 
@@ -1568,11 +1604,11 @@ mod tests {
             .unwrap();
         };
         send(HealthState::Healthy, Some(1500), HealthState::Unknown);
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         let json = store.get(&service_key("api.svc.emfor")).unwrap().unwrap();
         assert!(json.ends_with(r#""pool":["10.0.0.11:8080"]}"#), "{json}");
         send(HealthState::Unhealthy, None, HealthState::Healthy);
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        settled(&tx).await;
         let json = store.get(&service_key("api.svc.emfor")).unwrap().unwrap();
         assert!(json.ends_with(r#""pool":[]}"#), "{json}");
         let rr = store.get(&service_key("rr.svc.emfor")).unwrap().unwrap();

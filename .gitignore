@@ -4,6 +4,8 @@
 docs/spectra/.vector-search.db*
 /clients/build/
 __pycache__/
+/tests/spike/probe/target
+/tests/spike/probe/Cargo.lock
 
 # Claude Code settings, skills and instructions (local only)
 .claude/

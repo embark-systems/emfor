@@ -120,7 +120,9 @@ impl Checker for ExecChecker {
                 Err(e) => return CheckResult::Error(format!("cannot run {program}: {e}")),
             };
             let mut guard = GroupGuard(child.id().map(|id| Pid::from_raw(id as i32)));
-            let stdout = child.stdout.take().expect("stdout is piped");
+            let Some(stdout) = child.stdout.take() else {
+                return CheckResult::Error(format!("cannot read the output of {program}"));
+            };
             // Read stdout in this future (not a spawned task) into a buffer
             // owned here, so bytes already read are kept even when the grace
             // period below runs out.

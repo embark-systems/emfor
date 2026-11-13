@@ -6,7 +6,7 @@ use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use emfor_format::{SCHEMA_VERSION, ServiceRecord, service_key};
 
@@ -23,7 +23,9 @@ pub struct Client {
     /// before it opens the new one: LMDB must not have two environments on
     /// one lock file in a process.
     env: RwLock<Option<Env>>,
-    counters: Mutex<HashMap<String, Arc<AtomicU64>>>,
+    /// Read-locked on each round-robin lookup; written only the first time
+    /// a service is looked up.
+    counters: RwLock<HashMap<String, Arc<AtomicU64>>>,
     /// Random per client: each service's counter starts at a random value.
     seed: RandomState,
 }
@@ -40,7 +42,7 @@ impl Client {
             path,
             max_staleness_ms,
             env: RwLock::new(None),
-            counters: Mutex::new(HashMap::new()),
+            counters: RwLock::new(HashMap::new()),
             seed: RandomState::new(),
         }
     }
@@ -59,10 +61,13 @@ impl Client {
             }
         }
         let mut slot = self.env.write().unwrap_or_else(PoisonError::into_inner);
-        if slot.is_none() {
-            *slot = Some(Env::open(&self.path)?);
-        }
-        slot.as_ref().expect("opened above").snapshot(key)
+        let env = match slot.take() {
+            Some(env) => env, // another thread opened it meanwhile
+            None => Env::open(&self.path)?,
+        };
+        let snapshot = env.snapshot(key);
+        *slot = Some(env);
+        snapshot
     }
 
     /// When the store path now holds another file, close the open store and
@@ -85,12 +90,21 @@ impl Client {
     }
 
     fn next(&self, service: &str) -> u64 {
-        let counter = {
-            let mut m = self.counters.lock().unwrap_or_else(PoisonError::into_inner);
+        let known = self
+            .counters
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(service)
+            .cloned();
+        let counter = known.unwrap_or_else(|| {
+            let mut m = self
+                .counters
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
             m.entry(service.to_string())
                 .or_insert_with(|| Arc::new(AtomicU64::new(self.seed.hash_one(service))))
                 .clone()
-        };
+        });
         counter.fetch_add(1, Ordering::Relaxed)
     }
 

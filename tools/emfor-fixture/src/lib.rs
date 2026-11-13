@@ -21,8 +21,7 @@ use serde_json::Value;
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock after 1970")
-        .as_millis() as u64
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// Heartbeat value for a heartbeat form, or `None` for `"missing"`.

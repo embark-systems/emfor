@@ -172,7 +172,12 @@ tests:
 ---
 ### Requirement: Daemon metrics
 
-The body SHALL also contain `emfor_build_info{version="<emfor version>"} 1` (gauge), `emfor_start_time_seconds` (gauge) with the daemon start time in Unix seconds, and `emfor_store_commit_failures_total` (counter), the number of failed state store commits since the daemon started.
+The body SHALL also contain `emfor_build_info{version="<emfor version>"} 1` (gauge), `emfor_start_time_seconds` (gauge) with the daemon start time in Unix seconds, and `emfor_store_commit_failures_total` (counter), the number of failed state store commits since the daemon started. After the first successful commit it SHALL contain `emfor_store_last_commit_timestamp_seconds` (gauge), the Unix time of the last successful commit, `emfor_store_used_bytes` (gauge), the bytes of the store up to its last used page, and `emfor_store_map_size_bytes` (gauge), the map size. For each plugin of the applied config it SHALL contain `emfor_plugin_up{plugin="<name>"}` (gauge), 1 while the plugin process runs and has completed the handshake and 0 otherwise, and `emfor_plugin_restarts_total{plugin="<name>"}` (counter), the number of times the plugin was started again after it exited.
+
+#### Scenario: Plugin restart counted
+
+- **WHEN** a plugin exits during a check and is started again
+- **THEN** `emfor_plugin_restarts_total{plugin="<name>"}` increases by 1
 
 #### Scenario: Store commit failure counted
 

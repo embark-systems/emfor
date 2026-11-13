@@ -27,7 +27,7 @@ mod store;
 #[cfg(feature = "capi")]
 pub mod capi;
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use client::Client;
 
@@ -89,16 +89,25 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// The process's client and the pid that created it.
-static GLOBAL: Mutex<Option<(u32, Arc<Client>)>> = Mutex::new(None);
+/// Read-locked by every lookup, so lookups on many threads do not queue.
+static GLOBAL: RwLock<Option<(u32, Arc<Client>)>> = RwLock::new(None);
 
 /// The client for this process, created on first use and again after a fork.
 fn global() -> Arc<Client> {
     let pid = std::process::id();
-    let mut g = GLOBAL.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((p, c)) = g.as_ref()
+    if let Some((p, c)) = GLOBAL
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
         && *p == pid
     {
         return c.clone();
+    }
+    let mut g = GLOBAL.write().unwrap_or_else(PoisonError::into_inner);
+    if let Some((p, c)) = g.as_ref()
+        && *p == pid
+    {
+        return c.clone(); // another thread created it meanwhile
     }
     if let Some((_, inherited)) = g.take() {
         // Inherited across fork: LMDB forbids using or closing it here.
@@ -159,7 +168,7 @@ pub mod testing {
             crate::config::parse_max_staleness(max_staleness),
         );
         let mut g = crate::GLOBAL
-            .lock()
+            .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *g = Some((std::process::id(), std::sync::Arc::new(c)));
     }

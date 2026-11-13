@@ -8,7 +8,7 @@ use std::net::IpAddr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use emfor_format::{BackendRecord, Balance, HealthState, OnAllDown, ServiceRecord};
+use emfor_format::{BackendRecord, Balance, ServiceRecord, rules};
 
 use crate::live::{FamilyChoice, Swrr};
 
@@ -65,18 +65,7 @@ fn healthy_or_all<'a>(
     record: &ServiceRecord,
     list: Vec<(IpAddr, &'a BackendRecord)>,
 ) -> Result<Vec<(IpAddr, &'a BackendRecord)>, Selection> {
-    let healthy: Vec<(IpAddr, &BackendRecord)> = list
-        .iter()
-        .filter(|(_, b)| b.state == HealthState::Healthy)
-        .copied()
-        .collect();
-    if !healthy.is_empty() {
-        return Ok(healthy);
-    }
-    match record.on_all_down {
-        OnAllDown::Open => Ok(list),
-        OnAllDown::Closed => Err(Selection::AllDown),
-    }
+    rules::healthy_or_all(record.on_all_down, &list, true, |(_, b)| b).ok_or(Selection::AllDown)
 }
 
 /// Addresses that may be chosen for `family`, in config order, or why none may.
@@ -125,20 +114,10 @@ pub fn select(
         // Candidates in the host's site, or in the daemon's pool, in turn;
         // all candidates in turn when none of them qualifies.
         Balance::Locality | Balance::Fastest => {
-            let pool = record.pool.as_deref().unwrap_or_default();
-            let preferred: Vec<IpAddr> = c
-                .iter()
-                .filter(|(_, b)| match record.balance {
-                    Balance::Locality => site.is_some() && b.site.as_deref() == site,
-                    _ => pool.contains(&b.id),
-                })
-                .map(|(ip, _)| *ip)
-                .collect();
-            if preferred.is_empty() {
-                c[next(c.len())].0
-            } else {
-                preferred[next(preferred.len())]
-            }
+            let pool = record.pool.as_deref();
+            let preferred =
+                rules::subset_or_all(&c, |(_, b)| rules::preferred(record.balance, b, site, pool));
+            preferred[next(preferred.len())].0
         }
         // No affinity key on this path: sticky behaves as round-robin.
         Balance::RoundRobin | Balance::Sticky | Balance::Unknown => c[next(c.len())].0,
@@ -223,6 +202,7 @@ pub fn srv_targets(
 mod tests {
     use super::*;
     use HealthState::*;
+    use emfor_format::{HealthState, OnAllDown};
     use std::collections::BTreeSet;
 
     fn rec(

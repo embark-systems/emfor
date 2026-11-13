@@ -71,7 +71,8 @@ fn normalize(name: &Name) -> String {
 }
 
 fn fqdn(name: &str) -> Name {
-    let mut n = Name::from_ascii(name).expect("normalized name is valid");
+    let mut n = Name::from_ascii(name)
+        .expect("zone and service names are validated by the config (labels of [a-z0-9-], at most 242 characters for the zone)");
     n.set_fqdn(true);
     n
 }

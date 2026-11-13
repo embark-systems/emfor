@@ -1,17 +1,20 @@
 # Spike 2 probe: a minimal cargo-c library that reads the daemon's store with
-# the daemon's own LMDB (heed, same workspace and Cargo.lock). Not shipped.
+# the daemon's own LMDB (heed pinned to the daemon's version). Not shipped,
+# and not a workspace member, so workspace builds and tests skip it.
+[workspace]
+
 [package]
 name = "emfor-spike-probe"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+version = "0.1.1"
+edition = "2024"
+license = "BSD-2-Clause"
 publish = false
 
 [lib]
 name = "emfor_spike_probe"
 
 [dependencies]
-heed = "0.22"
+heed = "=0.22.1"
 
 [features]
 capi = []

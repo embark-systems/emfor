@@ -122,6 +122,17 @@ impl Store {
         self.env.clear_stale_readers()
     }
 
+    /// Bytes in use (every page up to the last one used) and the map size.
+    /// Commits fail with `MDB_MAP_FULL` when the first reaches the second.
+    pub fn usage(&self) -> (u64, u64) {
+        let info = self.env.info();
+        let page = u64::from(self.env.stat().page_size);
+        (
+            (info.last_page_number as u64 + 1) * page,
+            info.map_size as u64,
+        )
+    }
+
     /// [`Store::clear_stale_readers`], logging a warning when any were freed.
     pub fn log_stale_readers(&self) -> heed::Result<usize> {
         let n = self.clear_stale_readers()?;
@@ -198,7 +209,7 @@ fn open_env(cfg: &StoreConfig) -> heed::Result<(Env<WithoutTls>, Database<Str, S
         let rtxn = env.read_txn()?;
         let db = env
             .open_database::<Str, Str>(&rtxn, None)?
-            .expect("the unnamed LMDB database always exists");
+            .expect("LMDB always has the unnamed default database, so opening it returns Some");
         // As raw bytes: only LMDB's own structure is checked here. A value
         // that is not UTF-8 is left to whoever reads it (`load_history`
         // discards it with a warning; `svc/*` is rewritten at start).

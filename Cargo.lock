@@ -685,13 +685,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "emfor-spike-probe"
-version = "0.1.1"
-dependencies = [
- "heed",
-]
-
-[[package]]
 name = "emfor-tls"
 version = "0.1.1"
 dependencies = [

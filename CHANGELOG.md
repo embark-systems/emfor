@@ -21,6 +21,14 @@ must be replaced. See [docs/deploy/daemon.md](docs/deploy/daemon.md#commands).
 
 ### Changed
 
+- The `http` checker shares one HTTP client among a service's backends
+  unless `host_header` is a domain name (which needs one client per
+  backend to connect to it), and no longer builds clients while holding a
+  lock.
+- Client lookups take read locks only, so lookups on many threads no
+  longer queue on a mutex, and a round-robin lookup no longer allocates
+  the service name each time.
+
 - **The store is no longer flushed to disk on every commit.** The new
   `[store] sync` setting defaults to `false` (LMDB's `MDB_NOSYNC`): a
   stalled disk could make the heartbeat late and every client on the host
@@ -40,6 +48,15 @@ must be replaced. See [docs/deploy/daemon.md](docs/deploy/daemon.md#commands).
   backends are known within about half a second of a start instead of 2 to
   4 seconds, during which services with `on_all_down = "closed"` answered
   `ALL_DOWN`.
+
+### Added
+
+- `/metrics` reports the store and the plugins:
+  `emfor_store_last_commit_timestamp_seconds`, `emfor_store_used_bytes`
+  and `emfor_store_map_size_bytes` (commits fail with `MDB_MAP_FULL` when
+  the used bytes reach the map size), and `emfor_plugin_up` and
+  `emfor_plugin_restarts_total` per plugin. Before, a crashing plugin showed
+  only as `error` checks.
 
 ### Fixed
 
@@ -64,6 +81,17 @@ must be replaced. See [docs/deploy/daemon.md](docs/deploy/daemon.md#commands).
   status 70 (`EX_SOFTWARE`), which the systemd unit restarts. A backend check task that
   stopped left its backend in its last state; it is now started again from
   `unknown` within a second. Both only happen through a bug (a panic).
+- A SIGTERM or SIGINT during a reload waited for the reload, up to about
+  10 seconds when a plugin was slow to start or to validate. It now
+  abandons the reload and stops at once.
+- `emfor status --watch` restored the terminal only on Ctrl-C. Killed, or
+  ended by a closed ssh session (SIGHUP), it left the terminal on the
+  alternate screen with the cursor hidden.
+- The docs now spell out what the default `[store] lock_file_mode = "0666"`
+  allows: any local user can write the lock file and so stop the daemon's
+  commits or disturb lookups. See "Who can use the store" in
+  [docs/deploy/daemon.md](docs/deploy/daemon.md#who-can-use-the-store) for
+  limiting the store to a group. The default is unchanged.
 - An application process killed in the middle of a lookup (SIGKILL, OOM,
   a crash) left its LMDB reader slot taken. Each such slot kept every page
   freed after it from being reused, so the store grew until commits failed
