@@ -173,12 +173,12 @@ command = ["/src/target/debug/emfor-check", "memcached"]
 check = "kv"
 backends = ["127.0.0.1:11211"]
 CFG
-if emfor --check-config --config /etc/emfor/bad.toml >"$D/bad.out" 2>&1; then
+if emfor check-config --config /etc/emfor/bad.toml >"$D/bad.out" 2>&1; then
     fail "config with emfor-check memcached was accepted"
 fi
 grep -q 'kv' "$D/bad.out" || fail "error does not name plugin kv: $(cat "$D/bad.out")"
 
-step "emfor --check-config shows emfor-check validation errors"
+step "emfor check-config shows emfor-check validation errors"
 cat > /etc/emfor/mysql-bad.toml <<'CFG'
 [plugins."mysql"]
 command = ["/src/target/debug/emfor-check", "mysql"]
@@ -188,7 +188,7 @@ check = "mysql"
 backends = ["127.0.0.1:3306"]
 check_options = {}
 CFG
-if emfor --check-config --config /etc/emfor/mysql-bad.toml >"$D/mysql-bad.out" 2>&1; then
+if emfor check-config --config /etc/emfor/mysql-bad.toml >"$D/mysql-bad.out" 2>&1; then
     fail "mysql service without user was accepted"
 fi
 grep -qF 'services."app.svc.emfor".check_options.user: missing required key' "$D/mysql-bad.out" \
@@ -212,8 +212,8 @@ rise = 1
 fall = 1
 check_options = { user = "emfor", database = "app", role = "primary", password_file = "$D/good.pass" }
 CFG
-emfor --check-config --config /etc/emfor/emfor.toml
-emfor --config /etc/emfor/emfor.toml >"$D/emfor.log" 2>&1 &
+emfor check-config --config /etc/emfor/emfor.toml
+emfor server --config /etc/emfor/emfor.toml >"$D/emfor.log" 2>&1 &
 i=0
 until dig @127.0.0.1 -p 5300 +short SRV db.svc.emfor | grep -q '^0 .* 5432 '; do
     i=$((i + 1))

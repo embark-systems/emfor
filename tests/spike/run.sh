@@ -46,7 +46,7 @@ backends = ["127.0.0.1:9"]
 interval = "200ms"
 timeout = "100ms"
 CFG
-target/debug/emfor --config "$work/emfor.toml" >"$work/emfor.log" 2>&1 &
+target/debug/emfor server --config "$work/emfor.toml" >"$work/emfor.log" 2>&1 &
 pid=$!
 i=0
 until [ -s "$work/state.mdb" ]; do

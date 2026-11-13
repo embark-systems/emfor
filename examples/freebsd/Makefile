@@ -16,7 +16,7 @@ GH_ACCOUNT=	embark-systems
 
 # The repository root is a workspace: build and install only the daemon and
 # emfor-check. EMFOR_PREFIX makes ${PREFIX}/etc/emfor/emfor.toml the
-# default config path of emfor, emfor status and emfor --check-config.
+# default config path of emfor server, emfor check-config and emfor status.
 CARGO_BUILD_ARGS=	--package emfor-daemon --package emfor-check
 CARGO_INSTALL_PATH=	crates/emfor-daemon crates/emfor-check
 CARGO_ENV+=	EMFOR_PREFIX=${PREFIX}

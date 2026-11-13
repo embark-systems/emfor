@@ -90,28 +90,35 @@ Each plugin SHALL validate `check_options` with the keys below and SHALL report 
 
 #### Scenario: Config check reports plugin errors
 
-- **WHEN** `emfor --check-config` runs on a config whose `mysql` service has `check_options = {}`
+- **WHEN** `emfor check-config` runs on a config whose `mysql` service has `check_options = {}`
 - **THEN** it fails with `services."<name>".check_options.user: missing required key`
 
 
 <!-- @trace
-source: emfor-check-ldap
-updated: 2026-11-12
+source: emfor-server-subcommand
+updated: 2026-11-13
 code:
-  - tests/plugins/inside.sh
-  - crates/emfor-check/Cargo.toml
-  - crates/emfor-check/src/ldap.rs
-  - tests/plugins/Dockerfile
-  - crates/emfor-check/src/ber.rs
+  - README.md
   - docs/deploy/plugins.md
+  - examples/systemd/emfor.service
+  - tests/spike/run.sh
+  - docs/plugins/protocol-v1.md
+  - examples/freebsd/Makefile
+  - examples/freebsd/README.md
+  - examples/rc.d/emfor
+  - CHANGELOG.md
+  - tests/plugins/inside.sh
+  - README.zh-TW.md
+  - docs/deploy/daemon.md
+  - tests/resolver/resolved.sh
   - examples/emfor.toml
-  - tests/plugins/run.sh
-  - crates/emfor-check/src/lib.rs
-  - crates/emfor-check/src/options.rs
-  - crates/emfor-check/src/main.rs
+  - tests/resolver/inside.sh
+  - crates/emfor-daemon/src/cli.rs
 tests:
-  - crates/emfor-check/tests/live.rs
-  - crates/emfor-check/tests/cli.rs
+  - crates/emfor-daemon/tests/dns.rs
+  - crates/emfor-daemon/tests/metrics.rs
+  - crates/emfor-daemon/tests/daemon.rs
+  - crates/emfor-daemon/tests/plugins.rs
 -->
 
 ---

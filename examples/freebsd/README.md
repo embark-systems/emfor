@@ -74,7 +74,7 @@ The store stays at `/var/lib/emfor/state.mdb` rather than under
 After installing, edit `${PREFIX}/etc/emfor/emfor.toml`, then:
 
 ```sh
-emfor --check-config
+emfor check-config
 sysrc emfor_enable=YES
 service emfor start
 emfor status

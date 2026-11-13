@@ -47,7 +47,7 @@ backends = ["10.0.3.1:5432", "10.0.3.2:5432"]
 check_options = { user = "emfor", database = "postgres", role = "primary", password_file = "/etc/emfor/pg.pass" }
 ```
 
-The plugin name in `[plugins."<name>"]` is your choice; the argument after the path decides the protocol. `emfor --check-config` starts the plugins and has them validate every service's `check_options`, so mistakes are found before a reload.
+The plugin name in `[plugins."<name>"]` is your choice; the argument after the path decides the protocol. `emfor check-config` starts the plugins and has them validate every service's `check_options`, so mistakes are found before a reload.
 
 ### Options
 

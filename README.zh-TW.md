@@ -53,8 +53,8 @@ EOF
 
 ```sh
 python3 -m http.server 8080 --bind 127.0.0.1 &
-target/release/emfor --check-config --config /tmp/emfor/emfor.toml
-target/release/emfor --config /tmp/emfor/emfor.toml
+target/release/emfor check-config --config /tmp/emfor/emfor.toml
+target/release/emfor server --config /tmp/emfor/emfor.toml
 ```
 
 在另一個終端機查看結果：

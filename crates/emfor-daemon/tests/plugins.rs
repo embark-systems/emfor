@@ -93,6 +93,7 @@ impl Daemon {
         let cfg = dir.path().join("emfor.toml");
         std::fs::write(&cfg, format!("{}{body}", store_header(dir.path()))).unwrap();
         let mut child = Command::new(cargo_bin("emfor"))
+            .arg("server")
             .arg("--config")
             .arg(&cfg)
             .env_remove("RUST_LOG")
@@ -205,7 +206,7 @@ fn check_config(body: &str) -> (i32, String, String) {
     let cfg = dir.path().join("emfor.toml");
     std::fs::write(&cfg, body).unwrap();
     let out = Command::new(cargo_bin("emfor"))
-        .args(["--check-config", "--config"])
+        .args(["check-config", "--config"])
         .arg(&cfg)
         .output()
         .unwrap();
@@ -308,6 +309,7 @@ fn broken_plugin_at_startup_exits_two() {
     )
     .unwrap();
     let out = Command::new(cargo_bin("emfor"))
+        .arg("server")
         .arg("--config")
         .arg(&cfg)
         .env("NO_COLOR", "1")

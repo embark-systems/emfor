@@ -27,7 +27,7 @@ interval = "200ms"
 timeout = "100ms"
 rise = 1
 CFG
-target/debug/emfor --config "$tmp/emfor.toml" 2>"$tmp/emfor.log" &
+target/debug/emfor server --config "$tmp/emfor.toml" 2>"$tmp/emfor.log" &
 emfor=$!
 cleanup() {
     kill "$emfor" "$backend" 2>/dev/null || true

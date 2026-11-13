@@ -22,7 +22,7 @@ password_file = "/etc/emfor/redis.pass"
 - **Plugin name:** 1–63 characters of `a-z`, `0-9`, `_` and `-`. It must not be `tcp`, `http` or `exec`.
 - **`command`:** an array. The first element is an absolute path to an executable file. It is run without a shell, with working directory `/`.
 - **Processes:** one per declared plugin, shared by every service that uses it. emfor starts every declared plugin, used or not.
-- **Config checks start plugins.** Loading a config (at startup, on `SIGHUP`, and for `emfor --check-config`) starts the plugins and asks them to validate each service's `check_options`. `--check-config` stops them again before it exits.
+- **Config checks start plugins.** Loading a config (at startup, on `SIGHUP`, and for `emfor check-config`) starts the plugins and asks them to validate each service's `check_options`. `emfor check-config` stops them again before it exits.
 
 ## Transport
 

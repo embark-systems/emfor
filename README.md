@@ -54,8 +54,8 @@ Give it a backend, check the config, and start the daemon:
 
 ```sh
 python3 -m http.server 8080 --bind 127.0.0.1 &
-target/release/emfor --check-config --config /tmp/emfor/emfor.toml
-target/release/emfor --config /tmp/emfor/emfor.toml
+target/release/emfor check-config --config /tmp/emfor/emfor.toml
+target/release/emfor server --config /tmp/emfor/emfor.toml
 ```
 
 In another terminal, look at the result:

@@ -1,6 +1,6 @@
 # Example emfor config. Validate with:
-#   emfor --check-config --config examples/emfor.toml
-# With [plugins] declared, --check-config starts the plugins to validate
+#   emfor check-config --config examples/emfor.toml
+# With [plugins] declared, check-config starts the plugins to validate
 # check_options, then stops them before it exits.
 
 # The data centre this host is in (optional): services with
@@ -86,7 +86,7 @@ backends = ["10.0.8.11:993", "10.0.8.12:993"]
 [services."imap.svc.emfor".check_options]
 tls = true
 server_name = "imap.internal"
-# ca_file = "/etc/emfor/internal-ca.pem"  # read by --check-config; must exist
+# ca_file = "/etc/emfor/internal-ca.pem"  # read by check-config; must exist
 expect = "* OK"
 
 # An HTTP service, checked every second.

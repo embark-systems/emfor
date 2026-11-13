@@ -8,7 +8,7 @@ Defines `emfor status`, the read-only command that shows operators what the loca
 
 ### Requirement: Status reads the store read-only
 
-`emfor status` SHALL read the state store at the `[store] path` of the config file given with `--config` (the build-time default config path when `--config` is absent), or `/var/lib/emfor/state.mdb` when the config file has no `[store] path`. It SHALL read only the `[store]` table of the config file and SHALL NOT validate the rest of the config, start plugins, run checks, or write to the store. It SHALL NOT take the daemon's writer lock, so a daemon can start or keep running while `emfor status` runs. When the store file does not exist, `emfor status` SHALL print `cannot open store <path>: no such file` and exit 2 without creating the store file or its `-lock` file. When `meta/schema_version` is not `1`, it SHALL print `store format version <n>; this emfor reads version 1` and exit 2. Running `emfor` without the `status` subcommand SHALL keep its existing behavior.
+`emfor status` SHALL read the state store at the `[store] path` of the config file given with `--config` (the build-time default config path when `--config` is absent), or `/var/lib/emfor/state.mdb` when the config file has no `[store] path`. It SHALL read only the `[store]` table of the config file and SHALL NOT validate the rest of the config, start plugins, run checks, or write to the store. It SHALL NOT take the daemon's writer lock, so a daemon can start or keep running while `emfor status` runs. When the store file does not exist, `emfor status` SHALL print `cannot open store <path>: no such file` and exit 2 without creating the store file or its `-lock` file. When `meta/schema_version` is not `1`, it SHALL print `store format version <n>; this emfor reads version 1` and exit 2. The other subcommands of `emfor` and running it without a subcommand SHALL follow the service-config requirement "Command line subcommands".
 
 #### Scenario: Status beside a running daemon
 
@@ -27,18 +27,30 @@ Defines `emfor status`, the read-only command that shows operators what the loca
 
 
 <!-- @trace
-source: emfor-status
+source: emfor-server-subcommand
 updated: 2026-11-13
 code:
-  - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/Cargo.toml
-  - docs/deploy/daemon.md
-  - crates/emfor-daemon/src/cli.rs
-  - crates/emfor-daemon/src/status.rs
-  - crates/emfor-daemon/src/config.rs
+  - README.md
+  - docs/deploy/plugins.md
+  - examples/systemd/emfor.service
+  - tests/spike/run.sh
+  - docs/plugins/protocol-v1.md
+  - examples/freebsd/Makefile
+  - examples/freebsd/README.md
   - examples/rc.d/emfor
+  - CHANGELOG.md
+  - tests/plugins/inside.sh
+  - README.zh-TW.md
+  - docs/deploy/daemon.md
+  - tests/resolver/resolved.sh
+  - examples/emfor.toml
+  - tests/resolver/inside.sh
+  - crates/emfor-daemon/src/cli.rs
 tests:
+  - crates/emfor-daemon/tests/dns.rs
+  - crates/emfor-daemon/tests/metrics.rs
   - crates/emfor-daemon/tests/daemon.rs
+  - crates/emfor-daemon/tests/plugins.rs
 -->
 
 ---

@@ -1,5 +1,17 @@
 # Building emfor and checking what it publishes
 
+## Commands
+
+The `emfor` executable takes a subcommand; `--config <path>` goes before or after it:
+
+| Command | What it does |
+| --- | --- |
+| `emfor server` | Runs the daemon in the foreground until `SIGTERM` or `SIGINT`; `SIGHUP` reloads the config. |
+| `emfor check-config` | Validates the config, starting and stopping any plugins it declares; prints `config ok: ...` and exits 0, or prints each error and exits 2. |
+| `emfor status` | Shows what the running daemon publishes (see [emfor status](#emfor-status)). |
+
+`emfor` with no subcommand only prints this list and exits 2: it never starts a daemon. Before 0.2.0, `emfor` without a subcommand started the daemon and `--check-config` checked the config; `--check-config` now only prints `--check-config was replaced by "emfor check-config"` and exits 2.
+
 ## Building with an install prefix
 
 The daemon looks for its config at `/etc/emfor/emfor.toml` unless `--config` says otherwise. To install under another prefix, set `EMFOR_PREFIX` when building; the default config path becomes `<prefix>/etc/emfor/emfor.toml`:
@@ -43,10 +55,10 @@ systemctl daemon-reload
 systemctl enable --now emfor
 ```
 
-Build without `EMFOR_PREFIX` (or with `/usr`) so that `emfor status` and `emfor --check-config` find `/etc/emfor/emfor.toml` without `--config`; the unit passes `--config` itself.
+Build without `EMFOR_PREFIX` (or with `/usr`) so that `emfor status` and `emfor check-config` find `/etc/emfor/emfor.toml` without `--config`; the unit passes `--config` itself.
 
 - **Store directory**: `StateDirectory=emfor` creates `/var/lib/emfor`, owned by `emfor` with mode 0755, for the default `[store] path`. Applications that use an emfor client need to reach it; `[store] file_mode` and `lock_file_mode` decide who can read the store. Do not switch to `DynamicUser=`: its directory sits under `/var/lib/private` (mode 0700), where clients cannot reach it.
-- **Reload**: `systemctl reload emfor` runs `emfor --check-config` first and fails without signalling the daemon if the config is invalid; otherwise it sends SIGHUP. `[store]`, `[dns] listen` and `[metrics] listen` changes need `systemctl restart emfor`.
+- **Reload**: `systemctl reload emfor` runs `emfor check-config` first and fails without signalling the daemon if the config is invalid; otherwise it sends SIGHUP. `[store]`, `[dns] listen` and `[metrics] listen` changes need `systemctl restart emfor`.
 - **Restarts**: the unit restarts the daemon after a crash, but not after exit status 1 (a listen address in use, the store held by another emfor) or 2 (invalid config), which a retry does not fix.
 - **Logs**: the daemon logs to stderr, which goes to the journal (`journalctl -u emfor`), without color escape sequences.
 - **Hardening**: the file system is read-only except `/var/lib/emfor`, there is no access to home directories or devices, and no capabilities. Plugins run under the same limits. A `[store] path` elsewhere needs `ReadWritePaths=<its directory>`; a plugin under a home directory needs `ProtectHome=` relaxed. For DNS on port 53, set `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` and `AmbientCapabilities=CAP_NET_BIND_SERVICE`.

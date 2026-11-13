@@ -1,0 +1,15 @@
+## 1. 命令列
+
+- [x] 1.1 在 crates/emfor-daemon/src/cli.rs 實作「Command line subcommands」：`Command` 新增 `Server` 與 `CheckConfig`，`emfor server` 啟動 daemon（依「子命令名稱用 server」），`emfor check-config` 執行原本 `--check-config` 的檢查（依「check-config 改為子命令，舊旗標移除」，滿足「Check-config command」的輸出與結束碼）；沒有子命令時把用法寫到 stderr 並以 2 結束、不讀設定檔也不開 store（依「沒有子命令時印用法並以 2 結束」）；隱藏的 `--check-config` 不論出現在哪裡都印 `--check-config was replaced by "emfor check-config"` 並以 2 結束（依「舊旗標給出改用提示」）；`--config` 仍是全域選項，`--help` 仍顯示內建預設路徑（「Default config path set at build time」）。同時把 crates/emfor-daemon/tests/ 的 daemon.rs、dns.rs、metrics.rs、plugins.rs 中啟動 daemon 的呼叫改為 `server`、`--check-config` 改為 `check-config`（「Plugin validation of check options」、「Check options validation」的情境改用新命令）。驗證：`cargo test -p emfor-daemon --all-features` 全部通過，含 `help_shows_the_built_in_config_path`。
+- [x] 1.2 在 crates/emfor-daemon/tests/daemon.rs 新增「Command line subcommands」的測試，涵蓋 spec 中 invocations without a usable subcommand 表格的五列（stderr 內容與結束碼 2）、無子命令時 store 檔與其 `-lock`、`.writer` 檔都沒有產生、`--config` 放在 `check-config` 前後輸出相同；並確認 `--help` 不列出 `--check-config`。驗證：新測試在 1.1 完成後通過；暫時把無子命令改回啟動 daemon 時，store 檔的斷言失敗。 [after: 1.1]
+
+## 2. 範例與部署文件
+
+- [x] 2.1 範例改用新命令：examples/rc.d/emfor 以 `emfor server --config` 啟動、`configtest` 與 reload 前的檢查用 `emfor check-config --config`；examples/systemd/emfor.service 的 ExecStart 用 `server`、ExecStartPre 與 ExecReload 用 `check-config`；examples/emfor.toml 開頭說明與 examples/freebsd/Makefile 註解、examples/freebsd/README.md 的指令改用新命令。驗證：`sh -n examples/rc.d/emfor`；`systemd-analyze verify` 在 Debian 映像可用時檢查 unit；`git grep -n -- "--check-config" examples` 無結果，`git grep -nE "bin/emfor\b.*--config|procname\} --config" examples` 只剩帶 `server` 或 `check-config` 的寫法。 [after: 1.1]
+- [x] 2.2 文件改用新命令：README.md 與 README.zh-TW.md 的快速開始用 `emfor check-config` 與 `emfor server`；docs/deploy/daemon.md、docs/deploy/plugins.md、docs/plugins/protocol-v1.md 中的 `--check-config` 與啟動命令改為新命令，daemon.md 說明不帶子命令的 `emfor` 只印用法（依「Services with backends on different ports are reported」與「Status reads the store read-only」更新後的用語）。驗證：`git grep -n -- "--check-config" -- README.md README.zh-TW.md docs/deploy docs/plugins` 無結果，內容審閱確認 README 的指令可依序複製執行。 [after: 1.1]
+- [x] 2.3 CHANGELOG.md 最上方新增 `## Unreleased` 段：開頭寫明這是不相容的改動，列出 0.1.x 的 `emfor --config X` 改為 `emfor server --config X`、`emfor --check-config` 改為 `emfor check-config`，以及 rc.d 與 systemd 範例已跟著改；說明不帶子命令的 `emfor` 只印用法。驗證：內容審閱；clients/rust/tests/versions.rs 仍通過（版本號未改）。
+
+## 3. 測試腳本與整體檢查
+
+- [x] 3.1 tests/resolver/inside.sh、tests/resolver/resolved.sh、tests/resolver/freebsd.sh、tests/plugins/ 中啟動 daemon 的腳本、tests/spike/run.sh 改以 `emfor server` 啟動、以 `emfor check-config` 檢查。驗證：tests/resolver 的 dnsmasq 與 unbound 容器測試、tests/plugins/run.sh 通過（需要 Docker 映像，必要的下載先徵得同意）；freebsd.sh 沒有本機環境，以 `sh -n` 檢查並在回報中註明未實跑。 [after: 1.1, 2.1]
+- [x] 3.2 全部改完後跑本機檢查：macOS 與 Debian 映像 emfor-clients-test 的 `cargo fmt --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`cargo test --workspace --all-features`；並以 `git grep -n -- "--check-config"` 確認在 docs/spectra 與 CHANGELOG.md 以外只剩 cli.rs 的隱藏旗標與其測試。驗證：上述命令全部成功。 [after: 1.2, 2.1, 2.2, 2.3, 3.1]

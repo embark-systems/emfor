@@ -88,7 +88,7 @@ When a plugin process exits or closes its stdout, the daemon SHALL log its exit 
 ---
 ### Requirement: Plugin validation of check options
 
-When a config is loaded at startup, on `SIGHUP` reload, or by `--check-config`, the daemon SHALL start the declared plugins and send each service's `check_options` to its plugin in a `validate` request before applying the config. Every error the plugin returns SHALL be a config error at `services."<service>".check_options.<key>`. A plugin that fails to start or to complete the handshake SHALL be a config error at `plugins."<name>".command`. A plugin that does not answer a `validate` request within 5 seconds SHALL be a config error at `services."<service>".check_options`, and every later `validate` request to that plugin in the same load SHALL fail with the same error without waiting. These errors SHALL be reported together with all other validation errors. `--check-config` SHALL stop every plugin it started before exiting.
+When a config is loaded at startup, on `SIGHUP` reload, or by `emfor check-config`, the daemon SHALL start the declared plugins and send each service's `check_options` to its plugin in a `validate` request before applying the config. Every error the plugin returns SHALL be a config error at `services."<service>".check_options.<key>`. A plugin that fails to start or to complete the handshake SHALL be a config error at `plugins."<name>".command`. A plugin that does not answer a `validate` request within 5 seconds SHALL be a config error at `services."<service>".check_options`, and every later `validate` request to that plugin in the same load SHALL fail with the same error without waiting. These errors SHALL be reported together with all other validation errors. `emfor check-config` SHALL stop every plugin it started before exiting.
 
 #### Scenario: Plugin rejects an option
 
@@ -97,8 +97,36 @@ When a config is loaded at startup, on `SIGHUP` reload, or by `--check-config`, 
 
 #### Scenario: Check config with a broken plugin
 
-- **WHEN** `emfor --check-config` runs with a config whose plugin exits before answering the handshake
+- **WHEN** `emfor check-config` runs with a config whose plugin exits before answering the handshake
 - **THEN** it prints an error at `plugins."<name>".command`, exits with status 2, and leaves no plugin process running
+
+
+<!-- @trace
+source: emfor-server-subcommand
+updated: 2026-11-13
+code:
+  - README.md
+  - docs/deploy/plugins.md
+  - examples/systemd/emfor.service
+  - tests/spike/run.sh
+  - docs/plugins/protocol-v1.md
+  - examples/freebsd/Makefile
+  - examples/freebsd/README.md
+  - examples/rc.d/emfor
+  - CHANGELOG.md
+  - tests/plugins/inside.sh
+  - README.zh-TW.md
+  - docs/deploy/daemon.md
+  - tests/resolver/resolved.sh
+  - examples/emfor.toml
+  - tests/resolver/inside.sh
+  - crates/emfor-daemon/src/cli.rs
+tests:
+  - crates/emfor-daemon/tests/dns.rs
+  - crates/emfor-daemon/tests/metrics.rs
+  - crates/emfor-daemon/tests/daemon.rs
+  - crates/emfor-daemon/tests/plugins.rs
+-->
 
 ---
 ### Requirement: Plugins on reload

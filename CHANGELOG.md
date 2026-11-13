@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+**Breaking: the daemon is started with `emfor server`.** `emfor` without a
+subcommand now only prints its usage and exits 2, so running it to see the
+options no longer starts a second daemon. When upgrading from 0.1.x, change
+the service definition before restarting:
+
+| 0.1.x | Now |
+| --- | --- |
+| `emfor --config X` | `emfor server --config X` |
+| `emfor --check-config --config X` | `emfor check-config --config X` |
+
+`--check-config` now only prints `--check-config was replaced by "emfor
+check-config"` and exits 2. `emfor status` is unchanged.
+[examples/rc.d/emfor](examples/rc.d/emfor),
+[examples/systemd/emfor.service](examples/systemd/emfor.service) and the
+FreeBSD port example use the new commands; copies of the 0.1.x versions
+must be replaced. See [docs/deploy/daemon.md](docs/deploy/daemon.md#commands).
+
 ## 0.1.1 — 2026-11-13
 
 The repository moved to `github.com/embark-systems/emfor`. The daemon,

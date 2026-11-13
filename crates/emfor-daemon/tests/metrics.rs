@@ -91,6 +91,7 @@ fn spawn(body: &str) -> Daemon {
     let cfg = dir.path().join("emfor.toml");
     std::fs::write(&cfg, format!("{}{body}", header(dir.path()))).unwrap();
     let mut child = Command::new(cargo_bin("emfor"))
+        .arg("server")
         .arg("--config")
         .arg(&cfg)
         .env_remove("RUST_LOG")

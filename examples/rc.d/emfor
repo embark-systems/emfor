@@ -10,7 +10,7 @@
 #   emfor_config  config file (default /usr/local/etc/emfor/emfor.toml)
 #                 Build emfor with EMFOR_PREFIX=/usr/local to make this the
 #                 binary's own default too, so "emfor status" and
-#                 "emfor --check-config" need no --config
+#                 "emfor check-config" need no --config
 #                 (see docs/deploy/daemon.md).
 #   emfor_user    user to run as (default root). A dedicated user is better:
 #                 it needs write access to the directory of [store] path and
@@ -41,7 +41,7 @@ procname="/usr/local/bin/emfor"
 command="/usr/sbin/daemon"
 # -p: pid file of emfor itself, so reload and stop signal the daemon directly.
 # -S -T: send emfor's log output (stderr) to syslog with tag "emfor".
-command_args="-p ${pidfile} -S -T ${name} -u ${emfor_user} ${procname} --config ${emfor_config}"
+command_args="-p ${pidfile} -S -T ${name} -u ${emfor_user} ${procname} server --config ${emfor_config}"
 required_files="${emfor_config}"
 extra_commands="reload configtest"
 sig_reload="HUP"
@@ -50,7 +50,7 @@ configtest_cmd="emfor_configtest"
 
 emfor_configtest()
 {
-	"${procname}" --check-config --config "${emfor_config}"
+	"${procname}" check-config --config "${emfor_config}"
 }
 
 emfor_precmd()

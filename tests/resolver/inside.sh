@@ -21,7 +21,7 @@ interval = "200ms"
 timeout = "100ms"
 rise = 1
 CFG
-emfor --config /etc/emfor/emfor.toml 2>/tmp/emfor.log &
+emfor server --config /etc/emfor/emfor.toml 2>/tmp/emfor.log &
 
 case "$resolver" in
 dnsmasq)

@@ -353,7 +353,7 @@ code:
 ---
 ### Requirement: Services with backends on different ports are reported
 
-On startup and after every successful reload, when `[dns]` is present, the daemon SHALL log one `warn` line for each service whose name is under the zone and whose backends do not all have the same port. The line SHALL contain the service name, the service's distinct backend ports in ascending order, and the words `SRV` and `port`, telling the operator that A and AAAA answers carry no port. Backends of both address families SHALL be counted together. A service whose name is not under the zone SHALL NOT get this warning. The warning SHALL NOT change DNS answers, the validity of the config, or the output and exit status of `--check-config`.
+On startup and after every successful reload, when `[dns]` is present, the daemon SHALL log one `warn` line for each service whose name is under the zone and whose backends do not all have the same port. The line SHALL contain the service name, the service's distinct backend ports in ascending order, and the words `SRV` and `port`, telling the operator that A and AAAA answers carry no port. Backends of both address families SHALL be counted together. A service whose name is not under the zone SHALL NOT get this warning. The warning SHALL NOT change DNS answers, the validity of the config, or the output and exit status of `emfor check-config`.
 
 #### Scenario: Mixed ports in the zone
 
@@ -377,11 +377,28 @@ On startup and after every successful reload, when `[dns]` is present, the daemo
 - **THEN** there is no port warning before the reload, and after it the log contains one `warn` line with `api.svc.emfor` and both ports in ascending order (`8080, 9090` in the example)
 
 <!-- @trace
-source: emfor-dns-port-warning
-updated: 2026-11-12
+source: emfor-server-subcommand
+updated: 2026-11-13
 code:
-  - docs/deploy/dns-resolver.md
+  - README.md
+  - docs/deploy/plugins.md
+  - examples/systemd/emfor.service
+  - tests/spike/run.sh
+  - docs/plugins/protocol-v1.md
+  - examples/freebsd/Makefile
+  - examples/freebsd/README.md
+  - examples/rc.d/emfor
+  - CHANGELOG.md
+  - tests/plugins/inside.sh
+  - README.zh-TW.md
+  - docs/deploy/daemon.md
+  - tests/resolver/resolved.sh
+  - examples/emfor.toml
+  - tests/resolver/inside.sh
   - crates/emfor-daemon/src/cli.rs
 tests:
+  - crates/emfor-daemon/tests/dns.rs
+  - crates/emfor-daemon/tests/metrics.rs
   - crates/emfor-daemon/tests/daemon.rs
+  - crates/emfor-daemon/tests/plugins.rs
 -->

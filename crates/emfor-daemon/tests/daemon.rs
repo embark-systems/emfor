@@ -120,6 +120,7 @@ fn start_in(dir: tempfile::TempDir, services: &str) -> Daemon {
     let cfg = dir.path().join("emfor.toml");
     std::fs::write(&cfg, format!("{}{services}", store_header(dir.path()))).unwrap();
     let child = Command::new(cargo_bin("emfor"))
+        .arg("server")
         .arg("--config")
         .arg(&cfg)
         .env_remove("RUST_LOG")
@@ -268,6 +269,7 @@ fn second_daemon_on_same_store_exits_one() {
     let (_l, addr) = listener();
     let mut d = start(&tcp_service("api.svc.emfor", &addr));
     let out = Command::new(cargo_bin("emfor"))
+        .arg("server")
         .arg("--config")
         .arg(d.config())
         .env_remove("RUST_LOG")
@@ -292,7 +294,7 @@ fn check_config_valid_and_invalid() {
     )
     .unwrap();
     let out = Command::new(cargo_bin("emfor"))
-        .args(["--check-config", "--config"])
+        .args(["check-config", "--config"])
         .arg(&cfg)
         .output()
         .unwrap();
@@ -304,7 +306,7 @@ fn check_config_valid_and_invalid() {
 
     std::fs::write(&cfg, "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\nintervall = \"1s\"\n").unwrap();
     let out = Command::new(cargo_bin("emfor"))
-        .args(["--check-config", "--config"])
+        .args(["check-config", "--config"])
         .arg(&cfg)
         .output()
         .unwrap();
@@ -326,6 +328,7 @@ fn invalid_config_at_startup_exits_two_without_store() {
     )
     .unwrap();
     let out = Command::new(cargo_bin("emfor"))
+        .arg("server")
         .arg("--config")
         .arg(&cfg)
         .env_remove("RUST_LOG")
@@ -356,7 +359,7 @@ fn example_config_is_valid() {
         );
     }
     let out = Command::new(cargo_bin("emfor"))
-        .args(["--check-config", "--config"])
+        .args(["check-config", "--config"])
         .arg(&example)
         .output()
         .unwrap();
@@ -733,6 +736,115 @@ fn help_shows_the_built_in_config_path() {
         Ok(_) => "etc/emfor/emfor.toml]".to_owned(),
     };
     assert!(help.contains(&want), "{help}");
+}
+
+/// Run `emfor <args>`: (exit code, stdout, stderr). Fails instead of
+/// hanging when emfor has not exited within 10 s (for example, because it
+/// started a daemon).
+fn emfor(args: &[&str]) -> (i32, String, String) {
+    let mut child = Command::new(cargo_bin("emfor"))
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("emfor {args:?} still running after 10s");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// Service-config "Command line subcommands": without a usable subcommand,
+/// emfor prints usage or the `--check-config` hint, exits 2, and leaves
+/// the store alone.
+#[test]
+fn no_subcommand_prints_usage_and_touches_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    let store = dir.path().join("state.mdb");
+    std::fs::write(
+        &cfg,
+        format!(
+            "{}[services.a]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
+            store_header(dir.path())
+        ),
+    )
+    .unwrap();
+    let cfg = cfg.to_str().unwrap();
+    let hint = "--check-config was replaced by \"emfor check-config\"";
+    let rows: [(&[&str], &[&str]); 5] = [
+        (&[], &["server", "check-config", "status"]),
+        (&["--config", cfg], &["server", "check-config", "status"]),
+        (&["--check-config"], &[hint]),
+        (&["--check-config", "--config", cfg], &[hint]),
+        (&["server", "--check-config"], &[hint]),
+    ];
+    for (args, want) in rows {
+        let (code, out, err) = emfor(args);
+        assert_eq!(code, 2, "emfor {args:?}: {err}");
+        assert_eq!(out, "", "emfor {args:?}");
+        for w in want {
+            assert!(err.contains(w), "emfor {args:?}: no {w:?} in {err}");
+        }
+    }
+    for f in ["state.mdb", "state.mdb-lock", "state.mdb.writer"] {
+        assert!(!dir.path().join(f).exists(), "{f} was created");
+    }
+    assert!(!store.exists());
+}
+
+/// Service-config "Command line subcommands", scenario "No subcommand":
+/// beside a running daemon, `emfor` prints usage and the daemon keeps
+/// publishing heartbeats.
+#[test]
+fn no_subcommand_beside_a_running_daemon() {
+    let (_l, addr) = listener();
+    let mut d = start(&tcp_service("api.svc.emfor", &addr));
+    let r = Reader::open(&d.store());
+    let heartbeat = || r.dump().get("meta/heartbeat").cloned().unwrap_or_default();
+    wait_for(|| r.service("api.svc.emfor").is_some());
+    let cfg = d.config();
+    for args in [vec![], vec!["--config", cfg.to_str().unwrap()]] {
+        let (code, _, err) = emfor(&args);
+        assert_eq!(code, 2, "emfor {args:?}: {err}");
+        assert!(err.contains("server"), "emfor {args:?}: {err}");
+    }
+    assert!(d.running());
+    let before = heartbeat();
+    wait_for(|| heartbeat() != before);
+    let (code, _) = d.stop();
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn config_option_before_or_after_the_subcommand() {
+    let example = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/emfor.toml");
+    let before = emfor(&["--config", example, "check-config"]);
+    let after = emfor(&["check-config", "--config", example]);
+    assert_eq!(before.0, 0, "{}", before.2);
+    assert!(before.1.starts_with("config ok: "), "{}", before.1);
+    assert_eq!(before, after);
+}
+
+#[test]
+fn help_does_not_list_the_old_flag() {
+    let (code, out, _) = emfor(&["--help"]);
+    assert_eq!(code, 0);
+    assert!(!out.contains("--check-config"), "{out}");
+    for w in ["server", "check-config", "status"] {
+        assert!(out.contains(w), "no {w} in {out}");
+    }
 }
 
 /// Run `emfor status --config <cfg> <args>`: (exit code, stdout, stderr).

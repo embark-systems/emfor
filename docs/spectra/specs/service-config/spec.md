@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines how operators configure emfor: the TOML file format, built-in defaults with per-service overrides, validation rules, the `--check-config` command, and how a running daemon reloads its config on `SIGHUP` without ever applying an invalid one.
+Defines how operators configure emfor: the TOML file format, built-in defaults with per-service overrides, validation rules, the `emfor check-config` command and the `emfor` subcommands, and how a running daemon reloads its config on `SIGHUP` without ever applying an invalid one.
 
 ## Requirements
 
@@ -159,11 +159,11 @@ tests:
 ---
 ### Requirement: Check-config command
 
-`emfor --check-config` SHALL validate the config file without opening the state store or starting checks. On success it SHALL print `config ok: <n> services, <m> backends` and exit with status 0. On failure it SHALL print each validation error on its own line and exit with status 2.
+`emfor check-config` SHALL validate the config file without opening the state store or starting checks. On success it SHALL print `config ok: <n> services, <m> backends` and exit with status 0. On failure it SHALL print each validation error on its own line and exit with status 2.
 
 #### Scenario: Valid config
 
-- **WHEN** an operator runs `emfor --check-config --config examples/emfor.toml` on a file with 2 services and 5 backends
+- **WHEN** an operator runs `emfor check-config --config emfor.toml` where `emfor.toml` has 2 services and 5 backends
 - **THEN** the command prints `config ok: 2 services, 5 backends` and exits 0
 
 #### Scenario: Invalid config
@@ -173,30 +173,30 @@ tests:
 
 
 <!-- @trace
-source: emfor-core
-updated: 2026-11-12
+source: emfor-server-subcommand
+updated: 2026-11-13
 code:
-  - crates/emfor-daemon/src/checker/http.rs
-  - crates/emfor-daemon/src/writer.rs
-  - Cargo.toml
-  - crates/emfor-daemon/src/cli.rs
-  - CLAUDE.md
-  - crates/emfor-daemon/src/main.rs
-  - crates/emfor-daemon/src/state.rs
-  - crates/emfor-daemon/Cargo.toml
-  - .spectra.yaml
-  - crates/emfor-daemon/src/checker/tcp.rs
-  - crates/emfor-daemon/src/checker/mod.rs
-  - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/src/config.rs
-  - crates/emfor-daemon/src/supervisor.rs
-  - crates/emfor-daemon/src/store.rs
-  - crates/emfor-format/src/lib.rs
+  - README.md
+  - docs/deploy/plugins.md
+  - examples/systemd/emfor.service
+  - tests/spike/run.sh
+  - docs/plugins/protocol-v1.md
+  - examples/freebsd/Makefile
+  - examples/freebsd/README.md
+  - examples/rc.d/emfor
+  - CHANGELOG.md
+  - tests/plugins/inside.sh
+  - README.zh-TW.md
+  - docs/deploy/daemon.md
+  - tests/resolver/resolved.sh
   - examples/emfor.toml
-  - crates/emfor-format/Cargo.toml
-  - crates/emfor-daemon/src/schedule.rs
+  - tests/resolver/inside.sh
+  - crates/emfor-daemon/src/cli.rs
 tests:
+  - crates/emfor-daemon/tests/dns.rs
+  - crates/emfor-daemon/tests/metrics.rs
   - crates/emfor-daemon/tests/daemon.rs
+  - crates/emfor-daemon/tests/plugins.rs
 -->
 
 ---
@@ -317,7 +317,7 @@ code:
 ---
 ### Requirement: Default config path set at build time
 
-The default config path used by `emfor`, `emfor --check-config` and `emfor status` when `--config` is absent SHALL be decided when the daemon is built, from the environment variable `EMFOR_PREFIX`: `/etc/emfor/emfor.toml` when `EMFOR_PREFIX` is unset, empty or `/usr`, and `<EMFOR_PREFIX>/etc/emfor/emfor.toml` otherwise, with one trailing `/` of the prefix removed. A value that is not an absolute path SHALL fail the build with an error naming `EMFOR_PREFIX`. Changing `EMFOR_PREFIX` SHALL cause the next build to use the new path. `emfor --help` SHALL show the default config path built in. The target operating system SHALL NOT change the default.
+The default config path used by `emfor server`, `emfor check-config` and `emfor status` when `--config` is absent SHALL be decided when the daemon is built, from the environment variable `EMFOR_PREFIX`: `/etc/emfor/emfor.toml` when `EMFOR_PREFIX` is unset, empty or `/usr`, and `<EMFOR_PREFIX>/etc/emfor/emfor.toml` otherwise, with one trailing `/` of the prefix removed. A value that is not an absolute path SHALL fail the build with an error naming `EMFOR_PREFIX`. Changing `EMFOR_PREFIX` SHALL cause the next build to use the new path. `emfor --help` SHALL show the default config path built in. The target operating system SHALL NOT change the default.
 
 #### Scenario: Built with a prefix
 
@@ -340,17 +340,92 @@ The default config path used by `emfor`, `emfor --check-config` and `emfor statu
 - **WHEN** emfor is built without `EMFOR_PREFIX` and an operator runs `emfor --help`
 - **THEN** the `--config` line shows the default `/etc/emfor/emfor.toml`
 
+
 <!-- @trace
-source: emfor-status
+source: emfor-server-subcommand
 updated: 2026-11-13
 code:
-  - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/Cargo.toml
-  - docs/deploy/daemon.md
-  - crates/emfor-daemon/src/cli.rs
-  - crates/emfor-daemon/src/status.rs
-  - crates/emfor-daemon/src/config.rs
+  - README.md
+  - docs/deploy/plugins.md
+  - examples/systemd/emfor.service
+  - tests/spike/run.sh
+  - docs/plugins/protocol-v1.md
+  - examples/freebsd/Makefile
+  - examples/freebsd/README.md
   - examples/rc.d/emfor
+  - CHANGELOG.md
+  - tests/plugins/inside.sh
+  - README.zh-TW.md
+  - docs/deploy/daemon.md
+  - tests/resolver/resolved.sh
+  - examples/emfor.toml
+  - tests/resolver/inside.sh
+  - crates/emfor-daemon/src/cli.rs
 tests:
+  - crates/emfor-daemon/tests/dns.rs
+  - crates/emfor-daemon/tests/metrics.rs
   - crates/emfor-daemon/tests/daemon.rs
+  - crates/emfor-daemon/tests/plugins.rs
+-->
+
+---
+### Requirement: Command line subcommands
+
+The `emfor` executable SHALL take one of the subcommands `server`, `check-config` and `status`. `emfor server` SHALL run the daemon. `emfor check-config` SHALL check the config file (see "Check-config command"). `emfor status` SHALL show the published state (see the status-command capability). `--config <path>` SHALL be a global option accepted before or after any of the three subcommands with the same meaning. Without a subcommand, `emfor` SHALL print its usage, listing the three subcommands, to standard error and exit with status 2 without reading the config file, opening or creating the state store, or starting plugins; this SHALL hold also when `--config` is given. `emfor --help` SHALL print the usage to standard output and exit 0. The option `--check-config` SHALL NOT check anything: wherever it appears, `emfor` SHALL print `--check-config was replaced by "emfor check-config"` to standard error and exit with status 2, and `--help` SHALL NOT list it.
+
+#### Scenario: No subcommand
+
+- **WHEN** an operator runs `emfor` on a host where an emfor daemon is already running
+- **THEN** it prints a usage listing `server`, `check-config` and `status` to standard error, exits 2, and the running daemon is not affected
+
+##### Example: invocations without a usable subcommand
+
+| Command | Standard error contains | Exit status |
+| --- | --- | --- |
+| `emfor` | `server`, `check-config`, `status` | 2 |
+| `emfor --config /tmp/t/emfor.toml` | `server`, `check-config`, `status` | 2 |
+| `emfor --check-config` | `--check-config was replaced by "emfor check-config"` | 2 |
+| `emfor --check-config --config /tmp/t/emfor.toml` | `--check-config was replaced by "emfor check-config"` | 2 |
+| `emfor server --check-config` | `--check-config was replaced by "emfor check-config"` | 2 |
+
+#### Scenario: No subcommand leaves the store alone
+
+- **WHEN** an operator runs `emfor --config <config>` whose `[store] path` is `/tmp/t/state.mdb` and that file does not exist
+- **THEN** it exits 2 and neither `/tmp/t/state.mdb` nor `/tmp/t/state.mdb-lock` nor `/tmp/t/state.mdb.writer` exists afterwards
+
+#### Scenario: Running the daemon
+
+- **WHEN** an operator runs `emfor server --config <config>` with a valid config
+- **THEN** the daemon starts, publishes its services to the state store, and on `SIGTERM` exits 0
+
+#### Scenario: Global config option position
+
+- **WHEN** an operator runs `emfor --config examples/emfor.toml check-config` and, separately, `emfor check-config --config examples/emfor.toml`
+- **THEN** both print the same `config ok: ...` line and exit 0
+
+<!-- @trace
+source: emfor-server-subcommand
+updated: 2026-11-13
+code:
+  - README.md
+  - docs/deploy/plugins.md
+  - examples/systemd/emfor.service
+  - tests/spike/run.sh
+  - docs/plugins/protocol-v1.md
+  - examples/freebsd/Makefile
+  - examples/freebsd/README.md
+  - examples/rc.d/emfor
+  - CHANGELOG.md
+  - tests/plugins/inside.sh
+  - README.zh-TW.md
+  - docs/deploy/daemon.md
+  - tests/resolver/resolved.sh
+  - examples/emfor.toml
+  - tests/resolver/inside.sh
+  - crates/emfor-daemon/src/cli.rs
+tests:
+  - crates/emfor-daemon/tests/dns.rs
+  - crates/emfor-daemon/tests/metrics.rs
+  - crates/emfor-daemon/tests/daemon.rs
+  - crates/emfor-daemon/tests/plugins.rs
 -->

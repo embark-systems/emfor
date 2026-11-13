@@ -1,4 +1,4 @@
-//! Command line entry point: `emfor [--config <path>] [--check-config]`.
+//! Command line entry point: `emfor [--config <path>] <server|check-config|status>`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -21,25 +21,27 @@ use crate::store::Store;
 use crate::supervisor::Supervisor;
 use crate::writer::{self, WriterMsg};
 
-/// Exit status after clean shutdown or a valid `--check-config`.
+/// Exit status after clean shutdown or a valid `emfor check-config`.
 pub const EXIT_OK: u8 = 0;
 /// Exit status when the store cannot be opened or is locked by another daemon.
 pub const EXIT_STARTUP: u8 = 1;
-/// Exit status for an invalid config.
+/// Exit status for an invalid config, and for a command line without a
+/// subcommand.
 pub const EXIT_CONFIG: u8 = 2;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "emfor",
     version,
-    about = "Per-host backend health-check daemon"
+    about = "Per-host backend health-check daemon",
+    override_usage = "emfor [OPTIONS] <COMMAND>"
 )]
 pub struct Cli {
     /// Config file.
     #[arg(long, value_name = "PATH", default_value = DEFAULT_CONFIG_PATH, global = true)]
     pub config: PathBuf,
-    /// Validate the config file and exit.
-    #[arg(long)]
+    /// Replaced by `emfor check-config`; only prints that.
+    #[arg(long, hide = true, global = true)]
     pub check_config: bool,
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -47,6 +49,10 @@ pub struct Cli {
 
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
+    /// Run the daemon.
+    Server,
+    /// Validate the config file, then exit: 0 when it is valid, 2 when not.
+    CheckConfig,
     /// Show the health state the running daemon publishes, then exit.
     ///
     /// Exits 1 when the daemon is not updating the store or a shown service
@@ -56,13 +62,21 @@ pub enum Command {
 
 pub fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Some(Command::Status(args)) = &cli.command {
-        if cli.check_config {
-            eprintln!("--check-config cannot be used with status");
+    if cli.check_config {
+        eprintln!("--check-config was replaced by \"emfor check-config\"");
+        return ExitCode::from(EXIT_CONFIG);
+    }
+    let check_only = match &cli.command {
+        None => {
+            // Never start a daemon by accident: only `server` does.
+            use clap::CommandFactory;
+            let _ = Cli::command().write_help(&mut std::io::stderr());
             return ExitCode::from(EXIT_CONFIG);
         }
-        return crate::status::main(&cli.config, args);
-    }
+        Some(Command::Status(args)) => return crate::status::main(&cli.config, args),
+        Some(Command::CheckConfig) => true,
+        Some(Command::Server) => false,
+    };
     // Loading a config starts plugins, so the runtime comes first.
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(r) => r,
@@ -71,13 +85,13 @@ pub fn main() -> ExitCode {
             return ExitCode::from(EXIT_STARTUP);
         }
     };
-    runtime.block_on(start(cli))
+    runtime.block_on(start(cli.config, check_only))
 }
 
-async fn start(cli: Cli) -> ExitCode {
-    if cli.check_config {
+async fn start(config_path: PathBuf, check_only: bool) -> ExitCode {
+    if check_only {
         let mut plugins = PluginSet::default();
-        let (prepared, loaded) = load(&cli.config, None, &plugins).await;
+        let (prepared, loaded) = load(&config_path, None, &plugins).await;
         // Nothing keeps running after a config check.
         plugins.commit(prepared).await;
         plugins.stop_all().await;
@@ -103,12 +117,12 @@ async fn start(cli: Cli) -> ExitCode {
     // configured level.
     let log = init_logging("info");
     let mut plugins = PluginSet::default();
-    let (prepared, loaded) = load(&cli.config, None, &plugins).await;
+    let (prepared, loaded) = load(&config_path, None, &plugins).await;
     let config = match loaded {
         Ok(c) => c,
         Err(errors) => {
             prepared.rollback().await;
-            log_config_errors(&cli.config, &errors);
+            log_config_errors(&config_path, &errors);
             return ExitCode::from(EXIT_CONFIG);
         }
     };
@@ -118,7 +132,7 @@ async fn start(cli: Cli) -> ExitCode {
     {
         tracing::error!("cannot set log level: {e}");
     }
-    let code = run(cli.config, config, &mut plugins, log).await;
+    let code = run(config_path, config, &mut plugins, log).await;
     plugins.stop_all().await;
     code
 }
