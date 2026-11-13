@@ -12,6 +12,12 @@ cargo build --bin emfor
 install -m 0555 target/debug/emfor /usr/local/bin/emfor
 install -m 0555 examples/rc.d/emfor /usr/local/etc/rc.d/emfor
 mkdir -p /usr/local/etc/emfor /var/db/emfor
+# Run as a dedicated user, as the port does: rc.subr then starts daemon(8)
+# itself as that user, which must still be able to write its pid files.
+pw usershow emfor >/dev/null 2>&1 ||
+    pw useradd emfor -d /nonexistent -s /usr/sbin/nologin -c "emfor daemon"
+chown emfor /var/db/emfor
+sysrc emfor_user=emfor
 cat > /usr/local/etc/emfor/emfor.toml <<'CFG'
 [store]
 path = "/var/db/emfor/state.mdb"
@@ -38,6 +44,8 @@ until drill -p 5300 api.svc.emfor @127.0.0.1 A | grep -q '127\.0\.0\.1$'; do
     i=$((i + 1)); [ "$i" -lt 50 ] || fail "emfor did not answer"
     sleep 0.2
 done
+[ "$(ps -o user= -p "$(cat /var/run/emfor/emfor.child.pid)")" = emfor ] ||
+    fail "emfor is not running as user emfor"
 service emfor reload
 sleep 1
 service emfor status || fail "emfor not running after reload"
@@ -47,11 +55,11 @@ echo 'nonsense =' >> /usr/local/etc/emfor/emfor.toml
 if service emfor reload; then fail "reload accepted an invalid config"; fi
 cp /tmp/emfor.toml.good /usr/local/etc/emfor/emfor.toml
 # daemon(8) starts emfor again after it dies.
-first=$(cat /var/run/emfor.child.pid)
+first=$(cat /var/run/emfor/emfor.child.pid)
 kill -KILL "$first"
 i=0
-until [ -s /var/run/emfor.child.pid ] && [ "$(cat /var/run/emfor.child.pid)" != "$first" ] &&
-    pgrep -F /var/run/emfor.child.pid emfor >/dev/null; do
+until [ -s /var/run/emfor/emfor.child.pid ] && [ "$(cat /var/run/emfor/emfor.child.pid)" != "$first" ] &&
+    pgrep -F /var/run/emfor/emfor.child.pid emfor >/dev/null; do
     i=$((i + 1)); [ "$i" -lt 50 ] || fail "emfor not restarted after it was killed"
     sleep 0.2
 done

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Deployment
+
+- The FreeBSD rc.d script failed to start emfor with any `emfor_user`
+  other than `root`, such as the port's default `emfor`: `daemon: pidfile
+  ``/var/run/emfor.child.pid'': Permission denied`. rc.subr runs the whole
+  command as `${name}_user`, the daemon(8) supervisor included, and that
+  user cannot write `/var/run`. The pid files are now in `/var/run/emfor/`,
+  which `service emfor start` creates owned by `emfor_user`, and daemon(8)
+  no longer gets `-u` (it needs root). Replace installed copies of
+  `examples/rc.d/emfor`; scripts that read `/var/run/emfor.child.pid` read
+  `/var/run/emfor/emfor.child.pid` now.
+
 ## 0.2.0 — 2026-11-13
 
 **Breaking: the daemon is started with `emfor server`.** `emfor` without a

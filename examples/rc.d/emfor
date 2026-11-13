@@ -17,6 +17,9 @@
 #                 nothing else, since the default DNS port 5300 is unprivileged.
 #                 "service emfor configtest" (also run before start) checks
 #                 the config as this user too, so plugins never run as root.
+#                 rc.subr runs the whole command as this user, the daemon(8)
+#                 supervisor included, so its pid files live in
+#                 /var/run/emfor, which start creates owned by this user.
 #
 # "service emfor reload" checks the config first and fails without touching
 # the daemon if it is invalid; otherwise it sends SIGHUP and the daemon
@@ -48,14 +51,18 @@ load_rc_config "$name"
 
 emfor_bin="/usr/local/bin/emfor"
 # pidfile: the daemon(8) supervisor, which rc.subr checks, stops and waits
-# for. emfor_pidfile: emfor itself, which reload signals.
-pidfile="/var/run/${name}.pid"
-emfor_pidfile="/var/run/${name}.child.pid"
+# for. emfor_pidfile: emfor itself, which reload signals. rc.subr starts
+# daemon(8) as emfor_user (it does that for any ${name}_user), so both live
+# in a directory that user can write: /var/run itself is root's.
+emfor_rundir="/var/run/${name}"
+pidfile="${emfor_rundir}/${name}.pid"
+emfor_pidfile="${emfor_rundir}/${name}.child.pid"
 command="/usr/sbin/daemon"
 # -P/-p: pid files of the supervisor and of emfor.
 # -R 2: start emfor again 2 seconds after it exits.
 # -S -T: send emfor's log output (stderr) to syslog with tag "emfor".
-command_args="-P ${pidfile} -p ${emfor_pidfile} -R 2 -S -T ${name} -u ${emfor_user} ${emfor_bin} server --config ${emfor_config}"
+# No -u: daemon(8) already runs as emfor_user, and -u needs root.
+command_args="-P ${pidfile} -p ${emfor_pidfile} -R 2 -S -T ${name} ${emfor_bin} server --config ${emfor_config}"
 required_files="${emfor_config}"
 extra_commands="reload configtest"
 start_precmd="emfor_precmd"
@@ -89,7 +96,9 @@ emfor_reload()
 emfor_precmd()
 {
 	# Refuse to start with an invalid config; errors go to stderr.
-	emfor_configtest >/dev/null
+	emfor_configtest >/dev/null || return 1
+	# The pid file directory, writable by the user daemon(8) runs as.
+	install -d -o "${emfor_user}" -m 0755 "${emfor_rundir}"
 }
 
 run_rc_command "$1"
