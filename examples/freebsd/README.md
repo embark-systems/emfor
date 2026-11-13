@@ -29,7 +29,13 @@ touch Makefile.crates                  # the Makefile includes it
 make makesum                           # fetches the release tarball
 make cargo-crates > Makefile.crates    # from the tarball's Cargo.lock
 make makesum                           # now with every crate
+make clean                             # see below
 ```
+
+`make cargo-crates` extracts the source into `work/` while
+`Makefile.crates` is still empty, so `work/` has no crates. Without
+`make clean`, the build reuses that `work/` and stops at
+`no matching package named ...` for the first dependency.
 
 `USERS` and `GROUPS` need an `emfor` entry in `/usr/ports/UIDs` and
 `/usr/ports/GIDs`; in a private tree, pick ids that are free there. Then:
@@ -41,8 +47,8 @@ make install
 
 or `poudriere testport -o net-mgmt/emfor`.
 
-For a new emfor release, change `DISTVERSION` and run the three commands
-from `touch` on again (`touch` can be skipped).
+For a new emfor release, change `DISTVERSION` and run the commands from
+`touch` on again (`touch` can be skipped).
 
 ## What it installs
 
