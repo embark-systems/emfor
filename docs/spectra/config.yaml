@@ -148,7 +148,7 @@ context: |
     顯示 daemon（心跳超過 3 秒為 stale、0 為 stopped）、各服務 balance / on_all_down / ALL DOWN、各後端狀態、
     檢查年齡、latency_us、fastest 的 pool 與最後失敗原因。--service、--json；結束碼 0 正常、1 daemon 沒在更新或
     顯示的服務 all down、2 讀不到設定或 store。--watch 每秒重畫、反白變化、列最近 10 筆轉換（後端轉換取自 store 歷史，daemon 狀態變化只含執行期間），
-    不用 TUI 套件。設定檔預設路徑在編譯時由 option_env! 讀 EMFOR_PREFIX 決定（未設或 /usr 為 /etc/emfor/emfor.toml，
+    以 crossterm 處理 raw mode 與按鍵（emfor-status-watch-scroll）：store/daemon 兩行固定，其餘以 PgUp/PgDn、方向鍵、Home/End 捲動，q 或 Ctrl-C 結束；不用 ratatui 等 TUI 框架。設定檔預設路徑在編譯時由 option_env! 讀 EMFOR_PREFIX 決定（未設或 /usr 為 /etc/emfor/emfor.toml，
     其他為 <prefix>/etc/emfor/emfor.toml），不依作業系統；store 與 client 預設不變。
     狀態歷史（emfor-status-history）：hist/<服務> 存每台後端最近 20 筆由檢查造成的轉換（at/from/to/reason），
     與 svc/ 記錄同一交易寫入，跨重啟保留、啟動與 reload 時修剪；client 與 DNS 不讀。emfor status 以

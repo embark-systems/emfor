@@ -124,7 +124,7 @@ On a terminal the states are colored; set `NO_COLOR` to turn that off. Piped out
 | `--config <path>` | Config file to take `[store] path` from |
 | `--service <name>` | Show one service |
 | `--json` | One JSON object: `store`, `daemon` (`running`, `stale`, `stopped`), `heartbeat_ms`, `heartbeat_age_ms`, `started_at_ms`, `site`, `dns_listen` and `metrics_listen` (the `[dns]` and `[metrics]` listen addresses, or `null`), `services` (the store's service records as written), `history` (service name → its `hist/` value as written) and `flapping` (`[{"service", "backend", "changes"}]`) |
-| `--watch` | Redraw every second until Ctrl-C; needs a terminal, not with `--json` |
+| `--watch` | Redraw every second, scrolling with PgUp/PgDn, Up/Down and Home/End, until `q` or Ctrl-C; needs a terminal, not with `--json` |
 | `--history` | List each backend's recorded state changes, newest first; not with `--json` or `--watch` |
 
 ### Exit status
@@ -147,6 +147,16 @@ recent changes:
   14:01:40 daemon stopped -> running
   2026-11-12 23:50:00 api.svc.emfor 10.0.0.12:8080 unhealthy -> healthy
 ```
+
+The `store:` and `daemon:` lines stay at the top. When the services and changes do not fit in the terminal, the last row shows which lines are on screen, for example `-- lines 1-21 of 60  PgUp/PgDn Up/Down Home/End  q quit --`, and the rest scrolls:
+
+| Key | Scrolls |
+| --- | --- |
+| PgDn, Space / PgUp | One screen down / up |
+| Down / Up | One line down / up |
+| Home / End | To the first service / the last change |
+
+The position is kept across refreshes. Lines wider than the terminal are cut at the right edge; use `--history` or `--json` for long failure reasons. `q` or Ctrl-C ends the watch; so do `SIGINT`, `SIGTERM` and `SIGHUP` (a closed ssh session). Each way, and also a crash, puts the terminal back as it was.
 
 ### State history
 

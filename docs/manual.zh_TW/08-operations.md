@@ -44,7 +44,7 @@ api.svc.emfor  round-robin  on_all_down=open
 | --- | --- |
 | `--service <name>` | 只顯示一個服務。 |
 | `--json` | 一個 JSON 物件，供 script 使用。 |
-| `--watch` | 每秒重繪、標示變化，並列出最近 10 次變化。 |
+| `--watch` | 每秒重繪、標示變化，並列出最近 10 次變化。`store:` 與 `daemon:` 兩行固定在上方，清單超過一個畫面時用 PgUp/PgDn、上下方向鍵與 Home/End 捲動；超過終端機寬度的行會被截斷。按 `q` 或 Ctrl-C 結束。 |
 | `--history` | 列出每個 backend 最近 20 次狀態變化（重新啟動後仍保留）。 |
 
 | 結束代碼 | 何時 |
