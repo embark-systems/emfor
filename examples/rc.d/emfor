@@ -15,6 +15,8 @@
 #   emfor_user    user to run as (default root). A dedicated user is better:
 #                 it needs write access to the directory of [store] path and
 #                 nothing else, since the default DNS port 5300 is unprivileged.
+#                 "service emfor configtest" (also run before start) checks
+#                 the config as this user too, so plugins never run as root.
 #
 # "service emfor reload" sends SIGHUP: the config is re-read and applied only
 # if it is fully valid. [store] and [dns] listen changes need a restart.
@@ -50,7 +52,15 @@ configtest_cmd="emfor_configtest"
 
 emfor_configtest()
 {
-	"${procname}" check-config --config "${emfor_config}"
+	# As emfor_user, like the daemon: check-config starts the plugins the
+	# config declares, and they must not run as root when the daemon does
+	# not. su -m keeps the shell, since emfor_user may have no login shell.
+	if [ "${emfor_user}" = root ]; then
+		"${procname}" check-config --config "${emfor_config}"
+	else
+		su -m "${emfor_user}" -c \
+		    "\"${procname}\" check-config --config \"${emfor_config}\""
+	fi
 }
 
 emfor_precmd()

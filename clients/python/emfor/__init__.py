@@ -17,6 +17,19 @@ import ctypes
 import ctypes.util
 import os
 
+# The emfor release; libemfor must come from the same one.
+__version__ = "0.1.1"
+
+
+def _library_names(version):
+    """File names libemfor is installed under, newest-ABI first. cargo-c
+    versions the shared library by major version, or by major.minor while
+    the major is 0: libemfor.so.0.1 and libemfor.0.1.dylib for 0.1.x."""
+    major, minor = version.split(".")[:2]
+    abi = major if major != "0" else "%s.%s" % (major, minor)
+    return ["libemfor.so." + abi, "libemfor.so", "libemfor.%s.dylib" % abi, "libemfor.dylib"]
+
+
 __all__ = [
     "lookup",
     "Error",
@@ -79,7 +92,7 @@ def _load():
     found = ctypes.util.find_library("emfor")
     if found:
         names.append(found)
-    names += ["libemfor.so.0", "libemfor.so", "libemfor.dylib"]
+    names += _library_names(__version__)
     for name in names:
         try:
             return ctypes.CDLL(name)

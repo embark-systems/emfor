@@ -23,6 +23,7 @@ Change the current version to `X.Y.Z` in each of these:
 | --- | --- |
 | `Cargo.toml` | `version` under `[workspace.package]`; every crate inherits it |
 | `clients/python/pyproject.toml` | `version` |
+| `clients/python/emfor/__init__.py` | `__version__` (also names the `libemfor.so.X.Y` it looks for) |
 | `clients/perl/lib/Emfor.pm` | `our $VERSION` |
 | `clients/php/emfor.c` | `PHP_EMFOR_VERSION` |
 | `clients/go/README.md` | the `go get ...@vX.Y.Z` line |

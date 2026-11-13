@@ -116,6 +116,14 @@ async fn start(config_path: PathBuf, check_only: bool) -> ExitCode {
     // Log at `info` while loading (plugin start lines), then switch to the
     // configured level.
     let log = init_logging("info");
+    // Before loading, which starts plugins and can take seconds: until a
+    // handler exists, SIGHUP's default action kills the daemon. A signal
+    // that arrives meanwhile waits for the main loop, where SIGHUP reloads
+    // and SIGTERM / SIGINT stop.
+    let Some(signals) = Signals::install() else {
+        tracing::error!("cannot install signal handlers");
+        return ExitCode::from(EXIT_STARTUP);
+    };
     let mut plugins = PluginSet::default();
     let (prepared, loaded) = load(&config_path, None, &plugins).await;
     let config = match loaded {
@@ -132,7 +140,7 @@ async fn start(config_path: PathBuf, check_only: bool) -> ExitCode {
     {
         tracing::error!("cannot set log level: {e}");
     }
-    let code = run(config_path, config, &mut plugins, log).await;
+    let code = run(config_path, config, &mut plugins, log, signals).await;
     plugins.stop_all().await;
     code
 }
@@ -209,11 +217,28 @@ fn load_history(store: &Store) -> BTreeMap<String, ServiceHistory> {
         .collect()
 }
 
+struct Signals {
+    hup: tokio::signal::unix::Signal,
+    term: tokio::signal::unix::Signal,
+    int: tokio::signal::unix::Signal,
+}
+
+impl Signals {
+    fn install() -> Option<Signals> {
+        Some(Signals {
+            hup: signal(SignalKind::hangup()).ok()?,
+            term: signal(SignalKind::terminate()).ok()?,
+            int: signal(SignalKind::interrupt()).ok()?,
+        })
+    }
+}
+
 async fn run(
     config_path: PathBuf,
     config: Config,
     plugins: &mut PluginSet,
     log: Option<LogHandle>,
+    signals: Signals,
 ) -> ExitCode {
     let store = match Store::open(&config.store) {
         Ok(s) => s,
@@ -222,14 +247,11 @@ async fn run(
             return ExitCode::from(EXIT_STARTUP);
         }
     };
-    let (Ok(mut hup), Ok(mut term), Ok(mut int)) = (
-        signal(SignalKind::hangup()),
-        signal(SignalKind::terminate()),
-        signal(SignalKind::interrupt()),
-    ) else {
-        tracing::error!("cannot install signal handlers");
-        return ExitCode::from(EXIT_STARTUP);
-    };
+    let Signals {
+        mut hup,
+        mut term,
+        mut int,
+    } = signals;
 
     let live = LiveState::default();
     let started = std::time::SystemTime::now()

@@ -28,6 +28,21 @@ must be replaced. See [docs/deploy/daemon.md](docs/deploy/daemon.md#commands).
   the daemon did not help while applications kept the store open. The
   daemon now frees these slots when it opens the store, about once a minute
   after that, and right after a failed commit, and logs how many it freed.
+- `emfor server` installs its signal handlers before it loads the config.
+  Loading starts plugins and can take seconds; a SIGHUP in that time (a
+  `service emfor reload` or config management reloading right after a
+  start) used to kill the daemon. A SIGHUP that arrives while starting now
+  reloads once the daemon has started, and SIGTERM / SIGINT stop it
+  cleanly.
+- `service emfor configtest`, which the FreeBSD rc.d script also runs
+  before starting, checked the config as root and so started the config's
+  plugins as root even with `emfor_user` set. It now runs as `emfor_user`.
+  Replace copies of [examples/rc.d/emfor](examples/rc.d/emfor).
+- The Python client looked for `libemfor.so.0`, a name libemfor is never
+  installed under, so with only the runtime library installed (no
+  `libemfor.so` symlink, not in the `ldconfig` cache) `import emfor`
+  failed. It now looks for `libemfor.so.0.1` and `libemfor.0.1.dylib`,
+  derived from the new `emfor.__version__`.
 - The store's lock file has 1024 reader slots instead of LMDB's default
   of 126. The daemon and every client ask for the same number, since the
   process that opens the store first sizes the lock file; install

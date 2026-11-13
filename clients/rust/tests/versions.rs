@@ -4,8 +4,9 @@
 //! place below (RELEASING.md).
 
 /// (file under the repository root, text that must contain the version).
-const PLACES: [(&str, &str); 5] = [
+const PLACES: [(&str, &str); 6] = [
     ("clients/python/pyproject.toml", "version = \"{}\""),
+    ("clients/python/emfor/__init__.py", "__version__ = \"{}\""),
     ("clients/perl/lib/Emfor.pm", "our $VERSION = '{}';"),
     ("clients/php/emfor.c", "#define PHP_EMFOR_VERSION \"{}\""),
     ("examples/freebsd/Makefile", "DISTVERSION=\t{}\n"),

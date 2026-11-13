@@ -105,6 +105,32 @@ class LoadTest(unittest.TestCase):
         self.assertIn("ImportError", p.stderr)
         self.assertIn("EMFOR_LIBRARY", p.stderr)
 
+    def test_library_names_follow_the_release(self):
+        names = emfor._library_names
+        self.assertEqual(
+            names("0.1.1"), ["libemfor.so.0.1", "libemfor.so", "libemfor.0.1.dylib", "libemfor.dylib"]
+        )
+        self.assertEqual(names("0.2.0")[0], "libemfor.so.0.2")
+        self.assertEqual(names("1.4.2")[:3], ["libemfor.so.1", "libemfor.so", "libemfor.1.dylib"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "LD_LIBRARY_PATH lookup is Linux-only")
+    def test_finds_the_runtime_library_alone(self):
+        # Only the file a runtime package installs: no libemfor.so symlink,
+        # nothing in the ldconfig cache.
+        import shutil
+        import tempfile
+
+        real = os.path.realpath(os.environ["EMFOR_LIBRARY"])
+        with tempfile.TemporaryDirectory() as d:
+            shutil.copy(real, os.path.join(d, emfor._library_names(emfor.__version__)[0]))
+            env = dict(os.environ, LD_LIBRARY_PATH=d)
+            del env["EMFOR_LIBRARY"]
+            here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            p = subprocess.run(
+                [sys.executable, "-c", "import emfor"], cwd=here, env=env, capture_output=True, text=True
+            )
+        self.assertEqual(p.returncode, 0, p.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

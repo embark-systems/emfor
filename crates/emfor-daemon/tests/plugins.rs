@@ -89,6 +89,15 @@ struct Daemon {
 
 impl Daemon {
     fn start(body: &str) -> Daemon {
+        let d = Daemon::spawn(body);
+        wait_for("store created", || {
+            std::fs::metadata(d.store()).is_ok_and(|m| m.len() > 0)
+        });
+        d
+    }
+
+    /// Start the daemon without waiting for it to finish starting.
+    fn spawn(body: &str) -> Daemon {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("emfor.toml");
         std::fs::write(&cfg, format!("{}{body}", store_header(dir.path()))).unwrap();
@@ -116,11 +125,7 @@ impl Daemon {
                     .push_str(&String::from_utf8_lossy(&buf[..n]));
             }
         });
-        let d = Daemon { child, dir, log };
-        wait_for("store created", || {
-            std::fs::metadata(d.store()).is_ok_and(|m| m.len() > 0)
-        });
-        d
+        Daemon { child, dir, log }
     }
 
     fn store(&self) -> PathBuf {
@@ -566,4 +571,48 @@ fn reload_while_plugin_is_restarting() {
         "config reloaded",
     );
     assert!(d.log().contains("restarting in 4s"));
+}
+
+/// A plugin that takes a second to start, so the daemon is still loading
+/// its config when the test signals it.
+fn slow_plugin_config(mark: &str) -> String {
+    format!(
+        "[plugins.\"slow\"]\ncommand = [\"/bin/sh\", \"-c\", \"sleep 1; exec {PLUGIN} {mark}\"]\n\n{}",
+        plugin_service("s.svc.emfor", "slow", "up", FAST)
+    )
+}
+
+/// Spawn the daemon with the slow plugin and wait until it has started the
+/// plugin's shell: the daemon is now loading its config.
+fn spawn_loading(mark: &str) -> Daemon {
+    let d = Daemon::spawn(&slow_plugin_config(mark));
+    let pid = d.child.id().to_string();
+    wait_for("plugin spawned", || {
+        Command::new("pgrep")
+            .args(["-P", &pid])
+            .output()
+            .is_ok_and(|o| !o.stdout.is_empty())
+    });
+    d
+}
+
+#[test]
+fn sighup_while_starting_reloads_once_started() {
+    let mut d = spawn_loading(&marker("hup-start"));
+    kill(Pid::from_raw(d.child.id() as i32), Signal::SIGHUP).unwrap();
+    wait_for("reload after start", || d.log().contains("config reloaded"));
+    assert!(d.child.try_wait().unwrap().is_none(), "{}", d.log());
+    let (code, log) = d.stop();
+    assert_eq!(code, 0, "{log}");
+    assert!(log.contains("emfor started"), "{log}");
+}
+
+#[test]
+fn sigterm_while_starting_stops_cleanly() {
+    let mark = marker("term-start");
+    let d = spawn_loading(&mark);
+    let (code, log) = d.stop();
+    assert_eq!(code, 0, "{log}");
+    assert!(log.contains("shutting down"), "{log}");
+    wait_for("plugin stopped", || pgrep(&mark).is_empty());
 }
