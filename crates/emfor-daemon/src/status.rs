@@ -19,13 +19,17 @@ macro_rules! append {
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::{cursor, terminal};
 use emfor_format::{
     HIST_KEY_PREFIX, HealthState, HistoryEntry, KEY_DNS_LISTEN, KEY_HEARTBEAT, KEY_METRICS_LISTEN,
     KEY_SCHEMA_VERSION, KEY_SITE, KEY_STARTED_AT, SCHEMA_VERSION, SERVICE_KEY_PREFIX,
     ServiceHistory, ServiceRecord,
 };
+use futures::StreamExt;
 use heed::types::Str;
 use heed::{Database, Env, EnvFlags, EnvOpenOptions, WithoutTls};
 
@@ -368,6 +372,19 @@ pub fn text(
     marked: &HashSet<Row>,
 ) -> Vec<String> {
     let mut lines = header(snap, store, now_ms, style);
+    lines.extend(services_lines(snap, now_ms, style, marked));
+    lines
+}
+
+/// The services part of [`text`]: everything after the `store:` and
+/// `daemon:` lines.
+fn services_lines(
+    snap: &Snapshot,
+    now_ms: u64,
+    style: Style,
+    marked: &HashSet<Row>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
     let flaps = flapping(snap, now_ms);
 
     // Backend cells: id, state, checked, latency, pool; reason unpadded.
@@ -588,6 +605,110 @@ impl Watch {
     }
 }
 
+/// What a key does in `--watch`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    LineUp,
+    LineDown,
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
+    Quit,
+}
+
+/// The `--watch` action of a key, or `None` for keys it ignores. Raw mode
+/// turns Ctrl-C into a key instead of `SIGINT`, so it is mapped here.
+pub fn key_action(key: &KeyEvent) -> Option<Action> {
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    Some(match key.code {
+        KeyCode::PageUp => Action::PageUp,
+        KeyCode::PageDown | KeyCode::Char(' ') => Action::PageDown,
+        KeyCode::Up => Action::LineUp,
+        KeyCode::Down => Action::LineDown,
+        KeyCode::Home => Action::Top,
+        KeyCode::End => Action::Bottom,
+        KeyCode::Char('q' | 'Q') => Action::Quit,
+        KeyCode::Char('c' | 'C') if ctrl => Action::Quit,
+        _ => return None,
+    })
+}
+
+/// The `--watch` scroll position: the index of the first content line
+/// shown below the fixed header.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Scroll {
+    pub offset: usize,
+}
+
+impl Scroll {
+    /// Keep the position within `content_len` lines shown `page` at a time.
+    pub fn clamp(&mut self, content_len: usize, page: usize) {
+        self.offset = self.offset.min(content_len.saturating_sub(page));
+    }
+
+    /// Move for `action`, then clamp. `Quit` leaves the position alone.
+    pub fn apply(&mut self, action: Action, content_len: usize, page: usize) {
+        let page = page.max(1);
+        self.offset = match action {
+            Action::LineUp => self.offset.saturating_sub(1),
+            Action::LineDown => self.offset.saturating_add(1),
+            Action::PageUp => self.offset.saturating_sub(page),
+            Action::PageDown => self.offset.saturating_add(page),
+            Action::Top => 0,
+            Action::Bottom => usize::MAX,
+            Action::Quit => self.offset,
+        };
+        self.clamp(content_len, page);
+    }
+}
+
+/// How many content lines fit below `header_len` header lines in a
+/// terminal of `rows` rows: all rows left when the content fits, else one
+/// row less for the footer, and never less than one.
+pub fn page_height(header_len: usize, content_len: usize, rows: usize) -> usize {
+    let left = rows.saturating_sub(header_len);
+    if content_len <= left {
+        left.max(1)
+    } else {
+        left.saturating_sub(1).max(1)
+    }
+}
+
+/// One `--watch` screen: the header, the part of `content` at the
+/// (clamped) scroll position and, when the content does not fit, a footer
+/// with the shown range. At most `rows` lines.
+pub fn compose(
+    header: &[String],
+    content: &[String],
+    rows: usize,
+    scroll: &mut Scroll,
+    style: Style,
+) -> Vec<String> {
+    let page = page_height(header.len(), content.len(), rows);
+    scroll.clamp(content.len(), page);
+    let mut lines = header.to_vec();
+    let end = (scroll.offset + page).min(content.len());
+    lines.extend_from_slice(&content[scroll.offset..end]);
+    if header.len() + content.len() > rows {
+        let footer = format!(
+            "-- lines {}-{end} of {}  PgUp/PgDn Up/Down Home/End  q quit --",
+            scroll.offset + 1,
+            content.len()
+        );
+        lines.push(if style.color {
+            reverse(&footer)
+        } else {
+            footer
+        });
+    }
+    lines.truncate(rows.max(1));
+    lines
+}
+
 /// Local (`YYYY-MM-DD`, `HH:MM:SS`) of Unix milliseconds.
 fn local(ms: u64) -> Option<(String, String)> {
     let t = (ms / 1000) as libc::time_t;
@@ -679,7 +800,84 @@ pub fn main(config_path: &Path, args: &StatusArgs) -> ExitCode {
     ExitCode::from(exit_status(&snap, now))
 }
 
-/// `--watch`: redraw every second until Ctrl-C.
+/// Give the terminal back: line wrapping on, cursor shown, main screen,
+/// raw mode off. Safe to run more than once; errors are ignored because
+/// there is nowhere left to report them.
+fn restore_terminal() {
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        terminal::EnableLineWrap,
+        cursor::Show,
+        terminal::LeaveAlternateScreen
+    );
+    let _ = terminal::disable_raw_mode();
+}
+
+type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
+
+/// The terminal set up for `--watch`: raw mode, alternate screen, hidden
+/// cursor and no line wrapping, so that each line takes exactly one row.
+/// Dropping it restores the terminal; while it lives, a panic restores the
+/// terminal before the panic message is printed.
+struct TerminalGuard {
+    previous_hook: Arc<PanicHook>,
+}
+
+impl TerminalGuard {
+    fn enter() -> std::io::Result<TerminalGuard> {
+        terminal::enable_raw_mode()?;
+        if let Err(e) = crossterm::execute!(
+            std::io::stdout(),
+            terminal::EnterAlternateScreen,
+            cursor::Hide,
+            terminal::DisableLineWrap
+        ) {
+            restore_terminal();
+            return Err(e);
+        }
+        let previous_hook: Arc<PanicHook> = Arc::new(std::panic::take_hook());
+        let hook = Arc::clone(&previous_hook);
+        std::panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            hook(info);
+        }));
+        Ok(TerminalGuard { previous_hook })
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        restore_terminal();
+        // The hook cannot be changed while unwinding (that would abort);
+        // it already restored the terminal then.
+        if !std::thread::panicking() {
+            let previous = Arc::clone(&self.previous_hook);
+            std::panic::set_hook(Box::new(move |info| previous(info)));
+        }
+    }
+}
+
+/// Terminal height in rows; 24 when it cannot be told.
+fn terminal_rows() -> usize {
+    match terminal::size() {
+        Ok((_, rows)) if rows > 0 => usize::from(rows),
+        _ => 24,
+    }
+}
+
+/// Write `lines` from the top-left corner, clearing what the previous
+/// frame left behind. No newline after the last line, so a full screen
+/// does not scroll.
+fn draw(out: &mut impl Write, lines: &[String]) {
+    let mut frame = String::from("\x1b[H");
+    frame.push_str(&lines.join("\x1b[K\r\n"));
+    frame.push_str("\x1b[K\x1b[J");
+    let _ = out.write_all(frame.as_bytes());
+    let _ = out.flush();
+}
+
+/// `--watch`: redraw every second and scroll with the keys until `q`,
+/// Ctrl-C or a signal.
 fn watch(store: &StoreConfig, service: Option<&str>) -> ExitCode {
     if !std::io::stdout().is_terminal() {
         eprintln!("--watch needs a terminal");
@@ -697,70 +895,109 @@ fn watch(store: &StoreConfig, service: Option<&str>) -> ExitCode {
     };
     let style = style_for_terminal();
     runtime.block_on(async {
-        let mut out = std::io::stdout();
-        // Alternate screen, hidden cursor.
-        let _ = write!(out, "\x1b[?1049h\x1b[?25l");
-        let mut state = Watch::default();
-        let mut reader: Result<Reader, Failure> = Err(Failure(String::new()));
-        let mut tick = tokio::time::interval(Duration::from_secs(1));
-        // Ctrl-C, `kill`, and a closed ssh session (SIGHUP) all end the
-        // watch and give the terminal back.
+        // `kill` and a closed ssh session (SIGHUP) end the watch and give
+        // the terminal back; in raw mode Ctrl-C arrives as a key instead
+        // of SIGINT, but `kill -INT` still works.
         use tokio::signal::unix::{SignalKind, signal};
         let (Ok(mut int), Ok(mut term), Ok(mut hup)) = (
             signal(SignalKind::interrupt()),
             signal(SignalKind::terminate()),
             signal(SignalKind::hangup()),
         ) else {
-            let _ = write!(out, "\x1b[?25h\x1b[?1049l");
             eprintln!("cannot install signal handlers");
-            return;
+            return ExitCode::from(EXIT_FAILURE);
         };
+        let guard = match TerminalGuard::enter() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("cannot use the terminal: {e}");
+                return ExitCode::from(EXIT_FAILURE);
+            }
+        };
+        let mut out = std::io::stdout();
+        let mut events = EventStream::new();
+        let mut events_open = true;
+        let mut state = Watch::default();
+        let mut reader: Result<Reader, Failure> = Err(Failure(String::new()));
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        let mut rows = terminal_rows();
+        let mut scroll = Scroll::default();
+        // The last frame read from the store; keys and resizes redraw it
+        // without reading again, so highlights stay for one refresh.
+        let mut top: Vec<String> = Vec::new();
+        let mut content: Vec<String> = Vec::new();
         loop {
             tokio::select! {
                 _ = int.recv() => break,
                 _ = term.recv() => break,
                 _ = hup.recv() => break,
-                _ = tick.tick() => {}
-            }
-            let now = unix_ms();
-            if reader.is_err() {
-                reader = Reader::open(store);
-            }
-            let read = reader.as_ref().map_err(Clone::clone).and_then(Reader::read);
-            if read.is_err() {
-                // Open the store afresh next time, in case it was replaced.
-                reader = Err(Failure(String::new()));
-            }
-            let read = read.and_then(|s| filter(s, service));
-            let mut lines = match &read {
-                Ok(snap) => {
-                    let marked = state.update(snap, now);
-                    text(snap, &store.path, now, style, &marked)
+                _ = tick.tick() => {
+                    rows = terminal_rows();
+                    (top, content) = read_frame(store, service, &mut reader, &mut state, style);
                 }
-                Err(Failure(message)) => vec![
-                    format!("store: {}", store.path.display()),
-                    paint(style, RED, &format!("error: {message}")),
-                ],
-            };
-            let changes = state.changes(now);
-            if !changes.is_empty() {
-                lines.push(String::new());
-                lines.push("recent changes:".to_owned());
-                lines.extend(changes.iter().map(|c| format!("  {c}")));
+                event = events.next(), if events_open => match event {
+                    Some(Ok(Event::Key(key))) => match key_action(&key) {
+                        Some(Action::Quit) => break,
+                        Some(action) => {
+                            let page = page_height(top.len(), content.len(), rows);
+                            scroll.apply(action, content.len(), page);
+                        }
+                        None => continue,
+                    },
+                    Some(Ok(Event::Resize(_, r))) => rows = usize::from(r.max(1)),
+                    Some(Ok(_)) => continue,
+                    // No more keys; keep refreshing, signals still end it.
+                    Some(Err(_)) | None => {
+                        events_open = false;
+                        continue;
+                    }
+                },
             }
-            let mut frame = String::from("\x1b[H");
-            for l in &lines {
-                frame.push_str(l);
-                frame.push_str("\x1b[K\r\n");
-            }
-            frame.push_str("\x1b[J");
-            let _ = out.write_all(frame.as_bytes());
-            let _ = out.flush();
+            draw(&mut out, &compose(&top, &content, rows, &mut scroll, style));
         }
-        let _ = write!(out, "\x1b[?25h\x1b[?1049l");
-        let _ = out.flush();
-    });
-    ExitCode::SUCCESS
+        drop(guard);
+        ExitCode::SUCCESS
+    })
+}
+
+/// Read the store for one `--watch` refresh: the fixed top lines and the
+/// scrollable content (services, then the recent changes).
+fn read_frame(
+    store: &StoreConfig,
+    service: Option<&str>,
+    reader: &mut Result<Reader, Failure>,
+    state: &mut Watch,
+    style: Style,
+) -> (Vec<String>, Vec<String>) {
+    let now = unix_ms();
+    if reader.is_err() {
+        *reader = Reader::open(store);
+    }
+    let read = reader.as_ref().map_err(Clone::clone).and_then(Reader::read);
+    if read.is_err() {
+        // Open the store afresh next time, in case it was replaced.
+        *reader = Err(Failure(String::new()));
+    }
+    let (top, mut content) = match read.and_then(|s| filter(s, service)) {
+        Ok(snap) => {
+            let marked = state.update(&snap, now);
+            (
+                header(&snap, &store.path, now, style),
+                services_lines(&snap, now, style, &marked),
+            )
+        }
+        Err(Failure(message)) => (
+            vec![format!("store: {}", store.path.display())],
+            vec![paint(style, RED, &format!("error: {message}"))],
+        ),
+    };
+    let changes = state.changes(now);
+    if !changes.is_empty() {
+        content.push(String::new());
+        content.push("recent changes:".to_owned());
+        content.extend(changes.iter().map(|c| format!("  {c}")));
+    }
+    (top, content)
 }
 
 #[cfg(test)]
@@ -1427,5 +1664,196 @@ mod tests {
         let snap = Reader::open(&cfg).unwrap().read().unwrap();
         assert_eq!(snap.history.keys().collect::<Vec<_>>(), ["api.svc.emfor"]);
         assert_eq!(snap.history["api.svc.emfor"], h);
+    }
+
+    fn lines(prefix: &str, n: usize) -> Vec<String> {
+        (1..=n).map(|i| format!("{prefix}{i}")).collect()
+    }
+
+    fn top() -> Vec<String> {
+        vec!["store: x".to_owned(), "daemon: running".to_owned()]
+    }
+
+    /// The footer of a frame, or `None` when there is none.
+    fn footer(frame: &[String]) -> Option<&str> {
+        frame
+            .last()
+            .map(String::as_str)
+            .filter(|l| l.starts_with("-- lines "))
+    }
+
+    /// Spec "Status watch mode", scenario "Output fits the terminal".
+    #[test]
+    fn watch_frame_that_fits_has_no_footer() {
+        let content = lines("c", 13);
+        let mut scroll = Scroll { offset: 5 };
+        let frame = compose(&top(), &content, 24, &mut scroll, Style::default());
+        assert_eq!(frame.len(), 15);
+        assert_eq!(frame[..2], top()[..]);
+        assert_eq!(frame[2..], content[..]);
+        assert_eq!(scroll.offset, 0);
+        assert_eq!(footer(&frame), None);
+    }
+
+    /// Spec "Status watch mode", scenario "Scrolling a long list" and its
+    /// keys table.
+    #[test]
+    fn watch_scrolls_a_long_list() {
+        let content = lines("c", 60);
+        let first = compose(
+            &top(),
+            &content,
+            24,
+            &mut Scroll::default(),
+            Style::default(),
+        );
+        assert_eq!(first.len(), 24);
+        assert_eq!(
+            footer(&first),
+            Some("-- lines 1-21 of 60  PgUp/PgDn Up/Down Home/End  q quit --")
+        );
+        use Action::*;
+        let cases: &[(&[Action], &str)] = &[
+            (&[], "1-21"),
+            (&[PageDown], "22-42"),
+            (&[PageDown, PageDown], "40-60"),
+            (&[PageDown, PageUp], "1-21"),
+            (&[LineDown], "2-22"),
+            (&[LineUp], "1-21"),
+            (&[Bottom], "40-60"),
+            (&[Bottom, Top], "1-21"),
+            (&[Bottom, LineDown], "40-60"),
+        ];
+        for (keys, range) in cases {
+            let mut scroll = Scroll::default();
+            for &k in *keys {
+                let page = page_height(2, content.len(), 24);
+                assert_eq!(page, 21);
+                scroll.apply(k, content.len(), page);
+            }
+            let frame = compose(&top(), &content, 24, &mut scroll, Style::default());
+            assert_eq!(frame.len(), 24, "{keys:?}");
+            assert_eq!(frame[..2], top()[..], "{keys:?}");
+            let (a, b) = range.split_once('-').unwrap();
+            let a: usize = a.parse().unwrap();
+            assert_eq!(frame[2], format!("c{a}"), "{keys:?}");
+            assert_eq!(frame[22], format!("c{b}"), "{keys:?}");
+            assert_eq!(
+                footer(&frame),
+                Some(
+                    format!("-- lines {range} of 60  PgUp/PgDn Up/Down Home/End  q quit --")
+                        .as_str()
+                ),
+                "{keys:?}"
+            );
+        }
+    }
+
+    /// Spec "Status watch mode", scenario "Position kept across refreshes
+    /// and limited when the list shrinks".
+    #[test]
+    fn watch_keeps_and_limits_the_position() {
+        let mut scroll = Scroll::default();
+        scroll.apply(Action::PageDown, 60, page_height(2, 60, 24));
+        for _ in 0..3 {
+            let frame = compose(&top(), &lines("c", 60), 24, &mut scroll, Style::default());
+            assert!(footer(&frame).unwrap().starts_with("-- lines 22-42 of 60 "));
+        }
+        let frame = compose(&top(), &lines("c", 30), 24, &mut scroll, Style::default());
+        assert!(footer(&frame).unwrap().starts_with("-- lines 10-30 of 30 "));
+        assert_eq!(frame[2], "c10");
+        // Shrinking until it fits goes back to the top.
+        let frame = compose(&top(), &lines("c", 5), 24, &mut scroll, Style::default());
+        assert_eq!(scroll.offset, 0);
+        assert_eq!(frame[2..], lines("c", 5)[..]);
+    }
+
+    #[test]
+    fn watch_frame_in_a_tiny_terminal() {
+        let content = lines("c", 60);
+        let mut scroll = Scroll::default();
+        // One content row and the footer below the header.
+        let frame = compose(&top(), &content, 4, &mut scroll, Style::default());
+        assert_eq!(frame[2], "c1");
+        assert!(footer(&frame).unwrap().starts_with("-- lines 1-1 of 60 "));
+        scroll.apply(Action::PageDown, content.len(), page_height(2, 60, 4));
+        assert_eq!(scroll.offset, 1);
+        // Too small for the footer: never more lines than rows.
+        let frame = compose(
+            &top(),
+            &content,
+            3,
+            &mut Scroll::default(),
+            Style::default(),
+        );
+        assert_eq!(frame, ["store: x", "daemon: running", "c1"]);
+        assert_eq!(
+            compose(
+                &top(),
+                &content,
+                0,
+                &mut Scroll::default(),
+                Style::default()
+            )
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn watch_footer_in_reverse_video_only_with_color() {
+        let content = lines("c", 60);
+        let colored = compose(
+            &top(),
+            &content,
+            24,
+            &mut Scroll::default(),
+            Style { color: true },
+        );
+        assert!(colored[23].starts_with(REVERSE));
+        let plain = compose(
+            &top(),
+            &content,
+            24,
+            &mut Scroll::default(),
+            Style::default(),
+        );
+        assert!(!plain[23].contains('\x1b'));
+    }
+
+    #[test]
+    fn watch_keys() {
+        let none = KeyModifiers::NONE;
+        let cases = [
+            (KeyCode::PageUp, none, Some(Action::PageUp)),
+            (KeyCode::PageDown, none, Some(Action::PageDown)),
+            (KeyCode::Char(' '), none, Some(Action::PageDown)),
+            (KeyCode::Up, none, Some(Action::LineUp)),
+            (KeyCode::Down, none, Some(Action::LineDown)),
+            (KeyCode::Home, none, Some(Action::Top)),
+            (KeyCode::End, none, Some(Action::Bottom)),
+            (KeyCode::Char('q'), none, Some(Action::Quit)),
+            (KeyCode::Char('Q'), KeyModifiers::SHIFT, Some(Action::Quit)),
+            (
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+                Some(Action::Quit),
+            ),
+            (KeyCode::Char('c'), none, None),
+            (KeyCode::Char('x'), none, None),
+            (KeyCode::Esc, none, None),
+            (KeyCode::Left, none, None),
+        ];
+        for (code, mods, want) in cases {
+            assert_eq!(
+                key_action(&KeyEvent::new(code, mods)),
+                want,
+                "{code:?} {mods:?}"
+            );
+        }
+        let released = KeyEvent::new_with_kind(KeyCode::Char('q'), none, KeyEventKind::Release);
+        assert_eq!(key_action(&released), None);
+        let repeated = KeyEvent::new_with_kind(KeyCode::Down, none, KeyEventKind::Repeat);
+        assert_eq!(key_action(&repeated), Some(Action::LineDown));
     }
 }

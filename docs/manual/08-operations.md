@@ -56,7 +56,7 @@ it.
 | --- | --- |
 | `--service <name>` | Show one service. |
 | `--json` | One JSON object, for scripts. |
-| `--watch` | Redraw every second, highlight changes, and list the last 10 changes. |
+| `--watch` | Redraw every second, highlight changes, and list the last 10 changes. The `store:` and `daemon:` lines stay at the top; scroll a long list with PgUp/PgDn, Up/Down and Home/End. Lines wider than the terminal are cut. `q` or Ctrl-C ends it. |
 | `--history` | List each backend's last 20 state changes (kept across restarts). |
 
 | Exit status | When |

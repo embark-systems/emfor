@@ -1,7 +1,7 @@
 //! End-to-end tests: run the `emfor` binary and read its LMDB store.
 
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -1160,71 +1160,107 @@ fn status_watch_needs_a_terminal() {
     assert_eq!((code, err.trim()), (2, "--watch needs a terminal"));
 }
 
-/// `status --watch` gives the terminal back (main screen, cursor shown)
-/// when it is stopped by `kill` or by a closed ssh session, not only by
-/// Ctrl-C.
-#[test]
-fn status_watch_restores_the_terminal_on_term_and_hup() {
-    use std::os::fd::{FromRawFd, OwnedFd};
+/// How a test ends `status --watch`.
+enum WatchStop {
+    Signal(Signal),
+    Keys(&'static [u8]),
+}
+
+/// Run `status --watch` on a new pseudo-terminal (its standard input and
+/// output), end it with `stop`, and return its exit status, everything it
+/// wrote, and the terminal's `c_lflag` afterwards.
+fn watch_on_a_pty(cfg: &Path, stop: &WatchStop) -> (Option<i32>, Vec<u8>, libc::tcflag_t) {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::sync::{Arc, Mutex};
+    let (mut master, mut slave) = (0, 0);
+    // SAFETY: openpty fills two new descriptors, owned below.
+    let rc = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(rc, 0);
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+    let mut child = Command::new(cargo_bin("emfor"))
+        .arg("status")
+        .arg("--config")
+        .arg(cfg)
+        .arg("--watch")
+        .stdin(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut input = std::fs::File::from(master.try_clone().unwrap());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let reader = {
+        let seen = seen.clone();
+        let mut master = std::fs::File::from(master);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = master.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                seen.lock().unwrap().extend_from_slice(&buf[..n]);
+            }
+        })
+    };
+    let has = |s: &[u8]| {
+        let seen = seen.lock().unwrap();
+        seen.windows(s.len()).any(|w| w == s)
+    };
+    wait_for(|| has(b"store: "));
+    match stop {
+        WatchStop::Signal(sig) => kill(Pid::from_raw(child.id() as i32), *sig).unwrap(),
+        WatchStop::Keys(keys) => input.write_all(keys).unwrap(),
+    }
+    let status = child.wait().unwrap();
+    // SAFETY: tcgetattr only writes into `t`; `slave` is an open pty.
+    let mut t: libc::termios = unsafe { std::mem::zeroed() };
+    assert_eq!(unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut t) }, 0);
+    // The reader ends once every slave descriptor is closed.
+    drop(slave);
+    drop(input);
+    reader.join().unwrap();
+    let out = seen.lock().unwrap().clone();
+    (status.code(), out, t.c_lflag)
+}
+
+/// Spec status-command "Status watch mode", scenarios "Ending with a key"
+/// and "Ending with a signal": `status --watch` gives the terminal back
+/// (line wrapping, cursor, main screen, cooked mode) when it is ended by
+/// `q`, Ctrl-C, `kill` or a closed ssh session.
+#[test]
+fn status_watch_restores_the_terminal() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
     std::fs::write(&cfg, store_header(dir.path())).unwrap();
-    for sig in [Signal::SIGTERM, Signal::SIGHUP, Signal::SIGINT] {
-        let (mut master, mut slave) = (0, 0);
-        // SAFETY: openpty fills two new descriptors, owned below.
-        let rc = unsafe {
-            libc::openpty(
-                &mut master,
-                &mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
+    for stop in [
+        WatchStop::Signal(Signal::SIGTERM),
+        WatchStop::Signal(Signal::SIGHUP),
+        WatchStop::Signal(Signal::SIGINT),
+        WatchStop::Keys(b"q"),
+        WatchStop::Keys(b"\x03"),
+    ] {
+        let what = match &stop {
+            WatchStop::Signal(sig) => sig.to_string(),
+            WatchStop::Keys(k) => format!("{k:?}"),
         };
-        assert_eq!(rc, 0);
-        let (master, slave) =
-            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-        let mut child = Command::new(cargo_bin("emfor"))
-            .arg("status")
-            .arg("--config")
-            .arg(&cfg)
-            .arg("--watch")
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(slave))
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let reader = {
-            let seen = seen.clone();
-            let mut master = std::fs::File::from(master);
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 4096];
-                // Ends with EIO (Linux) or 0 once the child has exited.
-                while let Ok(n) = master.read(&mut buf) {
-                    if n == 0 {
-                        break;
-                    }
-                    seen.lock().unwrap().extend_from_slice(&buf[..n]);
-                }
-            })
-        };
-        let has = |s: &[u8]| {
-            let seen = seen.lock().unwrap();
-            seen.windows(s.len()).any(|w| w == s)
-        };
-        wait_for(|| has(b"store: "));
-        kill(Pid::from_raw(child.id() as i32), sig).unwrap();
-        let status = child.wait().unwrap();
-        reader.join().unwrap();
-        assert_eq!(status.code(), Some(0), "{sig}");
-        let out = seen.lock().unwrap().clone();
+        let (code, out, lflag) = watch_on_a_pty(&cfg, &stop);
+        assert_eq!(code, Some(0), "{what}");
         assert!(
-            out.ends_with(b"\x1b[?25h\x1b[?1049l"),
-            "{sig}: {:?}",
+            out.ends_with(b"\x1b[?7h\x1b[?25h\x1b[?1049l"),
+            "{what}: {:?}",
             String::from_utf8_lossy(&out[out.len().saturating_sub(40)..])
         );
+        for flag in [libc::ICANON, libc::ECHO, libc::ISIG] {
+            assert_ne!(lflag & flag, 0, "{what}: lflag {lflag:#x} lacks {flag:#x}");
+        }
     }
 }
 

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Status
+
+- `emfor status --watch` scrolls when the services and recent changes do
+  not fit in the terminal: the `store:` and `daemon:` lines stay at the
+  top, PgUp/PgDn (or Space) move one screen, Up/Down one line, Home/End
+  to the start or end, and the last row shows which lines are on screen.
+  Lines wider than the terminal are cut instead of wrapped. `q` or Ctrl-C
+  ends the watch, and the terminal is restored also after a crash. When
+  it cannot install its signal handlers it now exits 2 instead of 0.
+
 ### Plugins
 
 - `emfor-check dns` checks DNS servers: it sends one query (`name`,
