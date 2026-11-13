@@ -93,7 +93,11 @@ peers: 1/2 live, not live 10.0.0.7:5302
 peers: check definition of api.svc.emfor differs at 10.0.0.6:5302
 ```
 
-群組投票判為 down、而本機檢查通過的 backend 會標上 `local-up`。這些值得看一下：這台主機連得到其他主機連不到的 backend（常見原因是網路分割，或其他主機上的防火牆規則），`emfor_peer_disagreements` 會計算它們的數量。「check definition differs」那一行表示該成員這個服務的 `check`、`check_options` 或 `timeout` 和這台主機不同，所以它的結果不計入；請讓設定一致。同樣的資料也在 store 的 `meta/peers` key，以及 `emfor status --json` 的 `peers` 中。其中 `services_off` 列出這台主機不參加群組的服務（`peers = false`）；它們的 backend 不會標 `voted`，也沒有 `assigned_checkers`。`members` 的每一項也有自己的 `services_off`：該成員宣告不參加、而這台主機也有的服務。這台主機挑這些服務的負責主機時不算那個成員，`emfor status` 也照同樣方式排除。
+群組投票判為 down、而本機檢查通過的 backend 會標上 `local-up`。這些值得看一下：這台主機連得到其他主機連不到的 backend（常見原因是網路分割，或其他主機上的防火牆規則），`emfor_peer_disagreements` 會計算它們的數量。「check definition differs」那一行表示該成員這個服務的 `check`、`check_options` 或 `timeout` 和這台主機不同，所以它的結果不計入；請讓設定一致。同樣的資料也在 store 的 `meta/peers` key，以及 `emfor status --json` 的 `peers` 中。其中 `services_off` 列出這台主機不參加群組的服務（`peers = false`）；它們的 backend 不會標 `voted`，也沒有 `assigned_checkers`。`members` 的每一項也有自己的 `services_off`：該成員宣告不參加、而這台主機也有的服務。這台主機挑這些服務的負責主機時不算那個成員，`emfor status` 也照同樣方式排除。文字輸出會在 `peers:` 那一行之後，為每個這樣的成員加一行，只列出目前顯示的服務：
+
+```
+peers: 10.0.0.6:5302 leaves out api.svc.emfor db.svc.emfor
+```
 
 四台以上的群組裡，不是某些 backend 負責主機的主機，`emfor_peer_checks_skipped_total` 會增加：大部分的檢查時間讓投票決定，大約每五個 `interval` 才自己檢查那些 backend 一次。`emfor status` 會把那些 backend 標上 `voted`，並在 `peers:` 那一行最後寫出顯示的 backend 中有幾個是這台主機每次都檢查的：
 

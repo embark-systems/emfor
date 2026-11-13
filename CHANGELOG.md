@@ -54,6 +54,11 @@
 
 ### Status
 
+- `emfor status` shows, after the `peers:` line, one line per member that
+  leaves shown services out of the peer group:
+  `peers: 10.0.0.6:5302 leaves out api.svc.emfor db.svc.emfor`. Only the
+  services shown are listed (so `--service` narrows it); `--json` is
+  unchanged.
 - `emfor status --watch` scrolls when the services and recent changes do
   not fit in the terminal: the `store:` and `daemon:` lines stay at the
   top, PgUp/PgDn (or Space) move one screen, Up/Down one line, Home/End

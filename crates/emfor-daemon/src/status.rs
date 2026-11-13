@@ -474,6 +474,19 @@ fn peer_lines(
         }
     }
     let mut lines = vec![line];
+    // Members that leave shown services out (`snap.services` is in name
+    // order, so the names come out sorted).
+    for m in &state.members {
+        let off: Vec<&str> = snap
+            .services
+            .iter()
+            .filter(|svc| m.services_off.contains(&svc.name))
+            .map(|svc| svc.name.as_str())
+            .collect();
+        if !off.is_empty() {
+            lines.push(format!("peers: {} leaves out {}", m.addr, off.join(" ")));
+        }
+    }
     for svc in &snap.services {
         let at: Vec<&str> = state
             .digest_mismatch
@@ -1552,6 +1565,84 @@ mod tests {
             "peers: 2/3 live, not live 10.0.0.7:5302"
         );
         assert!(!render(&only_db)[3].starts_with("peers:"));
+    }
+
+    /// Spec "Status text output", scenario "Members that leave services
+    /// out".
+    #[test]
+    fn members_leave_out_lines() {
+        let value = r#"{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true,"services_off":["db.svc.emfor","api.svc.emfor"]},{"addr":"10.0.0.7:5302","live":true,"services_off":[]},{"addr":"10.0.0.8:5302","live":true,"services_off":["api.svc.emfor"]}],"digest_mismatch":[{"service":"api.svc.emfor","member":"10.0.0.7:5302"}],"disagreements":[]}"#;
+        let mut s = snap(
+            Some(400),
+            vec![api(), service("db.svc.emfor", false, vec![])],
+        );
+        s.peers = peers_value(Some(value));
+        assert_eq!(
+            render(&s)[2..6],
+            [
+                "peers: 3/3 live",
+                "peers: 10.0.0.6:5302 leaves out api.svc.emfor db.svc.emfor",
+                "peers: 10.0.0.8:5302 leaves out api.svc.emfor",
+                "peers: check definition of api.svc.emfor differs at 10.0.0.7:5302",
+            ]
+        );
+    }
+
+    /// Spec "Status text output", example "leaves-out lines for member
+    /// 10.0.0.6:5302".
+    #[test]
+    fn leave_out_lines_table() {
+        let member = |off: &str| {
+            format!(
+                r#"{{"listen":"10.0.0.5:5302","members":[{{"addr":"10.0.0.6:5302","live":true{off}}}],"digest_mismatch":[],"disagreements":[]}}"#
+            )
+        };
+        let both = r#","services_off":["db.svc.emfor","api.svc.emfor"]"#;
+        // (member's services_off, --service, heartbeat age, expected line)
+        type Row<'a> = (&'a str, Option<&'a str>, Option<u64>, Option<&'a str>);
+        let rows: [Row; 6] = [
+            (
+                both,
+                None,
+                Some(400),
+                Some("peers: 10.0.0.6:5302 leaves out api.svc.emfor db.svc.emfor"),
+            ),
+            (
+                both,
+                Some("api.svc.emfor"),
+                Some(400),
+                Some("peers: 10.0.0.6:5302 leaves out api.svc.emfor"),
+            ),
+            (
+                r#","services_off":["db.svc.emfor"]"#,
+                Some("api.svc.emfor"),
+                Some(400),
+                None,
+            ),
+            (r#","services_off":[]"#, None, Some(400), None),
+            ("", None, Some(400), None),
+            (r#","services_off":["api.svc.emfor"]"#, None, None, None),
+        ];
+        for (off, only, heartbeat_ago, want) in rows {
+            let mut s = snap(
+                heartbeat_ago,
+                vec![api(), service("db.svc.emfor", false, vec![])],
+            );
+            s.peers = peers_value(Some(&member(off)));
+            let s = filter(s, only).unwrap();
+            let got: Vec<String> = render(&s)
+                .into_iter()
+                .filter(|l| l.contains("leaves out"))
+                .collect();
+            assert_eq!(
+                got,
+                want.into_iter().map(String::from).collect::<Vec<_>>(),
+                "{off} {only:?}"
+            );
+            if heartbeat_ago.is_none() {
+                assert!(render(&s).iter().all(|l| !l.starts_with("peers:")));
+            }
+        }
     }
 
     /// Spec "Status text output", example "peers line".

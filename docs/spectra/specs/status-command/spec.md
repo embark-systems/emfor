@@ -60,7 +60,7 @@ tests:
 
 1. `store: <path>`;
 2. one daemon line: `daemon: running, heartbeat <age> ago, up <duration>` followed by `, site <site>` when `meta/site` is set, then `, dns <addresses>` when `meta/dns_listen` holds a JSON array of strings, and then `, metrics <addresses>` when `meta/metrics_listen` does, the addresses of each separated by single spaces in stored order; `daemon: stale, heartbeat <age> ago` when the heartbeat is older than 3 seconds; `daemon: stopped` when the heartbeat is `0`;
-3. when the daemon is running and `meta/peers` holds a JSON object of the shape defined in spec state-store, a line `peers: <live>/<members> live`, where `<members>` is the number of entries in `members` and `<live>` the number of them with `live` true, followed by `, not live <addresses>` with the addresses of the members that are not live separated by single spaces in stored order when there are any; followed by `, checks <n>/<m> backends here` when at least one shown backend is voted (see below), where `<m>` is the number of shown backends and `<n>` the number of them that are not voted; then, for each shown service with entries in `digest_mismatch`, a line `peers: check definition of <service> differs at <members>` with that service's members separated by single spaces in stored order;
+3. when the daemon is running and `meta/peers` holds a JSON object of the shape defined in spec state-store, a line `peers: <live>/<members> live`, where `<members>` is the number of entries in `members` and `<live>` the number of them with `live` true, followed by `, not live <addresses>` with the addresses of the members that are not live separated by single spaces in stored order when there are any; followed by `, checks <n>/<m> backends here` when at least one shown backend is voted (see below), where `<m>` is the number of shown backends and `<n>` the number of them that are not voted; then, for each member in stored order whose `services_off` (spec state-store) contains at least one shown service, a line `peers: <member> leaves out <services>` with those shown services in name order separated by single spaces; then, for each shown service with entries in `digest_mismatch`, a line `peers: check definition of <service> differs at <members>` with that service's members separated by single spaces in stored order;
 4. for each service in name order, a line `<name>  <balance>  on_all_down=<open|closed>` followed by `  ALL DOWN` when `all_down` is true;
 5. under each service, one line per backend in store order with the backend `id`, its health state (`healthy`, `unhealthy` or `unknown`), the time since `checked_at` as `<age> ago` (`never` when absent), the check latency (`-` when absent), the marker `pool` for members of a `fastest` service's pool, the marker `local-up` when the daemon is running and `meta/peers` lists the backend in `disagreements`, the marker `voted` when the backend is voted, and the last failure `reason` when present.
 
@@ -175,27 +175,30 @@ All four other members are live.
 | .6, .9 | not voted (assigned .5, .8, .7) | not voted (assigned .7, .8, .5) | `live` (no `checks` part) |
 | .6, .7, .9 | not voted (no assigned checkers) | not voted (no assigned checkers) | `live` (no `checks` part) |
 
+#### Scenario: Members that leave services out
+
+- **WHEN** the daemon is running, the shown services are `api.svc.emfor` and `db.svc.emfor`, and `meta/peers` holds `{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true,"services_off":["db.svc.emfor","api.svc.emfor"]},{"addr":"10.0.0.7:5302","live":true,"services_off":[]},{"addr":"10.0.0.8:5302","live":true,"services_off":["api.svc.emfor"]}],"digest_mismatch":[{"service":"api.svc.emfor","member":"10.0.0.7:5302"}],"disagreements":[]}`
+- **THEN** right after the `peers: 3/3 live` line the output has `peers: 10.0.0.6:5302 leaves out api.svc.emfor db.svc.emfor` and then `peers: 10.0.0.8:5302 leaves out api.svc.emfor`, followed by `peers: check definition of api.svc.emfor differs at 10.0.0.7:5302`
+
+##### Example: leaves-out lines for member 10.0.0.6:5302
+
+| Member's `services_off` | Shown services | Daemon state | Line for 10.0.0.6:5302 |
+| --- | --- | --- | --- |
+| `["db.svc.emfor","api.svc.emfor"]` | all | running | `peers: 10.0.0.6:5302 leaves out api.svc.emfor db.svc.emfor` |
+| `["db.svc.emfor","api.svc.emfor"]` | `--service api.svc.emfor` | running | `peers: 10.0.0.6:5302 leaves out api.svc.emfor` |
+| `["db.svc.emfor"]` | `--service api.svc.emfor` | running | none |
+| `[]` or absent | all | running | none |
+| `["api.svc.emfor"]` | all | stopped | none (no `peers:` lines) |
+
 
 <!-- @trace
-source: emfor-peers-off-announce
-updated: 2026-11-13
+source: emfor-status-peers-off
+updated: 2026-11-14
 code:
-  - examples/emfor.toml
-  - crates/emfor-daemon/src/peers.rs
-  - docs/manual/03-configuration.md
-  - crates/emfor-daemon/src/status.rs
-  - crates/emfor-daemon/src/quorum.rs
-  - CHANGELOG.md
-  - docs/manual.zh_TW/03-configuration.md
   - docs/manual/08-operations.md
-  - docs/manual.zh_TW/01-concepts.md
-  - crates/emfor-daemon/src/supervisor.rs
-  - docs/manual/01-concepts.md
-  - crates/emfor-daemon/src/metrics.rs
+  - crates/emfor-daemon/src/status.rs
   - docs/manual.zh_TW/08-operations.md
-  - crates/emfor-daemon/src/writer.rs
-tests:
-  - crates/emfor-daemon/tests/peers.rs
+  - CHANGELOG.md
 -->
 
 ---
