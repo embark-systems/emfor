@@ -1,6 +1,6 @@
-# Checking redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP and MongoDB with emfor-check
+# Checking redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB and gRPC with emfor-check
 
-`emfor-check` is the plugin program that ships with emfor. One executable holds eleven plugins; its only argument picks which one runs:
+`emfor-check` is the plugin program that ships with emfor. One executable holds twelve plugins; its only argument picks which one runs:
 
 | Argument | Checks | Up when |
 | --- | --- | --- |
@@ -15,6 +15,7 @@
 | `smtp` | SMTP servers (Postfix, Exim, …) | the greeting is 220 and EHLO answers 250, over STARTTLS or TLS when asked for |
 | `amqp` | AMQP 0-9-1 brokers (RabbitMQ, …) | the login succeeds and the vhost opens (Connection.Open-Ok) |
 | `mongodb` | MongoDB 4.4 and later: replica set members, standalone servers, mongos | `hello` answers, the login succeeds when a user is set, and the role matches |
+| `grpc` | gRPC services with the standard health service (`grpc.health.v1`) | `Health/Check` answers `SERVING` |
 
 Each plugin runs as one long-lived child process of the emfor daemon, shared by every service that uses it (see [the plugin protocol](../plugins/protocol-v1.md)). Each check opens a new connection to the backend (for `dns` over UDP, a new socket) and closes it before answering, so a server that refuses new connections (for example because `max_connections` is reached) is reported as down.
 
@@ -58,7 +59,7 @@ The plugin name in `[plugins."<name>"]` is your choice; the argument after the p
 
 ### Options
 
-These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns`, `radius`, `sip`, `diameter`, `smtp`, `amqp` and `mongodb` plugins have their own, see [DNS](#dns), [RADIUS](#radius), [SIP](#sip), [Diameter](#diameter), [SMTP](#smtp), [AMQP](#amqp) and [MongoDB](#mongodb).
+These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns`, `radius`, `sip`, `diameter`, `smtp`, `amqp`, `mongodb` and `grpc` plugins have their own, see [DNS](#dns), [RADIUS](#radius), [SIP](#sip), [Diameter](#diameter), [SMTP](#smtp), [AMQP](#amqp), [MongoDB](#mongodb) and [gRPC](#grpc).
 
 | Key | Plugins | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
@@ -408,6 +409,42 @@ Another role is down with `role is <role>, want <role>`, for example `role is se
 - Only SCRAM-SHA-256 is supported: not SCRAM-SHA-1, x.509, LDAP or Kerberos. MongoDB before 4.4 (4.2.10) has no `hello` and is down with `query: CommandNotFound: …`. Replication lag (`max_lag`), connection strings (`mongodb://`) and SRV records are not supported.
 - MongoDB logs every connection and authentication. Use a longer `interval` if that is too much.
 
+### gRPC
+
+The `grpc` plugin opens a new HTTP/2 connection on every check and calls the standard health service: `POST /grpc.health.v1.Health/Check` with `HealthCheckRequest { service }`. It is up when the answer is `SERVING`. Without TLS it speaks HTTP/2 directly (prior knowledge, as gRPC servers expect); with `tls = true` it offers ALPN `h2`. `:authority` is `server_name`, or the backend's `ip:port`. The request carries `content-type: application/grpc`, `te: trailers` and `user-agent: emfor-check/<version>`, and nothing else: no token or other metadata.
+
+```toml
+[plugins."grpc"]
+command = ["/usr/local/libexec/emfor-check", "grpc"]
+
+[services."orders-api.svc.emfor"]
+check = "grpc"
+backends = ["10.0.15.1:50051", "10.0.15.2:50051"]
+check_options = { service = "orders.v1.Orders" }
+```
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `service` | string | `""`: the whole server | The service name to ask about, at most 256 bytes |
+| `tls` | boolean | `false` | TLS with ALPN `h2` |
+| `tls_verify`, `server_name`, `ca_file` | | | As for the other plugins, see [TLS](#tls); need `tls = true` |
+
+Any other key is an error. The server must register the health service: in Go `google.golang.org/grpc/health`, in Java `grpc-services`' `HealthStatusManager`, in Python `grpcio-health-checking`. The answer is judged in this order; the first match is the reason:
+
+| Answer | Result |
+| --- | --- |
+| An HTTP/2 error, or a server that does not speak HTTP/2 (an HTTP/1.1 server, plaintext to a TLS port) | down: `query: HTTP/2: <error>` |
+| A status other than 200 | down: `query: HTTP status <n>` |
+| A `content-type` that does not start with `application/grpc` | down: `query: not a gRPC response (content-type <value>)` |
+| A `grpc-status` other than 0 | down: `grpc: <code> <NAME>`, with `: <grpc-message>` when the server sends one, for example `grpc: 12 UNIMPLEMENTED` (no health service) or `grpc: 5 NOT_FOUND: unknown service` (`service` is not registered) |
+| No `grpc-status` | down: `query: no grpc-status` |
+| A compressed message, a message longer than 65536 bytes, none, or one that cannot be decoded | down: `query: compressed message`, `query: reply too large`, `query: no message`, `query: malformed message` |
+| `SERVING` | up |
+| `NOT_SERVING`, `UNKNOWN`, `SERVICE_UNKNOWN`, or another value | down: `status: NOT_SERVING`, `status: UNKNOWN`, `status: SERVICE_UNKNOWN`, `status: <n>` |
+
+- With `tls = true`, a server that completes the handshake without selecting `h2` is down with `tls: server did not select h2 (ALPN)`; one that refuses `h2` with a TLS alert is down with `tls: ` and the alert.
+- Client certificates (mTLS), tokens and other metadata, compressed messages, `Watch` and HTTP/1.1 upgrade (`h2c` with `Upgrade:`) are not supported. A service that needs a token for the health service cannot be checked.
+
 ## Reading results
 
 | Reason starts with | Result | Meaning |
@@ -428,4 +465,4 @@ Another role is down with `role is <role>, want <role>`, for example `role is se
 
 ## What is tested
 
-`tests/plugins/run.sh` checks all eleven plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary, a replica that replicates from it, a replica whose primary is unreachable, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; Kamailio 5.6.3 over UDP, TCP and TLS; freeDiameter 1.2.1 over TCP and over TLS with a client certificate, with an ACL that knows one peer; Postfix 3.7 with STARTTLS, with TLS on port 465 and without TLS; RabbitMQ 3.10 over plaintext and TLS, with a vhost the user may open and one it may not; and MongoDB 8.0 with a two-member replica set and a server with access control over plaintext and TLS. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, the `sip` plugin against Kamailio only, the `diameter` plugin against freeDiameter only, the `smtp` plugin against Postfix only, the `amqp` plugin against RabbitMQ only, and the `mongodb` plugin against MongoDB 8.0 only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it (the replica check reads MySQL's `Replica_*` and `Seconds_Behind_Source` column names too, but only MariaDB's `Slave_*` names are tested). Like the rest of emfor, the plugins have not been tested on FreeBSD yet.
+`tests/plugins/run.sh` checks all twelve plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary, a replica that replicates from it, a replica whose primary is unreachable, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; Kamailio 5.6.3 over UDP, TCP and TLS; freeDiameter 1.2.1 over TCP and over TLS with a client certificate, with an ACL that knows one peer; Postfix 3.7 with STARTTLS, with TLS on port 465 and without TLS; RabbitMQ 3.10 over plaintext and TLS, with a vhost the user may open and one it may not; MongoDB 8.0 with a two-member replica set and a server with access control over plaintext and TLS; and a gRPC server written with Python grpcio 1.51 over plaintext and TLS, with and without a health service. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, the `sip` plugin against Kamailio only, the `diameter` plugin against freeDiameter only, the `smtp` plugin against Postfix only, the `amqp` plugin against RabbitMQ only, the `mongodb` plugin against MongoDB 8.0 only, and the `grpc` plugin against grpcio (Python) only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it (the replica check reads MySQL's `Replica_*` and `Seconds_Behind_Source` column names too, but only MariaDB's `Slave_*` names are tested). Like the rest of emfor, the plugins have not been tested on FreeBSD yet.

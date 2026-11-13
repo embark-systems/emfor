@@ -1,6 +1,7 @@
 # Builds emfor, emfor-check and its live tests, and a Debian image with
 # redis, MariaDB, PostgreSQL, OpenLDAP, unbound, FreeRADIUS, Kamailio,
-# freeDiameter, Postfix, RabbitMQ and MongoDB, for run.sh.
+# freeDiameter, Postfix, RabbitMQ, MongoDB and a Python gRPC server, for
+# run.sh.
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
@@ -20,7 +21,7 @@ FROM debian:bookworm-slim
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends redis-server redis-tools mariadb-server mariadb-client \
     postgresql postgresql-client openssl dnsutils ca-certificates procps slapd ldap-utils unbound freeradius kamailio kamailio-tls-modules \
-    freediameterd freediameter-extensions postfix rabbitmq-server \
+    freediameterd freediameter-extensions postfix rabbitmq-server python3-grpcio \
  && rm -rf /var/lib/apt/lists/*
 # MongoDB is not in Debian: use MongoDB's own repository. It has no arm64
 # server package for Debian, so arm64 takes the Ubuntu 22.04 one.
@@ -38,5 +39,6 @@ RUN apt-get update \
 COPY --from=build /src/target/debug/emfor /usr/local/bin/emfor
 COPY --from=build /src/target/debug/emfor-check /src/target/debug/emfor-check
 COPY --from=build /src/live-test /usr/local/bin/emfor-check-live-test
+COPY tests/plugins/grpc_server.py /grpc_server.py
 COPY tests/plugins/inside.sh /inside.sh
 ENTRYPOINT ["/bin/sh", "/inside.sh"]

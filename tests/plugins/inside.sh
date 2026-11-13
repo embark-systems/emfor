@@ -407,6 +407,17 @@ done
 # The localhost exception allows creating the first user.
 mongosh --quiet --port 27020 --eval 'db.getSiblingDB("admin").createUser({user: "emfor", pwd: "s3cret", roles: []}).ok' >/dev/null
 
+step "grpc"
+# 50051: health service, plaintext; 50052: the same over TLS; 50053: no
+# health service. See grpc_server.py.
+python3 /grpc_server.py "$D/server.crt" "$D/server.key" >"$D/grpc.out" 2>&1 &
+i=0
+# 50051 to 50053 are C383 to C385 in /proc/net; grpcio listens on IPv6
+# sockets with IPv4-mapped addresses, so they are in tcp6.
+until [ "$(cat /proc/net/tcp /proc/net/tcp6 | grep -cE ':(C383|C384|C385) 0+:0000 0A')" = 3 ]; do
+    i=$((i + 1)); [ $i -lt 60 ] || { cat "$D/grpc.out"; fail "grpc server is not listening"; }; sleep 0.5
+done
+
 step "emfor-check against the servers"
 EMFOR_LIVE_DIR="$D" emfor-check-live-test --ignored --test-threads=1
 

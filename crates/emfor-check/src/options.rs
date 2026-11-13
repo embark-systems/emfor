@@ -112,7 +112,8 @@ fn parse_with(
         | Kind::Diameter
         | Kind::Smtp
         | Kind::Amqp
-        | Kind::Mongodb => &[],
+        | Kind::Mongodb
+        | Kind::Grpc => &[],
         Kind::Mysql => &[("user", &user)],
         Kind::Pgsql => &[("user", &user), ("database", &database)],
     };
@@ -174,7 +175,8 @@ fn parse_with(
                     | Kind::Diameter
                     | Kind::Smtp
                     | Kind::Amqp
-                    | Kind::Mongodb => "unknown key",
+                    | Kind::Mongodb
+                    | Kind::Grpc => "unknown key",
                 };
                 errors.push(OptionError::new("role", message));
             }

@@ -1,11 +1,12 @@
 //! The plugins behind the `emfor-check` executable: the database plugins
 //! redis, mysql, pgsql and ldap, and the network plugins dns, radius, sip,
-//! diameter, smtp, amqp and mongodb.
+//! diameter, smtp, amqp, mongodb and grpc.
 
 mod amqp;
 mod ber;
 mod diameter;
 mod dns;
+mod grpc;
 mod ldap;
 mod mongodb;
 mod mysql;
@@ -35,6 +36,7 @@ pub enum Kind {
     Smtp,
     Amqp,
     Mongodb,
+    Grpc,
 }
 
 impl Kind {
@@ -52,6 +54,7 @@ impl Kind {
             "smtp" => Some(Kind::Smtp),
             "amqp" => Some(Kind::Amqp),
             "mongodb" => Some(Kind::Mongodb),
+            "grpc" => Some(Kind::Grpc),
             _ => None,
         }
     }
@@ -70,6 +73,7 @@ impl Kind {
             Kind::Smtp => "smtp",
             Kind::Amqp => "amqp",
             Kind::Mongodb => "mongodb",
+            Kind::Grpc => "grpc",
         }
     }
 }
@@ -105,6 +109,7 @@ impl Plugin for Service {
             Kind::Smtp => smtp::parse(options, true).map(|_| ()),
             Kind::Amqp => amqp::parse(options, true).map(|_| ()),
             Kind::Mongodb => mongodb::parse(options, true).map(|_| ()),
+            Kind::Grpc => grpc::parse(options, true).map(|_| ()),
             kind => options::parse(kind, options).map(|_| ()),
         };
         result.err().unwrap_or_default()
@@ -143,6 +148,10 @@ impl Plugin for Service {
                 Ok(settings) => mongodb::check(&req, &settings).await,
                 Err(errors) => options_error(errors),
             },
+            Kind::Grpc => match grpc::parse(&req.options, false) {
+                Ok(settings) => grpc::check(&req, &settings).await,
+                Err(errors) => options_error(errors),
+            },
             kind => check_database(kind, &req).await,
         }
     }
@@ -167,7 +176,8 @@ async fn check_database(kind: Kind, req: &CheckRequest) -> CheckOutcome {
         | Kind::Diameter
         | Kind::Smtp
         | Kind::Amqp
-        | Kind::Mongodb => CheckOutcome::Error(format!(
+        | Kind::Mongodb
+        | Kind::Grpc => CheckOutcome::Error(format!(
             "internal: {} check sent to the database plugins",
             kind.name()
         )),

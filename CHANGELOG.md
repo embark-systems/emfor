@@ -38,6 +38,12 @@
   primary, a standalone server or mongos) or `role = "secondary"`, so
   `balance = "failover"` follows the replica set's primary. See
   [docs/deploy/plugins.md](docs/deploy/plugins.md#mongodb).
+- `emfor-check grpc` checks gRPC services with the standard health
+  service: `grpc.health.v1.Health/Check` over HTTP/2, plaintext or TLS
+  with ALPN `h2`, is up when it answers `SERVING`. It is down with
+  `status: NOT_SERVING`, `grpc: 12 UNIMPLEMENTED` (no health service) or
+  `grpc: 5 NOT_FOUND: …` (an unknown `service`). See
+  [docs/deploy/plugins.md](docs/deploy/plugins.md#grpc).
 
 ## 0.3.0 — 2026-11-14
 

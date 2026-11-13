@@ -171,8 +171,8 @@ backends = [
 # speaking line-delimited JSON on stdin/stdout. See
 # docs/plugins/protocol-v1.md. The plugin validates check_options itself.
 # emfor-check is the plugin that ships with emfor; its argument picks
-# redis, mysql, pgsql, ldap, dns, radius, sip, diameter, smtp, amqp
-# or mongodb. See docs/deploy/plugins.md for every option.
+# redis, mysql, pgsql, ldap, dns, radius, sip, diameter, smtp, amqp,
+# mongodb or grpc. See docs/deploy/plugins.md for every option.
 # Commented out because emfor-check is not installed on a fresh host.
 #
 # [plugins."redis"]
@@ -298,3 +298,11 @@ backends = [
 # role = "primary"                          # primary, standalone or mongos
 # user = "emfor"                            # optional: hello alone needs no login
 # password_file = "/etc/emfor/mongo.pass"
+#
+# [plugins."grpc"]
+# command = ["/usr/local/libexec/emfor-check", "grpc"]
+#
+# [services."orders-api.svc.emfor"]
+# check = "grpc"
+# backends = ["10.0.15.1:50051", "10.0.15.2:50051"]
+# check_options = { service = "orders.v1.Orders" }  # grpc.health.v1; "" is the whole server

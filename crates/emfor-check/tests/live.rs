@@ -1,6 +1,6 @@
 //! `emfor-check` against real redis, MariaDB, PostgreSQL, OpenLDAP,
-//! unbound, FreeRADIUS, Kamailio, freeDiameter, Postfix, RabbitMQ and
-//! MongoDB servers.
+//! unbound, FreeRADIUS, Kamailio, freeDiameter, Postfix, RabbitMQ, MongoDB
+//! and gRPC (Python grpcio) servers.
 //!
 //! Ignored by default: these tests need the servers that
 //! tests/plugins/inside.sh starts in the `emfor-plugins-test` container
@@ -32,10 +32,13 @@
 //! | 27017 | MongoDB primary of replica set `rs0`, no login |
 //! | 27018 | MongoDB secondary of `rs0` |
 //! | 27020 | MongoDB standalone with `--auth`, user `emfor` in `admin`, plaintext or TLS |
+//! | 50051 | gRPC health service: `""` SERVING, `down` NOT_SERVING, others NOT_FOUND |
+//! | 50052 | the same over TLS |
+//! | 50053 | gRPC without a health service |
 //!
 //! Server certificates are for `db.test`, signed by `$EMFOR_LIVE_DIR/ca.pem`;
 //! `$EMFOR_LIVE_DIR/good.pass` holds the password, `bad.pass` a wrong one.
-//! Nothing listens on 6399, 3399, 5499, 3899, 5399, 1899, 5099, 2599, 5699 and 27099 (TCP and
+//! Nothing listens on 6399, 3399, 5499, 3899, 5399, 1899, 5099, 2599, 5699, 27099 and 50099 (TCP and
 //! UDP).
 //! `radius.secret`, `wrong.secret` and `probe.pass` hold the RADIUS secret,
 //! another secret and the password of `probe`. The LDAP administrator is
@@ -622,4 +625,25 @@ fn mongodb_live() {
         "tls: ",
     );
     down(p.check(27099, json!({})), "connect: ");
+}
+
+#[test]
+#[ignore = "needs the emfor-plugins-test container"]
+fn grpc_live() {
+    let mut p = Plugin::start("grpc");
+    up(p.check(50051, json!({})));
+    down(
+        p.check(50051, json!({"service": "down"})),
+        "status: NOT_SERVING",
+    );
+    down(
+        p.check(50051, json!({"service": "nope"})),
+        "grpc: 5 NOT_FOUND: unknown service",
+    );
+    down(p.check(50053, json!({})), "grpc: 12 UNIMPLEMENTED");
+    up(p.check(50052, tls("db.test", true)));
+    down(p.check(50052, tls("nope.test", true)), "tls: ");
+    down(p.check(50051, tls("db.test", true)), "tls: ");
+    down(p.check(50052, json!({})), "query: HTTP/2: ");
+    down(p.check(50099, json!({})), "connect: ");
 }
