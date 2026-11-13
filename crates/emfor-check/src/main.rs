@@ -1,8 +1,8 @@
 //! `emfor-check`: emfor checker plugins for redis, MySQL, PostgreSQL,
-//! LDAP, DNS, RADIUS, SIP, Diameter and SMTP.
+//! LDAP, DNS, RADIUS, SIP, Diameter, SMTP and AMQP.
 //!
 //! Usage:
-//! `emfor-check redis|mysql|pgsql|ldap|dns|radius|sip|diameter|smtp`.
+//! `emfor-check redis|mysql|pgsql|ldap|dns|radius|sip|diameter|smtp|amqp`.
 //! The argument picks the plugin; the process then speaks plugin protocol 1
 //! on stdin and stdout (docs/plugins/protocol-v1.md). See
 //! docs/deploy/plugins.md.
@@ -18,7 +18,7 @@ fn main() -> ExitCode {
         _ => None,
     };
     let Some(kind) = kind else {
-        eprintln!("usage: emfor-check redis|mysql|pgsql|ldap|dns|radius|sip|diameter|smtp");
+        eprintln!("usage: emfor-check redis|mysql|pgsql|ldap|dns|radius|sip|diameter|smtp|amqp");
         return ExitCode::from(2);
     };
     // The drivers build their own rustls configurations from the process

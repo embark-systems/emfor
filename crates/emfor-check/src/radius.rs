@@ -8,11 +8,10 @@ use std::path::{Path, PathBuf};
 use emfor_plugin::{CheckOutcome, CheckRequest, OptionError, Options};
 use hmac::{Hmac, KeyInit, Mac};
 use md5::{Digest, Md5};
-use serde_json::Value;
 
 use crate::net;
 use crate::options::{
-    boolean, check_file, check_password_file, read_option_file, read_password, string, trim_newline,
+    boolean, check_password_file, file, read_option_file, read_password, string, trim_newline,
 };
 
 const KEYS: &[&str] = &[
@@ -188,30 +187,6 @@ pub fn parse(options: &Options, read_files: bool) -> Result<Settings, Vec<Option
             require_message_authenticator,
         }),
         _ => Err(errors),
-    }
-}
-
-/// A file option, checked with `check_content` when `read_files`.
-fn file(
-    options: &Options,
-    key: &str,
-    read_files: bool,
-    check_content: fn(&Path) -> Result<(), String>,
-    errors: &mut Vec<OptionError>,
-) -> Option<PathBuf> {
-    match options.get(key) {
-        None => None,
-        Some(Value::String(p)) => match check_file(Path::new(p), read_files, check_content) {
-            Ok(()) => Some(PathBuf::from(p)),
-            Err(message) => {
-                errors.push(OptionError::new(key, message));
-                None
-            }
-        },
-        Some(_) => {
-            errors.push(OptionError::new(key, "must be a string"));
-            None
-        }
     }
 }
 
@@ -460,7 +435,7 @@ fn judge(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::net::SocketAddr;
     use std::time::Duration;
     use tokio::net::UdpSocket;

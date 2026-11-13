@@ -171,8 +171,8 @@ backends = [
 # speaking line-delimited JSON on stdin/stdout. See
 # docs/plugins/protocol-v1.md. The plugin validates check_options itself.
 # emfor-check is the plugin that ships with emfor; its argument picks
-# redis, mysql, pgsql, ldap, dns, radius, sip, diameter or
-# smtp. See docs/deploy/plugins.md for every option.
+# redis, mysql, pgsql, ldap, dns, radius, sip, diameter, smtp or
+# amqp. See docs/deploy/plugins.md for every option.
 # Commented out because emfor-check is not installed on a fresh host.
 #
 # [plugins."redis"]
@@ -273,3 +273,15 @@ backends = [
 # [services."mx.svc.emfor".check_options]
 # starttls = true                           # or tls = true on port 465
 # server_name = "mx.example.org"
+#
+# [plugins."amqp"]
+# command = ["/usr/local/libexec/emfor-check", "amqp"]
+#
+# [services."mq.svc.emfor"]
+# check = "amqp"
+# backends = ["10.0.13.1:5672", "10.0.13.2:5672"]
+#
+# [services."mq.svc.emfor".check_options]
+# user = "emfor"
+# password_file = "/etc/emfor/amqp.pass"
+# vhost = "orders"                          # default "/"

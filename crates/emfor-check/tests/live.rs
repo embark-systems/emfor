@@ -1,5 +1,6 @@
 //! `emfor-check` against real redis, MariaDB, PostgreSQL, OpenLDAP,
-//! unbound, FreeRADIUS, Kamailio, freeDiameter and Postfix servers.
+//! unbound, FreeRADIUS, Kamailio, freeDiameter, Postfix and RabbitMQ
+//! servers.
 //!
 //! Ignored by default: these tests need the servers that
 //! tests/plugins/inside.sh starts in the `emfor-plugins-test` container
@@ -26,10 +27,12 @@
 //! | 2525 | Postfix, plaintext with STARTTLS |
 //! | 4465 | the same Postfix, TLS from the start |
 //! | 2526 | the same Postfix without STARTTLS |
+//! | 5672 | RabbitMQ, plaintext, user `emfor` with vhost `app` (no rights on vhost `locked`) |
+//! | 5671 | the same RabbitMQ, TLS |
 //!
 //! Server certificates are for `db.test`, signed by `$EMFOR_LIVE_DIR/ca.pem`;
 //! `$EMFOR_LIVE_DIR/good.pass` holds the password, `bad.pass` a wrong one.
-//! Nothing listens on 6399, 3399, 5499, 3899, 5399, 1899, 5099 and 2599 (TCP and
+//! Nothing listens on 6399, 3399, 5499, 3899, 5399, 1899, 5099, 2599 and 5699 (TCP and
 //! UDP).
 //! `radius.secret`, `wrong.secret` and `probe.pass` hold the RADIUS secret,
 //! another secret and the password of `probe`. The LDAP administrator is
@@ -556,4 +559,33 @@ fn smtp_live() {
     down(p.check(2525, implicit), "tls: ");
     down(p.check(2526, starttls), "tls: STARTTLS not offered");
     down(p.check(2599, json!({})), "connect: ");
+}
+
+#[test]
+#[ignore = "needs the emfor-plugins-test container"]
+fn amqp_live() {
+    let mut p = Plugin::start("amqp");
+    let login = |pass: &str, extra: Value| {
+        let mut o = opts("emfor", pass, extra);
+        if o.get("vhost").is_none() {
+            o["vhost"] = json!("app");
+        }
+        o
+    };
+    up(p.check(5672, login("good.pass", json!({}))));
+    down(p.check(5672, login("bad.pass", json!({}))), "auth: 403 ");
+    down(
+        p.check(5672, login("good.pass", json!({"vhost": "locked"}))),
+        "vhost: 530 ",
+    );
+    down(
+        p.check(5672, login("good.pass", json!({"vhost": "nope"}))),
+        "vhost: 530 ",
+    );
+    up(p.check(5671, login("good.pass", tls("db.test", true))));
+    down(
+        p.check(5672, login("good.pass", tls("db.test", true))),
+        "tls: ",
+    );
+    down(p.check(5699, login("good.pass", json!({}))), "connect: ");
 }

@@ -362,6 +362,29 @@ until [ "$(grep -cE ':(09DD|1171|09DE) 00000000:0000 0A' /proc/net/tcp)" = 3 ]; 
     i=$((i + 1)); [ $i -lt 60 ] || { tail -20 /var/log/postfix.log; fail "postfix is not listening"; }; sleep 0.5
 done
 
+step "rabbitmq"
+# 5672: plaintext; 5671: TLS. User emfor may use vhost app, not locked.
+cat > /etc/rabbitmq/rabbitmq.conf <<CONF
+listeners.tcp.default = 127.0.0.1:5672
+listeners.ssl.default = 127.0.0.1:5671
+ssl_options.cacertfile = $D/ca.pem
+ssl_options.certfile = $D/server.crt
+ssl_options.keyfile = $D/server.key
+ssl_options.verify = verify_none
+ssl_options.fail_if_no_peer_cert = false
+CONF
+runuser -u rabbitmq -- rabbitmq-server >"$D/rabbitmq.out" 2>&1 &
+rmq() { runuser -u rabbitmq -- rabbitmqctl -q "$@"; }
+i=0
+# await_startup fails at once until the node has registered, so retry it.
+until rmq await_startup --timeout 5 >/dev/null 2>&1; do
+    i=$((i + 1)); [ $i -lt 60 ] || { tail -20 "$D/rabbitmq.out"; fail "rabbitmq did not start"; }; sleep 1
+done
+rmq add_user emfor s3cret >/dev/null
+rmq add_vhost app
+rmq add_vhost locked
+rmq set_permissions -p app emfor '.*' '.*' '.*'
+
 step "emfor-check against the servers"
 EMFOR_LIVE_DIR="$D" emfor-check-live-test --ignored --test-threads=1
 

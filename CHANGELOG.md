@@ -26,6 +26,12 @@
   port 465); then it sends `QUIT`. It never logs in or sends mail. It is
   down with `greeting: `, `ehlo: ` or `tls: STARTTLS not offered`. See
   [docs/deploy/plugins.md](docs/deploy/plugins.md#smtp).
+- `emfor-check amqp` checks AMQP 0-9-1 brokers such as RabbitMQ: a
+  `PLAIN` login and Connection.Open of `vhost` on a new connection, over
+  plaintext or TLS, then a normal Connection.Close. It is down with
+  `auth: 403 ACCESS_REFUSED - …` for a rejected login and
+  `vhost: 530 NOT_ALLOWED - …` for a vhost the user cannot open. See
+  [docs/deploy/plugins.md](docs/deploy/plugins.md#amqp).
 
 ## 0.3.0 — 2026-11-14
 

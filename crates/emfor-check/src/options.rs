@@ -110,7 +110,8 @@ fn parse_with(
         | Kind::Radius
         | Kind::Sip
         | Kind::Diameter
-        | Kind::Smtp => &[],
+        | Kind::Smtp
+        | Kind::Amqp => &[],
         Kind::Mysql => &[("user", &user)],
         Kind::Pgsql => &[("user", &user), ("database", &database)],
     };
@@ -170,7 +171,8 @@ fn parse_with(
                     | Kind::Radius
                     | Kind::Sip
                     | Kind::Diameter
-                    | Kind::Smtp => "unknown key",
+                    | Kind::Smtp
+                    | Kind::Amqp => "unknown key",
                 };
                 errors.push(OptionError::new("role", message));
             }
@@ -325,6 +327,30 @@ pub(crate) fn tls_settings(
         server_name,
         ca_file,
     })
+}
+
+/// A file option, checked with `check_content` when `read_files`.
+pub(crate) fn file(
+    options: &Options,
+    key: &str,
+    read_files: bool,
+    check_content: fn(&Path) -> Result<(), String>,
+    errors: &mut Vec<OptionError>,
+) -> Option<PathBuf> {
+    match options.get(key) {
+        None => None,
+        Some(Value::String(p)) => match check_file(Path::new(p), read_files, check_content) {
+            Ok(()) => Some(PathBuf::from(p)),
+            Err(message) => {
+                errors.push(OptionError::new(key, message));
+                None
+            }
+        },
+        Some(_) => {
+            errors.push(OptionError::new(key, "must be a string"));
+            None
+        }
+    }
 }
 
 /// Check a file option: always that the path is absolute, and with

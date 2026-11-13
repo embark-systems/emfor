@@ -1,6 +1,6 @@
-# Checking redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter and SMTP with emfor-check
+# Checking redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP and AMQP with emfor-check
 
-`emfor-check` is the plugin program that ships with emfor. One executable holds nine plugins; its only argument picks which one runs:
+`emfor-check` is the plugin program that ships with emfor. One executable holds ten plugins; its only argument picks which one runs:
 
 | Argument | Checks | Up when |
 | --- | --- | --- |
@@ -13,6 +13,7 @@
 | `sip` | SIP proxies, registrars and SBCs (Kamailio, OpenSIPS, Asterisk, …) | an OPTIONS request gets a final response with an expected status code |
 | `diameter` | Diameter nodes: HSS, PCRF, OCS, DRA (freeDiameter, …) | the capabilities exchange (CER / CEA) and a device watchdog (DWR / DWA) succeed |
 | `smtp` | SMTP servers (Postfix, Exim, …) | the greeting is 220 and EHLO answers 250, over STARTTLS or TLS when asked for |
+| `amqp` | AMQP 0-9-1 brokers (RabbitMQ, …) | the login succeeds and the vhost opens (Connection.Open-Ok) |
 
 Each plugin runs as one long-lived child process of the emfor daemon, shared by every service that uses it (see [the plugin protocol](../plugins/protocol-v1.md)). Each check opens a new connection to the backend (for `dns` over UDP, a new socket) and closes it before answering, so a server that refuses new connections (for example because `max_connections` is reached) is reported as down.
 
@@ -56,7 +57,7 @@ The plugin name in `[plugins."<name>"]` is your choice; the argument after the p
 
 ### Options
 
-These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns`, `radius`, `sip`, `diameter` and `smtp` plugins have their own, see [DNS](#dns), [RADIUS](#radius), [SIP](#sip), [Diameter](#diameter) and [SMTP](#smtp).
+These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns`, `radius`, `sip`, `diameter`, `smtp` and `amqp` plugins have their own, see [DNS](#dns), [RADIUS](#radius), [SIP](#sip), [Diameter](#diameter), [SMTP](#smtp) and [AMQP](#amqp).
 
 | Key | Plugins | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
@@ -330,6 +331,37 @@ Any other key is an error.
 - A reply that is not SMTP, has a line longer than 2048 bytes, or is longer than 65536 bytes in all is down with `query: `; so is a server that closes the connection before answering.
 - Mail servers log every connection, and some count one without mail against the client (Postfix's `anvil`, `postscreen`, fail2ban rules). Allow the emfor hosts there, and use an `interval` of 10 seconds or more.
 
+### AMQP
+
+The `amqp` plugin opens a new TCP connection (or TLS) on every check and goes through the AMQP 0-9-1 connection handshake: protocol header, Connection.Start, a `PLAIN` login in Start-Ok, Tune, and Open for `vhost`. It is up when the broker answers Connection.Open-Ok. It then sends Connection.Close (reply code 200), waits at most 200 ms for Close-Ok and closes the connection; this happens after the result is reported. It opens no channel and declares, reads or publishes nothing.
+
+```toml
+[plugins."amqp"]
+command = ["/usr/local/libexec/emfor-check", "amqp"]
+
+[services."mq.svc.emfor"]
+check = "amqp"
+backends = ["10.0.13.1:5672", "10.0.13.2:5672"]
+check_options = { user = "emfor", password_file = "/etc/emfor/amqp.pass", vhost = "orders" }
+```
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `user` | string | required | The user, 1 to 255 bytes |
+| `password_file` | absolute path | required | As for the database plugins, see [Passwords](#passwords) |
+| `vhost` | string | `/` | The virtual host to open, 1 to 255 bytes |
+| `tls` | boolean | `false` | TLS from the start of the connection (usually port 5671) |
+| `tls_verify`, `server_name`, `ca_file` | | | As for the other plugins, see [TLS](#tls); need `tls = true` |
+
+Any other key is an error. Only the `PLAIN` mechanism is supported (not `EXTERNAL` with a client certificate, and not `AMQPLAIN`); AMQP 1.0 brokers (ActiveMQ Artemis, Azure Service Bus, …) are not.
+
+- Give the check its own user with no rights except on the vhost it opens: with RabbitMQ, `rabbitmqctl add_user emfor <password>` and `rabbitmqctl set_permissions -p <vhost> emfor '^$' '^$' '^$'`. Opening a vhost needs permissions on it, even empty ones.
+- The client properties announce `authentication_failure_close`, so a broker that rejects the login says why: `auth: 403 ACCESS_REFUSED - Login was refused using authentication mechanism PLAIN …`. A broker that closes the connection instead is down with `auth: connection closed after login`. A broker that does not offer `PLAIN` is down with `auth: server does not offer PLAIN`.
+- A vhost that does not exist, or that the user has no permissions on, is down with `vhost: 530 NOT_ALLOWED - …`.
+- Any other Connection.Close from the broker is down with `query: <code> <text>`. A broker that answers with another protocol version is down with `query: server speaks AMQP <a>-<b>-<c>`; a frame larger than 131072 bytes or not ending in `0xCE` is down with `query: frame too large` or `query: malformed frame`, and a method out of order with `query: unexpected method <class>.<method>`.
+- A RabbitMQ memory or disk alarm blocks publishers, but the broker still accepts connections, so the check stays up during an alarm.
+- RabbitMQ logs every connection and its close. Use a longer `interval` if that is too much.
+
 ## Reading results
 
 | Reason starts with | Result | Meaning |
@@ -345,8 +377,9 @@ Any other key is an error.
 | `status: ` | down | `sip`: a final status code outside `expect_status`, see [SIP](#sip) |
 | `cea: `, `dwa: ` | down | `diameter`: a capabilities exchange or watchdog answer with a failed Result-Code, or the node closed the connection, see [Diameter](#diameter) |
 | `greeting: `, `ehlo: ` | down | `smtp`: a greeting other than 220 or an `EHLO` answer other than 250, see [SMTP](#smtp) |
+| `vhost: ` | down | `amqp`: the broker refused to open the vhost, see [AMQP](#amqp) |
 | `password_file: `, `secret_file: `, `ca_file: `, `tls_cert_file: `, `tls_key_file: ` | error | The file could not be read during the check |
 
 ## What is tested
 
-`tests/plugins/run.sh` checks all nine plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary, a replica that replicates from it, a replica whose primary is unreachable, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; Kamailio 5.6.3 over UDP, TCP and TLS; freeDiameter 1.2.1 over TCP and over TLS with a client certificate, with an ACL that knows one peer; and Postfix 3.7 with STARTTLS, with TLS on port 465 and without TLS. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, the `sip` plugin against Kamailio only, the `diameter` plugin against freeDiameter only, and the `smtp` plugin against Postfix only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it (the replica check reads MySQL's `Replica_*` and `Seconds_Behind_Source` column names too, but only MariaDB's `Slave_*` names are tested). Like the rest of emfor, the plugins have not been tested on FreeBSD yet.
+`tests/plugins/run.sh` checks all ten plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary, a replica that replicates from it, a replica whose primary is unreachable, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; Kamailio 5.6.3 over UDP, TCP and TLS; freeDiameter 1.2.1 over TCP and over TLS with a client certificate, with an ACL that knows one peer; Postfix 3.7 with STARTTLS, with TLS on port 465 and without TLS; and RabbitMQ 3.10 over plaintext and TLS, with a vhost the user may open and one it may not. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, the `sip` plugin against Kamailio only, the `diameter` plugin against freeDiameter only, the `smtp` plugin against Postfix only, and the `amqp` plugin against RabbitMQ only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it (the replica check reads MySQL's `Replica_*` and `Seconds_Behind_Source` column names too, but only MariaDB's `Slave_*` names are tested). Like the rest of emfor, the plugins have not been tested on FreeBSD yet.
