@@ -616,3 +616,50 @@ fn sigterm_while_starting_stops_cleanly() {
     assert!(log.contains("shutting down"), "{log}");
     wait_for("plugin stopped", || pgrep(&mark).is_empty());
 }
+
+/// Spec "Plugin output line limit", oversized answer line.
+#[test]
+fn oversized_stdout_line_restarts_the_plugin() {
+    let mark = marker("long-stdout");
+    // One check, then 5s: an `error` keeps the normal interval, so nothing
+    // overwrites the first check's reason while the plugin restarts (1s).
+    let slow = "interval = \"5s\"\ntimeout = \"1s\"\nrise = 2\nfall = 2\n";
+    let d = Daemon::start(&format!(
+        "{}{}",
+        plugin_decl("p", &[], &mark),
+        plugin_service("s.svc.emfor", "p", "long_stdout", slow)
+    ));
+    wait_for("oversized line logged", || {
+        d.log()
+            .contains("plugin p wrote a line longer than 65536 bytes")
+    });
+    wait_for("plugin restarted", || d.started_pids("p").len() >= 2);
+    let r = Reader::open(&d.store());
+    let b = r.backend("s.svc.emfor").unwrap();
+    assert_eq!(b.reason.as_deref(), Some("plugin exited"), "{}", d.log());
+    assert_eq!(b.state, HealthState::Unknown);
+    let (code, log) = d.stop();
+    assert_eq!(code, 0, "{log}");
+}
+
+/// Spec "Plugin output line limit", oversized stderr line.
+#[test]
+fn oversized_stderr_line_is_cut() {
+    let mark = marker("long-stderr");
+    let d = Daemon::start(&format!(
+        "{}{}",
+        plugin_decl("p", &[], &mark),
+        plugin_service("s.svc.emfor", "p", "long_stderr", FAST)
+    ));
+    let r = Reader::open(&d.store());
+    wait_for("backend healthy", || {
+        r.backend("s.svc.emfor")
+            .is_some_and(|b| b.state == HealthState::Healthy)
+    });
+    let log = d.log();
+    assert!(log.contains(&"y".repeat(1000)), "stderr line logged");
+    assert!(!log.contains(&"y".repeat(1001)), "cut for the log");
+    assert_eq!(d.started_pids("p").len(), 1, "{log}");
+    let (code, _) = d.stop();
+    assert_eq!(code, 0);
+}

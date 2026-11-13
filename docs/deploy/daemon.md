@@ -71,6 +71,16 @@ Checked with systemd 257 on Debian 13 (arm64), in a container running systemd as
 - `systemctl restart` and `stop` work; after `kill -KILL` the daemon is restarted, and when the metrics port is taken it stops with status 1 and is not restarted.
 - The journal holds plain log lines: the daemon colors its log only when stderr is a terminal and `NO_COLOR` is not set.
 
+## The store and the disk
+
+The daemon commits to the store at least once a second (the heartbeat) and on every state change. By default (`[store] sync = false`) a commit does not wait for the disk (LMDB's `MDB_NOSYNC`): when the disk stalls, for example during an I/O burst, a RAID rebuild or a throttled cloud volume, a commit that waited could leave the heartbeat older than the clients' `max_staleness` (3 seconds by default), and every application on the host would treat every backend as unknown.
+
+Nothing in the store needs to survive a crash of the host. The daemon rewrites every `svc/` record when it starts, and the applications that read the store stop with the host anyway. The one thing kept across restarts is the state history of `emfor status --history`.
+
+A power loss can leave a store that was not flushed damaged. When the daemon starts and finds the store damaged (LMDB reports `MDB_CORRUPTED`, `MDB_PAGE_NOTFOUND` or `MDB_INVALID`), it logs a warning, moves the file to `<path>.corrupt` (replacing an older one), deletes `<path>-lock`, and starts with a new store; the state history is lost. `MDB_INVALID` is also what a file that is not an LMDB store gives, so a `[store] path` pointing at another file is moved aside, not deleted.
+
+Set `sync = true` to flush every commit before it completes, as emfor did before this setting existed. Commits run on a separate thread either way, so a slow disk does not hold up DNS answers, `/metrics` or the checks.
+
 ## emfor status
 
 `emfor status` shows what the running daemon has published in the state store. It reads only the `[store]` table of the config (so it still works while the rest of the file has an error), opens the store read-only like a client, and never changes it.

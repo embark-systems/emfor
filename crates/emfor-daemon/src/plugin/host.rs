@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -25,6 +25,9 @@ const BACKOFF_START: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 /// Uptime after which the restart delay goes back to [`BACKOFF_START`].
 const BACKOFF_RESET_AFTER: Duration = Duration::from_secs(30);
+/// Longest line read from a plugin's stdout or stderr, in bytes; no more
+/// than this is buffered for one line.
+pub const LINE_LIMIT: usize = 65536;
 /// Longest stderr line logged, in characters.
 const STDERR_LINE_CHARS: usize = 1000;
 /// How long to keep routing answers the plugin wrote just before it exited.
@@ -253,8 +256,18 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
 
     let log_name = name.to_string();
     tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
+        let mut stderr = BufReader::new(stderr);
+        loop {
+            let line = match read_line_limited(&mut stderr, LINE_LIMIT).await {
+                Ok(LineRead::Line(line)) => line,
+                Ok(LineRead::TooLong(start)) => {
+                    if skip_line(&mut stderr).await.is_err() {
+                        break;
+                    }
+                    start
+                }
+                Ok(LineRead::Eof) | Err(_) => break,
+            };
             tracing::info!(plugin = %log_name, "plugin {}: {}", log_name, cut(&line, STDERR_LINE_CHARS));
         }
     });
@@ -271,15 +284,25 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
 
     let hello = serde_json::to_string(&Request::Hello { protocol: PROTOCOL }).unwrap() + "\n";
     let _ = tx.send(hello);
-    let mut lines = BufReader::new(stdout).lines();
-    let first = match tokio::time::timeout(HANDSHAKE_TIMEOUT, lines.next_line()).await {
+    let mut stdout = BufReader::new(stdout);
+    let first = match tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        read_line_limited(&mut stdout, LINE_LIMIT),
+    )
+    .await
+    {
         Err(_) => {
             return Err(format!(
                 "plugin {name} did not answer the handshake within {}s",
                 HANDSHAKE_TIMEOUT.as_secs()
             ));
         }
-        Ok(Ok(Some(line))) => line,
+        Ok(Ok(LineRead::Line(line))) => line,
+        Ok(Ok(LineRead::TooLong(_))) => {
+            return Err(format!(
+                "plugin {name} answered the handshake with a line longer than {LINE_LIMIT} bytes"
+            ));
+        }
         Ok(_) => {
             let status = match tokio::time::timeout(Duration::from_secs(1), child.wait()).await {
                 Ok(Ok(s)) => format!(" ({s})"),
@@ -317,8 +340,20 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
     let router_pending = pending.clone();
     let router_name = name.to_string();
     let router = tokio::spawn(async move {
-        while let Ok(Some(line)) = lines.next_line().await {
-            route(&router_name, &router_pending, &line);
+        loop {
+            match read_line_limited(&mut stdout, LINE_LIMIT).await {
+                Ok(LineRead::Line(line)) => route(&router_name, &router_pending, &line),
+                Ok(LineRead::TooLong(_)) => {
+                    // Stop reading: the supervisor sees stdout end, stops the
+                    // plugin and restarts it.
+                    tracing::warn!(
+                        plugin = %router_name,
+                        "plugin {router_name} wrote a line longer than {LINE_LIMIT} bytes"
+                    );
+                    break;
+                }
+                Ok(LineRead::Eof) | Err(_) => break,
+            }
         }
         lock(&router_pending).close();
     });
@@ -327,6 +362,83 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
         conn: Conn { tx, pending, pid },
         router,
     })
+}
+
+/// One line read by [`read_line_limited`].
+#[derive(Debug, PartialEq, Eq)]
+enum LineRead {
+    /// A line without its line feed (and carriage return), or the last
+    /// bytes before end of file.
+    Line(String),
+    /// The line went on past the limit: its first `limit` bytes. The rest of
+    /// the line is still unread.
+    TooLong(String),
+    Eof,
+}
+
+/// Read one line, buffering at most `limit` bytes of it.
+async fn read_line_limited<R: AsyncBufRead + Unpin>(
+    r: &mut R,
+    limit: usize,
+) -> std::io::Result<LineRead> {
+    let text = |mut b: Vec<u8>| {
+        if b.last() == Some(&b'\r') {
+            b.pop();
+        }
+        String::from_utf8_lossy(&b).into_owned()
+    };
+    let mut buf = Vec::new();
+    loop {
+        let avail = r.fill_buf().await?;
+        if avail.is_empty() {
+            return Ok(if buf.is_empty() {
+                LineRead::Eof
+            } else {
+                LineRead::Line(text(buf))
+            });
+        }
+        let end = avail.iter().position(|&b| b == b'\n');
+        let chunk = &avail[..end.unwrap_or(avail.len())];
+        let room = limit - buf.len();
+        if chunk.len() > room {
+            buf.extend_from_slice(&chunk[..room]);
+            r.consume(room);
+            return Ok(LineRead::TooLong(
+                String::from_utf8_lossy(&buf).into_owned(),
+            ));
+        }
+        buf.extend_from_slice(chunk);
+        match end {
+            Some(i) => {
+                r.consume(i + 1);
+                return Ok(LineRead::Line(text(buf)));
+            }
+            None => {
+                let n = chunk.len();
+                r.consume(n);
+            }
+        }
+    }
+}
+
+/// Discard input up to and including the next line feed.
+async fn skip_line<R: AsyncBufRead + Unpin>(r: &mut R) -> std::io::Result<()> {
+    loop {
+        let avail = r.fill_buf().await?;
+        if avail.is_empty() {
+            return Ok(());
+        }
+        match avail.iter().position(|&b| b == b'\n') {
+            Some(i) => {
+                r.consume(i + 1);
+                return Ok(());
+            }
+            None => {
+                let n = avail.len();
+                r.consume(n);
+            }
+        }
+    }
 }
 
 /// Deliver one stdout line to the request waiting for it.
@@ -430,6 +542,41 @@ fn log_exit(name: &str, status: std::io::Result<ExitStatus>) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn lines_are_read_up_to_the_limit() {
+        use super::{LineRead, read_line_limited, skip_line};
+        let input = [
+            b"short\r\n".to_vec(),
+            [vec![b'a'; 8], b"\n".to_vec()].concat(),
+            [vec![b'b'; 9], b"\nnext\n".to_vec()].concat(),
+            b"tail".to_vec(),
+        ]
+        .concat();
+        // A tiny buffer, so lines arrive in several pieces.
+        let mut r = tokio::io::BufReader::with_capacity(3, &input[..]);
+        let mut next = async || read_line_limited(&mut r, 8).await.unwrap();
+        assert_eq!(next().await, LineRead::Line("short".into()));
+        assert_eq!(
+            next().await,
+            LineRead::Line("a".repeat(8)),
+            "exactly the limit"
+        );
+        assert_eq!(
+            next().await,
+            LineRead::TooLong("b".repeat(8)),
+            "one byte over"
+        );
+        skip_line(&mut r).await.unwrap();
+        let mut next = async || read_line_limited(&mut r, 8).await.unwrap();
+        assert_eq!(next().await, LineRead::Line("next".into()));
+        assert_eq!(
+            next().await,
+            LineRead::Line("tail".into()),
+            "no line feed at the end"
+        );
+        assert_eq!(next().await, LineRead::Eof);
+    }
+
     use super::*;
 
     #[test]

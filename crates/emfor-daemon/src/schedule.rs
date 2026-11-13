@@ -57,9 +57,38 @@ pub fn unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Delay before a backend's first check: uniform in `[0, interval)`.
+/// Longest wait between checks while a backend's state is still unknown.
+pub const FAST_INTERVAL: Duration = Duration::from_millis(200);
+
+/// `min(interval, 200ms)`: the pace while a backend's state is unknown, so
+/// that after a start it is known within a few hundred milliseconds rather
+/// than `rise × interval`.
+pub fn fast_interval(interval: Duration) -> Duration {
+    interval.min(FAST_INTERVAL)
+}
+
+/// Delay before a backend's first check: uniform in `[0, fast_interval)`.
 pub fn first_delay(interval: Duration, rng: &mut impl RngExt) -> Duration {
-    interval.mul_f64(rng.random_range(0.0..1.0))
+    fast_interval(interval).mul_f64(rng.random_range(0.0..1.0))
+}
+
+/// Wait after a check, given the state it left the backend in: the fast
+/// pace while the state is unknown and the check said something about the
+/// backend (`up` or `down`); otherwise `interval ± jitter`. An `error` is a
+/// local problem (a plugin not running yet), which checking faster would not
+/// fix.
+pub fn wait_after(
+    state: HealthState,
+    result: &CheckResult,
+    interval: Duration,
+    jitter: f64,
+    rng: &mut impl RngExt,
+) -> Duration {
+    if state == HealthState::Unknown && !matches!(result, CheckResult::Error(_)) {
+        fast_interval(interval)
+    } else {
+        next_wait(interval, jitter, rng)
+    }
 }
 
 /// Wait between the end of one check and the start of the next:
@@ -138,7 +167,8 @@ pub fn spawn_backend(
             if updates.send(WriterMsg::Update(update)).is_err() {
                 return; // writer gone: daemon is shutting down
             }
-            tokio::time::sleep(next_wait(s.interval, s.jitter, &mut rng)).await;
+            let wait = wait_after(health.state, &result, s.interval, s.jitter, &mut rng);
+            tokio::time::sleep(wait).await;
         }
     })
 }
@@ -151,6 +181,36 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// Spec "Check scheduling with jitter and no overlap", example table.
+    #[test]
+    fn wait_after_a_check() {
+        use HealthState::*;
+        let mut rng = StdRng::seed_from_u64(7);
+        let ms = Duration::from_millis;
+        let up = CheckResult::Up;
+        let down = CheckResult::Down("refused".into());
+        let error = CheckResult::Error("plugin p unavailable".into());
+        for (interval, state, result, want) in [
+            (ms(2000), Unknown, &up, Some(ms(200))),
+            (ms(2000), Unknown, &down, Some(ms(200))),
+            (ms(2000), Unknown, &error, None),
+            (ms(2000), Healthy, &up, None),
+            (ms(2000), Unhealthy, &down, None),
+            (ms(100), Unknown, &up, Some(ms(100))),
+        ] {
+            for _ in 0..100 {
+                let w = wait_after(state, result, interval, 0.1, &mut rng);
+                match want {
+                    Some(fast) => assert_eq!(w, fast, "{state} {result:?}"),
+                    None => assert!(
+                        w >= interval.mul_f64(0.9) && w <= interval.mul_f64(1.1),
+                        "{state} {result:?}: {w:?}"
+                    ),
+                }
+            }
+        }
+    }
+
     #[test]
     fn wait_bounds() {
         let mut rng = StdRng::seed_from_u64(7);
@@ -161,7 +221,9 @@ mod tests {
                 "{w:?}"
             );
             let f = first_delay(Duration::from_secs(2), &mut rng);
-            assert!(f < Duration::from_secs(2));
+            assert!(f < Duration::from_millis(200), "{f:?}");
+            let f = first_delay(Duration::from_millis(50), &mut rng);
+            assert!(f < Duration::from_millis(50), "{f:?}");
         }
         assert_eq!(
             next_wait(Duration::from_secs(1), 0.0, &mut rng),
@@ -229,8 +291,10 @@ mod tests {
         assert_eq!(chk.max_in_flight.load(Ordering::SeqCst), 1);
         let starts = chk.starts.lock().unwrap().clone();
         assert!(starts.len() >= 9, "{} checks", starts.len());
-        for w in starts.windows(2) {
-            // 900ms check + 1s wait, no jitter.
+        // The first `up` leaves the backend unknown (rise = 2): 900ms check
+        // + 200ms fast wait. Healthy after the second: 900ms + 1s, no jitter.
+        assert_eq!(starts[1] - starts[0], Duration::from_millis(1100));
+        for w in starts[1..].windows(2) {
             assert_eq!(w[1] - w[0], Duration::from_millis(1900));
         }
         let first = update(rx.recv().await.unwrap());

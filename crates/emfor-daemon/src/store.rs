@@ -10,7 +10,7 @@ use std::fs::{File, OpenOptions, Permissions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use heed::types::Str;
+use heed::types::{Bytes, Str};
 use heed::{Database, Env, EnvFlags, EnvOpenOptions, RwTxn, WithoutTls};
 use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg};
@@ -83,14 +83,17 @@ impl Store {
                 }
             })?;
 
-        let env = unsafe {
-            let mut opts = EnvOpenOptions::new().read_txn_without_tls();
-            opts.map_size(cfg.map_size);
-            opts.max_readers(emfor_format::MAX_READERS);
-            opts.flags(EnvFlags::NO_SUB_DIR);
-            // SAFETY: only this daemon writes the file (guarded by the writer
-            // lock above) and readers only read; nothing truncates it.
-            opts.open(&cfg.path)?
+        let (env, db) = match open_env(cfg) {
+            Err(e) if is_damage(&e) => {
+                let corrupt = set_aside(&cfg.path).map_err(io(&cfg.path))?;
+                tracing::warn!(
+                    "state store {} is damaged ({e}); moved it to {} and starting with an empty store",
+                    cfg.path.display(),
+                    corrupt.display()
+                );
+                open_env(cfg)?
+            }
+            r => r?,
         };
         std::fs::set_permissions(&cfg.path, Permissions::from_mode(cfg.file_mode))
             .map_err(io(&cfg.path))?;
@@ -98,11 +101,6 @@ impl Store {
         std::fs::set_permissions(&lmdb_lock, Permissions::from_mode(cfg.lock_file_mode))
             .map_err(io(&lmdb_lock))?;
 
-        let rtxn = env.read_txn()?;
-        let db = env
-            .open_database::<Str, Str>(&rtxn, None)?
-            .expect("the unnamed LMDB database always exists");
-        rtxn.commit()?;
         let store = Store {
             env,
             db,
@@ -178,6 +176,66 @@ impl Store {
     }
 }
 
+/// Open the LMDB environment and read every key once, so damage anywhere in
+/// the file shows up now rather than in the first commit.
+fn open_env(cfg: &StoreConfig) -> heed::Result<(Env<WithoutTls>, Database<Str, Str>)> {
+    let env = unsafe {
+        let mut opts = EnvOpenOptions::new().read_txn_without_tls();
+        opts.map_size(cfg.map_size);
+        opts.max_readers(emfor_format::MAX_READERS);
+        let mut flags = EnvFlags::NO_SUB_DIR;
+        if !cfg.sync {
+            // The store is rebuilt on every start; a commit need not wait
+            // for the disk (see `[store] sync`).
+            flags |= EnvFlags::NO_SYNC;
+        }
+        opts.flags(flags);
+        // SAFETY: only this daemon writes the file (guarded by the writer
+        // lock) and readers only read; nothing truncates it.
+        opts.open(&cfg.path)?
+    };
+    let check = || -> heed::Result<Database<Str, Str>> {
+        let rtxn = env.read_txn()?;
+        let db = env
+            .open_database::<Str, Str>(&rtxn, None)?
+            .expect("the unnamed LMDB database always exists");
+        // As raw bytes: only LMDB's own structure is checked here. A value
+        // that is not UTF-8 is left to whoever reads it (`load_history`
+        // discards it with a warning; `svc/*` is rewritten at start).
+        for item in db.remap_types::<Bytes, Bytes>().iter(&rtxn)? {
+            item?;
+        }
+        rtxn.commit()?;
+        Ok(db)
+    };
+    // On error `env` is dropped here, closing the file before it is moved.
+    let db = check()?;
+    Ok((env, db))
+}
+
+/// LMDB errors that mean the file itself is damaged, as after a power loss
+/// with `MDB_NOSYNC`. `MDB_INVALID` is also what a file that is not LMDB at
+/// all gives, which is why the file is moved aside, not deleted.
+fn is_damage(e: &heed::Error) -> bool {
+    use heed::MdbError;
+    matches!(
+        e,
+        heed::Error::Mdb(MdbError::Corrupted | MdbError::PageNotFound | MdbError::Invalid)
+    )
+}
+
+/// Move a damaged data file to `<path>.corrupt` (replacing an older one)
+/// and delete its lock file, so the next open starts a new store.
+fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
+    let corrupt = suffixed(path, ".corrupt");
+    std::fs::rename(path, &corrupt)?;
+    match std::fs::remove_file(lock_file_path(path)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    Ok(corrupt)
+}
+
 /// Delete every key starting with `prefix`.
 pub fn delete_prefix(txn: &mut RwTxn, db: &Database<Str, Str>, prefix: &str) -> heed::Result<()> {
     let mut iter = db.prefix_iter_mut(txn, prefix)?;
@@ -250,6 +308,24 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn sync_setting_and_environment_flags() {
+        for (sync, no_sync) in [(None, true), (Some(false), true), (Some(true), false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut c = cfg(dir.path());
+            if let Some(s) = sync {
+                c.sync = s;
+            }
+            let store = Store::open(&c).unwrap();
+            let flags = store.env.get_flags().unwrap();
+            assert_eq!(
+                flags & EnvFlags::NO_SYNC.bits() != 0,
+                no_sync,
+                "sync = {sync:?}"
+            );
+        }
+    }
+
+    #[test]
     fn opens_with_more_reader_slots() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&cfg(dir.path())).unwrap();
@@ -301,6 +377,99 @@ pub(crate) mod tests {
         child.wait().unwrap();
         assert_eq!(store.clear_stale_readers().unwrap(), 1);
         assert_eq!(store.clear_stale_readers().unwrap(), 0);
+    }
+
+    /// Write a store with some keys, close it, damage it with `damage`
+    /// (given the file and the page size), and open it again.
+    fn reopen_damaged(damage: impl FnOnce(&mut std::fs::File, u64)) -> (tempfile::TempDir, Store) {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        let page = {
+            let store = Store::open(&c).unwrap();
+            store
+                .write(|txn, db| {
+                    for i in 0..200 {
+                        db.put(txn, &format!("svc/{i}"), &"x".repeat(100))?;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            u64::from(store.env.stat().page_size)
+        };
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&c.path)
+            .unwrap();
+        damage(&mut f, page);
+        f.flush().unwrap();
+        drop(f);
+        let store = Store::open(&c).unwrap();
+        (dir, store)
+    }
+
+    fn assert_replaced(dir: &tempfile::TempDir, store: &Store) {
+        let path = dir.path().join("state.mdb");
+        assert!(dir.path().join("state.mdb.corrupt").exists());
+        assert_eq!(store.get("svc/0").unwrap(), None, "a new, empty store");
+        store
+            .write(|txn, db| db.put(txn, "meta/heartbeat", "1"))
+            .unwrap();
+        assert_eq!(store.get("meta/heartbeat").unwrap().as_deref(), Some("1"));
+        assert!(path.exists());
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn zeroed_store_is_replaced() {
+        let (dir, store) = reopen_damaged(|f, _| {
+            let len = f.metadata().unwrap().len();
+            std::io::Write::write_all(f, &vec![0; len as usize]).unwrap();
+        });
+        assert_replaced(&dir, &store);
+        assert!(logs_contain("is damaged"));
+        assert!(logs_contain("state.mdb.corrupt"));
+    }
+
+    #[test]
+    fn store_with_zeroed_data_pages_is_replaced() {
+        let (dir, store) = reopen_damaged(|f, page| {
+            use std::io::{Seek, SeekFrom, Write};
+            let len = f.metadata().unwrap().len();
+            // Keep the two meta pages; zero every page they point to.
+            f.seek(SeekFrom::Start(2 * page)).unwrap();
+            f.write_all(&vec![0; (len - 2 * page) as usize]).unwrap();
+        });
+        assert_replaced(&dir, &store);
+    }
+
+    #[test]
+    fn value_that_is_not_utf8_is_not_damage() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        {
+            let store = Store::open(&c).unwrap();
+            let raw = store.db.remap_types::<Str, Bytes>();
+            let mut txn = store.env.write_txn().unwrap();
+            raw.put(&mut txn, "hist/a", &[0xff, 0xfe]).unwrap();
+            txn.commit().unwrap();
+        }
+        let store = Store::open(&c).unwrap();
+        assert!(!dir.path().join("state.mdb.corrupt").exists());
+        assert!(store.get("hist/a").is_err(), "left to the reader");
+    }
+
+    #[test]
+    fn healthy_store_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        Store::open(&c)
+            .unwrap()
+            .write(|txn, db| db.put(txn, "hist/a", "[]"))
+            .unwrap();
+        let store = Store::open(&c).unwrap();
+        assert_eq!(store.get("hist/a").unwrap().as_deref(), Some("[]"));
+        assert!(!dir.path().join("state.mdb.corrupt").exists());
     }
 
     #[test]

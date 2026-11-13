@@ -264,6 +264,90 @@ fn sigterm_exits_zero_and_zeroes_heartbeat() {
     assert_eq!(r.get("meta/heartbeat").as_deref(), Some("0"));
 }
 
+/// Spec "Damaged store is replaced at start": a store file whose meta
+/// pages are zero bytes, as after a power loss with `MDB_NOSYNC`.
+#[test]
+fn damaged_store_is_replaced_at_start() {
+    use std::io::Write;
+    let (_l, addr) = listener();
+    // A good store from a run that stopped, then its two meta pages zeroed.
+    let mut d = start(&tcp_service("api.svc.emfor", &addr));
+    let (path, page) = {
+        let r = Reader::open(&d.store());
+        wait_for(|| r.service("api.svc.emfor").is_some());
+        (d.store(), u64::from(r.env.stat().page_size))
+    };
+    let dir = std::mem::replace(&mut d.dir, tempfile::tempdir().unwrap());
+    let (code, err) = d.stop();
+    assert_eq!(code, 0, "{err}");
+    let len = std::fs::metadata(&path).unwrap().len();
+    assert!(len > 2 * page, "store has data pages");
+    let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    f.write_all(&vec![0u8; 2 * page as usize]).unwrap();
+    drop(f);
+    let corrupt = dir.path().join("state.mdb.corrupt");
+    let d = start_in(dir, &tcp_service("api.svc.emfor", &addr));
+    wait_for(|| corrupt.exists());
+    let r = Reader::open(&d.store());
+    wait_for(|| r.get("meta/heartbeat").is_some_and(|h| h != "0"));
+    assert!(r.service("api.svc.emfor").is_some());
+    assert_eq!(std::fs::metadata(&corrupt).unwrap().len(), len);
+    let store = d.store().display().to_string();
+    let (code, err) = d.stop();
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("is damaged") && err.contains(&store), "{err}");
+}
+
+/// Spec "Reasons are bounded and printable": an escape sequence from a
+/// check script reaches the store only escaped.
+#[test]
+fn escape_sequence_in_a_reason_is_stored_escaped() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("check.sh");
+    std::fs::write(&script, "#!/bin/sh\nprintf 'bad\\033[2Jstate\\n'\nexit 1\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let svc = format!(
+        "[services.\"x.svc.emfor\"]\ncheck = \"exec\"\nbackends = [\"127.0.0.1:1\"]\ninterval = \"200ms\"\ntimeout = \"100ms\"\njitter = \"0%\"\n[services.\"x.svc.emfor\".check_options]\ncommand = [\"{}\"]\n\n",
+        script.display()
+    );
+    let d = start_in(dir, &svc);
+    let r = Reader::open(&d.store());
+    wait_for(|| {
+        r.service("x.svc.emfor")
+            .is_some_and(|s| s.backends[0].reason.is_some())
+    });
+    let reason = r.service("x.svc.emfor").unwrap().backends[0].reason.clone();
+    assert_eq!(reason.as_deref(), Some("bad\\u{1b}[2Jstate"));
+    let (code, _) = d.stop();
+    assert_eq!(code, 0);
+}
+
+/// Spec "Check scheduling with jitter and no overlap": checks run at the
+/// fast pace while a backend's state is unknown.
+#[test]
+fn backend_known_within_a_second_of_start() {
+    let (_l, addr) = listener();
+    let svc = format!(
+        "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"{addr}\"]\ninterval = \"2s\"\ntimeout = \"1s\"\nrise = 2\njitter = \"0%\"\n\n"
+    );
+    let d = start(&svc);
+    let r = Reader::open(&d.store());
+    wait_for(|| {
+        r.service("api.svc.emfor")
+            .is_some_and(|s| s.backends[0].state == HealthState::Healthy)
+    });
+    // From the daemon's own start time to the check that made it healthy.
+    let started: u64 = r.get("meta/started_at").unwrap().parse().unwrap();
+    let healthy_at = r.service("api.svc.emfor").unwrap().backends[0]
+        .checked_at
+        .unwrap();
+    let took = healthy_at.saturating_sub(started);
+    assert!(took < 1000, "healthy {took} ms after the start");
+    let (code, _) = d.stop();
+    assert_eq!(code, 0);
+}
+
 #[test]
 fn second_daemon_on_same_store_exits_one() {
     let (_l, addr) = listener();
@@ -282,6 +366,7 @@ fn second_daemon_on_same_store_exits_one() {
         "{err}"
     );
     assert!(d.running());
+    assert!(!PathBuf::from(format!("{}.corrupt", d.store().display())).exists());
 }
 
 #[test]

@@ -5,7 +5,10 @@
 //!   `numeric` (a `result` that is not a string), `hang` (never answers),
 //!   `crash` (exits), `last_words` (answers `down`, then exits at once), or
 //!   `slow_first` (the first check
-//!   is answered after 300ms, later ones at once, so answers come out of order).
+//!   is answered after 300ms, later ones at once, so answers come out of order),
+//!   `long_stdout` (writes 70000 bytes to stdout without a line feed instead
+//!   of answering), or `long_stderr` (writes a 70000-byte line to stderr,
+//!   then answers `up`).
 //!
 //! Environment switches:
 //! - `EMFOR_TEST_PLUGIN_PROTOCOL=<n>`: answer the handshake with protocol `n`.
@@ -37,6 +40,8 @@ const MODES: &[&str] = &[
     "crash",
     "slow_first",
     "last_words",
+    "long_stdout",
+    "long_stderr",
 ];
 
 fn flag(name: &str) -> bool {
@@ -123,6 +128,16 @@ fn main() {
                     std::thread::sleep(delay);
                     let (result, reason) = match mode.as_str() {
                         "hang" => return,
+                        "long_stdout" => {
+                            let mut out = out.lock().unwrap();
+                            let _ = out.write_all(&[b'x'; 70000]);
+                            let _ = out.flush();
+                            return;
+                        }
+                        "long_stderr" => {
+                            eprintln!("{}", "y".repeat(70000));
+                            ("up".into(), None)
+                        }
                         "crash" => {
                             eprintln!("test plugin crashing");
                             std::process::exit(1);

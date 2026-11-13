@@ -28,6 +28,40 @@ impl CheckResult {
             CheckResult::Down(r) | CheckResult::Error(r) => Some(r),
         }
     }
+
+    /// The same result with its reason passed through [`normalize_reason`].
+    pub fn normalized(self) -> CheckResult {
+        match self {
+            CheckResult::Up => CheckResult::Up,
+            CheckResult::Down(r) => CheckResult::Down(normalize_reason(&r)),
+            CheckResult::Error(r) => CheckResult::Error(normalize_reason(&r)),
+        }
+    }
+}
+
+/// Longest reason kept, in characters.
+pub const REASON_MAX_CHARS: usize = 512;
+
+/// Make a reason safe to store and print, whatever produced it (a backend's
+/// answer, a plugin, a script): tab, CR and LF become `\t`, `\r`, `\n`;
+/// other control characters (Unicode Cc) become `\u{1b}` and the like;
+/// then anything past [`REASON_MAX_CHARS`] is cut and replaced by `…`.
+/// Backslashes stay as they are, so an excerpt that is already escaped
+/// (the tcp checker's `expect: got "..."`) is not escaped twice.
+pub fn normalize_reason(reason: &str) -> String {
+    let mut out = String::with_capacity(reason.len());
+    for c in reason.chars() {
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    if out.chars().count() > REASON_MAX_CHARS {
+        out = out.chars().take(REASON_MAX_CHARS - 1).collect();
+        out.push('…');
+    }
+    out
 }
 
 /// One check of one backend.
@@ -139,10 +173,13 @@ impl Registry {
 /// (`Down("timeout")` unless the checker says otherwise).
 pub async fn run_check(checker: &dyn Checker, req: CheckRequest) -> CheckResult {
     let timeout = req.timeout;
-    match tokio::time::timeout(timeout, checker.check(req)).await {
+    let result = match tokio::time::timeout(timeout, checker.check(req)).await {
         Ok(result) => result,
         Err(_) => checker.timeout_result(),
-    }
+    };
+    // Every reason reaches the state, the store, the logs and the metrics
+    // through here.
+    result.normalized()
 }
 
 /// Reject any key in `options` not listed in `allowed`.
@@ -165,6 +202,46 @@ pub mod tcp;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Spec "Reasons are bounded and printable", example table.
+    #[test]
+    fn reasons_are_normalized() {
+        let a = |n| "a".repeat(n);
+        for (input, want) in [
+            (
+                "connection refused".to_string(),
+                "connection refused".to_string(),
+            ),
+            ("a\tb".into(), "a\\tb".into()),
+            ("x\u{1b}y".into(), "x\\u{1b}y".into()),
+            ("x\u{85}y".into(), "x\\u{85}y".into()),
+            (a(600), format!("{}…", a(511))),
+            (a(512), a(512)),
+            ("r\rn\n".into(), "r\\rn\\n".into()),
+            ("del\u{7f}".into(), "del\\u{7f}".into()),
+            ("got \"\\x00\"".into(), "got \"\\x00\"".into()),
+            ("é ok 日本".into(), "é ok 日本".into()),
+        ] {
+            assert_eq!(normalize_reason(&input), want, "{input:?}");
+        }
+        // Escaping can push a reason over the limit.
+        let r = normalize_reason(&"\u{1}".repeat(200));
+        assert_eq!(r.chars().count(), REASON_MAX_CHARS);
+        assert!(r.ends_with('…'));
+    }
+
+    #[tokio::test]
+    async fn run_check_normalizes_the_reason() {
+        #[derive(Debug)]
+        struct Says(&'static str);
+        impl Checker for Says {
+            fn check(&self, _: CheckRequest) -> BoxFuture<'_, CheckResult> {
+                Box::pin(async move { CheckResult::Down(self.0.into()) })
+            }
+        }
+        let r = run_check(&Says("bad\u{1b}[2Jstate"), req(Duration::from_secs(1))).await;
+        assert_eq!(r, CheckResult::Down("bad\\u{1b}[2Jstate".into()));
+    }
 
     #[derive(Debug)]
     struct Sleepy(Duration);

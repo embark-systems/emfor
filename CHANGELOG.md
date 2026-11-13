@@ -19,7 +19,38 @@ check-config"` and exits 2. `emfor status` is unchanged.
 FreeBSD port example use the new commands; copies of the 0.1.x versions
 must be replaced. See [docs/deploy/daemon.md](docs/deploy/daemon.md#commands).
 
+### Changed
+
+- **The store is no longer flushed to disk on every commit.** The new
+  `[store] sync` setting defaults to `false` (LMDB's `MDB_NOSYNC`): a
+  stalled disk could make the heartbeat late and every client on the host
+  treat the store as stale. The store is rewritten on every start, so
+  nothing in it needs to survive a host crash. Set `sync = true` to keep the
+  old behavior. Commits now run on a separate thread.
+- When the daemon starts and finds the store damaged (`MDB_CORRUPTED`,
+  `MDB_PAGE_NOTFOUND` or `MDB_INVALID`, as after a power loss without
+  flushing), it moves the file to `<path>.corrupt`, deletes the lock file,
+  and starts with a new store instead of exiting. The state history of
+  `emfor status --history` is lost with it. See
+  [docs/deploy/daemon.md](docs/deploy/daemon.md#the-store-and-the-disk).
+- While a backend's state is `unknown` (after a start, a reload that adds
+  it, or a run of errors) and a check returns `up` or `down`, the next check
+  runs after `min(interval, 200ms)` instead of `interval`, and the first
+  check starts within that time too. With `interval = "2s"` and `rise = 2`,
+  backends are known within about half a second of a start instead of 2 to
+  4 seconds, during which services with `on_all_down = "closed"` answered
+  `ALL_DOWN`.
+
 ### Fixed
+
+- Check reasons are now escaped and bounded before they reach the store,
+  the logs and `emfor status`: tab, CR and LF become `\t`, `\r`, `\n`,
+  other control characters `\u{1b}` and the like, and a reason longer than
+  512 characters is cut and ends in `…`. A backend or plugin could send
+  terminal escape sequences, or reasons large enough to slow every lookup.
+- A plugin line longer than 65536 bytes no longer grows the daemon's memory
+  without bound: on stdout the plugin is stopped and restarted as if it had
+  exited; on stderr the rest of the line is discarded.
 
 - An application process killed in the middle of a lookup (SIGKILL, OOM,
   a crash) left its LMDB reader slot taken. Each such slot kept every page

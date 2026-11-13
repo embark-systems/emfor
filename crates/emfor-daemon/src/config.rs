@@ -94,6 +94,9 @@ pub struct StoreConfig {
     pub map_size: usize,
     pub file_mode: u32,
     pub lock_file_mode: u32,
+    /// Flush every commit to disk. Off by default (`MDB_NOSYNC`): the store
+    /// is rebuilt on every start, so it is not worth waiting for the disk.
+    pub sync: bool,
 }
 
 impl Default for StoreConfig {
@@ -103,6 +106,7 @@ impl Default for StoreConfig {
             map_size: 64 * 1024 * 1024,
             file_mode: 0o644,
             lock_file_mode: 0o666,
+            sync: false,
         }
     }
 }
@@ -678,8 +682,13 @@ impl Validator {
         self.unknown_keys(
             t,
             "store",
-            &["path", "map_size", "file_mode", "lock_file_mode"],
+            &["path", "map_size", "file_mode", "lock_file_mode", "sync"],
         );
+        match t.get("sync") {
+            None => {}
+            Some(toml::Value::Boolean(b)) => store.sync = *b,
+            Some(_) => self.err("store.sync", "must be true or false"),
+        }
         if let Some(p) = self.string(t, "store", "path") {
             if p.is_empty() {
                 self.err("store.path", "must not be empty");
@@ -1332,6 +1341,12 @@ backends = ["10.0.0.1:80"]
         assert_eq!(c.store.map_size, 16 << 20);
         assert_eq!((c.store.file_mode, c.store.lock_file_mode), (0o640, 0o660));
         assert_eq!(c.log.level, "debug");
+        assert!(!c.store.sync, "sync defaults to false");
+        let c = parse_ok(&format!("[store]\nsync = true\n{SVC}"));
+        assert!(c.store.sync);
+        let e = parse_err(&format!("[store]\nsync = \"yes\"\n{SVC}"));
+        assert_eq!(e[0].path, "store.sync");
+        assert_eq!(e[0].message, "must be true or false");
         let e = parse_err(&format!("[store]\nfile_mode = \"999\"\n{SVC}"));
         assert_eq!(e[0].path, "store.file_mode");
         // The store table alone, even when the rest of the file is invalid.

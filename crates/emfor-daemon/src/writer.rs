@@ -127,7 +127,8 @@ pub enum WriterMsg {
 }
 
 struct Writer<S: Sink> {
-    sink: S,
+    /// Taken while a commit runs on a blocking thread.
+    sink: Option<S>,
     records: BTreeMap<Arc<str>, ServiceRecord>,
     generations: BTreeMap<Arc<str>, u64>,
     /// Ops not yet committed (from failed commits or pending layout changes).
@@ -208,7 +209,7 @@ fn spawn_inner<S: Sink>(
     ];
     tokio::spawn(async move {
         let mut w = Writer {
-            sink,
+            sink: Some(sink),
             records: BTreeMap::new(),
             generations: BTreeMap::new(),
             pending: Vec::new(),
@@ -228,23 +229,23 @@ fn spawn_inner<S: Sink>(
         loop {
             tokio::select! {
                 msg = rx.recv() => match msg {
-                    Some(WriterMsg::Update(u)) => w.update(u),
-                    Some(WriterMsg::SetLayout { fresh_start, site, services }) => w.set_layout(fresh_start, site, services),
+                    Some(WriterMsg::Update(u)) => w.update(u).await,
+                    Some(WriterMsg::SetLayout { fresh_start, site, services }) => w.set_layout(fresh_start, site, services).await,
                     Some(WriterMsg::Shutdown(done)) => {
-                        w.shutdown();
+                        w.shutdown().await;
                         let _ = done.send(());
                         return;
                     }
                     None => return,
                 },
-                _ = ticker.tick() => w.heartbeat(),
+                _ = ticker.tick() => w.heartbeat().await,
             }
         }
     })
 }
 
 impl<S: Sink> Writer<S> {
-    fn update(&mut self, u: BackendUpdate) {
+    async fn update(&mut self, u: BackendUpdate) {
         if self.generations.get(&u.service) != Some(&u.generation) {
             return; // from a task replaced by a reload
         }
@@ -276,11 +277,11 @@ impl<S: Sink> Writer<S> {
                 .or_default()
                 .push(&u.backend_id, entry);
             self.hist_dirty.insert(u.service.clone());
-            self.flush(Vec::new());
+            self.flush(Vec::new()).await;
         }
     }
 
-    fn set_layout(
+    async fn set_layout(
         &mut self,
         fresh_start: bool,
         site: Option<String>,
@@ -384,30 +385,38 @@ impl<S: Sink> Writer<S> {
             None => Op::Delete(KEY_SITE.into()),
         });
         self.live.replace(live, site);
-        self.flush(ops);
+        self.flush(ops).await;
     }
 
-    fn heartbeat(&mut self) {
+    async fn heartbeat(&mut self) {
         self.ticks_since_reader_check += 1;
         if self.ticks_since_reader_check >= READER_CHECK_TICKS {
             self.clear_stale_readers();
         }
-        self.flush(vec![Op::Put(KEY_HEARTBEAT.into(), unix_ms().to_string())]);
+        self.flush(vec![Op::Put(KEY_HEARTBEAT.into(), unix_ms().to_string())])
+            .await;
     }
 
     fn clear_stale_readers(&mut self) {
         self.ticks_since_reader_check = 0;
-        if let Err(e) = self.sink.clear_stale_readers() {
+        if let Err(e) = self.sink_mut().clear_stale_readers() {
             tracing::error!("cannot check the state store's reader slots: {e}");
         }
     }
 
-    fn shutdown(&mut self) {
-        self.flush(vec![Op::Put(KEY_HEARTBEAT.into(), "0".into())]);
+    async fn shutdown(&mut self) {
+        self.flush(vec![Op::Put(KEY_HEARTBEAT.into(), "0".into())])
+            .await;
+    }
+
+    fn sink_mut(&mut self) -> &mut S {
+        self.sink
+            .as_mut()
+            .expect("the sink is back after every commit")
     }
 
     /// Commit pending ops, `extra`, and every dirty service record in one transaction.
-    fn flush(&mut self, extra: Vec<Op>) {
+    async fn flush(&mut self, extra: Vec<Op>) {
         let mut ops = std::mem::take(&mut self.pending);
         ops.extend(extra);
         for name in &self.dirty {
@@ -428,7 +437,21 @@ impl<S: Sink> Writer<S> {
         if ops.is_empty() {
             return;
         }
-        match self.sink.commit(&ops) {
+        // On a blocking thread: a commit can wait for the disk (`[store]
+        // sync = true`, or the kernel writing back), and must not hold up a
+        // worker that serves DNS, metrics and checks meanwhile.
+        let mut sink = self
+            .sink
+            .take()
+            .expect("the sink is back after every commit");
+        let (sink, ops, result) = tokio::task::spawn_blocking(move || {
+            let result = sink.commit(&ops);
+            (sink, ops, result)
+        })
+        .await
+        .expect("a store commit does not panic");
+        self.sink = Some(sink);
+        match result {
             Ok(()) => {
                 self.dirty.clear();
                 self.hist_dirty.clear();
@@ -547,6 +570,44 @@ mod tests {
             self.checks.fetch_add(1, Ordering::SeqCst);
             Ok(0)
         }
+    }
+
+    /// Records the thread each commit runs on.
+    struct Threads(Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>>);
+    impl Sink for Threads {
+        fn commit(&mut self, _ops: &[Op]) -> Result<(), String> {
+            self.0.lock().unwrap().push(std::thread::current().id());
+            Ok(())
+        }
+        fn clear_stale_readers(&mut self) -> Result<usize, String> {
+            Ok(0)
+        }
+    }
+
+    /// `#[tokio::test]` runs every task on the test's own thread, so a
+    /// commit made inside the writer task would run there too.
+    #[tokio::test]
+    async fn commits_run_off_the_async_thread() {
+        let threads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (tx, rx) = mpsc::unbounded_channel();
+        let writer = spawn_with_tick(Threads(threads.clone()), rx, Duration::from_secs(3600));
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+        })
+        .unwrap();
+        let (done_tx, done_rx) = oneshot::channel();
+        tx.send(WriterMsg::Shutdown(done_tx)).unwrap();
+        done_rx.await.unwrap();
+        writer.await.unwrap();
+        let threads = threads.lock().unwrap();
+        assert_eq!(threads.len(), 2, "layout and shutdown commits");
+        let here = std::thread::current().id();
+        assert!(
+            threads.iter().all(|t| *t != here),
+            "{threads:?} vs {here:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

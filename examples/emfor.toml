@@ -19,6 +19,12 @@ file_mode = "0644"
 #   lock_file_mode = "0660"
 #   file_mode = "0640"
 lock_file_mode = "0666"
+# Commits do not wait for the disk by default, so a slow or stalled disk
+# cannot make the store look stale to every client. The store is rewritten
+# on every start; after a power loss it may be damaged, and the daemon then
+# moves it to "<path>.corrupt" and starts with a new one (the state history
+# for "emfor status --history" is lost). Set true to flush every commit.
+sync = false
 
 [log]
 level = "info"
