@@ -156,7 +156,7 @@ backends = [
 # speaking line-delimited JSON on stdin/stdout. See
 # docs/plugins/protocol-v1.md. The plugin validates check_options itself.
 # emfor-check is the plugin that ships with emfor; its argument picks
-# redis, mysql, pgsql, ldap, dns, radius or sip. See docs/deploy/plugins.md for
+# redis, mysql, pgsql, ldap, dns, radius, sip or diameter. See docs/deploy/plugins.md for
 # every option.
 # Commented out because emfor-check is not installed on a fresh host.
 #
@@ -218,3 +218,17 @@ backends = [
 # [services."sbc.svc.emfor".check_options]
 # transport = "udp"
 # expect_status = ["200-499"]               # 5xx and 6xx (overload, maintenance) are down
+#
+# [plugins."diameter"]
+# command = ["/usr/local/libexec/emfor-check", "diameter"]
+#
+# [services."pcrf.svc.emfor"]
+# check = "diameter"
+# backends = ["10.0.11.1:3868", "10.0.11.2:3868"]
+# interval = "10s"                          # each check is a peer connection on the node
+#
+# [services."pcrf.svc.emfor".check_options]
+# origin_host = "emfor-app01.example.org"   # must be an allowed peer on the node
+# origin_realm = "example.org"
+# vendor_specific_application_ids = [{ vendor_id = 10415, auth_application_id = 16777238 }]  # Gx
+# supported_vendor_ids = [10415]

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs inside the emfor-plugins-test container: start redis, MariaDB,
-# PostgreSQL, OpenLDAP, unbound, FreeRADIUS and Kamailio as crates/emfor-check/tests/live.rs describes, run those tests,
+# PostgreSQL, OpenLDAP, unbound, FreeRADIUS, Kamailio and freeDiameter as crates/emfor-check/tests/live.rs describes, run those tests,
 # then run the emfor daemon with the pgsql plugin.
 set -eu
 
@@ -253,6 +253,45 @@ until grep -qi ':13C4 ' /proc/net/udp && grep -qi ':13C5 [0-9A-F:]* 0A ' /proc/n
     i=$((i + 1)); [ $i -lt 60 ] || { cat "$D/kamailio.log"; fail "kamailio did not start"; }; sleep 0.5
 done
 kamailio -v | head -1
+
+step "freediameter"
+FDX=$(dirname "$(find /usr/lib -name acl_wl.fdx | head -1)")
+[ -d "$FDX" ] || fail "freeDiameter extensions not found"
+# Only emfor.test may connect, over TCP without TLS (ALLOW_IPSEC). Debian's
+# freeDiameter has no extension that supports an application, so the
+# instance on 3868 is a relay (common with any application) and the one on
+# 3869 is not (no common application with anyone).
+printf 'ALLOW_IPSEC ALLOW_OLD_TLS emfor.test\n' > "$D/acl_wl.conf"
+# freeDiameter requires a client certificate on TLS, named like the peer.
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -keyout "$D/emfor.key" -out "$D/emfor.csr" -subj "/CN=emfor.test" 2>/dev/null
+printf 'subjectAltName = DNS:emfor.test\nextendedKeyUsage = clientAuth\n' > "$D/emfor.ext"
+openssl x509 -req -in "$D/emfor.csr" -CA "$D/ca.pem" -CAkey "$D/ca.key" -CAcreateserial \
+    -out "$D/emfor.crt" -days 2 -extfile "$D/emfor.ext" 2>/dev/null
+fd_conf() { # name port secport extra; Identity matches the server certificate
+    cat > "$D/$1.conf" <<CONF
+Identity = "db.test";
+Realm = "test";
+Port = $2;
+SecPort = $3;
+ListenOn = "127.0.0.1";
+No_SCTP;
+$4
+TLS_Cred = "$D/server.crt", "$D/server.key";
+TLS_CA = "$D/ca.pem";
+LoadExtension = "$FDX/acl_wl.fdx" : "$D/acl_wl.conf";
+CONF
+    freeDiameterd -c "$D/$1.conf" >"$D/$1.log" 2>&1 &
+}
+fd_conf dra 3868 5658 ""
+fd_conf hss 3869 5659 "NoRelay;"
+i=0
+# 3868 is 0F1C, 5658 161A and 3869 0F1D in /proc/net/tcp; 0A is LISTEN.
+until grep -qi ':0F1C [0-9A-F:]* 0A ' /proc/net/tcp && grep -qi ':161A [0-9A-F:]* 0A ' /proc/net/tcp \
+    && grep -qi ':0F1D [0-9A-F:]* 0A ' /proc/net/tcp; do
+    i=$((i + 1)); [ $i -lt 60 ] || { cat "$D/dra.log" "$D/hss.log"; fail "freeDiameter did not start"; }; sleep 0.5
+done
+grep -m1 "libfdcore" "$D/dra.log" || true
 
 step "emfor-check against the servers"
 EMFOR_LIVE_DIR="$D" emfor-check-live-test --ignored --test-threads=1

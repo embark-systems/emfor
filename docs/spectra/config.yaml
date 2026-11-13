@@ -81,7 +81,7 @@ context: |
     當掉時重啟，退避 1 秒起倍增、上限 30 秒，期間檢查回 error。
     載入、重載、--check-config 都實際啟動外掛並請它驗證 check_options；無法啟動、握手失敗、驗證逾時（5 秒）
     皆為設定錯誤。外掛超過 timeout_ms 未回覆算 error（外掛應自行在期限內回 down），不算後端失敗。
-  - 內附外掛（emfor-check-plugins）：emfor-check 一個執行檔，第一個參數選 redis / mysql / pgsql / ldap / dns / radius / sip；
+  - 內附外掛（emfor-check-plugins）：emfor-check 一個執行檔，第一個參數選 redis / mysql / pgsql / ldap / dns / radius / sip / diameter；
     crates/emfor-plugin 處理 protocol 1（emfor-check 與其他 Rust 外掛共用）。每次檢查開新連線；
     redis PING（有密碼先 AUTH）、mysql 與 pgsql 登入後 SELECT 1；role：redis master/replica（ROLE）、
     mysql primary（@@global.read_only = 0）、pgsql primary（pg_is_in_recovery() 為 false），可搭配 failover。
@@ -116,6 +116,12 @@ context: |
     回應以第一個 Via 的 branch、Call-ID、CSeq 比對，1xx 略過；UDP 不相符丟掉，TCP 不相符為 down。
     expect_status 預設 ["200-499"]（4xx 代表伺服器有在處理，5xx/6xx 為 down）；原因 status: <碼> <片語>、query:。
     TLS 鍵的檢查在 options::tls_settings 共用。實機測試用 Kamailio 5.6.3（5060 UDP/TCP、5061 TLS）。
+  - diameter 外掛（emfor-check-diameter）：emfor-check diameter 每次檢查開新 TCP（可選 TLS）連線，CER/CEA → DWR/DWA，
+    CEA 成功後一律送 DPR（Disconnect-Cause 2）、最多等 200 ms；訊息自己編解碼（不新增套件）；對端的請求忽略。
+    Result-Code 2xxx 為成功，其他為 cea: / dwa: <碼> <RFC 6733 名稱>；必填 origin_host、origin_realm 與至少一個 application。
+    TLS 可帶客戶端憑證 tls_cert_file / tls_key_file（RFC 6733 雙向認證，freeDiameter 要求）：emfor-tls 的
+    ClientCertificate、client_config_with_client、handshake_with_config，只由 diameter 使用，TlsSettings 不變。
+    實機測試用 freeDiameter 1.2.1（Debian 沒有 test_app：relay 節點 3868/5658 測 up，NoRelay 節點 3869 測 5010；未允許的 peer 回 3010）。
   - client（emfor-clients）：emfor_lookup(名稱, affinity_key?) 回傳 "ip:port"（LMDB 後端 id，IPv6 為 [ip]:port）；
     錯誤碼 UNAVAILABLE（LMDB 打不開／lock 格式不符）、INCOMPATIBLE（版本或 JSON 無法解析）、NOT_FOUND、ALL_DOWN，
     各語言依慣例回報。心跳過期（預設 max_staleness 3 秒）或歸零時所有後端視為未知，依 on_all_down 處理，

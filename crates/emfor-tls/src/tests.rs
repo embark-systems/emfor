@@ -175,3 +175,95 @@ fn local_errors() {
         libc::ECONNREFUSED
     )));
 }
+
+#[tokio::test]
+async fn client_certificate_when_the_server_asks() {
+    let pki = mutual_pki("dra.test", "emfor.test");
+    let dir = tempfile::tempdir().unwrap();
+    let path = |name: &str| dir.path().join(name);
+    std::fs::write(path("ca.pem"), &pki.ca_pem).unwrap();
+    std::fs::write(path("client.crt"), &pki.client_cert_pem).unwrap();
+    std::fs::write(path("client.key"), &pki.client_key_pem).unwrap();
+    let addr = tls_server(pki.server_config, b"hi").await;
+    let tls = settings(Some(&path("ca.pem")), Some("dra.test"), true);
+    let client = ClientCertificate {
+        cert_file: path("client.crt"),
+        key_file: path("client.key"),
+    };
+
+    let read = |config: Arc<ClientConfig>| {
+        let tls = tls.clone();
+        async move {
+            let stream = TcpStream::connect(addr).await.unwrap();
+            let mut s = handshake_with_config(stream, config, &tls, addr.ip(), T).await?;
+            let mut text = String::new();
+            let _ = s.read_to_string(&mut text).await;
+            Ok::<_, TlsFailure>(text)
+        }
+    };
+    let with = client_config_with_client(&tls, Some(&client)).unwrap();
+    assert_eq!(read(with).await.unwrap(), "hi");
+    // Without one the server rejects the connection: TLS 1.3 completes the
+    // handshake on the client side first, so nothing arrives.
+    let without = client_config(&tls).unwrap();
+    assert_ne!(read(without).await.unwrap_or_default(), "hi");
+}
+
+#[test]
+fn client_certificate_files() {
+    let pki = mutual_pki("dra.test", "emfor.test");
+    let dir = tempfile::tempdir().unwrap();
+    let path = |name: &str| dir.path().join(name);
+    std::fs::write(path("client.crt"), &pki.client_cert_pem).unwrap();
+    std::fs::write(path("client.key"), &pki.client_key_pem).unwrap();
+    std::fs::write(path("empty"), "").unwrap();
+
+    assert_eq!(check_cert_file(&path("client.crt")), Ok(()));
+    assert_eq!(check_key_file(&path("client.key")), Ok(()));
+    assert_eq!(
+        check_cert_file(&path("client.key")),
+        Err("no certificate found".into())
+    );
+    assert_eq!(
+        check_key_file(&path("client.crt")),
+        Err("no private key found".into())
+    );
+    assert_eq!(
+        check_key_file(&path("missing")),
+        Err("file not found".into())
+    );
+    assert_eq!(
+        check_key_file(Path::new("client.key")),
+        Err("not an absolute path".into())
+    );
+
+    let tls = settings(None, None, false);
+    let config = |cert: &str, key: &str| {
+        client_config_with_client(
+            &tls,
+            Some(&ClientCertificate {
+                cert_file: path(cert),
+                key_file: path(key),
+            }),
+        )
+        .map(|_| ())
+    };
+    assert_eq!(config("client.crt", "client.key"), Ok(()));
+    let local = |reason: &str| Err(TlsFailure::local(reason));
+    assert_eq!(
+        config("missing", "client.key"),
+        local("tls_cert_file: entity not found")
+    );
+    assert_eq!(
+        config("empty", "client.key"),
+        local("tls_cert_file: no certificate found")
+    );
+    assert_eq!(
+        config("client.crt", "missing"),
+        local("tls_key_file: entity not found")
+    );
+    assert_eq!(
+        config("client.crt", "empty"),
+        local("tls_key_file: no private key found")
+    );
+}

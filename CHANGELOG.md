@@ -24,6 +24,14 @@
   407 is working, while 503 (overload, maintenance) and other 5xx and
   6xx codes are down with `status: <code> <reason>`. See
   docs/deploy/plugins.md.
+- `emfor-check diameter` checks Diameter nodes (HSS, PCRF, OCS, DRA)
+  over TCP or TLS: a capabilities exchange and a device watchdog on a
+  new connection, then a Disconnect-Peer-Request. It is down with the
+  Result-Code and its RFC 6733 name, such as
+  `cea: 3010 DIAMETER_UNKNOWN_PEER` or
+  `cea: 5010 DIAMETER_NO_COMMON_APPLICATION`. TLS can present a client
+  certificate (`tls_cert_file`, `tls_key_file`), which nodes such as
+  freeDiameter require. See docs/deploy/plugins.md.
 
 ### Deployment
 

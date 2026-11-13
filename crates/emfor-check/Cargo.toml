@@ -1,6 +1,6 @@
 [package]
 name = "emfor-check"
-description = "emfor checker plugins for redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS and SIP"
+description = "emfor checker plugins for redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP and Diameter"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

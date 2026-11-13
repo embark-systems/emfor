@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
@@ -38,6 +38,16 @@ pub struct TlsSettings {
     pub ca_file: Option<PathBuf>,
 }
 
+/// A client certificate chain and its private key, PEM files that are read
+/// every time a client configuration is built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientCertificate {
+    /// `tls_cert_file`.
+    pub cert_file: PathBuf,
+    /// `tls_key_file`.
+    pub key_file: PathBuf,
+}
+
 /// A TLS step that failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TlsFailure {
@@ -45,7 +55,8 @@ pub struct TlsFailure {
     /// certificates, out of resources), not the backend's: an `error`
     /// result rather than `down`.
     pub local: bool,
-    /// The check reason, starting `tls: ` or `ca_file: `.
+    /// The check reason, starting `tls: `, `ca_file: `, `tls_cert_file: `
+    /// or `tls_key_file: `.
     pub reason: String,
 }
 
@@ -90,8 +101,28 @@ pub async fn handshake(
 ) -> Result<TlsStream<TcpStream>, TlsFailure> {
     let start = Instant::now();
     let config = client_config(tls)?;
+    handshake_with_config(
+        stream,
+        config,
+        tls,
+        ip,
+        remaining.saturating_sub(start.elapsed()),
+    )
+    .await
+}
+
+/// [`handshake`] with a configuration built beforehand, for example by
+/// [`client_config_with_client`] before connecting; `tls` gives the server
+/// name. The budget rule is the same, from `remaining` as given.
+pub async fn handshake_with_config(
+    stream: TcpStream,
+    config: Arc<ClientConfig>,
+    tls: &TlsSettings,
+    ip: IpAddr,
+    remaining: Duration,
+) -> Result<TlsStream<TcpStream>, TlsFailure> {
     let handshake = TlsConnector::from(config).connect(server_name(tls, ip), stream);
-    let budget = remaining.saturating_sub(start.elapsed()) * 9 / 10;
+    let budget = remaining * 9 / 10;
     let budget = if budget >= MIN_HANDSHAKE_BUDGET {
         budget
     } else {
@@ -130,21 +161,38 @@ fn provider() -> Arc<CryptoProvider> {
 /// a reload. An unreadable `ca_file` or a host without CA certificates is a
 /// local failure.
 pub fn client_config(tls: &TlsSettings) -> Result<Arc<ClientConfig>, TlsFailure> {
+    client_config_with_client(tls, None)
+}
+
+/// [`client_config`] that presents `client` when the server asks for a
+/// client certificate. Its files are read on every call; one that cannot
+/// be read, or holds no certificate or no private key, is a local failure
+/// (`tls_cert_file: ` or `tls_key_file: `).
+pub fn client_config_with_client(
+    tls: &TlsSettings,
+    client: Option<&ClientCertificate>,
+) -> Result<Arc<ClientConfig>, TlsFailure> {
+    let client = client.map(read_client_certificate).transpose()?;
     let provider = provider();
     let builder = ClientConfig::builder_with_provider(Arc::clone(&provider))
         .with_safe_default_protocol_versions()
         .map_err(|e| TlsFailure::local(format!("tls: {e}")))?;
-    let config = if !tls.verify {
+    let builder = if !tls.verify {
         builder
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(AcceptAnyCertificate(provider)))
-            .with_no_client_auth()
     } else {
         let roots = match &tls.ca_file {
             Some(path) => Arc::new(roots_from_file(path)?),
             None => system_roots()?,
         };
-        builder.with_root_certificates(roots).with_no_client_auth()
+        builder.with_root_certificates(roots)
+    };
+    let config = match client {
+        None => builder.with_no_client_auth(),
+        Some((certs, key)) => builder
+            .with_client_auth_cert(certs, key)
+            .map_err(|e| TlsFailure::local(format!("tls_key_file: {e}")))?,
     };
     Ok(Arc::new(config))
 }
@@ -187,6 +235,44 @@ pub fn check_ca_file(path: &Path) -> Result<(), String> {
         return Err("no certificate found".into());
     }
     Ok(())
+}
+
+/// Validate a `tls_cert_file` value by reading it; the error is the
+/// option's message.
+pub fn check_cert_file(path: &Path) -> Result<(), String> {
+    check_ca_file(path)
+}
+
+/// Validate a `tls_key_file` value by reading it; the error is the
+/// option's message. It never contains the file's content.
+pub fn check_key_file(path: &Path) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("not an absolute path".into());
+    }
+    let bytes = std::fs::read(path).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => "file not found".to_string(),
+        kind => format!("cannot read: {kind}"),
+    })?;
+    match PrivateKeyDer::from_pem_slice(&bytes) {
+        Ok(_) => Ok(()),
+        Err(_) => Err("no private key found".into()),
+    }
+}
+
+type ClientAuth = (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>);
+
+fn read_client_certificate(client: &ClientCertificate) -> Result<ClientAuth, TlsFailure> {
+    let certs = std::fs::read(&client.cert_file)
+        .map_err(|e| TlsFailure::local(format!("tls_cert_file: {}", e.kind())))?;
+    let certs = load_certificates(&certs);
+    if certs.is_empty() {
+        return Err(TlsFailure::local("tls_cert_file: no certificate found"));
+    }
+    let key = std::fs::read(&client.key_file)
+        .map_err(|e| TlsFailure::local(format!("tls_key_file: {}", e.kind())))?;
+    let key = PrivateKeyDer::from_pem_slice(&key)
+        .map_err(|_| TlsFailure::local("tls_key_file: no private key found"))?;
+    Ok((certs, key))
 }
 
 fn read_ca_file(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsFailure> {

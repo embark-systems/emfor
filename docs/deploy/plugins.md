@@ -1,6 +1,6 @@
-# Checking redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS and SIP with emfor-check
+# Checking redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP and Diameter with emfor-check
 
-`emfor-check` is the plugin program that ships with emfor. One executable holds seven plugins; its only argument picks which one runs:
+`emfor-check` is the plugin program that ships with emfor. One executable holds eight plugins; its only argument picks which one runs:
 
 | Argument | Checks | Up when |
 | --- | --- | --- |
@@ -11,6 +11,7 @@
 | `dns` | DNS servers (unbound, BIND, PowerDNS, …) | the answer to one query has an expected response code, and records when asked for |
 | `radius` | RADIUS servers (FreeRADIUS, …) | a Status-Server (or Access-Request) gets a correctly signed accept |
 | `sip` | SIP proxies, registrars and SBCs (Kamailio, OpenSIPS, Asterisk, …) | an OPTIONS request gets a final response with an expected status code |
+| `diameter` | Diameter nodes: HSS, PCRF, OCS, DRA (freeDiameter, …) | the capabilities exchange (CER / CEA) and a device watchdog (DWR / DWA) succeed |
 
 Each plugin runs as one long-lived child process of the emfor daemon, shared by every service that uses it (see [the plugin protocol](../plugins/protocol-v1.md)). Each check opens a new connection to the backend (for `dns` over UDP, a new socket) and closes it before answering, so a server that refuses new connections (for example because `max_connections` is reached) is reported as down.
 
@@ -54,7 +55,7 @@ The plugin name in `[plugins."<name>"]` is your choice; the argument after the p
 
 ### Options
 
-These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns`, `radius` and `sip` plugins have their own, see [DNS](#dns), [RADIUS](#radius) and [SIP](#sip).
+These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns`, `radius`, `sip` and `diameter` plugins have their own, see [DNS](#dns), [RADIUS](#radius), [SIP](#sip) and [Diameter](#diameter).
 
 | Key | Plugins | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
@@ -213,6 +214,58 @@ Any other key is an error. SCTP, WebSocket, REGISTER and authentication are not 
 - The request has a Via with `rport`, so the server answers where the request came from even behind NAT.
 - SIP servers often log every OPTIONS request; use a longer `interval`, or lower the log level for OPTIONS on the server.
 
+### Diameter
+
+The `diameter` plugin opens a new TCP connection (or TLS) to the node on every check, exchanges capabilities (CER / CEA, RFC 6733) and sends a Device-Watchdog-Request (DWR / DWA). Both answers must carry a Result-Code from 2000 to 2999. After a successful capabilities exchange, whatever the result, it sends a Disconnect-Peer-Request with Disconnect-Cause `DO_NOT_WANT_TO_TALK_TO_YOU`, waits at most 200 ms for the answer, and closes the connection; this happens after the result is reported, so a node that does not answer it does not slow the check down.
+
+```toml
+[plugins."diameter"]
+command = ["/usr/local/libexec/emfor-check", "diameter"]
+
+[services."pcrf.svc.emfor"]
+check = "diameter"
+backends = ["10.0.11.1:3868", "10.0.11.2:3868"]
+interval = "10s"
+
+[services."pcrf.svc.emfor".check_options]
+origin_host = "emfor-app01.example.org"
+origin_realm = "example.org"
+# Gx (3GPP TS 29.212): application 16777238 of vendor 10415 (3GPP)
+vendor_specific_application_ids = [{ vendor_id = 10415, auth_application_id = 16777238 }]
+supported_vendor_ids = [10415]
+```
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `origin_host` | string | required | Origin-Host: a DiameterIdentity of 1 to 255 ASCII letters, digits, `-` and `.` |
+| `origin_realm` | string | required | Origin-Realm, the same rules |
+| `auth_application_ids` | array of integers | `[]` | Auth-Application-Id values, 0 to 4294967295 |
+| `acct_application_ids` | array of integers | `[]` | Acct-Application-Id values |
+| `vendor_specific_application_ids` | array of tables | `[]` | Each `{ vendor_id, auth_application_id }` or `{ vendor_id, acct_application_id }`, for 3GPP and other vendor applications |
+| `supported_vendor_ids` | array of integers | `[]` | Supported-Vendor-Id values |
+| `host_ip_address` | string | the local address of the connection | Host-IP-Address, IPv4 or IPv6 |
+| `tls` | boolean | `false` | TLS from the start of the connection (usually port 5658) |
+| `tls_verify`, `server_name`, `ca_file` | | | As for the other plugins, see [TLS](#tls); need `tls = true` |
+| `tls_cert_file`, `tls_key_file` | absolute paths | | A PEM client certificate chain and its PEM private key, presented when the node asks for one; set both, with `tls = true` |
+
+At least one of `auth_application_ids`, `acct_application_ids` and `vendor_specific_application_ids` is required: the node accepts a peer only when they share an application, and emfor does not guess which one yours has. Any other key is an error. SCTP, DTLS, application requests (S6a AIR, Gx CCR, …) and a long-lived peer connection are not supported.
+
+- **Allow emfor as a peer.** Diameter nodes accept only the peers they know: add every emfor host's `origin_host` to the node's peer list or ACL. Many implementations allow a wildcard or a whole realm. Give each emfor host its own `origin_host` so the node's logs tell them apart.
+- **Client certificates.** RFC 6733 TLS authenticates both sides, and nodes such as freeDiameter require a client certificate whose name matches the peer's Origin-Host. Without one the TLS handshake completes on emfor's side and the node then closes the connection, so the check is down with `cea: connection closed by peer` (or `tls: ` when the node sends a TLS alert first). `tls_cert_file` and `tls_key_file` are read on every check, so a renewed certificate takes effect without a reload; a file that cannot be read, or holds no certificate or no private key, is `error` with `tls_cert_file: ` or `tls_key_file: `, and nothing is sent. A key that does not belong to the certificate is reported as `tls_key_file: ` too.
+- **Interval.** Every check is a peer connection, a capabilities exchange and a disconnect, which the node usually logs. Use an `interval` of 10 seconds or more.
+- A failed capabilities exchange or watchdog is down with `cea: <code> <name>` or `dwa: <code> <name>`; codes RFC 6733 does not name are shown as the number alone. Common ones:
+
+| Reason | Meaning |
+| --- | --- |
+| `cea: 3010 DIAMETER_UNKNOWN_PEER` | The node does not know this `origin_host` (or realm): add it to the node's peer list |
+| `cea: 5010 DIAMETER_NO_COMMON_APPLICATION` | The node supports none of the applications in `check_options` |
+| `cea: 3004 DIAMETER_TOO_BUSY`, `dwa: 3004 DIAMETER_TOO_BUSY` | The node is overloaded |
+| `cea: connection closed by peer` | The node closed the connection before answering: an unknown peer on some implementations, or a TLS node that wants a client certificate |
+| `dwa: connection closed by peer` | The node accepted the peer but closed the connection before answering the watchdog |
+| `query: ` | A message that is not Diameter version 1, has inconsistent lengths, is longer than 65536 bytes, or an answer without Result-Code |
+
+Requests the node sends on its own (for example its own DWR) are ignored and not answered.
+
 ## Reading results
 
 | Reason starts with | Result | Meaning |
@@ -225,8 +278,9 @@ Any other key is an error. SCTP, WebSocket, REGISTER and authentication are not 
 | `role is ` | down | The backend has another role |
 | `rcode: `, `answer: ` | down | `dns`: an unexpected response code, or no records of the asked type, see [DNS](#dns) |
 | `status: ` | down | `sip`: a final status code outside `expect_status`, see [SIP](#sip) |
-| `password_file: `, `secret_file: `, `ca_file: ` | error | The file could not be read during the check |
+| `cea: `, `dwa: ` | down | `diameter`: a capabilities exchange or watchdog answer with a failed Result-Code, or the node closed the connection, see [Diameter](#diameter) |
+| `password_file: `, `secret_file: `, `ca_file: `, `tls_cert_file: `, `tls_key_file: ` | error | The file could not be read during the check |
 
 ## What is tested
 
-`tests/plugins/run.sh` checks all seven plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary and a replica, read-only server or standby, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; and Kamailio 5.6.3 over UDP, TCP and TLS. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, and the `sip` plugin against Kamailio only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it. Like the rest of emfor, the plugins have not been tested on FreeBSD yet.
+`tests/plugins/run.sh` checks all eight plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary and a replica, read-only server or standby, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; Kamailio 5.6.3 over UDP, TCP and TLS; and freeDiameter 1.2.1 over TCP and over TLS with a client certificate, with an ACL that knows one peer. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, the `sip` plugin against Kamailio only, and the `diameter` plugin against freeDiameter only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it. Like the rest of emfor, the plugins have not been tested on FreeBSD yet.

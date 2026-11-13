@@ -437,3 +437,46 @@ fn sip_live() {
         closed.1
     );
 }
+
+#[test]
+#[ignore = "needs the emfor-plugins-test container"]
+fn diameter_live() {
+    let mut p = Plugin::start("diameter");
+    // A 3GPP-style vendor-specific application; the relay on 3868 has every
+    // application in common, the node on 3869 none.
+    let peer = |host: &str, extra: Value| {
+        let mut o = json!({
+            "origin_host": host,
+            "origin_realm": "test",
+            "vendor_specific_application_ids": [{ "vendor_id": 999999, "auth_application_id": 4294967040u64 }],
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            o[k] = v.clone();
+        }
+        o
+    };
+    up(p.check(3868, peer("emfor.test", json!({}))));
+    let tls = |client: bool| {
+        let mut o = json!({ "tls": true, "server_name": "db.test", "ca_file": file("ca.pem") });
+        if client {
+            o["tls_cert_file"] = json!(file("emfor.crt"));
+            o["tls_key_file"] = json!(file("emfor.key"));
+        }
+        peer("emfor.test", o)
+    };
+    up(p.check(5658, tls(true)));
+    // freeDiameter requires a client certificate: without one the TLS
+    // handshake completes on our side, then it closes the connection.
+    down(p.check(5658, tls(false)), "cea: connection closed by peer");
+    let stranger = p.check(3868, peer("stranger.test", json!({})));
+    assert_eq!(stranger.0, "down", "reason: {}", stranger.1);
+    assert_eq!(stranger.1, "cea: 3010 DIAMETER_UNKNOWN_PEER");
+    assert_eq!(
+        p.check(
+            3869,
+            json!({ "origin_host": "emfor.test", "origin_realm": "test", "auth_application_ids": [4] })
+        ),
+        ("down".into(), "cea: 5010 DIAMETER_NO_COMMON_APPLICATION".into())
+    );
+    down(p.check(3999, peer("emfor.test", json!({}))), "connect: ");
+}

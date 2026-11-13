@@ -9,7 +9,7 @@
 | `tcp` | 一條 TCP 連線，可選擇加上 TLS 與 send/expect 交換 | 任何 TCP 服務；以歡迎訊息開場的協定，例如 SMTP |
 | `http` | 一個 `GET` 請求與它的狀態碼 | Web 服務與 health endpoint |
 | `exec` | 每次檢查執行一次的程式 | 既有的 Nagios 式 script、不頻繁的檢查 |
-| plugin 名稱 | 長時間執行的 plugin 程式 | redis、MySQL、PostgreSQL、LDAP、DNS、RADIUS、SIP（`emfor-check`），或你自己寫的 |
+| plugin 名稱 | 長時間執行的 plugin 程式 | redis、MySQL、PostgreSQL、LDAP、DNS、RADIUS、SIP、Diameter（`emfor-check`），或你自己寫的 |
 
 在服務的 `timeout` 內沒有完成的檢查，結果是 `down`，reason 為 `timeout`。唯一的例外是 plugin：plugin 沒有及時回答時結果是 `error`，因為遲到的是 plugin，不是 backend。
 
@@ -114,8 +114,9 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 | `dns` | 一次查詢得到預期的 response code（設定 `expect_answer` 時還要有記錄） |
 | `radius` | Status-Server（或 Access-Request）得到以共享密鑰簽署的 accept |
 | `sip` | OPTIONS 請求得到 `expect_status` 內的最終狀態碼（預設 200 到 499） |
+| `diameter` | 能力交換（CER / CEA）與 Device-Watchdog（DWR / DWA）成功 |
 
-主要選項：`user`、`password_file`（絕不寫密碼本身；每次檢查都會讀取）、`database`（`pgsql`）、`role`（redis 為 `master`/`replica`，MySQL 與 PostgreSQL 為 `primary`，讓 `failover` 跟著 primary 走），以及 `tls`、`starttls`（`ldap`）、`tls_verify`、`server_name`、`ca_file`。`dns` plugin 則用 `name`、`type`、`transport`、`recursion_desired`、`expect_rcode`、`expect_answer`；`radius` plugin 用 `secret_file`、`request`、`application`、`user`、`password_file`、`reject_is_up`、`nas_identifier`、`require_message_authenticator`；`sip` plugin 用 `transport`、`tls`（及 TLS 相關鍵）、`uri`、`from`、`expect_status`。[docs/deploy/plugins.md](../deploy/plugins.md) 列出所有選項與 reason。
+主要選項：`user`、`password_file`（絕不寫密碼本身；每次檢查都會讀取）、`database`（`pgsql`）、`role`（redis 為 `master`/`replica`，MySQL 與 PostgreSQL 為 `primary`，讓 `failover` 跟著 primary 走），以及 `tls`、`starttls`（`ldap`）、`tls_verify`、`server_name`、`ca_file`。`dns` plugin 則用 `name`、`type`、`transport`、`recursion_desired`、`expect_rcode`、`expect_answer`；`radius` plugin 用 `secret_file`、`request`、`application`、`user`、`password_file`、`reject_is_up`、`nas_identifier`、`require_message_authenticator`；`sip` plugin 用 `transport`、`tls`（及 TLS 相關鍵）、`uri`、`from`、`expect_status`；`diameter` plugin 用 `origin_host`、`origin_realm`、各 application id、`supported_vendor_ids`、`host_ip_address`、`tls`（及 TLS 相關鍵與客戶端憑證 `tls_cert_file`、`tls_key_file`）。[docs/deploy/plugins.md](../deploy/plugins.md) 列出所有選項與 reason。
 
 `emfor check-config` 與每次 reload 都會啟動 plugin，讓它們驗證每個服務的 `check_options`，所以錯誤會在設定套用前就被發現。
 

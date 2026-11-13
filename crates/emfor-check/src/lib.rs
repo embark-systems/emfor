@@ -1,8 +1,9 @@
 //! The plugins behind the `emfor-check` executable: the database plugins
-//! redis, mysql, pgsql and ldap, and the network plugins dns, radius and
-//! sip.
+//! redis, mysql, pgsql and ldap, and the network plugins dns, radius, sip
+//! and diameter.
 
 mod ber;
+mod diameter;
 mod dns;
 mod ldap;
 mod mysql;
@@ -26,6 +27,7 @@ pub enum Kind {
     Dns,
     Radius,
     Sip,
+    Diameter,
 }
 
 impl Kind {
@@ -39,6 +41,7 @@ impl Kind {
             "dns" => Some(Kind::Dns),
             "radius" => Some(Kind::Radius),
             "sip" => Some(Kind::Sip),
+            "diameter" => Some(Kind::Diameter),
             _ => None,
         }
     }
@@ -53,6 +56,7 @@ impl Kind {
             Kind::Dns => "dns",
             Kind::Radius => "radius",
             Kind::Sip => "sip",
+            Kind::Diameter => "diameter",
         }
     }
 }
@@ -84,6 +88,7 @@ impl Plugin for Service {
             Kind::Dns => dns::parse(options).map(|_| ()),
             Kind::Radius => radius::parse(options, true).map(|_| ()),
             Kind::Sip => sip::parse(options, true).map(|_| ()),
+            Kind::Diameter => diameter::parse(options, true).map(|_| ()),
             kind => options::parse(kind, options).map(|_| ()),
         };
         result.err().unwrap_or_default()
@@ -106,6 +111,10 @@ impl Plugin for Service {
                 Ok(settings) => sip::check(&req, &settings).await,
                 Err(errors) => options_error(errors),
             },
+            Kind::Diameter => match diameter::parse(&req.options, false) {
+                Ok(settings) => diameter::check(&req, &settings).await,
+                Err(errors) => options_error(errors),
+            },
             kind => check_database(kind, &req).await,
         }
     }
@@ -124,7 +133,7 @@ async fn check_database(kind: Kind, req: &CheckRequest) -> CheckOutcome {
         Kind::Ldap => ldap::check(req, &settings).await,
         // `Service::check` sends the network plugins elsewhere; answering
         // `error` keeps a mistake there visible without a panic.
-        Kind::Dns | Kind::Radius | Kind::Sip => CheckOutcome::Error(format!(
+        Kind::Dns | Kind::Radius | Kind::Sip | Kind::Diameter => CheckOutcome::Error(format!(
             "internal: {} check sent to the database plugins",
             kind.name()
         )),
