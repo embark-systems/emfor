@@ -214,6 +214,7 @@ The server answers only `GET /metrics` (a query string is ignored): other paths 
 | `emfor_peer_notifications_total` | counter | `direction` | With `[peers]`: backend failure reports `sent` (one per receiving member) and `received` (accepted, whether acted on or not) |
 | `emfor_peer_results_total` | counter | `direction` | With `[peers]`: check results of assigned checkers `sent` (one per receiving member) and `received` (accepted, whether counted or not) |
 | `emfor_peer_disagreements` | gauge | | With `[peers]`: backends the group votes down while this daemon's own check passes |
+| `emfor_peer_checks_skipped_total` | counter | | With `[peers]`: check times this daemon did not check a backend because two of its assigned checkers agreed |
 
 The two counters start at 0 when a backend first appears in the running daemon, keep counting across reloads (also when `check` or `check_options` change), and start again from 0 if the backend is removed and added back. They restart with the daemon; Prometheus handles that as a counter reset.
 

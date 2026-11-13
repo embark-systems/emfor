@@ -26,6 +26,14 @@
   `--json` has `peers`, from the new store key `meta/peers` (format
   version stays 1, clients ignore it). New metrics
   `emfor_peer_results_total` and `emfor_peer_disagreements`.
+- Split checks: a member that is not one of a backend's assigned checkers
+  no longer checks it every interval. While two assigned checkers agree
+  their results decide (`up`, or `down` with `peers 2/3: …`); it still
+  checks the backend itself, with the service's own check, at least every
+  fifth interval, every interval while its own check fails, and whenever
+  the votes do not agree. A failure only such a member sees is noticed up
+  to about five intervals later. New metric
+  `emfor_peer_checks_skipped_total`.
 
 ### Status
 

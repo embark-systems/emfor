@@ -148,14 +148,23 @@ local store. Members that are not reachable change nothing: the vote falls
 back to each daemon's own checks. There is no master, and a group never
 spans two sites.
 
-A later step is planned on the same group: splitting the full checks among
-the assigned checkers so each backend gets fewer checks.
+The checks are split, too. A member that is not an assigned checker of a
+backend does not check it while two of its assigned checkers agree: two
+`up` votes count as `up`, two `down` votes as `down` (`peers 2/3:`). It
+still makes its own check, with the service's usual `check`, at least
+every fifth `interval`, and every time while there are fewer than two
+agreeing votes. When its own check fails it checks every `interval` again
+until it passes, so a failure only this host sees still reads
+`local: <reason>`; such a failure is noticed within about five `interval`s
+plus `fall` checks instead of `fall` checks. With three assigned checkers
+and N members a backend gets about 3 + (N − 3) / 5 checks per `interval`
+instead of N.
 
 ## Failure behavior at a glance
 
 | What fails | What applications see |
 | --- | --- |
-| One backend | It turns `unhealthy` after `fall` failed checks (about 6 seconds with the defaults) and is no longer returned. In a peer group, once one member has noticed, the others follow within about a second; when two of its three assigned checkers see it down, every member marks it down after `fall` checks, also where it still answers. |
+| One backend | It turns `unhealthy` after `fall` failed checks (about 6 seconds with the defaults) and is no longer returned. In a peer group, once one member has noticed, the others follow within about a second; when two of its three assigned checkers see it down, every member marks it down after `fall` checks, also where it still answers. A failure that only one member that is not an assigned checker sees takes up to about five `interval`s longer there. |
 | Every backend of a service | `open`: any backend; `closed`: `ALL_DOWN` / `SERVFAIL`. |
 | The emfor daemon stops or hangs | After 3 seconds the store is stale: `open` services return any backend, `closed` services fail. Lookups never block. |
 | The store file is missing or unreadable | Lookups fail with `UNAVAILABLE`. |

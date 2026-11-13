@@ -94,6 +94,7 @@ no TLS; keep it on loopback or firewall it.
 | `emfor_peer_notifications_total{direction}` | With `[peers]`: failure reports `sent` (one per member) and `received` |
 | `emfor_peer_results_total{direction}` | With `[peers]`: check results of assigned checkers `sent` (one per member) and `received` |
 | `emfor_peer_disagreements` | With `[peers]`: backends the group votes down while this host's own check passes |
+| `emfor_peer_checks_skipped_total` | With `[peers]`: checks this host did not make because two assigned checkers agreed |
 | `emfor_build_info{version}`, `emfor_start_time_seconds` | The daemon |
 
 [examples/prometheus/emfor-rules.yml](../../examples/prometheus/emfor-rules.yml)
@@ -131,6 +132,14 @@ definition differs" line means that member's `check`, `check_options` or
 `timeout` for the service differ from this host's, so its results are not
 counted; make the configs match. The same data is in the store key
 `meta/peers` and in `emfor status --json` as `peers`.
+
+In a group of four or more, `emfor_peer_checks_skipped_total` grows on
+hosts that are not an assigned checker of some backends: they let the
+votes decide most check times and check those backends themselves about
+every fifth `interval`. `emfor_backend_checks_total` still counts every
+check time, decided by votes or not. A backend's latency is measured only
+by this host's own checks, so on such a host it changes about every fifth
+`interval`.
 
 ## Logs
 

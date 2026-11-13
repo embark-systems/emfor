@@ -12,6 +12,7 @@ use tokio::time::Instant;
 use crate::checker::{CheckRequest, CheckResult, Checker, run_check};
 use crate::config::{Backend, Settings};
 use crate::peers::{BackendDown, BackendResult, Outcome, PeerHooks, PeerOut, Recheck};
+use crate::quorum::Votes;
 use crate::state::{BackendHealth, Thresholds, Transition, next_latency};
 use crate::writer::WriterMsg;
 
@@ -116,6 +117,49 @@ pub fn starts_fast_run(
         && last_run_end.is_none_or(|end| now.duration_since(end) > s.interval * s.fall)
 }
 
+/// Every this many check times a daemon that is not an assigned checker of
+/// a backend makes its own check, at least (spec peer-group, "Split
+/// checks").
+pub const OWN_CHECK_EVERY: u32 = 5;
+
+/// What a check time of a backend in a peer group comes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Step {
+    /// Make this daemon's own check.
+    Check,
+    /// The votes decided the result; no check.
+    Decided(CheckResult),
+}
+
+/// Whether this daemon checks a backend at this check time (spec
+/// peer-group, "Split checks"). `last_own_up` is `None` before the first
+/// own check, `has_latency` whether the backend has a latency now, and
+/// `decided_in_row` the check times decided by votes since the last own
+/// check.
+pub fn split(
+    votes: &Votes,
+    last_own_up: Option<bool>,
+    has_latency: bool,
+    decided_in_row: u32,
+    in_fast_run: bool,
+) -> Step {
+    let must_check = !votes.has_checkers
+        || votes.assigned
+        || last_own_up != Some(true)
+        || decided_in_row >= OWN_CHECK_EVERY - 1
+        || in_fast_run;
+    if must_check {
+        return Step::Check;
+    }
+    match votes.decided() {
+        // A backend turns healthy here only with a measured latency, or
+        // `balance = "fastest"` would leave it out of the fast pool.
+        Some(CheckResult::Up) if !has_latency => Step::Check,
+        Some(result) => Step::Decided(result),
+        None => Step::Check,
+    }
+}
+
 /// The peer side of one backend task: reports in, failures out.
 #[derive(Debug, Clone, Default)]
 pub struct PeerLink {
@@ -181,20 +225,56 @@ pub fn spawn_backend(
         // Checks left in the current fast recheck run (0: no run).
         let mut fast_left: u32 = 0;
         let mut last_run_end: Option<Instant> = None;
+        // Split checks: the last own result was up (`None`: no own check
+        // yet), and check times decided by votes since then.
+        let mut last_own_up: Option<bool> = None;
+        let mut decided_in_row: u32 = 0;
         let first = first_delay(settings.borrow().interval, &mut rng);
         tokio::time::sleep(first).await;
         loop {
             let s = *settings.borrow();
-            let req = CheckRequest::new(service.clone(), backend.addr, s.timeout);
-            // One-time setup (an HTTP client) happens here, outside the
-            // timed part, so it does not inflate the first latency sample.
-            checker.prepare(backend.addr);
-            let started = Instant::now();
-            let own = run_check(checker.as_ref(), req).await;
-            let sample_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-            let result = match &peers.peers {
-                Some(p) => combine(p, &service, &backend.id, own, s.interval),
-                None => own,
+            let step = match &peers.peers {
+                Some(p) => {
+                    let digest = p.targets.digest(&service).unwrap_or_default();
+                    let votes = p
+                        .quorum
+                        .votes(&service, &backend.id, &digest, Instant::now());
+                    split(
+                        &votes,
+                        last_own_up,
+                        latency_us.is_some(),
+                        decided_in_row,
+                        fast_left > 0,
+                    )
+                }
+                None => Step::Check,
+            };
+            let (result, sample_us, own_check) = match step {
+                Step::Decided(result) => {
+                    decided_in_row += 1;
+                    if let Some(p) = &peers.peers {
+                        p.quorum.skip();
+                    }
+                    (result, None, false)
+                }
+                Step::Check => {
+                    let req = CheckRequest::new(service.clone(), backend.addr, s.timeout);
+                    // One-time setup (an HTTP client) happens here, outside
+                    // the timed part, so it does not inflate the first
+                    // latency sample.
+                    checker.prepare(backend.addr);
+                    let started = Instant::now();
+                    let own = run_check(checker.as_ref(), req).await;
+                    let sample_us =
+                        u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+                    last_own_up = Some(matches!(own, CheckResult::Up));
+                    decided_in_row = 0;
+                    let result = match &peers.peers {
+                        Some(p) => combine(p, &service, &backend.id, own, s.interval),
+                        None => own,
+                    };
+                    (result, Some(sample_us), true)
+                }
             };
             let thresholds = Thresholds {
                 rise: s.rise,
@@ -203,7 +283,7 @@ pub fn spawn_backend(
             };
             let transition = health.apply(&result, Instant::now(), thresholds);
             let reason = result.reason().map(str::to_string);
-            if matches!(result, CheckResult::Up) {
+            if let (Some(sample_us), CheckResult::Up) = (sample_us, &result) {
                 tracing::debug!(
                     service = %service,
                     backend = %backend.id,
@@ -212,7 +292,12 @@ pub fn spawn_backend(
                     service, backend.id,
                 );
             }
-            latency_us = next_latency(latency_us, &result, sample_us, transition);
+            latency_us = match sample_us {
+                Some(sample_us) => next_latency(latency_us, &result, sample_us, transition),
+                // Decided by votes: no sample; turning unhealthy still clears it.
+                None if transition.is_some_and(|t| t.to == HealthState::Unhealthy) => None,
+                None => latency_us,
+            };
             if fast_left > 0 {
                 fast_left -= 1;
                 if matches!(result, CheckResult::Up) || health.state == HealthState::Unhealthy {
@@ -244,8 +329,10 @@ pub fn spawn_backend(
                 outcome: CheckOutcome::of(&result),
                 latency_us,
             };
-            let announce = transition
-                .is_some_and(|t| t.from == HealthState::Healthy && t.to == HealthState::Unhealthy);
+            let announce = own_check
+                && transition.is_some_and(|t| {
+                    t.from == HealthState::Healthy && t.to == HealthState::Unhealthy
+                });
             if announce && let Some(p) = &peers.peers {
                 // The peer task is gone only while the daemon stops.
                 let _ = p.out.send(PeerOut::Down(BackendDown {
@@ -723,6 +810,280 @@ mod tests {
         chk.error.store(true, Ordering::SeqCst);
         let (_updates, out) = with_votes(7, &[], chk).await;
         assert!(out.is_empty(), "{out:?}");
+    }
+
+    fn votes(has_checkers: bool, assigned: bool, kept: &[Outcome]) -> Votes {
+        let down = kept
+            .iter()
+            .filter(|o| matches!(o, Outcome::Down(_)))
+            .count() as u32;
+        Votes {
+            has_checkers,
+            assigned,
+            fresh: kept.len() as u32,
+            down,
+            up: kept.len() as u32 - down,
+            down_reason: kept.iter().find_map(|o| match o {
+                Outcome::Down(r) => Some(r.clone()),
+                Outcome::Up => None,
+            }),
+        }
+    }
+
+    /// Spec peer-group "what this daemon does at one check time", row by
+    /// row, then the cases that always check. Where the table's action is
+    /// an own check, its applied result is the combined result, covered by
+    /// quorum.rs `combined_result_table`.
+    #[test]
+    fn split_check_time_table() {
+        let up = || Outcome::Up;
+        let refused = || Outcome::Down("refused".into());
+        let region_down = || Step::Decided(CheckResult::Down("peers 2/3: refused".into()));
+        /// (last own up, has latency, decided in a row, votes, step)
+        type Row = (Option<bool>, bool, u32, Vec<Outcome>, Step);
+        let rows: [Row; 10] = [
+            (None, false, 0, vec![up(), up(), up()], Step::Check),
+            (
+                Some(true),
+                true,
+                0,
+                vec![up(), up(), up()],
+                Step::Decided(CheckResult::Up),
+            ),
+            (
+                Some(true),
+                true,
+                2,
+                vec![refused(), refused(), up()],
+                region_down(),
+            ),
+            (
+                Some(true),
+                false,
+                2,
+                vec![refused(), refused(), up()],
+                region_down(),
+            ),
+            (Some(true), false, 0, vec![up(), up(), up()], Step::Check),
+            (Some(true), true, 4, vec![up(), up(), up()], Step::Check),
+            (Some(true), true, 1, vec![up(), refused()], Step::Check),
+            (Some(true), true, 1, vec![], Step::Check),
+            (Some(false), true, 0, vec![up(), up(), up()], Step::Check),
+            (Some(false), true, 0, vec![up(), up()], Step::Check),
+        ];
+        for (i, (last_own_up, latency, in_row, kept, want)) in rows.into_iter().enumerate() {
+            let v = votes(true, false, &kept);
+            assert_eq!(
+                split(&v, last_own_up, latency, in_row, false),
+                want,
+                "row {i}"
+            );
+        }
+        let all_up = [up(), up(), up()];
+        let check = |v: Votes, fast| split(&v, Some(true), true, 0, fast);
+        assert_eq!(
+            check(votes(true, false, &all_up), true),
+            Step::Check,
+            "fast run"
+        );
+        assert_eq!(
+            check(votes(true, true, &all_up), false),
+            Step::Check,
+            "assigned"
+        );
+        assert_eq!(
+            check(votes(false, false, &[]), false),
+            Step::Check,
+            "no checkers"
+        );
+    }
+
+    /// Daemon .5, not an assigned checker of 10.0.0.11:8080 (assigned .7,
+    /// .6, .9), with up results kept from all three (fresh for an hour);
+    /// interval 1s, no jitter, fall 3.
+    async fn not_assigned() -> (
+        Arc<Switch>,
+        PeerHooks,
+        mpsc::UnboundedReceiver<WriterMsg>,
+        mpsc::UnboundedReceiver<PeerOut>,
+        JoinHandle<()>,
+    ) {
+        let (otx, orx) = mpsc::unbounded_channel();
+        let h = hooks(otx, "10.0.0.5:5302");
+        h.quorum.set_live((5..=9).map(member));
+        record_all(&h, [Outcome::Up, Outcome::Up, Outcome::Up]);
+        let settings = Settings {
+            interval: Duration::from_secs(1),
+            jitter: 0.0,
+            ..Settings::default()
+        };
+        let (_stx, srx) = watch::channel(settings);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let link = PeerLink {
+            recheck: Arc::new(Recheck::default()),
+            peers: Some(h.clone()),
+        };
+        let chk = Arc::new(Switch::default());
+        let task = spawn_backend("a".into(), backend(), chk.clone(), 0, srx, tx, link);
+        (chk, h, rx, orx, task)
+    }
+
+    /// Keep results from .7, .6 and .9, in that (rank) order.
+    fn record_all(h: &PeerHooks, outcomes: [Outcome; 3]) {
+        for (from, outcome) in [7, 6, 9].into_iter().zip(outcomes) {
+            let r = crate::peers::ResultMsg {
+                service: "a".into(),
+                digest: DIGEST.into(),
+                backend: "10.0.0.11:8080".into(),
+                outcome,
+                interval_ms: 3_600_000,
+            };
+            h.quorum.record(member(from), &r, Instant::now());
+        }
+    }
+
+    /// The next update, with the number of own checks made so far and the
+    /// time it arrived.
+    async fn next(
+        rx: &mut mpsc::UnboundedReceiver<WriterMsg>,
+        chk: &Switch,
+    ) -> (BackendUpdate, usize, Instant) {
+        let u = update(rx.recv().await.unwrap());
+        (u, chk.starts.lock().unwrap().len(), Instant::now())
+    }
+
+    /// Spec peer-group "Sparse own checks while the assigned checkers see
+    /// the backend up" and health-checking "Check times decided by votes
+    /// keep the schedule".
+    #[tokio::test(start_paused = true)]
+    async fn sparse_own_checks_while_the_region_is_up() {
+        let (chk, h, mut rx, _orx, task) = not_assigned().await;
+        let mut own = Vec::new();
+        let mut at = Vec::new();
+        let mut last = None;
+        for _ in 0..10 {
+            let (u, n, t) = next(&mut rx, &chk).await;
+            own.push(n);
+            at.push(t);
+            last = Some(u);
+        }
+        task.abort();
+        assert_eq!(own, [1, 1, 1, 1, 1, 2, 2, 2, 2, 2]);
+        assert_eq!(h.quorum.skipped(), 8);
+        let last = last.unwrap();
+        assert_eq!(last.state, HealthState::Healthy);
+        assert!(last.latency_us.is_some(), "kept from the own checks");
+        assert_eq!(
+            at[9] - at[8],
+            Duration::from_secs(1),
+            "decided by votes, healthy"
+        );
+    }
+
+    /// Spec peer-group "Local failure while the region is up".
+    #[tokio::test(start_paused = true)]
+    async fn local_failure_while_the_region_is_up() {
+        let (chk, _h, mut rx, mut orx, task) = not_assigned().await;
+        for _ in 0..5 {
+            next(&mut rx, &chk).await;
+        }
+        chk.down.store(true, Ordering::SeqCst);
+        let mut own = Vec::new();
+        let mut last = None;
+        for _ in 0..3 {
+            let (u, n, _) = next(&mut rx, &chk).await;
+            own.push(n);
+            last = Some(u);
+        }
+        task.abort();
+        assert_eq!(own, [2, 3, 4], "own checks at the 6th, 7th and 8th");
+        let last = last.unwrap();
+        assert_eq!(last.state, HealthState::Unhealthy);
+        assert_eq!(last.reason.as_deref(), Some("local: connection refused"));
+        let mut downs = 0;
+        while let Ok(o) = orx.try_recv() {
+            assert!(
+                matches!(o, PeerOut::Down(_)),
+                "not assigned: no result sent"
+            );
+            downs += 1;
+        }
+        assert_eq!(downs, 1, "an own check's move is announced");
+    }
+
+    /// Spec peer-group "Region down without an own check" and "Moves
+    /// decided by votes are not announced".
+    #[tokio::test(start_paused = true)]
+    async fn region_down_without_an_own_check() {
+        let (chk, h, mut rx, mut orx, task) = not_assigned().await;
+        for _ in 0..6 {
+            next(&mut rx, &chk).await;
+        }
+        let refused = || Outcome::Down("refused".into());
+        record_all(&h, [refused(), refused(), Outcome::Up]);
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            let (u, n, _) = next(&mut rx, &chk).await;
+            seen.push((u.state, u.reason, n));
+        }
+        task.abort();
+        let reason = Some("peers 2/3: refused".to_string());
+        assert_eq!(
+            seen,
+            [
+                (HealthState::Healthy, reason.clone(), 2),
+                (HealthState::Healthy, reason.clone(), 2),
+                (HealthState::Unhealthy, reason, 2),
+            ]
+        );
+        assert!(orx.try_recv().is_err(), "nothing sent");
+        assert_eq!(h.quorum.disagreements(), 0);
+    }
+
+    /// Spec peer-group "Recovery decided by votes waits for a latency".
+    #[tokio::test(start_paused = true)]
+    async fn recovery_by_votes_waits_for_a_latency() {
+        let (chk, h, mut rx, _orx, task) = not_assigned().await;
+        for _ in 0..6 {
+            next(&mut rx, &chk).await;
+        }
+        let refused = || Outcome::Down("refused".into());
+        record_all(&h, [refused(), refused(), Outcome::Up]);
+        loop {
+            let (u, n, _) = next(&mut rx, &chk).await;
+            assert_eq!(n, 2, "turned unhealthy by votes alone");
+            if u.state == HealthState::Unhealthy {
+                assert_eq!(u.latency_us, None);
+                break;
+            }
+        }
+        record_all(&h, [Outcome::Up, Outcome::Up, Outcome::Up]);
+        let (u, n, _) = next(&mut rx, &chk).await;
+        assert_eq!(n, 3, "an own check, not the votes");
+        assert!(u.latency_us.is_some());
+        loop {
+            let (u, _, _) = next(&mut rx, &chk).await;
+            assert!(u.latency_us.is_some(), "{u:?}");
+            if u.state == HealthState::Healthy {
+                break;
+            }
+        }
+        task.abort();
+    }
+
+    /// Spec peer-group "Assigned checkers stop being live": with only one
+    /// other member live there are no assigned checkers.
+    #[tokio::test(start_paused = true)]
+    async fn no_assigned_checkers_check_every_time() {
+        let (chk, h, mut rx, _orx, task) = not_assigned().await;
+        h.quorum.set_live([member(6)]);
+        let mut own = Vec::new();
+        for _ in 0..7 {
+            own.push(next(&mut rx, &chk).await.1);
+        }
+        task.abort();
+        assert_eq!(own, [1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(h.quorum.skipped(), 0);
     }
 
     fn report() -> crate::peers::PeerReport {

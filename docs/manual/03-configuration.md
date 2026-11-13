@@ -82,13 +82,14 @@ of one `site` that list each other here. Members send each other a
 heartbeat every second, and when one of them sees a backend go from
 `healthy` to `unhealthy` it tells the others, which recheck that backend at
 once and every 200ms (up to `fall` checks) instead of waiting for their
-next `interval`. Every member still checks every backend itself. With
-three or more live members, three of them are also assigned to each
-backend and send their results to the others after every check; two
-`down` results among those three mark the backend down on every member.
-The vote needs no setting of its own; it uses the services' `interval`,
-and only members whose
-`check`, `check_options` and `timeout` match count. Clients still read only
+next `interval`. With three or more live members, three of them are
+assigned to each backend: they check it every `interval` and send their
+results to the others; two `down` results among those three mark the
+backend down on every member. The other members let two agreeing results
+decide and check the backend themselves about every fifth `interval`. The
+vote and the split need no setting of their own; they use the services'
+`interval`, and only members whose `check`, `check_options` and `timeout`
+match count. Clients still read only
 the local store. Without `[peers]` nothing of this runs. See
 [chapter 1](01-concepts.md#peer-groups).
 

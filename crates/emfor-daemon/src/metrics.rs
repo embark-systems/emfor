@@ -384,6 +384,17 @@ pub fn render(view: &LiveView, version: &str) -> String {
             "Backends that a majority of their assigned checkers see down while this daemon's own check passes.",
         );
         put!(out, "emfor_peer_disagreements {}", peers.disagreements());
+        family(
+            &mut out,
+            "emfor_peer_checks_skipped_total",
+            "counter",
+            "Scheduled checks not made because the votes of the backend's assigned checkers decided the result.",
+        );
+        put!(
+            out,
+            "emfor_peer_checks_skipped_total {}",
+            peers.checks_skipped()
+        );
     }
 
     let mut names: Vec<&String> = view.services.keys().collect();
@@ -648,6 +659,7 @@ mod tests {
         for line in [
             "emfor_peer_results_total{direction=\"sent\"} 0",
             "emfor_peer_disagreements 0",
+            "emfor_peer_checks_skipped_total 0",
             "emfor_peer_up{peer=\"127.0.0.1:5303\"} 1",
             "emfor_peer_messages_rejected_total{reason=\"auth\"} 1",
             "emfor_peer_messages_rejected_total{reason=\"replay\"} 0",
@@ -667,6 +679,14 @@ mod tests {
         ] {
             assert!(body.lines().any(|l| l == line), "{line}: {body}");
         }
+        // Spec metrics-endpoint "Skipped checks counted".
+        stats.set_checks_skipped(8);
+        let body = render(&v, "0.1.0");
+        assert!(
+            body.lines()
+                .any(|l| l == "emfor_peer_checks_skipped_total 8"),
+            "{body}"
+        );
         // A member removed on reload loses its series.
         g.set_members(vec![me, "127.0.0.1:5304".parse().unwrap()]);
         let body = render(&v, "0.1.0");

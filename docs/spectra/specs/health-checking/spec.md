@@ -261,7 +261,7 @@ tests:
 ---
 ### Requirement: Check scheduling with jitter and no overlap
 
-The daemon SHALL check every backend of every service repeatedly. Let `fast` be the smaller of `interval` and 200ms. The first check of a backend SHALL start after a random delay in `[0, fast)`. When a check finishes and the backend's health state is `unknown` and that check's result was `up` or `down`, the next check SHALL start `fast` after the previous check finishes, without jitter. Otherwise each following check SHALL start after the previous check finishes plus `interval` adjusted by a uniformly random offset within `±jitter` of `interval`. When a fast recheck run starts because a peer reported the backend down (spec peer-group), the next check SHALL start at once, or right after the check in progress finishes; each following check of that run SHALL start `fast` after the previous one finishes, without jitter, until a check result is `up`, the backend becomes `unhealthy`, or the run has made `fall` checks, after which the rules above apply again. Two checks of the same backend SHALL NOT run at the same time.
+The daemon SHALL check every backend of every service repeatedly; in a peer group a daemon that is not an assigned checker of a backend SHALL instead decide some scheduled check times from the assigned checkers' votes without checking (spec peer-group, "Split checks"), and such a check time SHALL follow the same timing rules as a check whose result is the applied result. Let `fast` be the smaller of `interval` and 200ms. The first check of a backend SHALL start after a random delay in `[0, fast)`. When a check finishes and the backend's health state is `unknown` and that check's result was `up` or `down`, the next check SHALL start `fast` after the previous check finishes, without jitter. Otherwise each following check SHALL start after the previous check finishes plus `interval` adjusted by a uniformly random offset within `±jitter` of `interval`. When a fast recheck run starts because a peer reported the backend down (spec peer-group), the next check SHALL start at once, or right after the check in progress finishes; each following check of that run SHALL start `fast` after the previous one finishes, without jitter, until a check result is `up`, the backend becomes `unhealthy`, or the run has made `fall` checks, after which the rules above apply again. Two checks of the same backend SHALL NOT run at the same time.
 
 #### Scenario: Spacing between checks
 
@@ -294,26 +294,25 @@ The daemon SHALL check every backend of every service repeatedly. Let `fast` be 
 - **WHEN** a `healthy` backend with `interval = "5s"`, `fall = 3` and `jitter = "10%"` has just finished a check, a peer's `down` message for it starts a fast recheck run, and every check of the run returns `down`
 - **THEN** three checks start, the first at once and each next one 200ms after the previous finishes, the backend becomes `unhealthy` after the third, and the following check starts 5s ± 10% later
 
+#### Scenario: Check times decided by votes keep the schedule
+
+- **WHEN** a `healthy` backend with `interval = "2s"` and `jitter = "0%"` is decided by votes alone at one check time in a peer group
+- **THEN** the next check time is 2s after that one
+
 
 <!-- @trace
-source: emfor-peers
+source: emfor-peers-split-checks
 updated: 2026-11-13
 code:
-  - docs/manual/01-concepts.md
-  - crates/emfor-daemon/Cargo.toml
-  - crates/emfor-daemon/src/lib.rs
-  - docs/deploy/daemon.md
-  - crates/emfor-daemon/src/peers.rs
-  - crates/emfor-daemon/src/supervisor.rs
   - crates/emfor-daemon/src/schedule.rs
-  - docs/manual/03-configuration.md
-  - crates/emfor-daemon/src/live.rs
   - docs/manual/08-operations.md
-  - crates/emfor-daemon/src/cli.rs
+  - crates/emfor-daemon/src/peers.rs
+  - docs/manual/01-concepts.md
+  - docs/deploy/daemon.md
+  - crates/emfor-daemon/src/quorum.rs
   - crates/emfor-daemon/src/metrics.rs
-  - examples/emfor.toml
-  - crates/emfor-daemon/src/config.rs
   - CHANGELOG.md
+  - docs/manual/03-configuration.md
 tests:
   - crates/emfor-daemon/tests/peers.rs
 -->

@@ -356,6 +356,7 @@ pub struct PeerStats {
     results_sent: AtomicU64,
     results_received: AtomicU64,
     disagreements: AtomicU64,
+    checks_skipped: AtomicU64,
     up: Mutex<BTreeMap<SocketAddr, bool>>,
 }
 
@@ -387,6 +388,17 @@ impl PeerStats {
     /// Backends that are a disagreement, as of the last heartbeat round.
     pub fn disagreements(&self) -> u64 {
         self.disagreements.load(Ordering::Relaxed)
+    }
+
+    /// Check times decided by votes alone, as of the last heartbeat round.
+    pub fn checks_skipped(&self) -> u64 {
+        self.checks_skipped.load(Ordering::Relaxed)
+    }
+
+    /// Set the skipped-check counter.
+    #[cfg(test)]
+    pub fn set_checks_skipped(&self, n: u64) {
+        self.checks_skipped.store(n, Ordering::Relaxed);
     }
 
     /// Set the `result` counters and the disagreement gauge.
@@ -1001,6 +1013,10 @@ async fn run(
                     .stats()
                     .disagreements
                     .store(quorum.disagreements() as u64, Ordering::Relaxed);
+                group
+                    .stats()
+                    .checks_skipped
+                    .store(quorum.skipped(), Ordering::Relaxed);
                 state.publish(quorum.summary(&group.members_live(), now));
                 let data = group.encode(Kind::Heartbeat, unix_ms(), now);
                 send_all(&socket, &group.others(), &data).await;

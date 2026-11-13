@@ -400,7 +400,7 @@ fn exec_config(
 ) -> String {
     let members: Vec<String> = members.iter().map(|m| format!("\"{m}\"")).collect();
     format!(
-        "site = \"dc1\"\n\n[store]\npath = \"{}\"\nmap_size = \"4MiB\"\n\n[metrics]\nlisten = [\"{metrics}\"]\n\n[peers]\nlisten = \"{listen}\"\nmembers = [{}]\nsecret_file = \"{}\"\n\n[services.\"api.svc.emfor\"]\ncheck = \"exec\"\nbackends = [\"127.0.0.1:9\"]\ninterval = \"1s\"\ntimeout = \"900ms\"\nrise = 1\nfall = 3\njitter = \"0%\"\n[services.\"api.svc.emfor\".check_options]\ncommand = [\"/bin/sh\", \"-c\", 'if [ -e \"$EMFOR_TEST_FLAG\" ]; then echo refused; exit 1; fi']\n",
+        "site = \"dc1\"\n\n[store]\npath = \"{}\"\nmap_size = \"4MiB\"\n\n[metrics]\nlisten = [\"{metrics}\"]\n\n[peers]\nlisten = \"{listen}\"\nmembers = [{}]\nsecret_file = \"{}\"\n\n[services.\"api.svc.emfor\"]\ncheck = \"exec\"\nbackends = [\"127.0.0.1:9\"]\ninterval = \"1s\"\ntimeout = \"900ms\"\nrise = 1\nfall = 3\njitter = \"0%\"\n[services.\"api.svc.emfor\".check_options]\ncommand = [\"/bin/sh\", \"-c\", 'if [ -n \"$EMFOR_TEST_COUNT\" ]; then echo x >> \"$EMFOR_TEST_COUNT\"; fi; if [ -e \"$EMFOR_TEST_FLAG\" ]; then echo refused; exit 1; fi']\n",
         dir.join("state.mdb").display(),
         members.join(", "),
         secret(dir).display(),
@@ -489,14 +489,23 @@ fn majority_of_three() {
         serde_json::json!(members[2].to_string())
     );
     // Each own up or down check of an assigned checker goes to both others.
+    // Compared from now on: a member that briefly stopped being live on a
+    // loaded host left checks without assigned checkers, and so without
+    // results, earlier.
+    let sent_and_checks = || {
+        let body = c.scrape();
+        let checks = counter(&body, "emfor_backend_checks_total", "result=\"up\"")
+            + counter(&body, "emfor_backend_checks_total", "result=\"down\"");
+        let sent = counter(&body, "emfor_peer_results_total", "direction=\"sent\"");
+        (sent, checks)
+    };
+    let (sent0, checks0) = sent_and_checks();
     wait_for(
         "one round of results per check",
         Duration::from_secs(10),
         || {
-            let body = c.scrape();
-            let checks = counter(&body, "emfor_backend_checks_total", "result=\"up\"")
-                + counter(&body, "emfor_backend_checks_total", "result=\"down\"");
-            counter(&body, "emfor_peer_results_total", "direction=\"sent\"") == 2 * checks
+            let (sent, checks) = sent_and_checks();
+            checks >= checks0 + 2 && sent - sent0 == 2 * (checks - checks0)
         },
     );
 
@@ -524,4 +533,120 @@ fn majority_of_three() {
     for (d, n) in [(b, before[1]), (c, before[2])] {
         assert_eq!(d.log().matches(UNHEALTHY).count(), n, "{}", d.log());
     }
+}
+
+/// Own checks a daemon of [`split_checks`] has made so far.
+fn own_checks(path: &Path) -> usize {
+    std::fs::read_to_string(path).map_or(0, |s| s.lines().count())
+}
+
+/// Spec peer-group "Split checks": in a group of four, the one daemon that
+/// is not an assigned checker of the backend checks it about every fifth
+/// time, still notices a failure only it sees, and checks every time once
+/// a member is gone and it becomes an assigned checker.
+#[test]
+fn split_checks() {
+    let files = tempfile::tempdir().expect("a temporary directory can be created");
+    let flag = |i: usize| files.path().join(format!("down-{i}"));
+    let count = |i: usize| files.path().join(format!("checks-{i}"));
+    let members = [free_udp(), free_udp(), free_udp(), free_udp()];
+    let mut daemons: Vec<Daemon> = (0..4)
+        .map(|i| {
+            let (f, c) = (flag(i), count(i));
+            spawn_env(
+                |dir, m| exec_config(dir, m, members[i], &members),
+                &[("EMFOR_TEST_FLAG", &f), ("EMFOR_TEST_COUNT", &c)],
+            )
+        })
+        .collect();
+    let live: std::collections::BTreeSet<SocketAddr> = members[1..].iter().copied().collect();
+    let ranked = emfor_daemon::quorum::assigned("api.svc.emfor", "127.0.0.1:9", members[0], &live);
+    let spare = (0..4)
+        .find(|i| !ranked.contains(&members[*i]))
+        .expect("one member is not an assigned checker");
+    let checkers: Vec<usize> = (0..4).filter(|i| *i != spare).collect();
+    for d in &daemons {
+        d.wait_log(HEALTHY);
+    }
+    wait_for(
+        "every member live everywhere",
+        Duration::from_secs(10),
+        || {
+            daemons
+                .iter()
+                .all(|d| counter(&d.scrape(), "emfor_peer_up", "") == 3)
+        },
+    );
+
+    // About 8 check times: the assigned checkers check every time, the
+    // spare one about every fifth.
+    std::thread::sleep(Duration::from_secs(2));
+    let before: Vec<usize> = (0..4).map(|i| own_checks(&count(i))).collect();
+    std::thread::sleep(Duration::from_secs(8));
+    let made: Vec<usize> = (0..4).map(|i| own_checks(&count(i)) - before[i]).collect();
+    eprintln!("own checks in 8s: {made:?} (spare {spare})");
+    for i in &checkers {
+        assert!(made[*i] >= 6, "assigned checker {i}: {made:?}");
+        assert!(2 * made[spare] < made[*i], "spare {spare}: {made:?}");
+    }
+    let skipped = daemons[spare]
+        .scrape()
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("emfor_peer_checks_skipped_total ")?
+                .parse::<u64>()
+                .ok()
+        })
+        .expect("the spare one has the skipped-check counter");
+    assert!(skipped > 0, "the spare one counts its skipped checks");
+    assert!(daemons[spare].log().contains(HEALTHY));
+
+    // A failure only the spare one sees: found within 5 check times plus
+    // `fall` = 3, with a local reason; the others stay healthy.
+    let unhealthy: Vec<usize> = daemons
+        .iter()
+        .map(|d| d.log().matches(UNHEALTHY).count())
+        .collect();
+    std::fs::write(flag(spare), "").expect("the flag can be written");
+    let text = "changed from healthy to unhealthy (local: refused)";
+    wait_for(text, Duration::from_secs(15), || {
+        daemons[spare].log().contains(text)
+    });
+    for i in &checkers {
+        assert_eq!(
+            daemons[*i].log().matches(UNHEALTHY).count(),
+            unhealthy[*i],
+            "{}",
+            daemons[*i].log()
+        );
+    }
+    std::fs::remove_file(flag(spare)).expect("the flag can be removed");
+    wait_for(
+        "the spare one is healthy again",
+        Duration::from_secs(10),
+        || {
+            daemons[spare]
+                .log()
+                .contains("changed from unhealthy to healthy")
+        },
+    );
+
+    // One assigned checker stops: the remaining three are all assigned, so
+    // the spare one checks every time.
+    drop(daemons.remove(checkers[0]));
+    let spare_d = &daemons[if checkers[0] < spare {
+        spare - 1
+    } else {
+        spare
+    }];
+    wait_for(
+        "the stopped member is not live",
+        Duration::from_secs(10),
+        || counter(&spare_d.scrape(), "emfor_peer_up", "") == 2,
+    );
+    std::thread::sleep(Duration::from_secs(1));
+    let before = own_checks(&count(spare));
+    std::thread::sleep(Duration::from_secs(5));
+    let made = own_checks(&count(spare)) - before;
+    assert!(made >= 4, "the spare one checks every time now: {made}");
 }
