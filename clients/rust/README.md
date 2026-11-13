@@ -69,7 +69,9 @@ coordinate.
 looked up before forking: the child opens the store again.
 
 Each lookup holds an LMDB reader slot only for the read itself
-(`MDB_NOTLS`), so many threads and processes share the daemon's reader table.
+(`MDB_NOTLS`), so many threads and processes share the daemon's reader table
+of 1024 slots. A process killed in the middle of a lookup leaves its slot
+taken; the daemon frees such slots about once a minute.
 
 If the store file is deleted and created again while applications run, they
 keep reading the old, deleted file, which looks stale. Restart the

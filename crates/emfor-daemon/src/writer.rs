@@ -46,6 +46,10 @@ pub enum Op {
 pub trait Sink: Send + 'static {
     /// Apply all `ops` in one transaction.
     fn commit(&mut self, ops: &[Op]) -> Result<(), String>;
+
+    /// Free reader slots of processes that died during a lookup
+    /// ([`Store::clear_stale_readers`]); returns how many were freed.
+    fn clear_stale_readers(&mut self) -> Result<usize, String>;
 }
 
 fn commit_to_store(store: &Store, ops: &[Op]) -> Result<(), String> {
@@ -69,6 +73,10 @@ impl Sink for Store {
     fn commit(&mut self, ops: &[Op]) -> Result<(), String> {
         commit_to_store(self, ops)
     }
+
+    fn clear_stale_readers(&mut self) -> Result<usize, String> {
+        Store::log_stale_readers(self).map_err(|e| e.to_string())
+    }
 }
 
 /// Shared store, so tests (and future readers in-process) can read while the writer runs.
@@ -76,7 +84,16 @@ impl Sink for Arc<Store> {
     fn commit(&mut self, ops: &[Op]) -> Result<(), String> {
         commit_to_store(self, ops)
     }
+
+    fn clear_stale_readers(&mut self) -> Result<usize, String> {
+        self.log_stale_readers().map_err(|e| e.to_string())
+    }
 }
+
+/// Heartbeats between checks for reader slots left by dead processes:
+/// about once a minute at the 1-second heartbeat. A failed commit checks
+/// at once, since a full store is what those slots lead to.
+const READER_CHECK_TICKS: u32 = 60;
 
 /// Desired shape of one service after start or reload.
 #[derive(Debug, Clone)]
@@ -126,6 +143,8 @@ struct Writer<S: Sink> {
     listen: [(&'static str, Option<String>); 2],
     /// Updated before every commit attempt.
     live: LiveState,
+    /// Heartbeats since the last reader slot check.
+    ticks_since_reader_check: u32,
 }
 
 /// The listen addresses of the running daemon, written to `meta/dns_listen`
@@ -201,6 +220,7 @@ fn spawn_inner<S: Sink>(
                 .collect(),
             hist_dirty: BTreeSet::new(),
             listen,
+            ticks_since_reader_check: 0,
         };
         // First tick one period from now: start-up already writes a heartbeat.
         let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + tick, tick);
@@ -368,7 +388,18 @@ impl<S: Sink> Writer<S> {
     }
 
     fn heartbeat(&mut self) {
+        self.ticks_since_reader_check += 1;
+        if self.ticks_since_reader_check >= READER_CHECK_TICKS {
+            self.clear_stale_readers();
+        }
         self.flush(vec![Op::Put(KEY_HEARTBEAT.into(), unix_ms().to_string())]);
+    }
+
+    fn clear_stale_readers(&mut self) {
+        self.ticks_since_reader_check = 0;
+        if let Err(e) = self.sink.clear_stale_readers() {
+            tracing::error!("cannot check the state store's reader slots: {e}");
+        }
     }
 
     fn shutdown(&mut self) {
@@ -405,6 +436,7 @@ impl<S: Sink> Writer<S> {
             Err(e) => {
                 tracing::error!("state store commit failed, retrying at next heartbeat: {e}");
                 self.live.count_commit_failure();
+                self.clear_stale_readers();
                 // Keep everything except service and history puts (dirty records and
                 // histories are re-rendered) and stale heartbeats (a fresh one is
                 // written next tick).
@@ -494,6 +526,63 @@ mod tests {
             }
             self.inner.commit(ops)
         }
+        fn clear_stale_readers(&mut self) -> Result<usize, String> {
+            self.inner.clear_stale_readers()
+        }
+    }
+
+    /// Counts reader slot checks; commits fail while `fail` is set.
+    struct ReaderChecks {
+        checks: Arc<AtomicUsize>,
+        fail: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl Sink for ReaderChecks {
+        fn commit(&mut self, _ops: &[Op]) -> Result<(), String> {
+            if self.fail.load(Ordering::SeqCst) {
+                return Err("MDB_MAP_FULL: Environment mapsize limit reached".into());
+            }
+            Ok(())
+        }
+        fn clear_stale_readers(&mut self) -> Result<usize, String> {
+            self.checks.fetch_add(1, Ordering::SeqCst);
+            Ok(0)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reader_slots_checked_every_minute_of_heartbeats() {
+        let checks = Arc::new(AtomicUsize::new(0));
+        let sink = ReaderChecks {
+            checks: checks.clone(),
+            fail: Arc::default(),
+        };
+        let (_tx, rx) = mpsc::unbounded_channel();
+        spawn_with_tick(sink, rx, Duration::from_secs(1));
+        tokio::time::sleep(Duration::from_millis(59_500)).await;
+        assert_eq!(checks.load(Ordering::SeqCst), 0, "59 heartbeats");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(checks.load(Ordering::SeqCst), 1, "60 heartbeats");
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(checks.load(Ordering::SeqCst), 2, "120 heartbeats");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reader_slots_checked_after_failed_commit() {
+        let checks = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let sink = ReaderChecks {
+            checks: checks.clone(),
+            fail: fail.clone(),
+        };
+        let (_tx, rx) = mpsc::unbounded_channel();
+        spawn_with_tick(sink, rx, Duration::from_secs(1));
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert_eq!(checks.load(Ordering::SeqCst), 1, "first heartbeat failed");
+        fail.store(false, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(59)).await;
+        assert_eq!(checks.load(Ordering::SeqCst), 1, "the count restarted");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(checks.load(Ordering::SeqCst), 2);
     }
 
     fn record(store: &Store, name: &str) -> ServiceRecord {
@@ -747,6 +836,9 @@ mod tests {
         fn commit(&mut self, ops: &[Op]) -> Result<(), String> {
             self.commits.lock().unwrap().push(ops.to_vec());
             self.inner.commit(ops)
+        }
+        fn clear_stale_readers(&mut self) -> Result<usize, String> {
+            self.inner.clear_stale_readers()
         }
     }
 

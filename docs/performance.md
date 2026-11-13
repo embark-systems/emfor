@@ -49,10 +49,9 @@ client's own locks become lock-free reads. With 8 threads that reached
 5.2 million lookups a second on Linux and 3.6 million on macOS. The cost is
 that every thread that has looked up keeps one LMDB reader slot until it
 exits, where today a slot is held only during a lookup. The store has
-LMDB's default of 126 slots for all processes on the host, so a host with
-many worker processes or large thread pools could run out and see lookups
-fail. Adopting it would also need the daemon to create the store with more
-slots.
+1024 slots (`emfor_format::MAX_READERS`; LMDB's default is 126) for all
+processes on the host, so a host with many worker processes or large thread
+pools could run out and see lookups fail.
 
 ## Measuring it yourself
 

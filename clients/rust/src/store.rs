@@ -99,6 +99,12 @@ impl Env {
             if rc != 0 {
                 return Err(open_error(path, rc));
             }
+            // Matches the daemon, in case this process sizes the lock file.
+            let rc = ffi::mdb_env_set_maxreaders(env, emfor_format::MAX_READERS);
+            if rc != 0 {
+                ffi::mdb_env_close(env);
+                return Err(open_error(path, rc));
+            }
             let flags = ffi::MDB_RDONLY | ffi::MDB_NOSUBDIR | ffi::MDB_NOTLS;
             let rc = ffi::mdb_env_open(env, cpath.as_ptr(), flags, 0o644);
             if rc != 0 {

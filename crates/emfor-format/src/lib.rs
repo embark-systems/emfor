@@ -11,6 +11,14 @@ use serde::{Deserialize, Serialize};
 /// Current store format version, stored at [`KEY_SCHEMA_VERSION`].
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// LMDB reader slots in the store's lock file, shared by every reading
+/// process on the host. LMDB's default is 126. The process that first opens
+/// the store while nobody else has it open sizes the lock file, so the daemon
+/// and every client set the same value. A lookup holds a slot only for its
+/// own read transaction, and finding a free slot scans only the slots used
+/// so far, so a larger table does not slow lookups down.
+pub const MAX_READERS: u32 = 1024;
+
 /// Format version, decimal string.
 pub const KEY_SCHEMA_VERSION: &str = "meta/schema_version";
 /// Unix time in milliseconds as a decimal string; `"0"` after a clean shutdown.

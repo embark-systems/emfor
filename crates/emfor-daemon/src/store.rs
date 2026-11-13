@@ -86,6 +86,7 @@ impl Store {
         let env = unsafe {
             let mut opts = EnvOpenOptions::new().read_txn_without_tls();
             opts.map_size(cfg.map_size);
+            opts.max_readers(emfor_format::MAX_READERS);
             opts.flags(EnvFlags::NO_SUB_DIR);
             // SAFETY: only this daemon writes the file (guarded by the writer
             // lock above) and readers only read; nothing truncates it.
@@ -102,12 +103,36 @@ impl Store {
             .open_database::<Str, Str>(&rtxn, None)?
             .expect("the unnamed LMDB database always exists");
         rtxn.commit()?;
-        Ok(Store {
+        let store = Store {
             env,
             db,
             path: cfg.path.clone(),
             _writer_lock: writer_lock,
-        })
+        };
+        // Applications may have kept the store open across a daemon restart,
+        // and with it slots of readers that died since.
+        store.log_stale_readers()?;
+        Ok(store)
+    }
+
+    /// Free the reader slots of processes that exited during a read
+    /// transaction (killed in the middle of a lookup). LMDB frees them only
+    /// when asked: until then each one pins the snapshot it was reading, no
+    /// page freed after it can be reused, and the file grows to `map_size`.
+    /// Returns how many slots were freed.
+    pub fn clear_stale_readers(&self) -> heed::Result<usize> {
+        self.env.clear_stale_readers()
+    }
+
+    /// [`Store::clear_stale_readers`], logging a warning when any were freed.
+    pub fn log_stale_readers(&self) -> heed::Result<usize> {
+        let n = self.clear_stale_readers()?;
+        if n > 0 {
+            tracing::warn!(
+                "freed {n} store reader slot(s) left by processes that exited during a lookup"
+            );
+        }
+        Ok(n)
     }
 
     pub fn path(&self) -> &Path {
@@ -222,6 +247,60 @@ pub(crate) mod tests {
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&c.path), 0o640);
         assert_eq!(mode(&lock_file_path(&c.path)), 0o660);
+    }
+
+    #[test]
+    fn opens_with_more_reader_slots() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&cfg(dir.path())).unwrap();
+        assert_eq!(store.env.max_readers(), emfor_format::MAX_READERS);
+    }
+
+    /// Not a test by itself: run by `frees_slots_of_killed_readers` in a
+    /// child process, which it kills while the read transaction is open.
+    #[test]
+    fn reader_child() {
+        let Some(path) = std::env::var_os("EMFOR_TEST_READER_CHILD") else {
+            return;
+        };
+        let env = unsafe {
+            let mut opts = EnvOpenOptions::new().read_txn_without_tls();
+            opts.flags(EnvFlags::NO_SUB_DIR | EnvFlags::READ_ONLY);
+            // SAFETY: read-only; the parent test owns the file.
+            opts.open(path).unwrap()
+        };
+        let _txn = env.read_txn().unwrap();
+        println!("reader holds a transaction");
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+
+    #[test]
+    fn frees_slots_of_killed_readers() {
+        use std::io::BufRead;
+        use std::process::{Command, Stdio};
+
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        let store = Store::open(&c).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "store::tests::reader_child", "--nocapture"])
+            .env("EMFOR_TEST_READER_CHILD", &c.path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let ready = out
+            .lines()
+            .map_while(Result::ok)
+            .any(|l| l.contains("reader holds a transaction"));
+        assert!(ready, "child did not start its read transaction");
+        assert_eq!(store.clear_stale_readers().unwrap(), 0, "child still alive");
+
+        child.kill().unwrap(); // SIGKILL: the slot is never released
+        child.wait().unwrap();
+        assert_eq!(store.clear_stale_readers().unwrap(), 1);
+        assert_eq!(store.clear_stale_readers().unwrap(), 0);
     }
 
     #[test]

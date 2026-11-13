@@ -110,7 +110,7 @@ context: |
     因此 client 改為內嵌 daemon 同一份 LMDB：emfor-client 經 cargo-c 產出 libemfor，cdylib 不對外公開 mdb_* 符號，
     各語言只包裝動態函式庫（不用 .a）。libemfor 與 emfor 同版本一起發布、一起升級。
     讀取保留 MDB_NOTLS：每次交易結束歸還讀取槽；不用 MDB_NOTLS 時每條執行緒會一直佔用一個讀取槽，
-    而槽數由 daemon 建立 lock 檔時決定（預設 126，全主機共用）。實測一次查詢 Linux 約 0.2–1.7 µs，SQLite WAL 約 2–6 µs，
+    而槽數由第一個開啟 store 的行程決定，daemon 與 client 都設為 1024（emfor_format::MAX_READERS，全主機共用）。實測一次查詢 Linux 約 0.2–1.7 µs，SQLite WAL 約 2–6 µs，
     效能不是選擇依據。
   - 設定：全域 [defaults] + 每個服務覆寫（interval、timeout、rise、fall、jitter、on_all_down）；
     check_options 交給檢查器驗證；SIGHUP 重載時全部驗證通過才套用。

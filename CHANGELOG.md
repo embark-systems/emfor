@@ -19,6 +19,20 @@ check-config"` and exits 2. `emfor status` is unchanged.
 FreeBSD port example use the new commands; copies of the 0.1.x versions
 must be replaced. See [docs/deploy/daemon.md](docs/deploy/daemon.md#commands).
 
+### Fixed
+
+- An application process killed in the middle of a lookup (SIGKILL, OOM,
+  a crash) left its LMDB reader slot taken. Each such slot kept every page
+  freed after it from being reused, so the store grew until commits failed
+  with `MDB_MAP_FULL`, every client then saw a stale store, and restarting
+  the daemon did not help while applications kept the store open. The
+  daemon now frees these slots when it opens the store, about once a minute
+  after that, and right after a failed commit, and logs how many it freed.
+- The store's lock file has 1024 reader slots instead of LMDB's default
+  of 126. The daemon and every client ask for the same number, since the
+  process that opens the store first sizes the lock file; install
+  `libemfor` from the same release as the daemon, as before.
+
 ## 0.1.1 — 2026-11-13
 
 The repository moved to `github.com/embark-systems/emfor`. The daemon,
