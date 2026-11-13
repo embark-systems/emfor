@@ -50,6 +50,39 @@ impl Supervisor {
         self.sync(config, false);
     }
 
+    /// Start again every check task that ended on its own. A task only ends
+    /// by a panic while the daemon runs (or when the writer is gone, at
+    /// shutdown), and without this its backend would keep its last state
+    /// for good. The new task starts from `unknown`. Returns how many were
+    /// restarted.
+    pub fn restart_finished(&mut self) -> usize {
+        let mut restarted = 0;
+        for (name, r) in &mut self.services {
+            for b in &r.config.backends {
+                let Some(t) = r.tasks.get_mut(&b.id) else {
+                    continue;
+                };
+                if !t.is_finished() {
+                    continue;
+                }
+                tracing::error!(
+                    "check task of backend {} of {name} stopped; starting it again from unknown",
+                    b.id
+                );
+                *t = spawn_backend(
+                    name.clone(),
+                    b.clone(),
+                    r.config.checker.clone(),
+                    r.generation,
+                    r.settings.subscribe(),
+                    self.writer.clone(),
+                );
+                restarted += 1;
+            }
+        }
+        restarted
+    }
+
     /// Stop every check task.
     pub fn stop(&mut self) {
         for r in self.services.values_mut() {
@@ -264,6 +297,56 @@ mod tests {
             tx,
             _dir: dir,
         }
+    }
+
+    /// A check task that panics is started again from `unknown` and its
+    /// backend goes on being checked.
+    #[tokio::test]
+    async fn panicked_check_task_is_started_again() {
+        use crate::checker::{CheckRequest, CheckResult, Checker};
+        use futures::future::BoxFuture;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        #[derive(Debug, Default)]
+        struct PanicsFirst(AtomicU32);
+        impl Checker for PanicsFirst {
+            fn check(&self, _: CheckRequest) -> BoxFuture<'_, CheckResult> {
+                Box::pin(async move {
+                    if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                        panic!("checker bug");
+                    }
+                    CheckResult::Up
+                })
+            }
+        }
+
+        let h = harness();
+        let mut config = conf(
+            "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"127.0.0.1:1\"]\ninterval = \"200ms\"\ntimeout = \"100ms\"\nrise = 1\njitter = \"0%\"\n",
+        );
+        let checker = Arc::new(PanicsFirst::default());
+        config.services[0].checker = checker.clone();
+        let mut sup = Supervisor::start(&config, h.tx.clone());
+        let task = |sup: &Supervisor| {
+            sup.services
+                .values()
+                .next()
+                .unwrap()
+                .tasks
+                .values()
+                .next()
+                .unwrap()
+                .is_finished()
+        };
+        wait_for("task ended by the panic", || task(&sup)).await;
+        assert_eq!(sup.restart_finished(), 1);
+        assert!(!task(&sup));
+        wait_for("healthy after the restart", || {
+            states(&h.store, "api.svc.emfor") == [HealthState::Healthy]
+        })
+        .await;
+        assert_eq!(sup.restart_finished(), 0, "running tasks are left alone");
+        assert!(checker.0.load(Ordering::SeqCst) >= 2);
     }
 
     #[tokio::test]

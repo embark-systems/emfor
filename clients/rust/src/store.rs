@@ -18,6 +18,13 @@ pub struct Env {
     env: *mut ffi::MDB_env,
     dbi: ffi::MDB_dbi,
     path: PathBuf,
+    /// Device and inode of the file at `path` when it was opened.
+    file: (u64, u64),
+}
+
+fn file_id(m: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (m.dev(), m.ino())
 }
 
 // SAFETY: with MDB_NOTLS, read transactions may be created on any thread,
@@ -77,8 +84,10 @@ impl Env {
         // stop the daemon from starting later.
         // `Path::exists` would report a directory without search permission
         // as a missing file, so keep the real cause.
-        match std::fs::metadata(path) {
-            Ok(_) => {}
+        // The file identity is taken before opening: if the file is replaced
+        // in between, `replaced` reports it on the next stale lookup.
+        let file = match std::fs::metadata(path) {
+            Ok(m) => file_id(&m),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(open_error(path, ENOENT));
             }
@@ -88,7 +97,7 @@ impl Env {
                     path.display()
                 )));
             }
-        }
+        };
         let cpath = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
             unavailable(format!("store path {} contains a NUL byte", path.display()))
         })?;
@@ -130,8 +139,17 @@ impl Env {
                 env,
                 dbi,
                 path: path.to_path_buf(),
+                file,
             })
         }
+    }
+
+    /// True when the file now at the store path is another file than the
+    /// one this environment reads: the daemon set a damaged store aside, or
+    /// the store was deleted and created again. A missing file is not a
+    /// replacement: the open file stays the best there is.
+    pub fn replaced(&self) -> bool {
+        std::fs::metadata(&self.path).is_ok_and(|m| file_id(&m) != self.file)
     }
 
     /// Read schema version, heartbeat and one service record in a single

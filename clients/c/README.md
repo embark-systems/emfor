@@ -101,9 +101,12 @@ again in a child after `fork`:
 counted per process, starting at a random backend. It also works in a child
 after `fork`, including when the parent looked up before forking.
 
-If the store file is deleted and created again while applications run, they
-keep reading the old, deleted file, which looks stale. Restart the
-applications after deleting the store. The daemon itself never deletes it.
+Applications follow a store file that is replaced while they run: the
+daemon moved a damaged store aside at start, or the file was deleted and the
+daemon created a new one. When a lookup finds the open store stale, or fails,
+the library checks whether the store path now holds another file and, if so,
+closes the old one and opens the new one. No restart is needed. A fresh store
+costs nothing extra; a stale one costs one `stat` per lookup.
 
 Do not delete the lock file (`<store>-lock`) alone, and start the daemon
 before applications that run as root or as the daemon's user. If the lock

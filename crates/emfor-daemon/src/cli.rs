@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::Parser;
 use emfor_format::{HIST_KEY_PREFIX, ServiceHistory};
@@ -25,6 +26,9 @@ use crate::writer::{self, WriterMsg};
 pub const EXIT_OK: u8 = 0;
 /// Exit status when the store cannot be opened or is locked by another daemon.
 pub const EXIT_STARTUP: u8 = 1;
+/// Exit status when the state writer stops while the daemon runs (a bug):
+/// `EX_SOFTWARE`, which service managers restart, unlike 1 and 2.
+pub const EXIT_INTERNAL: u8 = 70;
 /// Exit status for an invalid config, and for a command line without a
 /// subcommand.
 pub const EXIT_CONFIG: u8 = 2;
@@ -297,7 +301,7 @@ async fn run(
 
     let (tx, rx) = mpsc::unbounded_channel();
     let history = load_history(&store);
-    let writer = writer::spawn_live(store, rx, live, history, listen_keys(&config));
+    let mut writer = writer::spawn_live(store, rx, live, history, listen_keys(&config));
     let mut supervisor = Supervisor::start(&config, tx.clone());
     tracing::info!(
         "emfor started: {} services, {} backends, store {}",
@@ -306,9 +310,27 @@ async fn run(
         config.store.path.display()
     );
     let mut current = config;
+    // Check tasks that stopped (only a panic does that) are started again.
+    let mut watchdog = tokio::time::interval(Duration::from_secs(1));
+    watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
+            ended = &mut writer => {
+                // Only a panic ends it before the Shutdown message. Without it
+                // the heartbeat stops and every client sees a stale store, so
+                // exit and let the service manager restart the daemon.
+                let why = match ended {
+                    Err(e) if e.is_panic() => "panicked",
+                    _ => "ended",
+                };
+                tracing::error!("state writer {why}; exiting");
+                supervisor.stop();
+                return ExitCode::from(EXIT_INTERNAL);
+            }
+            _ = watchdog.tick() => {
+                supervisor.restart_finished();
+            }
             _ = hup.recv() => {
                 let (prepared, loaded) = load(&config_path, Some(&current), plugins).await;
                 match loaded {

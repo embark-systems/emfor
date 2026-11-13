@@ -51,7 +51,19 @@ must be replaced. See [docs/deploy/daemon.md](docs/deploy/daemon.md#commands).
 - A plugin line longer than 65536 bytes no longer grows the daemon's memory
   without bound: on stdout the plugin is stopped and restarted as if it had
   exited; on stderr the rest of the line is discarded.
-
+- Applications kept reading the old store file after it was replaced (the
+  daemon moving a damaged store aside, or the file deleted and created
+  again), so they saw a stale store until they were restarted. A lookup
+  that finds the store stale, or fails, now checks whether the store path
+  holds another file and opens it. This covers every client library.
+- A `[dns] zone` longer than 242 characters made the daemon panic on every
+  query in the zone: the SOA name `hostmaster.<zone>` went past the
+  253-character limit. Such a zone is now a config error.
+- If the state writer stopped while the daemon ran, the daemon kept running
+  without a heartbeat and every client saw a stale store; it now exits with
+  status 70 (`EX_SOFTWARE`), which the systemd unit restarts. A backend check task that
+  stopped left its backend in its last state; it is now started again from
+  `unknown` within a second. Both only happen through a bug (a panic).
 - An application process killed in the middle of a lookup (SIGKILL, OOM,
   a crash) left its LMDB reader slot taken. Each such slot kept every page
   freed after it from being reused, so the store grew until commits failed

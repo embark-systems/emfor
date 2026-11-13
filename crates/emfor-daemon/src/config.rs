@@ -392,6 +392,9 @@ fn valid_site(label: &str) -> bool {
 const SITE_RULE: &str =
     "invalid site label: 1-63 characters of [a-z0-9-], not starting or ending with -";
 
+/// Longest `[dns] zone`: the SOA's `hostmaster.<zone>` must stay a valid name.
+pub const MAX_ZONE_LEN: usize = 253 - "hostmaster.".len();
+
 fn valid_service_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 253
@@ -659,13 +662,19 @@ impl Validator {
         dns.listen = self.listen(t, "dns", DnsConfig::default().listen);
         if let Some(z) = self.string(t, "dns", "zone") {
             let zone = normalize_service_name(z);
-            if valid_service_name(&zone) {
-                dns.zone = zone;
-            } else {
+            if !valid_service_name(&zone) {
                 self.err(
                     "dns.zone",
                     "invalid zone name: labels of [a-z0-9-], 1-63 characters each, 253 characters total",
                 );
+            } else if zone.len() > MAX_ZONE_LEN {
+                // The SOA names hostmaster.<zone>, which must fit in 253.
+                self.err(
+                    "dns.zone",
+                    format!("zone name longer than {MAX_ZONE_LEN} characters"),
+                );
+            } else {
+                dns.zone = zone;
             }
         }
         if let Some(ttl) = self.dns_seconds(t, "dns", "ttl") {
@@ -1030,7 +1039,7 @@ fn parse_size(s: &str) -> Option<usize> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn parse_ok(text: &str) -> Config {
@@ -1407,6 +1416,11 @@ backends = ["10.0.0.1:80"]
                 "duplicate listen address",
             ),
             ("zone = \"svc..emfor\"", "dns.zone", "invalid zone name"),
+            (
+                &format!("zone = \"{}\"", long_zone(MAX_ZONE_LEN + 1)),
+                "dns.zone",
+                "zone name longer than 242 characters",
+            ),
             ("zones = \"x\"", "dns.zones", "unknown key"),
         ];
         for (line, path, frag) in rows {
@@ -1417,6 +1431,29 @@ backends = ["10.0.0.1:80"]
                 "{line}: {e:?}"
             );
         }
+    }
+
+    /// A valid zone name of exactly `len` characters: 60-character labels.
+    pub(crate) fn long_zone(len: usize) -> String {
+        let mut z = String::new();
+        while z.len() < len {
+            if !z.is_empty() {
+                z.push('.');
+            }
+            let n = (len - z.len()).min(60);
+            z.push_str(&"a".repeat(n));
+        }
+        z
+    }
+
+    #[test]
+    fn longest_zone_is_accepted() {
+        let zone = long_zone(MAX_ZONE_LEN);
+        assert_eq!(zone.len(), 242);
+        let d = parse_ok(&format!("[dns]\nzone = \"{zone}\"\n{SVC}"))
+            .dns
+            .unwrap();
+        assert_eq!(d.zone, zone);
     }
 
     /// Spec service-config "Config validation rules": `[metrics]` rows.

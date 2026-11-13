@@ -770,6 +770,20 @@ mod tests {
         );
     }
 
+    /// The longest zone the config accepts still has a valid SOA.
+    #[test]
+    fn soa_for_the_longest_zone() {
+        let zone = crate::config::tests::long_zone(crate::config::MAX_ZONE_LEN);
+        let rec = soa_record(&DnsSettings {
+            zone: zone.clone(),
+            ..settings()
+        });
+        let RData::SOA(soa) = rec.data else {
+            panic!("not SOA")
+        };
+        assert_eq!(soa.rname.to_ascii(), format!("hostmaster.{zone}."));
+    }
+
     #[test]
     fn malformed_and_unsupported() {
         let v = LiveView::default();

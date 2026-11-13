@@ -664,12 +664,17 @@ tests:
 ---
 ### Requirement: Clients are safe across threads and fork
 
-The client SHALL open the store read-only, at most once per process, and reuse it for later lookups. Lookups from several threads at once SHALL each return a valid result. When a lookup runs in a process whose pid differs from the pid that opened the store (after `fork`), the client SHALL discard the inherited handle without closing it, open the store again, re-read the environment variables, and reset the round-robin counters. Each lookup SHALL end its read transaction before returning.
+The client SHALL open the store read-only once per process and reuse it for later lookups. When a lookup finds the store stale or fails, and the file at the store path is now a different file (device and inode) than the open one, the client SHALL close the open store once no lookup in the process uses it, open the file at the path, and repeat the lookup once; a missing file SHALL NOT count as a different file. Lookups from several threads at once SHALL each return a valid result. When a lookup runs in a process whose pid differs from the pid that opened the store (after `fork`), the client SHALL discard the inherited handle without closing it, open the store again, re-read the environment variables, and reset the round-robin counters. Each lookup SHALL end its read transaction before returning.
 
 #### Scenario: Lookup after fork
 
 - **WHEN** a process performs a successful lookup, forks, and the child performs a lookup of the same service
 - **THEN** the child's lookup returns a valid address of that service, and the parent's next lookup also returns one
+
+#### Scenario: Store replaced while the client runs
+
+- **WHEN** a client has looked up a service in a stale store, and the store path is then replaced by a fresh store whose record of that service names another backend
+- **THEN** the next lookup in the same process returns the backend of the new store
 
 #### Scenario: Concurrent lookups
 

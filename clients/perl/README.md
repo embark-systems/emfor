@@ -73,8 +73,8 @@ cd clients/rust
 cargo cinstall --release --features capi --prefix /usr/local
 ```
 
-Restart applications after deleting the store file; do not delete its
-`-lock` file alone.
+Applications follow a store file that is replaced while they run (see the
+C client's README); do not delete its `-lock` file alone.
 
 ## Tests
 

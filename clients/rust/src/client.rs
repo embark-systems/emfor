@@ -6,19 +6,23 @@ use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use emfor_format::{SCHEMA_VERSION, ServiceRecord, service_key};
 
 use crate::select::{candidates, is_stale, normalize, pick, pool_candidates};
-use crate::store::Env;
+use crate::store::{Env, Snapshot};
 use crate::{Error, ErrorCode};
 
 pub struct Client {
     path: PathBuf,
     max_staleness_ms: Result<u64, String>,
     /// `None` until an open succeeds; a failed open is retried next lookup.
-    env: Mutex<Option<Arc<Env>>>,
+    /// Lookups hold the read lock for their read transaction, so a reopen
+    /// (write lock) closes the old environment only when none uses it, and
+    /// before it opens the new one: LMDB must not have two environments on
+    /// one lock file in a process.
+    env: RwLock<Option<Env>>,
     counters: Mutex<HashMap<String, Arc<AtomicU64>>>,
     /// Random per client: each service's counter starts at a random value.
     seed: RandomState,
@@ -35,7 +39,7 @@ impl Client {
         Client {
             path,
             max_staleness_ms,
-            env: Mutex::new(None),
+            env: RwLock::new(None),
             counters: Mutex::new(HashMap::new()),
             seed: RandomState::new(),
         }
@@ -46,14 +50,38 @@ impl Client {
         Client::new(path, max)
     }
 
-    fn env(&self) -> Result<Arc<Env>, Error> {
-        let mut slot = self.env.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(env) = slot.as_ref() {
-            return Ok(env.clone());
+    /// One read transaction on the store, opening it first if needed.
+    fn snapshot(&self, key: &str) -> Result<Snapshot, Error> {
+        {
+            let slot = self.env.read().unwrap_or_else(PoisonError::into_inner);
+            if let Some(env) = slot.as_ref() {
+                return env.snapshot(key);
+            }
         }
-        let env = Arc::new(Env::open(&self.path)?);
-        *slot = Some(env.clone());
-        Ok(env)
+        let mut slot = self.env.write().unwrap_or_else(PoisonError::into_inner);
+        if slot.is_none() {
+            *slot = Some(Env::open(&self.path)?);
+        }
+        slot.as_ref().expect("opened above").snapshot(key)
+    }
+
+    /// When the store path now holds another file, close the open store and
+    /// open that one. Only called for a stale store, so a running client
+    /// follows a store the daemon replaced without a restart. True when the
+    /// next read sees the new file.
+    fn reopen_if_replaced(&self) -> bool {
+        let mut slot = self.env.write().unwrap_or_else(PoisonError::into_inner);
+        if !slot.as_ref().is_some_and(Env::replaced) {
+            return false;
+        }
+        *slot = None; // closes the old environment first
+        match Env::open(&self.path) {
+            Ok(env) => {
+                *slot = Some(env);
+                true
+            }
+            Err(_) => false, // opened again on the next lookup
+        }
     }
 
     fn next(&self, service: &str) -> u64 {
@@ -67,13 +95,26 @@ impl Client {
     }
 
     pub fn lookup(&self, name: &str, affinity_key: Option<&str>) -> Result<String, Error> {
+        match self.lookup_once(name, affinity_key, true) {
+            // A store that was set aside as damaged may fail to read, and a
+            // service added since is missing from it: errors look too.
+            Err(_) if self.reopen_if_replaced() => self.lookup_once(name, affinity_key, false),
+            r => r,
+        }
+    }
+
+    fn lookup_once(
+        &self,
+        name: &str,
+        affinity_key: Option<&str>,
+        may_reopen: bool,
+    ) -> Result<String, Error> {
         let max = self
             .max_staleness_ms
             .clone()
             .map_err(|m| Error::new(ErrorCode::Unavailable, m))?;
-        let env = self.env()?;
         let service = normalize(name);
-        let snap = env.snapshot(&service_key(&service))?;
+        let snap = self.snapshot(&service_key(&service))?;
         let path = self.path.display();
         let schema = snap.schema_version.ok_or_else(|| {
             Error::new(
@@ -101,6 +142,10 @@ impl Client {
                 format!("store {path}: meta/heartbeat {heartbeat:?} is not a decimal integer"),
             )
         })?;
+        let stale = is_stale(heartbeat, now_ms(), max);
+        if stale && may_reopen && self.reopen_if_replaced() {
+            return self.lookup_once(name, affinity_key, false);
+        }
         let record = snap.record.ok_or_else(|| {
             Error::new(ErrorCode::NotFound, format!("no service named {service:?}"))
         })?;
@@ -110,7 +155,6 @@ impl Client {
                 format!("record of service {service:?} cannot be parsed: {e}"),
             )
         })?;
-        let stale = is_stale(heartbeat, now_ms(), max);
         let cands = pool_candidates(&record, candidates(&record, stale)?, stale);
         Ok(pick(
             record.balance,
@@ -265,6 +309,72 @@ mod tests {
             assert_eq!(c.lookup(n, None).unwrap(), "10.0.0.11:8080", "{n}");
         }
         assert_eq!(code(&c, "api.svc.emfor.."), ErrorCode::NotFound);
+    }
+
+    /// Put a new store file at `dir/state.mdb` the way the daemon replaces a
+    /// damaged one: the old file moves away (here: is unlinked by the
+    /// rename) and the lock file is removed.
+    fn replace(dir: &Path, store: serde_json::Value) {
+        let next = dir.join("next.mdb");
+        emfor_fixture::write_store(&store, 3000, emfor_fixture::now_ms(), &next).unwrap();
+        std::fs::rename(&next, dir.join("state.mdb")).unwrap();
+        let _ = std::fs::remove_file(dir.join("next.mdb-lock"));
+        let _ = std::fs::remove_file(dir.join("state.mdb-lock"));
+    }
+
+    fn backend(ip: &str) -> serde_json::Value {
+        // `open`: a stale store still answers, with any backend.
+        serde_json::json!({"on_all_down": "open", "backends": [{"id": format!("{ip}:8080"), "ip": ip, "port": 8080, "state": "healthy", "checked_at": 1, "reason": null}]})
+    }
+
+    #[test]
+    fn stale_store_is_followed_to_its_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write(
+            dir.path(),
+            serde_json::json!({"schema_version": "1", "heartbeat": "stale",
+                "services": [svc("api.svc.emfor", backend("10.0.0.11"))]}),
+        );
+        let c = Client::new(p, Ok(3000));
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
+        replace(
+            dir.path(),
+            serde_json::json!({"schema_version": "1",
+                "services": [svc("api.svc.emfor", backend("10.0.0.22"))]}),
+        );
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.22:8080");
+    }
+
+    #[test]
+    fn service_only_in_the_replacement_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write(
+            dir.path(),
+            serde_json::json!({"schema_version": "1",
+                "services": [svc("api.svc.emfor", backend("10.0.0.11"))]}),
+        );
+        let c = Client::new(p, Ok(3000));
+        assert_eq!(code(&c, "db.svc.emfor"), ErrorCode::NotFound);
+        replace(
+            dir.path(),
+            serde_json::json!({"schema_version": "1",
+                "services": [svc("db.svc.emfor", backend("10.0.0.33"))]}),
+        );
+        assert_eq!(c.lookup("db.svc.emfor", None).unwrap(), "10.0.0.33:8080");
+    }
+
+    #[test]
+    fn deleted_store_keeps_the_open_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write(
+            dir.path(),
+            serde_json::json!({"schema_version": "1", "heartbeat": "stale",
+                "services": [svc("api.svc.emfor", backend("10.0.0.11"))]}),
+        );
+        let c = Client::new(p.clone(), Ok(3000));
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
+        std::fs::remove_file(&p).unwrap();
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
     }
 
     #[test]

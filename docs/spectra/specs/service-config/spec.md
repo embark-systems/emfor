@@ -93,7 +93,7 @@ The daemon SHALL reject a config that violates any of these rules and SHALL repo
 - `backends` is non-empty; every entry is a string or a table; a string, and a table's `addr`, is `IPv4:port` or `[IPv6]:port` with port 1–65535; a table has `addr` and no keys other than `addr`, `weight`, `site`; `weight` is an integer from 1 to 100; no `addr` repeats within a service.
 - The top-level `site` and every backend `site` are, after ASCII lowercasing, 1 to 63 characters of `[a-z0-9-]` that do not start or end with `-`.
 - `check` names a registered checker and `check_options` passes that checker's validation.
-- `[dns] listen` is a non-empty array of `IPv4:port` or `[IPv6]:port` with port 1–65535 and no repeats; `[dns] zone` follows the service name rules after the same normalization; `[dns] ttl` is a whole number of seconds from 0s to 3600s.
+- `[dns] listen` is a non-empty array of `IPv4:port` or `[IPv6]:port` with port 1–65535 and no repeats; `[dns] zone` follows the service name rules after the same normalization and is at most 242 characters, so that the SOA name `hostmaster.<zone>` fits in 253; `[dns] ttl` is a whole number of seconds from 0s to 3600s.
 - `[metrics] listen` is a non-empty array of `IPv4:port` or `[IPv6]:port` with port 1–65535 and no repeats; `[metrics]` has no keys other than `listen`.
 - No unknown keys anywhere in the file.
 
@@ -131,6 +131,7 @@ The daemon SHALL reject a config that violates any of these rules and SHALL repo
 | `[dns] listen` | `[]` | error: listen must not be empty |
 | `[dns] listen` | `["localhost:5300"]` | error: listen address must be an IP literal with port |
 | `[dns] zone` | `"svc..emfor"` | error: invalid zone name |
+| `[dns] zone` | a valid name of 243 characters | error: zone name longer than 242 characters |
 | `[dns] zone` | `"SVC.Emfor."` | ok, normalized to `svc.emfor` |
 | `[metrics] listen` | `[]` | error: listen must not be empty |
 | `[metrics] listen` | `["localhost:5301"]` | error: listen address must be an IP literal with port |
