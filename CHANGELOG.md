@@ -1,8 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-11-14
 
-### Peer groups
+**Breaking, on FreeBSD only: the rc.d script keeps its pid files in
+`/var/run/emfor/`.** Scripts that read `/var/run/emfor.child.pid` must read
+`/var/run/emfor/emfor.child.pid`, and installed copies of
+[examples/rc.d/emfor](examples/rc.d/emfor) must be replaced (see
+Deployment). Nothing else needs a change: configs, commands and the
+`--json` output of 0.2.0 work as before.
+
+The main addition is peer groups: the daemons of one site can pass
+backend failures on, vote on a backend's state and split the checks
+between them. Without a `[peers]` table the daemon behaves as in 0.2.0.
+The store format (`meta/schema_version` 1) and the plugin protocol (1) are
+unchanged; the new store key `meta/peers` is read only by `emfor status`.
+As with every release, install `libemfor` from the same release as the
+daemon.
+
+### Daemon
 
 - New optional `[peers]` table: the emfor daemons of one `site` that list
   each other form a peer group. Members send each other a heartbeat every
@@ -14,7 +29,9 @@
   only for services whose `check`, `check_options` and `timeout` match.
   New metrics `emfor_peer_up`, `emfor_peer_messages_rejected_total` and
   `emfor_peer_notifications_total`. Without `[peers]` nothing changes.
-  See docs/manual/03-configuration.md and docs/deploy/daemon.md.
+  See
+  [docs/manual/03-configuration.md](docs/manual/03-configuration.md#peers)
+  and [docs/deploy/daemon.md](docs/deploy/daemon.md).
 - Majority vote: with three or more live members, each backend has three
   assigned checkers, chosen by rendezvous hashing over the live members.
   They send their own check results to the others, and two `down` votes
@@ -34,10 +51,6 @@
   the votes do not agree. A failure only such a member sees is noticed up
   to about five intervals later. New metric
   `emfor_peer_checks_skipped_total`.
-- `emfor status` marks backends this daemon is not an assigned checker of
-  with `voted`, adds `checks N/M backends here` to the `peers:` line when
-  there are any, and `--json` has `assigned_checkers` (each backend's
-  assigned checkers, worked out from `meta/peers`).
 - New setting `peers` (default `true`), per service or in `[defaults]`:
   `peers = false` leaves a service out of the peer group on this host. It
   sends no reports or results for it, ignores those it receives, and
@@ -45,15 +58,18 @@
   backends' state. `meta/peers` lists such services in `services_off`.
   The host announces those services in its heartbeats (`off`: the first
   4 bytes of SHA-256 of each name, as 8 hex digits, at most 80; with more
-  it logs a warning), and members of this version leave it out when
-  choosing those services' assigned checkers, so hosts can set it on their
-  own. Older members ignore the announcement and still count the host.
+  it logs a warning), and the other members leave it out when choosing
+  those services' assigned checkers, so each host can set it on its own.
   Each entry of `members` in `meta/peers` has `services_off` with the
   services that member leaves out, and `emfor status` uses it for `voted`
   and `assigned_checkers`.
 
-### Status
+### emfor status
 
+- `emfor status` marks backends this daemon is not an assigned checker of
+  with `voted`, adds `checks N/M backends here` to the `peers:` line when
+  there are any, and `--json` has `assigned_checkers` (each backend's
+  assigned checkers, worked out from `meta/peers`).
 - `emfor status` shows, after the `peers:` line, one line per member that
   leaves shown services out of the peer group:
   `peers: 10.0.0.6:5302 leaves out api.svc.emfor db.svc.emfor`. Only the
@@ -67,14 +83,15 @@
   ends the watch, and the terminal is restored also after a crash. When
   it cannot install its signal handlers it now exits 2 instead of 0.
 
-### Plugins
+### emfor-check
 
 - `emfor-check dns` checks DNS servers: it sends one query (`name`,
   `type`, over UDP or TCP) and is up when the response code is one of
   `expect_rcode` (default `NOERROR`) and, with `expect_answer = true`, the
   answer has a record of the asked type. Over UDP the query is sent again
   once at half of the `timeout`. Reasons start with `rcode: `, `answer: `,
-  `query: `, `connect: ` or `timeout`. See docs/deploy/plugins.md.
+  `query: `, `connect: ` or `timeout`. See
+  [docs/deploy/plugins.md](docs/deploy/plugins.md).
 - `emfor-check radius` checks RADIUS servers: it sends a Status-Server
   (RFC 5997) by default, or an Access-Request with PAP for a test
   account, with Message-Authenticator first, and is up when the server
@@ -82,13 +99,14 @@
   `secret_file`. Reasons start with `auth: `, `query: `, `connect: ` or
   `timeout`; servers that check Message-Authenticator, such as
   FreeRADIUS, do not answer a request made with the wrong secret, which
-  then shows as `timeout`. See docs/deploy/plugins.md.
+  then shows as `timeout`. See
+  [docs/deploy/plugins.md](docs/deploy/plugins.md).
 - `emfor-check sip` checks SIP servers with an OPTIONS request over UDP,
   TCP or TLS, and is up when the final status code is in
   `expect_status`, by default 200 to 499: a proxy that answers 404 or
   407 is working, while 503 (overload, maintenance) and other 5xx and
   6xx codes are down with `status: <code> <reason>`. See
-  docs/deploy/plugins.md.
+  [docs/deploy/plugins.md](docs/deploy/plugins.md).
 - `emfor-check diameter` checks Diameter nodes (HSS, PCRF, OCS, DRA)
   over TCP or TLS: a capabilities exchange and a device watchdog on a
   new connection, then a Disconnect-Peer-Request. It is down with the
@@ -96,7 +114,8 @@
   `cea: 3010 DIAMETER_UNKNOWN_PEER` or
   `cea: 5010 DIAMETER_NO_COMMON_APPLICATION`. TLS can present a client
   certificate (`tls_cert_file`, `tls_key_file`), which nodes such as
-  freeDiameter require. See docs/deploy/plugins.md.
+  freeDiameter require. See
+  [docs/deploy/plugins.md](docs/deploy/plugins.md).
 
 ### Deployment
 
@@ -107,8 +126,36 @@
   user cannot write `/var/run`. The pid files are now in `/var/run/emfor/`,
   which `service emfor start` creates owned by `emfor_user`, and daemon(8)
   no longer gets `-u` (it needs root). Replace installed copies of
-  `examples/rc.d/emfor`; scripts that read `/var/run/emfor.child.pid` read
-  `/var/run/emfor/emfor.child.pid` now.
+  [examples/rc.d/emfor](examples/rc.d/emfor); scripts that read
+  `/var/run/emfor.child.pid` read `/var/run/emfor/emfor.child.pid` now.
+
+### Documentation
+
+- A user manual in English ([docs/manual](docs/manual/README.md)) and
+  Traditional Chinese ([docs/manual.zh_TW](docs/manual.zh_TW/README.md)):
+  concepts, installation, configuration, health checks, backend
+  selection, clients, DNS, operations and troubleshooting.
+- [SECURITY.md](SECURITY.md) (how to report a vulnerability),
+  [CONTRIBUTING.md](CONTRIBUTING.md) and
+  [docs/compatibility.md](docs/compatibility.md), which says which
+  interfaces stay stable across releases.
+
+### Known limits
+
+- Unchanged from 0.2.0: FreeBSD has not been tested on a host yet, peer
+  groups included ([tests/resolver/freebsd.sh](tests/resolver/freebsd.sh)
+  checks the daemon, the rc.d script and the port example there).
+- Unchanged from 0.1.0: lookup throughput across threads levels off at
+  about two million a second on Linux
+  ([docs/performance.md](docs/performance.md)).
+- Unchanged from 0.2.0: with `[store] sync = false` (the default), a host
+  crash can leave the store damaged; the daemon then sets it aside at the
+  next start and the state history is lost.
+- In a peer group, a failure that only a member which is not one of the
+  backend's assigned checkers sees is noticed there up to about five
+  intervals later than without a group.
+- A host announces at most 80 services left out of the peer group; the
+  other members still count it as a candidate for the rest.
 
 ## 0.2.0 — 2026-11-13
 
