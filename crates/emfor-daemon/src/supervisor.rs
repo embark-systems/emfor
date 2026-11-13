@@ -205,6 +205,25 @@ mod tests {
         addr
     }
 
+    /// Poll `cond` every 20ms until it holds, failing after 5s: the checks
+    /// and the writer run on real time, which a loaded machine stretches.
+    async fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !cond() {
+            assert!(tokio::time::Instant::now() < deadline, "timed out: {what}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// A port that refuses connections: bound but not listening, and held
+    /// for as long as the socket lives so no other test can take it.
+    fn closed_port() -> (tokio::net::TcpSocket, std::net::SocketAddr) {
+        let s = tokio::net::TcpSocket::new_v4().unwrap();
+        s.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let addr = s.local_addr().unwrap();
+        (s, addr)
+    }
+
     fn conf(text: &str) -> Config {
         crate::config::parse(text, &Registry::builtin()).unwrap()
     }
@@ -216,18 +235,16 @@ mod tests {
             .map(|j| serde_json::from_str(&j).unwrap())
     }
 
+    /// Backend states of `name`; empty while its record is not written yet.
     fn states(store: &Store, name: &str) -> Vec<HealthState> {
         rec(store, name)
-            .unwrap()
-            .backends
-            .iter()
-            .map(|b| b.state)
-            .collect()
+            .map(|r| r.backends.iter().map(|b| b.state).collect())
+            .unwrap_or_default()
     }
 
     fn http_service(name: &str, addr: &str, path: &str, interval: &str) -> String {
         format!(
-            "[services.\"{name}\"]\ncheck = \"http\"\nbackends = [\"{addr}\"]\ninterval = \"{interval}\"\ntimeout = \"100ms\"\nrise = 1\njitter = \"0%\"\n[services.\"{name}\".check_options]\npath = \"{path}\"\n"
+            "[services.\"{name}\"]\ncheck = \"http\"\nbackends = [\"{addr}\"]\ninterval = \"{interval}\"\ntimeout = \"{interval}\"\nrise = 1\njitter = \"0%\"\n[services.\"{name}\".check_options]\npath = \"{path}\"\n"
         )
     }
 
@@ -259,19 +276,22 @@ mod tests {
             })
             .unwrap();
         // Closed port: results are `down`, which cannot leave `unknown` before fall = 3.
-        let closed = TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        let (_closed, closed) = closed_port();
         let _sup = Supervisor::start(
             &conf(&format!(
                 "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"{closed}\"]\n"
             )),
             h.tx.clone(),
         );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(rec(&h.store, "old.svc.emfor").is_none());
+        // The start layout replaces both records in one commit; read the raw
+        // value, since the stale `api` record is not a valid record.
+        wait_for("old removed", || {
+            h.store
+                .get(&service_key("old.svc.emfor"))
+                .unwrap()
+                .is_none()
+        })
+        .await;
         let r = rec(&h.store, "api.svc.emfor").unwrap();
         assert_eq!(
             states(&h.store, "api.svc.emfor"),
@@ -288,11 +308,10 @@ mod tests {
             &conf(&http_service("api.svc.emfor", &addr, "/", "200ms")),
             h.tx.clone(),
         );
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        assert_eq!(
-            states(&h.store, "api.svc.emfor"),
-            vec![HealthState::Healthy]
-        );
+        wait_for("api healthy", || {
+            states(&h.store, "api.svc.emfor") == vec![HealthState::Healthy]
+        })
+        .await;
         sup.reload(&conf(&http_service("api.svc.emfor", &addr, "/", "1s")));
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(
@@ -309,11 +328,10 @@ mod tests {
             &conf(&http_service("api.svc.emfor", &addr, "/", "200ms")),
             h.tx.clone(),
         );
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        assert_eq!(
-            states(&h.store, "api.svc.emfor"),
-            vec![HealthState::Healthy]
-        );
+        wait_for("api healthy", || {
+            states(&h.store, "api.svc.emfor") == vec![HealthState::Healthy]
+        })
+        .await;
         // `/healthz` answers 404: new checks are `down`, and fall = 3 keeps a
         // reset backend `unknown`, while a kept (not reset) one would stay `healthy`.
         sup.reload(&conf(&http_service(
@@ -322,7 +340,10 @@ mod tests {
             "/healthz",
             "200ms",
         )));
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        wait_for("api reset to unknown", || {
+            states(&h.store, "api.svc.emfor") == vec![HealthState::Unknown]
+        })
+        .await;
         let r = rec(&h.store, "api.svc.emfor").unwrap();
         assert_eq!(r.backends[0].state, HealthState::Unknown);
         assert!(
@@ -390,20 +411,20 @@ mod tests {
             http_service("old.svc.emfor", &addr, "/", "200ms")
         );
         let mut sup = Supervisor::start(&conf(&two), h.tx.clone());
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        assert!(rec(&h.store, "old.svc.emfor").is_some());
-        let closed = TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap();
-        let one = http_service("api.svc.emfor", &addr, "/", "200ms").replace(
+        wait_for("api healthy and old written", || {
+            states(&h.store, "api.svc.emfor") == vec![HealthState::Healthy]
+                && rec(&h.store, "old.svc.emfor").is_some()
+        })
+        .await;
+        let (_closed, closed) = closed_port();
+        // At a 1s interval the added backend stays `unknown` (fall = 3) for
+        // seconds after the reload, however late it is observed.
+        let one = http_service("api.svc.emfor", &addr, "/", "1s").replace(
             &format!("backends = [\"{addr}\"]"),
             &format!("backends = [\"{addr}\", \"{closed}\"]"),
         );
         sup.reload(&conf(&one));
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(rec(&h.store, "old.svc.emfor").is_none());
+        wait_for("old removed", || rec(&h.store, "old.svc.emfor").is_none()).await;
         assert_eq!(
             states(&h.store, "api.svc.emfor"),
             vec![HealthState::Healthy, HealthState::Unknown]
