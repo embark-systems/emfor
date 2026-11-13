@@ -1,0 +1,130 @@
+# 1. Concepts
+
+[Manual](README.md) · Next: [2. Installation](02-installation.md)
+
+## What emfor does
+
+emfor is a health-check daemon that runs on every application host. It
+checks the backends of the services your applications use, and publishes
+which backends are healthy in a file on the same host. An application that
+needs, say, a database server asks the emfor client library for one; the
+library reads the local file and returns an address such as
+`10.0.3.1:5432`. The lookup sends nothing over the network, takes about a
+microsecond, and keeps working when other hosts, or the network, fail.
+
+```
+              checks over the network
+  backends <------------------------------ emfor daemon ---------> DNS on 127.0.0.1
+                                               |  writes           (programs without a
+                                               v                    client; answered from
+                                     local LMDB state store         the daemon's memory)
+                                               |  reads
+                             +-----------------+-----------+
+                             |                             |
+                  client library (Rust, C,           emfor status
+                  Go, Python, Perl, PHP)
+```
+
+Each host runs its own daemon with its own config and sees the backends
+from where it stands. There is no central server and no communication
+between emfor daemons.
+
+## The parts
+
+| Part | What it is |
+| --- | --- |
+| `emfor server` | The daemon. It reads `emfor.toml`, checks every backend repeatedly, and writes the results to the state store. One per host (one per store). |
+| The state store | An LMDB file, `/var/lib/emfor/state.mdb` by default, with one record per service. The daemon is its only writer; any number of processes read it. |
+| Client libraries | `emfor_client` (Rust) and `libemfor` (C), with wrappers for Go, Python, Perl and PHP. A lookup reads the store and picks one backend. |
+| DNS server | Optional. Answers A, AAAA and SRV queries for service names in one zone, from the daemon's memory, for programs that cannot use a client library. |
+| `emfor status` | Shows what the daemon has published. Also usable as a monitoring check. |
+| `/metrics` | Optional Prometheus endpoint. |
+| `emfor-check` | A plugin program with checks for redis, MySQL/MariaDB, PostgreSQL and LDAP. |
+
+## Services and backends
+
+A **service** is a name, such as `api.svc.emfor`, with a list of
+**backends**: the `ip:port` addresses that serve it. Each service has a
+**check** (how to test one backend), timing settings, a **balance** method
+(how to choose among healthy backends) and an **on_all_down** policy (what
+to do when none is healthy).
+
+```toml
+[services."api.svc.emfor"]
+check = "http"
+backends = ["10.0.0.11:8080", "10.0.0.12:8080"]
+```
+
+Backends are always IP addresses, never host names: emfor does not depend
+on DNS to find them.
+
+## Check results and health states
+
+Every check ends with one **result**:
+
+| Result | Meaning | Counts against the backend |
+| --- | --- | --- |
+| `up` | The backend passed. | No |
+| `down` | The backend failed (refused, timed out, wrong answer). | Yes |
+| `error` | emfor could not perform the check (a local problem such as an unreadable password file or a crashed plugin). | No |
+
+Each backend has a **health state**:
+
+| State | When |
+| --- | --- |
+| `unknown` | After the daemon starts, after the backend is added, after its `check` changes, and after a long run of `error` results. |
+| `healthy` | After `rise` consecutive `up` results (default 2). |
+| `unhealthy` | After `fall` consecutive `down` results (default 3). |
+
+The counters make a single lost packet harmless: one failed check does not
+remove a backend, and one passed check does not bring it back. An `error`
+changes nothing, so a problem on the checking host does not mark good
+backends down; only when a backend has had nothing but errors for longer
+than `fall × interval` does it go back to `unknown`.
+
+## What a lookup returns
+
+The client takes the service's **healthy** backends as candidates and lets
+`balance` pick one. When none is healthy, `on_all_down` decides:
+
+- `open` (the default): every backend is a candidate. The application tries
+  one anyway, which is usually better than failing outright when the
+  checks, not the backends, are at fault.
+- `closed`: the lookup fails with `ALL_DOWN`, and DNS answers `SERVFAIL`.
+
+## The heartbeat and a stale store
+
+The daemon writes a **heartbeat** (the current time) into the store at
+least once a second. A client compares it with its own clock: when the
+heartbeat is more than 3 seconds old (`EMFOR_MAX_STALENESS`), or the
+daemon has stopped and set it to 0, the store is **stale**. In a stale
+store the client treats every backend as not healthy, and `on_all_down`
+decides. An application therefore never trusts health data from a daemon
+that has hung or gone away, and it still gets an address from an `open`
+service.
+
+When the daemon starts it rewrites every service record with all backends
+`unknown`; it never reuses health state from a previous run. While a
+backend is `unknown` it is checked about every 200 ms, so with the default
+settings every backend is known within about half a second of a start.
+
+## Failure behavior at a glance
+
+| What fails | What applications see |
+| --- | --- |
+| One backend | It turns `unhealthy` after `fall` failed checks (about 6 seconds with the defaults) and is no longer returned. |
+| Every backend of a service | `open`: any backend; `closed`: `ALL_DOWN` / `SERVFAIL`. |
+| The emfor daemon stops or hangs | After 3 seconds the store is stale: `open` services return any backend, `closed` services fail. Lookups never block. |
+| The store file is missing or unreadable | Lookups fail with `UNAVAILABLE`. |
+| The checking host loses its network | Checks fail, backends turn `unhealthy`; the applications on that host cannot reach them either. |
+| A plugin crashes | Its checks are `error` (no state change) until the daemon has restarted it. |
+
+## Files the daemon uses
+
+| File | Purpose |
+| --- | --- |
+| `/etc/emfor/emfor.toml` | The config. Another path with `--config`. |
+| `<store>` (`/var/lib/emfor/state.mdb`) | The state store. |
+| `<store>-lock` | LMDB's lock file. Every reader registers in it, so applications need write access to it. |
+| `<store>.writer` | Held locked by the running daemon, so that only one daemon writes a store. |
+| `<store>.corrupt` | A damaged store moved aside at start, kept for inspection. |

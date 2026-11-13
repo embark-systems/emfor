@@ -102,6 +102,7 @@ The C library, and every client built on it, must come from the same emfor relea
 
 | Topic | Document |
 | --- | --- |
+| User manual: concepts, installation, configuration, checks, clients, DNS, operations, troubleshooting | [docs/manual/](docs/manual/README.md) |
 | Installing, `emfor status`, systemd, metrics and alerting | [docs/deploy/daemon.md](docs/deploy/daemon.md) |
 | Forwarding the DNS zone from dnsmasq, unbound, systemd-resolved or macOS | [docs/deploy/dns-resolver.md](docs/deploy/dns-resolver.md) |
 | redis, MySQL, PostgreSQL and LDAP checks with `emfor-check` | [docs/deploy/plugins.md](docs/deploy/plugins.md) |

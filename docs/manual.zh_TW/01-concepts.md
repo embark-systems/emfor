@@ -1,0 +1,100 @@
+# 1. 基本概念
+
+[手冊](README.md) · 下一章：[2. 安裝](02-installation.md)
+
+## emfor 做什麼
+
+emfor 是在每一台應用程式主機上執行的健康檢查 daemon。它檢查應用程式所用服務的 backend，並把哪些 backend 健康寫進同一台主機上的一個檔案。應用程式需要（例如）一台資料庫伺服器時，向 emfor client 函式庫要一個；函式庫讀取本機檔案，回傳像 `10.0.3.1:5432` 這樣的位址。查詢不經過網路、大約一微秒完成，而且在其他主機或網路故障時仍然有效。
+
+```
+              checks over the network
+  backends <------------------------------ emfor daemon ---------> DNS on 127.0.0.1
+                                               |  writes           (programs without a
+                                               v                    client; answered from
+                                     local LMDB state store         the daemon's memory)
+                                               |  reads
+                             +-----------------+-----------+
+                             |                             |
+                  client library (Rust, C,           emfor status
+                  Go, Python, Perl, PHP)
+```
+
+每台主機執行自己的 daemon、用自己的設定，從自己的位置看 backend。沒有中央伺服器，emfor daemon 之間也不互相通訊。
+
+## 組成元件
+
+| 元件 | 說明 |
+| --- | --- |
+| `emfor server` | daemon。讀取 `emfor.toml`，反覆檢查每個 backend，並把結果寫入 state store。每台主機一個（每個 store 一個）。 |
+| state store | 一個 LMDB 檔案，預設為 `/var/lib/emfor/state.mdb`，每個服務一筆記錄。daemon 是唯一的寫入者；可以有任意多個行程讀取。 |
+| client 函式庫 | `emfor_client`（Rust）與 `libemfor`（C），以及 Go、Python、Perl、PHP 的包裝。一次查詢讀取 store 並選出一個 backend。 |
+| DNS server | 選用。為某個 zone 內的服務名稱回答 A、AAAA 與 SRV 查詢，資料來自 daemon 的記憶體，給無法使用 client 函式庫的程式用。 |
+| `emfor status` | 顯示 daemon 發布的內容，也可以當作監控檢查。 |
+| `/metrics` | 選用的 Prometheus endpoint。 |
+| `emfor-check` | 一個 plugin 程式，提供 redis、MySQL/MariaDB、PostgreSQL 與 LDAP 的檢查。 |
+
+## 服務與 backend
+
+**服務**（service）是一個名稱，例如 `api.svc.emfor`，加上一份 **backend** 清單：提供該服務的 `ip:port` 位址。每個服務有一個 **check**（如何測試一個 backend）、時間設定、一個 **balance** 方式（如何在健康的 backend 中挑選），以及一個 **on_all_down** 政策（沒有任何 backend 健康時怎麼辦）。
+
+```toml
+[services."api.svc.emfor"]
+check = "http"
+backends = ["10.0.0.11:8080", "10.0.0.12:8080"]
+```
+
+backend 一律是 IP 位址，不是主機名稱：emfor 找 backend 不依賴 DNS。
+
+## 檢查結果與健康狀態
+
+每次檢查都以一個**結果**結束：
+
+| 結果 | 意義 | 是否算 backend 的失敗 |
+| --- | --- | --- |
+| `up` | backend 通過。 | 否 |
+| `down` | backend 失敗（被拒絕、逾時、回答不對）。 | 是 |
+| `error` | emfor 無法執行檢查（本機問題，例如讀不到密碼檔或 plugin 當掉）。 | 否 |
+
+每個 backend 有一個**健康狀態**：
+
+| 狀態 | 何時 |
+| --- | --- |
+| `unknown` | daemon 啟動後、backend 剛加入後、其 `check` 變更後，以及連續很久都是 `error` 之後。 |
+| `healthy` | 連續 `rise` 次 `up`（預設 2）之後。 |
+| `unhealthy` | 連續 `fall` 次 `down`（預設 3）之後。 |
+
+計數器讓單一遺失的封包不造成影響：一次失敗不會移除 backend，一次成功也不會讓它回來。`error` 不改變任何東西，所以檢查端主機的問題不會把好的 backend 標成 down；只有當一個 backend 只收到 error 的時間超過 `fall × interval`，它才回到 `unknown`。
+
+## 查詢回傳什麼
+
+client 以服務中**健康**的 backend 作為候選，交給 `balance` 挑一個。沒有任何 backend 健康時，由 `on_all_down` 決定：
+
+- `open`（預設）：所有 backend 都是候選。應用程式照樣試一個；當出錯的是檢查本身而不是 backend 時，這通常比直接失敗好。
+- `closed`：查詢以 `ALL_DOWN` 失敗，DNS 回答 `SERVFAIL`。
+
+## Heartbeat 與過期的 store
+
+daemon 至少每秒把一次 **heartbeat**（目前時間）寫進 store。client 拿它與自己的時鐘比較：heartbeat 超過 3 秒（`EMFOR_MAX_STALENESS`），或 daemon 已停止並把它設為 0 時，store 就是**過期**（stale）的。在過期的 store 裡，client 把每個 backend 都當作不健康，由 `on_all_down` 決定結果。因此應用程式絕不會相信已經卡住或消失的 daemon 所留下的健康資料，而 `open` 的服務仍然能拿到位址。
+
+daemon 啟動時會把每筆服務記錄重寫一遍，所有 backend 都是 `unknown`；它從不沿用上一次執行的健康狀態。backend 處於 `unknown` 期間大約每 200 ms 檢查一次，所以用預設值時，啟動後約半秒內每個 backend 的狀態就已確定。
+
+## 故障行為一覽
+
+| 什麼故障 | 應用程式看到什麼 |
+| --- | --- |
+| 一個 backend | 經過 `fall` 次失敗的檢查後（預設約 6 秒）變成 `unhealthy`，不再被回傳。 |
+| 某服務的所有 backend | `open`：任一個 backend；`closed`：`ALL_DOWN` / `SERVFAIL`。 |
+| emfor daemon 停止或卡住 | 3 秒後 store 過期：`open` 的服務回傳任一 backend，`closed` 的服務失敗。查詢永遠不會卡住。 |
+| store 檔案不存在或無法讀取 | 查詢以 `UNAVAILABLE` 失敗。 |
+| 檢查端主機斷網 | 檢查失敗，backend 變成 `unhealthy`；這台主機上的應用程式本來也連不到它們。 |
+| plugin 當掉 | 它的檢查都是 `error`（狀態不變），直到 daemon 把它重新啟動。 |
+
+## daemon 使用的檔案
+
+| 檔案 | 用途 |
+| --- | --- |
+| `/etc/emfor/emfor.toml` | 設定檔。可用 `--config` 指定其他路徑。 |
+| `<store>`（`/var/lib/emfor/state.mdb`） | state store。 |
+| `<store>-lock` | LMDB 的 lock 檔。每個讀取者都要在裡面登記，所以應用程式需要它的寫入權限。 |
+| `<store>.writer` | 執行中的 daemon 鎖住它，確保一個 store 只有一個 daemon 寫入。 |
+| `<store>.corrupt` | 啟動時被移到一旁的損毀 store，留著供檢查。 |

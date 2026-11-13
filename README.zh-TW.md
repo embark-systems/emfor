@@ -100,10 +100,11 @@ C 函式庫以及所有建立在它之上的 client，必須和 daemon 來自同
 
 ## 文件
 
-以下文件都是英文。
+除了使用手冊，以下文件都是英文。
 
 | 主題 | 文件 |
 | --- | --- |
+| 使用手冊：概念、安裝、設定、健康檢查、client、DNS、維運、疑難排解 | [docs/manual.zh_TW/](docs/manual.zh_TW/README.md)（[English](docs/manual/README.md)） |
 | 安裝、`emfor status`、systemd、指標與告警 | [docs/deploy/daemon.md](docs/deploy/daemon.md) |
 | 從 dnsmasq、unbound、systemd-resolved 或 macOS 轉發 DNS 網域 | [docs/deploy/dns-resolver.md](docs/deploy/dns-resolver.md) |
 | 用 `emfor-check` 檢查 redis、MySQL、PostgreSQL 與 LDAP | [docs/deploy/plugins.md](docs/deploy/plugins.md) |
