@@ -100,11 +100,10 @@ services stay in the group. The host announces the services it leaves out
 in its heartbeats (as short hashes of their names, at most 80 of them), and
 the other members then do not count it as one of those services' assigned
 checkers, so their backends keep three where enough members are live. Each
-host can therefore leave out its own services. This needs every member on a
-version that reads the announcement: an older member still counts the host
-as a candidate, which can leave a backend with two assigned checkers that
-vote. With more than 80 services left out the host logs a warning and the
-others still count it for the rest.
+host can therefore leave out its own services. Peer groups and this
+announcement both came in 0.3.0, and 0.2.0 refuses a config with
+`[peers]`, so every member reads it. With more than 80 services left out
+the host logs a warning and the others still count it for the rest.
 
 ```toml
 site = "dc1"                               # required with [peers]
