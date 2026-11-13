@@ -65,16 +65,24 @@ followed.
 | `host_header` | string | none | `Host` header to send. |
 | `expect_status` | non-empty list | `["200-399"]` | Status codes that count as `up`: codes (`200` or `"200"`) or inclusive ranges (`"200-299"`), all within 100–599. |
 | `tls_verify` | boolean | `true` | For `https`: `false` accepts any certificate. |
+| `expect_body` | string | none | Bytes that must appear, case-sensitively, in the body (read up to 65536 bytes). At most 16384 bytes. |
 
 ```toml
 [services."api.svc.emfor".check_options]
 path = "/healthz"
 host_header = "api.internal"
 expect_status = ["200-299"]
+expect_body = '"status":"UP"'
 ```
 
 A response with another status is `down` with the status code in the
-reason.
+reason, and its body is not read. With `expect_body`, a response whose
+status matches is read until the text is found, the body ends, or 65536
+bytes have been read; without the text it is `down` with
+`expect_body: got "<the first 64 bytes, escaped>"`, and a body that cannot
+be read is `down` with a reason starting `body: `. Use it for health
+endpoints that answer 200 either way and put the state in the body. The
+latency `fastest` uses then includes reading the body.
 
 ## exec
 

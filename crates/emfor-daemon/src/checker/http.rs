@@ -1,4 +1,5 @@
-//! `http` checker: one `GET` per check, judged by response status.
+//! `http` checker: one `GET` per check, judged by response status and,
+//! with `expect_body`, by a piece of text in the response body.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -16,7 +17,17 @@ const ALLOWED: &[&str] = &[
     "host_header",
     "expect_status",
     "tls_verify",
+    "expect_body",
 ];
+
+/// Longest `expect_body`, as for the tcp checker's `expect`.
+const MAX_EXPECT_BODY: usize = 16384;
+
+/// Most body bytes read when looking for `expect_body`.
+const MAX_BODY_READ: usize = 65536;
+
+/// Body bytes quoted in the reason when `expect_body` is not found.
+const EXCERPT: usize = 64;
 
 pub struct HttpFactory;
 
@@ -31,6 +42,8 @@ pub struct HttpOptions {
     pub host_header: Option<String>,
     pub expect_status: Vec<StatusRange>,
     pub tls_verify: bool,
+    /// Bytes the body must contain; the body is read only when this is set.
+    pub expect_body: Option<Vec<u8>>,
 }
 
 impl CheckerFactory for HttpFactory {
@@ -120,6 +133,26 @@ fn parse_options(options: &toml::Table) -> Result<HttpOptions, Vec<OptionError>>
         }
     };
 
+    let expect_body = match options.get("expect_body") {
+        None => None,
+        Some(toml::Value::String(b)) if b.is_empty() => {
+            errors.push(OptionError::new("expect_body", "must not be empty"));
+            None
+        }
+        Some(toml::Value::String(b)) if b.len() > MAX_EXPECT_BODY => {
+            errors.push(OptionError::new(
+                "expect_body",
+                format!("must be at most {MAX_EXPECT_BODY} bytes"),
+            ));
+            None
+        }
+        Some(toml::Value::String(b)) => Some(b.clone().into_bytes()),
+        Some(_) => {
+            errors.push(OptionError::new("expect_body", "must be a string"));
+            None
+        }
+    };
+
     if errors.is_empty() {
         Ok(HttpOptions {
             path,
@@ -127,6 +160,7 @@ fn parse_options(options: &toml::Table) -> Result<HttpOptions, Vec<OptionError>>
             host_header,
             expect_status,
             tls_verify,
+            expect_body,
         })
     } else {
         Err(errors)
@@ -263,10 +297,12 @@ impl Checker for HttpChecker {
             match req.send().await {
                 Ok(resp) => {
                     let status = resp.status().as_u16();
-                    if self.status_matches(status) {
-                        CheckResult::Up
-                    } else {
-                        CheckResult::Down(format!("unexpected status {status}"))
+                    if !self.status_matches(status) {
+                        return CheckResult::Down(format!("unexpected status {status}"));
+                    }
+                    match &self.opts.expect_body {
+                        Some(want) => body_contains(resp, want).await,
+                        None => CheckResult::Up,
                     }
                 }
                 Err(e) if has_local_io_error(&e) => CheckResult::Error(error_chain(&e)),
@@ -286,6 +322,37 @@ impl Checker for HttpChecker {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&Some(target));
     }
+}
+
+/// Read the body until it contains `want`, it ends, or [`MAX_BODY_READ`]
+/// bytes have been read.
+async fn body_contains(mut resp: reqwest::Response, want: &[u8]) -> CheckResult {
+    let mut got: Vec<u8> = Vec::new();
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let room = MAX_BODY_READ - got.len();
+                got.extend_from_slice(&chunk[..chunk.len().min(room)]);
+                if contains(&got, want) {
+                    return CheckResult::Up;
+                }
+                if got.len() == MAX_BODY_READ {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(e) if has_local_io_error(&e) => {
+                return CheckResult::Error(format!("body: {}", error_chain(&e)));
+            }
+            Err(e) => return CheckResult::Down(format!("body: {}", error_chain(&e))),
+        }
+    }
+    let excerpt = &got[..got.len().min(EXCERPT)];
+    CheckResult::Down(format!("expect_body: got \"{}\"", excerpt.escape_ascii()))
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 fn has_local_io_error(e: &(dyn std::error::Error + 'static)) -> bool {
@@ -507,6 +574,113 @@ path = "/healthz""#,
 tls_verify = "yes""#)
             .len(),
             2
+        );
+    }
+
+    /// A server answering every request with `status` and a body written in
+    /// `parts`, 20 ms apart, ended by closing the connection.
+    async fn body_server(status: u16, parts: Vec<Vec<u8>>) -> SocketAddr {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = l.accept().await else {
+                    return;
+                };
+                let parts = parts.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let _ = s.read(&mut buf).await;
+                    let head = format!("HTTP/1.1 {status} X\r\nConnection: close\r\n\r\n");
+                    let _ = s.write_all(head.as_bytes()).await;
+                    for part in parts {
+                        let _ = s.write_all(&part).await;
+                        let _ = s.flush().await;
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn body_matching_table() {
+        let up_json = br#"{"status":"UP"}"#.to_vec();
+        let mut long = vec![b'a'; 70000];
+        long.extend_from_slice(b"ok");
+        let a64 = "a".repeat(64);
+        let rows: Vec<(&str, u16, Vec<Vec<u8>>, CheckResult)> = vec![
+            (
+                "",
+                200,
+                vec![br#"{"status":"DOWN"}"#.to_vec()],
+                CheckResult::Up,
+            ),
+            (
+                r#"expect_body = '"status":"UP"'"#,
+                200,
+                vec![up_json.clone()],
+                CheckResult::Up,
+            ),
+            (
+                r#"expect_body = '"status":"UP"'"#,
+                200,
+                vec![br#"{"status":"up"}"#.to_vec()],
+                CheckResult::Down(r#"expect_body: got "{\"status\":\"up\"}""#.into()),
+            ),
+            (
+                r#"expect_body = '"status":"UP"'"#,
+                503,
+                vec![up_json],
+                CheckResult::Down("unexpected status 503".into()),
+            ),
+            (
+                r#"expect_body = "ok""#,
+                200,
+                vec![b"o".to_vec(), b"k".to_vec()],
+                CheckResult::Up,
+            ),
+            (
+                r#"expect_body = "ok""#,
+                200,
+                vec![long],
+                CheckResult::Down(format!("expect_body: got \"{a64}\"")),
+            ),
+            (
+                r#"expect_body = "ok""#,
+                200,
+                vec![],
+                CheckResult::Down(r#"expect_body: got """#.into()),
+            ),
+        ];
+        for (opts, status, parts, want) in rows {
+            let addr = body_server(status, parts).await;
+            assert_eq!(checker(opts).check(req(addr)).await, want, "{opts}");
+        }
+    }
+
+    #[test]
+    fn expect_body_validation() {
+        let bad = |opts: &str| {
+            HttpFactory
+                .validate(&opts.parse::<toml::Table>().unwrap())
+                .unwrap_err()
+        };
+        assert_eq!(
+            bad(r#"expect_body = """#),
+            vec![OptionError::new("expect_body", "must not be empty")]
+        );
+        assert_eq!(
+            bad(&format!("expect_body = \"{}\"", "x".repeat(16385))),
+            vec![OptionError::new(
+                "expect_body",
+                "must be at most 16384 bytes"
+            )]
+        );
+        assert_eq!(
+            bad("expect_body = 200"),
+            vec![OptionError::new("expect_body", "must be a string")]
         );
     }
 

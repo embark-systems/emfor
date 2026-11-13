@@ -56,15 +56,17 @@ check_options = { tls = true, server_name = "imap.internal", expect = "* OK" }
 | `host_header` | 字串 | 無 | 要送出的 `Host` header。 |
 | `expect_status` | 非空清單 | `["200-399"]` | 視為 `up` 的狀態碼：單一狀態碼（`200` 或 `"200"`）或含頭尾的範圍（`"200-299"`），都必須在 100–599 之間。 |
 | `tls_verify` | 布林 | `true` | 用於 `https`：`false` 接受任何憑證。 |
+| `expect_body` | 字串 | 無 | 回應內容必須含有這段位元組（區分大小寫，最多讀 65536 位元組）。最長 16384 位元組。 |
 
 ```toml
 [services."api.svc.emfor".check_options]
 path = "/healthz"
 host_header = "api.internal"
 expect_status = ["200-299"]
+expect_body = '"status":"UP"'
 ```
 
-狀態碼不在清單內時為 `down`，reason 中帶有狀態碼。
+狀態碼不在清單內時為 `down`，reason 中帶有狀態碼，也不會讀內容。設了 `expect_body` 時，狀態碼符合的回應會一直讀到找到這段文字、內容結束或讀滿 65536 位元組；找不到時為 `down`，reason 為 `expect_body: got "<前 64 位元組，escape 後>"`，讀內容失敗時 reason 以 `body: ` 開頭。適合不論好壞都回 200、把狀態寫在內容裡的健康端點。此時 `fastest` 用的延遲包含讀內容的時間。
 
 ## exec
 

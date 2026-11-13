@@ -126,6 +126,7 @@ path = "/healthz"
 scheme = "http"              # or "https"
 host_header = "api.internal" # optional
 expect_status = ["200-299"]  # default ["200-399"]
+expect_body = '"status":"UP"' # optional: the body must contain this
 
 # Weighted: over every 5 choices, 10.0.4.12 is chosen 3 times and the others
 # once each. A backend is a string, or a table with addr and optional
