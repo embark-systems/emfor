@@ -1,5 +1,5 @@
 //! The plugins behind the `emfor-check` executable: the database plugins
-//! redis, mysql, pgsql and ldap, and the network plugin dns.
+//! redis, mysql, pgsql and ldap, and the network plugins dns and radius.
 
 mod ber;
 mod dns;
@@ -8,6 +8,7 @@ mod mysql;
 pub mod net;
 pub mod options;
 mod pgsql;
+mod radius;
 mod redis;
 mod resp;
 
@@ -21,6 +22,7 @@ pub enum Kind {
     Pgsql,
     Ldap,
     Dns,
+    Radius,
 }
 
 impl Kind {
@@ -32,6 +34,7 @@ impl Kind {
             "pgsql" => Some(Kind::Pgsql),
             "ldap" => Some(Kind::Ldap),
             "dns" => Some(Kind::Dns),
+            "radius" => Some(Kind::Radius),
             _ => None,
         }
     }
@@ -44,6 +47,7 @@ impl Kind {
             Kind::Pgsql => "pgsql",
             Kind::Ldap => "ldap",
             Kind::Dns => "dns",
+            Kind::Radius => "radius",
         }
     }
 }
@@ -73,6 +77,7 @@ impl Plugin for Service {
         // plugins share `options`.
         let result = match self.kind {
             Kind::Dns => dns::parse(options).map(|_| ()),
+            Kind::Radius => radius::parse(options, true).map(|_| ()),
             kind => options::parse(kind, options).map(|_| ()),
         };
         result.err().unwrap_or_default()
@@ -81,25 +86,38 @@ impl Plugin for Service {
     async fn check(&self, req: CheckRequest) -> CheckOutcome {
         // The daemon only sends options that passed `validate`. Files are
         // not read here: each check reads them and reports a missing one as
-        // `password_file: ...` or `ca_file: ...`.
-        if self.kind == Kind::Dns {
-            return match dns::parse(&req.options) {
+        // `password_file: ...`, `secret_file: ...` or `ca_file: ...`.
+        match self.kind {
+            Kind::Dns => match dns::parse(&req.options) {
                 Ok(settings) => dns::check(&req, &settings).await,
                 Err(errors) => options_error(errors),
-            };
+            },
+            Kind::Radius => match radius::parse(&req.options, false) {
+                Ok(settings) => radius::check(&req, &settings).await,
+                Err(errors) => options_error(errors),
+            },
+            kind => check_database(kind, &req).await,
         }
-        let settings = match options::settings(self.kind, &req.options) {
-            Ok(s) => s,
-            Err(errors) => return options_error(errors),
-        };
-        match self.kind {
-            Kind::Redis => redis::check(&req, &settings).await,
-            Kind::Mysql => mysql::check(&req, &settings).await,
-            Kind::Pgsql => pgsql::check(&req, &settings).await,
-            Kind::Ldap => ldap::check(&req, &settings).await,
-            // Handled above.
-            Kind::Dns => dns_is_not_a_database(),
-        }
+    }
+}
+
+/// A check by one of the database plugins, which share `options`.
+async fn check_database(kind: Kind, req: &CheckRequest) -> CheckOutcome {
+    let settings = match options::settings(kind, &req.options) {
+        Ok(s) => s,
+        Err(errors) => return options_error(errors),
+    };
+    match kind {
+        Kind::Redis => redis::check(req, &settings).await,
+        Kind::Mysql => mysql::check(req, &settings).await,
+        Kind::Pgsql => pgsql::check(req, &settings).await,
+        Kind::Ldap => ldap::check(req, &settings).await,
+        // `Service::check` sends the network plugins elsewhere; answering
+        // `error` keeps a mistake there visible without a panic.
+        Kind::Dns | Kind::Radius => CheckOutcome::Error(format!(
+            "internal: {} check sent to the database plugins",
+            kind.name()
+        )),
     }
 }
 
@@ -110,10 +128,4 @@ fn options_error(errors: Vec<OptionError>) -> CheckOutcome {
         .map(|e| format!("{}: {}", e.key, e.message))
         .collect();
     CheckOutcome::Error(format!("check_options: {}", list.join("; ")))
-}
-
-/// `Kind::Dns` never reaches the database branch of [`Service::check`];
-/// answering `error` keeps a mistake there visible without a panic.
-fn dns_is_not_a_database() -> CheckOutcome {
-    CheckOutcome::Error("internal: dns check sent to the database plugins".into())
 }

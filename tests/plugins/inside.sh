@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs inside the emfor-plugins-test container: start redis, MariaDB,
-# PostgreSQL, OpenLDAP and unbound as crates/emfor-check/tests/live.rs describes, run those tests,
+# PostgreSQL, OpenLDAP, unbound and FreeRADIUS as crates/emfor-check/tests/live.rs describes, run those tests,
 # then run the emfor daemon with the pgsql plugin.
 set -eu
 
@@ -186,6 +186,27 @@ for t in "" +tcp; do
         i=$((i + 1)); [ $i -lt 60 ] || fail "unbound did not answer ($t)"; sleep 0.5
     done
 done
+
+step "freeradius"
+RADDB=/etc/freeradius/3.0
+printf 'testing123\n' > radius.secret
+printf 'not-the-secret\n' > wrong.secret
+printf 'probe-pw\n' > probe.pass
+# Answer Status-Server on the authentication and accounting ports.
+sed -i 's/^\([[:space:]]*\)status_server = no/\1status_server = yes/' "$RADDB/radiusd.conf"
+grep -q '^[[:space:]]*status_server = yes' "$RADDB/radiusd.conf" || fail "status_server is not enabled"
+# A test account; the localhost client with secret testing123 is in the
+# default clients.conf.
+printf 'probe Cleartext-Password := "probe-pw"\n' > "$RADDB/mods-config/files/authorize.emfor"
+cat "$RADDB/mods-config/files/authorize" >> "$RADDB/mods-config/files/authorize.emfor"
+mv "$RADDB/mods-config/files/authorize.emfor" "$RADDB/mods-config/files/authorize"
+grep -q 'secret = testing123' "$RADDB/clients.conf" || fail "clients.conf has no localhost client"
+freeradius -X > "$D/freeradius.log" 2>&1 &
+i=0
+until grep -q 'Ready to process requests' "$D/freeradius.log"; do
+    i=$((i + 1)); [ $i -lt 60 ] || { cat "$D/freeradius.log"; fail "freeradius did not start"; }; sleep 0.5
+done
+freeradius -v | head -1
 
 step "emfor-check against the servers"
 EMFOR_LIVE_DIR="$D" emfor-check-live-test --ignored --test-threads=1

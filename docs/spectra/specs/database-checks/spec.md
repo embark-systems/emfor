@@ -8,7 +8,7 @@ Defines `emfor-check`, the plugin executable shipped with emfor, and its `redis`
 
 ### Requirement: Plugin selection by argument
 
-`emfor-check` SHALL take exactly one argument naming the plugin: `redis`, `mysql`, `pgsql`, `ldap` or `dns`. With a missing, extra or unknown argument it SHALL print a usage line to stderr and exit with status 2 without answering the handshake. With a valid argument it SHALL speak checker-plugins protocol 1 and answer `hello` with `name` equal to the plugin name and `version` equal to the `emfor-check` package version. Each check of the `redis`, `mysql`, `pgsql` and `ldap` plugins SHALL open a new connection to the backend and close it before answering. A check that has not finished within the request's `timeout_ms` SHALL be answered `down` with reason `timeout`.
+`emfor-check` SHALL take exactly one argument naming the plugin: `redis`, `mysql`, `pgsql`, `ldap`, `dns` or `radius`. With a missing, extra or unknown argument it SHALL print a usage line to stderr and exit with status 2 without answering the handshake. With a valid argument it SHALL speak checker-plugins protocol 1 and answer `hello` with `name` equal to the plugin name and `version` equal to the `emfor-check` package version. Each check of the `redis`, `mysql`, `pgsql` and `ldap` plugins SHALL open a new connection to the backend and close it before answering. A check that has not finished within the request's `timeout_ms` SHALL be answered `down` with reason `timeout`.
 
 #### Scenario: Unknown plugin argument
 
@@ -30,6 +30,11 @@ Defines `emfor-check`, the plugin executable shipped with emfor, and its `redis`
 - **WHEN** `emfor-check dns` receives `{"type":"hello","protocol":1}`
 - **THEN** it answers `{"type":"hello","protocol":1,"name":"dns","version":"<package version>"}`
 
+#### Scenario: RADIUS plugin handshake
+
+- **WHEN** `emfor-check radius` receives `{"type":"hello","protocol":1}`
+- **THEN** it answers `{"type":"hello","protocol":1,"name":"radius","version":"<package version>"}`
+
 #### Scenario: Slow backend
 
 - **WHEN** a check request has `timeout_ms` 900 and the backend accepts the TCP connection but never answers
@@ -37,26 +42,25 @@ Defines `emfor-check`, the plugin executable shipped with emfor, and its `redis`
 
 
 <!-- @trace
-source: emfor-check-dns
+source: emfor-check-radius
 updated: 2026-11-13
 code:
-  - examples/emfor.toml
+  - CHANGELOG.md
   - crates/emfor-check/src/lib.rs
   - crates/emfor-check/src/options.rs
-  - tests/plugins/run.sh
-  - tests/plugins/inside.sh
-  - CHANGELOG.md
-  - crates/emfor-check/src/dns.rs
-  - docs/deploy/plugins.md
-  - crates/emfor-check/src/net.rs
-  - docs/manual.zh_TW/04-health-checks.md
-  - docs/manual/04-health-checks.md
-  - crates/emfor-check/Cargo.toml
+  - examples/emfor.toml
   - crates/emfor-check/src/main.rs
+  - crates/emfor-check/src/radius.rs
+  - docs/manual/04-health-checks.md
+  - docs/deploy/plugins.md
+  - docs/manual.zh_TW/04-health-checks.md
   - tests/plugins/Dockerfile
+  - crates/emfor-check/Cargo.toml
+  - tests/plugins/inside.sh
+  - tests/plugins/run.sh
 tests:
-  - crates/emfor-check/tests/cli.rs
   - crates/emfor-check/tests/live.rs
+  - crates/emfor-check/tests/cli.rs
 -->
 
 ---

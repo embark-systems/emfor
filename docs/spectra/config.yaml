@@ -81,7 +81,7 @@ context: |
     當掉時重啟，退避 1 秒起倍增、上限 30 秒，期間檢查回 error。
     載入、重載、--check-config 都實際啟動外掛並請它驗證 check_options；無法啟動、握手失敗、驗證逾時（5 秒）
     皆為設定錯誤。外掛超過 timeout_ms 未回覆算 error（外掛應自行在期限內回 down），不算後端失敗。
-  - 內附外掛（emfor-check-plugins）：emfor-check 一個執行檔，第一個參數選 redis / mysql / pgsql / ldap / dns；
+  - 內附外掛（emfor-check-plugins）：emfor-check 一個執行檔，第一個參數選 redis / mysql / pgsql / ldap / dns / radius；
     crates/emfor-plugin 處理 protocol 1（emfor-check 與其他 Rust 外掛共用）。每次檢查開新連線；
     redis PING（有密碼先 AUTH）、mysql 與 pgsql 登入後 SELECT 1；role：redis master/replica（ROLE）、
     mysql primary（@@global.read_only = 0）、pgsql primary（pg_is_in_recovery() 為 false），可搭配 failover。
@@ -103,6 +103,14 @@ context: |
     UDP 交換在 net.rs 共用（connected socket、timeout 一半時重送一次、只收相符的回應），後續網路外掛沿用。
     原因：rcode: <名稱>、answer: no <TYPE> records[ (truncated; set transport = "tcp")]、query:、connect:、timeout。
     實機測試用 unbound local-zone（5353，UDP 與 TCP）。
+  - radius 外掛（emfor-check-radius）：emfor-check radius 預設送 Status-Server（RFC 5997），可選 Access-Request（PAP）；
+    每個請求第一個屬性為 Message-Authenticator；回應必須通過 Response Authenticator 驗證，有帶 Message-Authenticator
+    時一併驗證。密鑰只用 secret_file（同 password_file 規則，每次檢查重讀）。MD5/HMAC 用 Cargo.lock 已有的 md-5、hmac。
+    原因：auth: Access-Reject[: Reply-Message]、auth: Access-Challenge、auth: response authenticator does not match
+    (wrong secret?)、auth: Message-Authenticator does not match、auth: response has no Message-Authenticator、
+    query: malformed response、query: unexpected response code <N>。不做 RadSec、CHAP/EAP、計費記錄、CoA。
+    實機測試用 FreeRADIUS 3.2.1：它驗證請求的 Message-Authenticator，密鑰錯誤時不回應（結果為 timeout），
+    回應也不帶 Message-Authenticator。
   - client（emfor-clients）：emfor_lookup(名稱, affinity_key?) 回傳 "ip:port"（LMDB 後端 id，IPv6 為 [ip]:port）；
     錯誤碼 UNAVAILABLE（LMDB 打不開／lock 格式不符）、INCOMPATIBLE（版本或 JSON 無法解析）、NOT_FOUND、ALL_DOWN，
     各語言依慣例回報。心跳過期（預設 max_staleness 3 秒）或歸零時所有後端視為未知，依 on_all_down 處理，

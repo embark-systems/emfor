@@ -10,6 +10,14 @@
   answer has a record of the asked type. Over UDP the query is sent again
   once at half of the `timeout`. Reasons start with `rcode: `, `answer: `,
   `query: `, `connect: ` or `timeout`. See docs/deploy/plugins.md.
+- `emfor-check radius` checks RADIUS servers: it sends a Status-Server
+  (RFC 5997) by default, or an Access-Request with PAP for a test
+  account, with Message-Authenticator first, and is up when the server
+  answers with an accept signed with the shared secret from
+  `secret_file`. Reasons start with `auth: `, `query: `, `connect: ` or
+  `timeout`; servers that check Message-Authenticator, such as
+  FreeRADIUS, do not answer a request made with the wrong secret, which
+  then shows as `timeout`. See docs/deploy/plugins.md.
 
 ### Deployment
 

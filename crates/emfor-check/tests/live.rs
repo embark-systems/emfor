@@ -1,5 +1,5 @@
-//! `emfor-check` against real redis, MariaDB, PostgreSQL, OpenLDAP and
-//! unbound servers.
+//! `emfor-check` against real redis, MariaDB, PostgreSQL, OpenLDAP,
+//! unbound and FreeRADIUS servers.
 //!
 //! Ignored by default: these tests need the servers that
 //! tests/plugins/inside.sh starts in the `emfor-plugins-test` container
@@ -18,10 +18,13 @@
 //! | 636 | the same OpenLDAP, LDAPS |
 //! | 3389 | OpenLDAP without TLS |
 //! | 5353 | unbound, UDP and TCP, local zone `check.test` with only `a.check.test A 192.0.2.1` |
+//! | 1812, 1813 | FreeRADIUS authentication and accounting, Status-Server on, secret `testing123`, user `probe` with password `probe-pw` |
 //!
 //! Server certificates are for `db.test`, signed by `$EMFOR_LIVE_DIR/ca.pem`;
 //! `$EMFOR_LIVE_DIR/good.pass` holds the password, `bad.pass` a wrong one.
-//! Nothing listens on 6399, 3399, 5499, 3899 and 5399 (TCP and UDP). The LDAP administrator is
+//! Nothing listens on 6399, 3399, 5499, 3899, 5399 and 1899 (TCP and UDP).
+//! `radius.secret`, `wrong.secret` and `probe.pass` hold the RADIUS secret,
+//! another secret and the password of `probe`. The LDAP administrator is
 //! `cn=admin,dc=example,dc=org` with password `admin-pw`.
 
 use std::io::{BufRead, BufReader, Write};
@@ -334,5 +337,64 @@ fn dns_live() {
     down(
         p.check(5399, name("a.check.test", json!({ "transport": "tcp" }))),
         "connect: ",
+    );
+}
+
+#[test]
+#[ignore = "needs the emfor-plugins-test container"]
+fn radius_live() {
+    let mut p = Plugin::start("radius");
+    let with = |extra: Value| {
+        let mut o = json!({ "secret_file": file("radius.secret") });
+        for (k, v) in extra.as_object().unwrap() {
+            o[k] = v.clone();
+        }
+        o
+    };
+    let access = |pass: &str, extra: Value| {
+        let mut o = with(json!({
+            "request": "access-request",
+            "user": "probe",
+            "password_file": file(pass),
+        }));
+        for (k, v) in extra.as_object().unwrap() {
+            o[k] = v.clone();
+        }
+        o
+    };
+    let no_secrets = |got: &(String, String)| {
+        assert!(
+            !got.1.contains("testing123") && !got.1.contains("probe-pw"),
+            "reason shows a secret: {}",
+            got.1
+        );
+    };
+
+    up(p.check(1812, with(json!({}))));
+    up(p.check(1813, with(json!({ "application": "acct" }))));
+    // FreeRADIUS checks the request's Message-Authenticator and drops a
+    // request made with another secret without answering.
+    let wrong = p.check(1812, json!({ "secret_file": file("wrong.secret") }));
+    no_secrets(&wrong);
+    assert_eq!(wrong, ("down".into(), "timeout".into()));
+    up(p.check(1812, access("probe.pass", json!({}))));
+    let reject = p.check(1812, access("bad.pass", json!({})));
+    no_secrets(&reject);
+    down(reject, "auth: Access-Reject");
+    up(p.check(1812, access("bad.pass", json!({ "reject_is_up": true }))));
+    // FreeRADIUS 3.2.1 does not sign its responses with Message-Authenticator.
+    assert_eq!(
+        p.check(1812, with(json!({ "require_message_authenticator": true }))),
+        (
+            "down".into(),
+            "auth: response has no Message-Authenticator".into()
+        )
+    );
+    let closed = p.check(1899, with(json!({})));
+    assert_eq!(closed.0, "down", "reason: {}", closed.1);
+    assert!(
+        closed.1.starts_with("connect: ") || closed.1 == "timeout",
+        "reason {:?}",
+        closed.1
     );
 }

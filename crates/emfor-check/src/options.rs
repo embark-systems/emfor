@@ -95,8 +95,8 @@ fn parse_with(
         None
     };
     let required: &[(&str, &Option<String>)] = match kind {
-        // dns has its own options (crate::dns) and never gets here.
-        Kind::Redis | Kind::Ldap | Kind::Dns => &[],
+        // dns and radius have their own options and never get here.
+        Kind::Redis | Kind::Ldap | Kind::Dns | Kind::Radius => &[],
         Kind::Mysql => &[("user", &user)],
         Kind::Pgsql => &[("user", &user), ("database", &database)],
     };
@@ -149,8 +149,8 @@ fn parse_with(
                 let message = match kind {
                     Kind::Redis => "must be one of master, replica",
                     Kind::Mysql | Kind::Pgsql => "must be primary",
-                    // ldap is skipped above; dns never gets here.
-                    Kind::Ldap | Kind::Dns => "unknown key",
+                    // ldap is skipped above; dns and radius never get here.
+                    Kind::Ldap | Kind::Dns | Kind::Radius => "unknown key",
                 };
                 errors.push(OptionError::new("role", message));
             }
@@ -217,7 +217,11 @@ fn parse_with(
     }
 }
 
-fn non_empty_string(options: &Options, key: &str, errors: &mut Vec<OptionError>) -> Option<String> {
+pub(crate) fn non_empty_string(
+    options: &Options,
+    key: &str,
+    errors: &mut Vec<OptionError>,
+) -> Option<String> {
     match options.get(key) {
         None => None,
         Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
@@ -246,7 +250,7 @@ pub(crate) fn boolean(
 
 /// Check a file option: always that the path is absolute, and with
 /// `read_files` also its content.
-fn check_file(
+pub(crate) fn check_file(
     path: &Path,
     read_files: bool,
     check_content: fn(&Path) -> Result<(), String>,
@@ -262,7 +266,7 @@ fn check_file(
 }
 
 /// Read a file named by an option, with the option's error messages.
-fn read_option_file(path: &Path) -> Result<Vec<u8>, String> {
+pub(crate) fn read_option_file(path: &Path) -> Result<Vec<u8>, String> {
     if !path.is_absolute() {
         return Err("not an absolute path".into());
     }
@@ -272,7 +276,7 @@ fn read_option_file(path: &Path) -> Result<Vec<u8>, String> {
     })
 }
 
-fn check_password_file(path: &Path) -> Result<(), String> {
+pub(crate) fn check_password_file(path: &Path) -> Result<(), String> {
     let bytes = read_option_file(path)?;
     let password = trim_newline(&bytes);
     if password.is_empty() {
@@ -289,7 +293,7 @@ fn check_ca_file(path: &Path) -> Result<(), String> {
 }
 
 /// Remove one trailing `\n` or `\r\n`.
-fn trim_newline(bytes: &[u8]) -> &[u8] {
+pub(crate) fn trim_newline(bytes: &[u8]) -> &[u8] {
     bytes
         .strip_suffix(b"\r\n")
         .or_else(|| bytes.strip_suffix(b"\n"))
