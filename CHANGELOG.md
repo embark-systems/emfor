@@ -43,8 +43,14 @@
   sends no reports or results for it, ignores those it receives, and
   decides from its own checks only; a reload applies it and keeps the
   backends' state. `meta/peers` lists such services in `services_off`.
-  Other members still count the host as a candidate checker, so set it the
-  same on every member.
+  The host announces those services in its heartbeats (`off`: the first
+  4 bytes of SHA-256 of each name, as 8 hex digits, at most 80; with more
+  it logs a warning), and members of this version leave it out when
+  choosing those services' assigned checkers, so hosts can set it on their
+  own. Older members ignore the announcement and still count the host.
+  Each entry of `members` in `meta/peers` has `services_off` with the
+  services that member leaves out, and `emfor status` uses it for `voted`
+  and `assigned_checkers`.
 
 ### Status
 

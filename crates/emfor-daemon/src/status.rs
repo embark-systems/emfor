@@ -366,6 +366,10 @@ struct PeerState {
 struct PeerMember {
     addr: String,
     live: bool,
+    /// Services this member leaves out of the peer group, as this daemon
+    /// names them; absent from a store written before the field existed.
+    #[serde(default)]
+    services_off: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -400,11 +404,12 @@ fn assigned_checkers(
     snap: &Snapshot,
 ) -> Option<(std::net::SocketAddr, Checkers)> {
     let me: std::net::SocketAddr = state.listen.as_deref()?.parse().ok()?;
-    let mut live = std::collections::BTreeSet::new();
+    // Live members with what each leaves out.
+    let mut live = Vec::new();
     for m in &state.members {
         let addr: std::net::SocketAddr = m.addr.parse().ok()?;
         if m.live {
-            live.insert(addr);
+            live.push((addr, &m.services_off));
         }
     }
     let live = &live;
@@ -418,7 +423,13 @@ fn assigned_checkers(
                 let checkers = if off {
                     Vec::new()
                 } else {
-                    crate::quorum::assigned(&svc.name, &b.id, me, live)
+                    // Members that leave the service out are not candidates.
+                    let candidates = live
+                        .iter()
+                        .filter(|(_, off)| !off.contains(&svc.name))
+                        .map(|(a, _)| *a)
+                        .collect();
+                    crate::quorum::assigned(&svc.name, &b.id, me, &candidates)
                 };
                 ((svc.name.clone(), b.id.clone()), checkers)
             })
@@ -1711,6 +1722,57 @@ mod tests {
             serde_json::json!([
                 {"service":"api.svc.emfor","backend":"10.0.0.11:8080","checkers":[]},
                 {"service":"api.svc.emfor","backend":"10.0.0.12:8080","checkers":[]}
+            ])
+        );
+    }
+
+    /// `peers_at` at 10.0.0.5:5302 with every member live, where the
+    /// members numbered in `off` have `api.svc.emfor` in their
+    /// `services_off`.
+    fn members_off(off: &[u8]) -> String {
+        let mut v = peers_at("10.0.0.5:5302", [true; 4]);
+        for i in off {
+            let m = format!(r#""addr":"10.0.0.{i}:5302","live":true"#);
+            v = v.replace(&m, &format!(r#"{m},"services_off":["api.svc.emfor"]"#));
+        }
+        v
+    }
+
+    /// Spec "Status text output", example "members' services_off and
+    /// voted backends of api.svc.emfor at 10.0.0.5:5302".
+    #[test]
+    fn members_services_off_table() {
+        let rows: [(&[u8], bool, bool, &str); 4] = [
+            (&[], false, true, "live, checks 1/2 backends here"),
+            (&[9], false, true, "live, checks 1/2 backends here"),
+            (&[6, 9], false, false, "4/4 live"),
+            (&[6, 7, 9], false, false, "4/4 live"),
+        ];
+        for (off, voted11, voted12, end) in rows {
+            let mut s = snap(Some(400), vec![api()]);
+            s.peers = peers_value(Some(&members_off(off)));
+            let lines = render(&s);
+            assert!(lines[2].ends_with(end), "{off:?}: {:?}", lines[2]);
+            let line = |id| lines.iter().find(|l| l.contains(id)).unwrap();
+            assert_eq!(line("10.0.0.11:8080").contains("voted"), voted11, "{off:?}");
+            assert_eq!(line("10.0.0.12:8080").contains("voted"), voted12, "{off:?}");
+        }
+    }
+
+    /// Spec "Status text output", scenario "Members that leave a service
+    /// out are not candidates".
+    #[test]
+    fn members_that_leave_a_service_out_are_not_candidates() {
+        let mut s = snap(Some(400), vec![api()]);
+        s.peers = peers_value(Some(&members_off(&[6, 9])));
+        let lines = render(&s);
+        assert_eq!(lines[2], "peers: 4/4 live");
+        assert!(lines.iter().all(|l| !l.contains("voted")), "{lines:?}");
+        assert_eq!(
+            json(&s, Path::new("/s.mdb"), NOW)["assigned_checkers"],
+            serde_json::json!([
+                {"service":"api.svc.emfor","backend":"10.0.0.11:8080","checkers":["10.0.0.5:5302","10.0.0.8:5302","10.0.0.7:5302"]},
+                {"service":"api.svc.emfor","backend":"10.0.0.12:8080","checkers":["10.0.0.7:5302","10.0.0.8:5302","10.0.0.5:5302"]}
             ])
         );
     }

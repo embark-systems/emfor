@@ -362,7 +362,7 @@ fn reload_rejects_peers_listen_change() {
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .expect("the clock is after 1970"),
-            kind: Kind::Heartbeat,
+            kind: Kind::Heartbeat(Vec::new()),
         },
         SECRET.trim_end().as_bytes(),
     );
@@ -694,6 +694,31 @@ fn service_left_out_on_one_member() {
         serde_json::json!(["api.svc.emfor"])
     );
     assert_eq!(status(a).1["peers"]["services_off"], serde_json::json!([]));
+    // C announces the service, so A and B do not count it as a candidate:
+    // with two candidates left the backend has no assigned checkers there.
+    // `meta/peers` follows within 2 seconds.
+    let c_off = |d: &Daemon| {
+        status(d).1["peers"]["members"]
+            .as_array()
+            .expect("members is an array")
+            .iter()
+            .find(|m| m["addr"] == members[2].to_string())
+            .map(|m| m["services_off"].clone())
+            .expect("C is a member")
+    };
+    for d in [a, b] {
+        wait_for(
+            "C's services_off at A and B",
+            Duration::from_secs(2),
+            || c_off(d) == serde_json::json!(["api.svc.emfor"]),
+        );
+        let json = status(d).1;
+        assert_eq!(
+            json["assigned_checkers"][0]["checkers"],
+            serde_json::json!([]),
+            "{json}"
+        );
+    }
 
     // A and B see the backend down, C's own checks pass.
     for i in [0, 1] {
@@ -732,6 +757,82 @@ fn service_left_out_on_one_member() {
     );
 }
 
+/// Spec state-store "Services another member leaves out": a member's
+/// heartbeats announce `api.svc.emfor` and `web.svc.emfor`; `meta/peers`
+/// names only the one this daemon has, and nothing once the member is not
+/// live.
+#[test]
+fn services_another_member_leaves_out() {
+    let held = TcpListener::bind("127.0.0.1:0").expect("the backend can listen");
+    let backend = held.local_addr().expect("the backend has an address");
+    let other_socket = UdpSocket::bind("127.0.0.1:0").expect("the other member's address is free");
+    let other = other_socket
+        .local_addr()
+        .expect("the other member has an address");
+    let a = free_udp();
+    let d = spawn(|dir, m| {
+        config(
+            dir,
+            m,
+            a,
+            &[a, other],
+            backend,
+            &format!(
+                "\n[services.\"db.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"{backend}\"]\n"
+            ),
+        )
+    });
+    d.wait_log(HEALTHY);
+    let tags = vec![
+        emfor_daemon::quorum::service_tag("api.svc.emfor"),
+        emfor_daemon::quorum::service_tag("web.svc.emfor"),
+    ];
+    let mut seq = 0;
+    let mut heartbeat = || {
+        seq += 1;
+        let data = encode(
+            &Message {
+                from: other,
+                site: "dc1".into(),
+                boot: 0x0123_4567_89ab_cdef,
+                seq,
+                ts: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .expect("the clock is after 1970"),
+                kind: Kind::Heartbeat(tags.clone()),
+            },
+            SECRET.trim_end().as_bytes(),
+        );
+        other_socket
+            .send_to(&data, a)
+            .expect("the other member can send");
+    };
+    let member = |d: &Daemon| status(d).1["peers"]["members"][0].clone();
+    heartbeat();
+    let first = Instant::now();
+    let mut seen = false;
+    while first.elapsed() < Duration::from_secs(2) {
+        if member(&d)
+            == serde_json::json!({"addr": other.to_string(), "live": true, "services_off": ["api.svc.emfor"]})
+        {
+            seen = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        heartbeat();
+    }
+    assert!(seen, "{}", member(&d));
+    // Stop sending: not live after 3 seconds, and then nothing announced.
+    wait_for("the other member not live", Duration::from_secs(5), || {
+        d.has_line(&format!("emfor_peer_up{{peer=\"{other}\"}} 0"))
+    });
+    wait_for("its services forgotten", Duration::from_secs(2), || {
+        member(&d)
+            == serde_json::json!({"addr": other.to_string(), "live": false, "services_off": []})
+    });
+}
+
 /// Spec state-store "Services left out are listed": `services_off` at
 /// start, and after a reload turns one service back on.
 #[test]
@@ -768,4 +869,117 @@ fn services_off_follow_reloads() {
         || off(&d) == serde_json::json!(["api.svc.emfor", "db.svc.emfor"]),
     );
     assert!(reloaded.elapsed() <= Duration::from_secs(2));
+}
+
+/// A config for one member at `listen` with the services `api`, `db` and
+/// `web` (`.svc.emfor`) on `backend`, whose `peers` settings are `peers`
+/// in that order.
+fn three_services(
+    dir: &Path,
+    metrics: SocketAddr,
+    listen: SocketAddr,
+    members: &[SocketAddr],
+    backend: SocketAddr,
+    peers: [bool; 3],
+) -> String {
+    let [api, db, web] = peers;
+    config(
+        dir,
+        metrics,
+        listen,
+        members,
+        backend,
+        &format!(
+            "peers = {api}\n\n[services.\"db.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"{backend}\"]\npeers = {db}\n\n[services.\"web.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"{backend}\"]\npeers = {web}\n"
+        ),
+    )
+}
+
+/// The `off` field of the next heartbeat `socket` receives, as JSON
+/// (`null` when absent).
+fn next_heartbeat_off(socket: &UdpSocket) -> serde_json::Value {
+    let mut buf = [0u8; 1500];
+    loop {
+        let n = socket
+            .recv(&mut buf)
+            .expect("a heartbeat arrives within the timeout");
+        // EMP1 and the 32-byte tag, then the JSON payload.
+        let payload: serde_json::Value =
+            serde_json::from_slice(&buf[36..n]).expect("the payload is JSON");
+        if payload["kind"] == "heartbeat" {
+            return payload["off"].clone();
+        }
+    }
+}
+
+/// Spec peer-group "Heartbeat announces services left out": heartbeats
+/// carry the tags of the services left out, and none after a reload puts
+/// them all back in the group.
+#[test]
+fn heartbeat_announces_services_left_out() {
+    let held = TcpListener::bind("127.0.0.1:0").expect("the backend can listen");
+    let backend = held.local_addr().expect("the backend has an address");
+    let other = UdpSocket::bind("127.0.0.1:0").expect("the other member's address is free");
+    other
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("a read timeout can be set");
+    let peer = other.local_addr().expect("the other member has an address");
+    let a = free_udp();
+    let d = spawn(|dir, m| three_services(dir, m, a, &[a, peer], backend, [false, false, true]));
+    d.wait_log(HEALTHY);
+    assert_eq!(
+        next_heartbeat_off(&other),
+        serde_json::json!(["a513a047", "fa6f63b4"])
+    );
+    d.write_config(&three_services(
+        d.dir.path(),
+        d.metrics,
+        a,
+        &[a, peer],
+        backend,
+        [true; 3],
+    ));
+    d.signal(Signal::SIGHUP);
+    d.wait_log("config reloaded");
+    // The heartbeat after the next tick has no `off`.
+    wait_for("heartbeats without off", Duration::from_secs(3), || {
+        next_heartbeat_off(&other).is_null()
+    });
+}
+
+/// Spec peer-group "More services left out than fit": 81 services left
+/// out give one warning that 1 tag is not sent, also after a reload that
+/// changes nothing.
+#[test]
+fn more_services_left_out_than_fit() {
+    let held = TcpListener::bind("127.0.0.1:0").expect("the backend can listen");
+    let backend = held.local_addr().expect("the backend has an address");
+    let (a, other) = (free_udp(), free_udp());
+    let extra: String = (1..=80)
+        .map(|i| {
+            format!(
+                "\n[services.\"s{i}.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"{backend}\"]\npeers = false\n"
+            )
+        })
+        .collect();
+    let cfg = move |dir: &Path, m: SocketAddr| {
+        config(
+            dir,
+            m,
+            a,
+            &[a, other],
+            backend,
+            &format!("peers = false\n{extra}"),
+        )
+    };
+    let d = spawn(|dir, m| cfg(dir, m));
+    d.wait_log("1 tag is not sent");
+    let warnings = |d: &Daemon| d.log().matches("1 tag is not sent").count();
+    assert_eq!(warnings(&d), 1, "{}", d.log());
+    d.write_config(&cfg(d.dir.path(), d.metrics));
+    d.signal(Signal::SIGHUP);
+    d.wait_log("config reloaded");
+    // Give a second warning time to show up.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(warnings(&d), 1, "{}", d.log());
 }

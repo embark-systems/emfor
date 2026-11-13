@@ -645,7 +645,7 @@ mod tests {
                     boot: 1,
                     seq,
                     ts: t,
-                    kind: Kind::Heartbeat,
+                    kind: Kind::Heartbeat(Vec::new()),
                 },
                 key,
             )

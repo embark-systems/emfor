@@ -133,7 +133,11 @@ definition differs" line means that member's `check`, `check_options` or
 counted; make the configs match. The same data is in the store key
 `meta/peers` and in `emfor status --json` as `peers`. Its `services_off`
 lists the services this host leaves out of the group (`peers = false`);
-their backends are never `voted` and have no `assigned_checkers`.
+their backends are never `voted` and have no `assigned_checkers`. Each
+entry of `members` has its own `services_off`: the services of this host
+that the member announces it leaves out. That member is not counted as
+an assigned checker of those services here, and `emfor status` leaves it
+out the same way.
 
 In a group of four or more, `emfor_peer_checks_skipped_total` grows on
 hosts that are not an assigned checker of some backends: they let the

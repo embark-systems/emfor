@@ -91,7 +91,7 @@ daemon 啟動時會把每筆服務記錄重寫一遍，所有 backend 都是 `un
 - 否則以本機的結果為準，`down` 的原因寫成 `local: <原因>`：這台主機看到其他主機沒看到的問題；
 - 存活成員少於三台，或一票都沒有時，本機結果原樣使用，和沒有群組時一樣。
 
-算出的結果再照常經過 `rise` 與 `fall`。群組判為 down、而本機檢查通過的 backend，`emfor status` 會標上 `local-up`。查詢仍然只讀本機的 store。連不到的成員不會造成任何改變：投票退回各 daemon 自己的檢查。沒有 master，群組也不會跨兩個機房。某個服務可以用 `peers = false` 不參加群組（[第 3 章](03-configuration.md#peers)）。
+算出的結果再照常經過 `rise` 與 `fall`。群組判為 down、而本機檢查通過的 backend，`emfor status` 會標上 `local-up`。查詢仍然只讀本機的 store。連不到的成員不會造成任何改變：投票退回各 daemon 自己的檢查。沒有 master，群組也不會跨兩個機房。某個服務可以用 `peers = false` 不參加群組（[第 3 章](03-configuration.md#peers)）；這台主機會告訴其他成員，它們再從其餘成員中挑這個服務的負責主機。
 
 檢查也會分工。不是某個 backend 負責主機的成員，在兩台負責主機意見一致時不檢查它：兩票 `up` 算 `up`，兩票 `down` 算 `down`（`peers 2/3:`）。它仍然至少每五個 `interval` 用服務原本的 `check` 自己檢查一次，而一致的票少於兩張時每次都自己檢查。本機檢查失敗時，它會恢復每個 `interval` 都檢查，直到通過為止，所以只有這台主機看到的故障仍然寫成 `local: <原因>`；這種故障要大約五個 `interval` 加上 `fall` 次檢查才會發現，而不是 `fall` 次。有三台負責主機、N 個成員時，每個 backend 每個 `interval` 大約被檢查 3 + (N − 3) / 5 次，而不是 N 次。
 

@@ -110,6 +110,8 @@ impl Supervisor {
                 })
                 .collect();
             p.quorum.retain(&keep);
+            p.quorum
+                .set_services(self.services.keys().map(|n| n.to_string()).collect());
             p.quorum.set_off(
                 self.services
                     .iter()

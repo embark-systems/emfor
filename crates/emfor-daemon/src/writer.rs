@@ -869,7 +869,7 @@ mod tests {
     }
 
     /// State-store "Peer state written at start".
-    const PEERS_AT_START: &str = r#"{"listen":"127.0.0.1:5302","members":[{"addr":"127.0.0.1:5303","live":false}],"digest_mismatch":[],"disagreements":[],"services_off":[]}"#;
+    const PEERS_AT_START: &str = r#"{"listen":"127.0.0.1:5302","members":[{"addr":"127.0.0.1:5303","live":false,"services_off":[]}],"digest_mismatch":[],"disagreements":[],"services_off":[]}"#;
 
     /// A new `meta/peers` value is written with the next commit (here the
     /// next heartbeat).

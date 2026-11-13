@@ -67,7 +67,9 @@ pub struct Message {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
-    Heartbeat,
+    /// With the service tags the sender leaves out of the peer group
+    /// (`off`), sorted; empty when it leaves none out.
+    Heartbeat(Vec<u32>),
     Down(Down),
     Result(ResultMsg),
     /// A kind this version does not know (a newer member): it counts for
@@ -124,6 +126,9 @@ struct Wire {
     outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     interval_ms: Option<u64>,
+    /// Service tags of a heartbeat, as 8 lowercase hex digits each.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    off: Option<Vec<String>>,
 }
 
 /// The longest prefix of `s` of at most `max` bytes that ends on a
@@ -161,9 +166,15 @@ pub fn encode(msg: &Message, key: &[u8]) -> Vec<u8> {
         reason: None,
         outcome: None,
         interval_ms: None,
+        off: None,
     };
     match &msg.kind {
-        Kind::Heartbeat => wire.kind = "heartbeat".into(),
+        Kind::Heartbeat(tags) => {
+            wire.kind = "heartbeat".into();
+            if !tags.is_empty() {
+                wire.off = Some(tags.iter().map(|t| format!("{t:08x}")).collect());
+            }
+        }
         Kind::Unknown(k) => wire.kind = k.clone(),
         Kind::Down(d) => {
             wire.kind = "down".into();
@@ -213,6 +224,12 @@ pub fn encode(msg: &Message, key: &[u8]) -> Vec<u8> {
     out
 }
 
+/// A service tag written as exactly 8 lowercase hex digits.
+fn parse_tag(s: &str) -> Option<u32> {
+    let ok = s.len() == 8 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    ok.then(|| u32::from_str_radix(s, 16).ok()).flatten()
+}
+
 /// Parse a datagram without checking its tag; `None` when it is malformed.
 fn decode(data: &[u8]) -> Option<Message> {
     if data.len() < HEADER_LEN || data.len() > MAX_DATAGRAM || &data[..4] != MAGIC {
@@ -223,7 +240,13 @@ fn decode(data: &[u8]) -> Option<Message> {
         return None;
     }
     let kind = match wire.kind.as_str() {
-        "heartbeat" => Kind::Heartbeat,
+        "heartbeat" => Kind::Heartbeat(match wire.off {
+            None => Vec::new(),
+            Some(off) => off
+                .iter()
+                .map(|s| parse_tag(s))
+                .collect::<Option<Vec<u32>>>()?,
+        }),
         "down" => Kind::Down(Down {
             service: wire.service?,
             digest: wire.digest?,
@@ -961,7 +984,8 @@ fn received(group: &Group, targets: &Targets, quorum: &Quorum, msg: &Message, no
                 quorum.record(msg.from, r, now);
             }
         }
-        Kind::Heartbeat | Kind::Unknown(_) => {}
+        Kind::Heartbeat(tags) => quorum.set_member_tags(msg.from, tags),
+        Kind::Unknown(_) => {}
     }
 }
 
@@ -1030,7 +1054,7 @@ async fn run(
                     .checks_skipped
                     .store(quorum.skipped(), Ordering::Relaxed);
                 state.publish(quorum.summary(&group.members_live(), now));
-                let data = group.encode(Kind::Heartbeat, unix_ms(), now);
+                let data = group.encode(Kind::Heartbeat(quorum.off_tags()), unix_ms(), now);
                 send_all(&socket, &group.others(), &data).await;
             }
             Some(ev) = out.recv() => {
@@ -1188,7 +1212,7 @@ mod tests {
     #[test]
     fn encode_then_decode() {
         for kind in [
-            Kind::Heartbeat,
+            Kind::Heartbeat(Vec::new()),
             down("connection refused"),
             result(Outcome::Up),
             result(Outcome::Down("connect: Connection refused".into())),
@@ -1198,7 +1222,7 @@ mod tests {
             assert_eq!(&data[..4], MAGIC);
             assert_eq!(decode(&data), Some(m));
         }
-        let m = msg("[2001:db8::1]:5302", 1, 1, 1, Kind::Heartbeat);
+        let m = msg("[2001:db8::1]:5302", 1, 1, 1, Kind::Heartbeat(Vec::new()));
         assert_eq!(decode(&encode(&m, KEY)), Some(m));
     }
 
@@ -1258,12 +1282,112 @@ mod tests {
         }
     }
 
+    /// Spec peer-group "heartbeat `off` field" table.
+    #[test]
+    fn heartbeat_off_field() {
+        let now = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let head = format!(
+            r#""from":"{B}","site":"dc1","boot":"0000000000000001","seq":1,"ts":{t},"kind":"heartbeat""#
+        );
+        let cases: [(&str, Result<Vec<u32>, Reject>); 7] = [
+            ("", Ok(vec![])),
+            (r#","off":[]"#, Ok(vec![])),
+            (
+                r#","off":["a513a047","fa6f63b4"]"#,
+                Ok(vec![0xa513_a047, 0xfa6f_63b4]),
+            ),
+            (r#","off":["A513A047"]"#, Err(Reject::Malformed)),
+            (r#","off":["a513a04"]"#, Err(Reject::Malformed)),
+            (r#","off":"a513a047""#, Err(Reject::Malformed)),
+            (r#","off":[42]"#, Err(Reject::Malformed)),
+        ];
+        for (tail, want) in cases {
+            let mut g = group(now);
+            let got = g
+                .accept(&raw(&format!("{{{head}{tail}}}")), addr(B), t, now)
+                .map(|m| m.kind);
+            assert_eq!(got, want.map(Kind::Heartbeat), "{tail}");
+        }
+    }
+
+    /// Spec peer-group "Heartbeat announces services left out": tags are
+    /// written as 8 lowercase hex digits, and no `off` without tags.
+    #[test]
+    fn heartbeat_off_on_the_wire() {
+        let json = |kind| {
+            let data = encode(&msg(B, 1, 1, 1, kind), KEY);
+            String::from_utf8(data[HEADER_LEN..].to_vec()).expect("the payload is UTF-8 JSON")
+        };
+        assert!(!json(Kind::Heartbeat(Vec::new())).contains("off"));
+        assert!(
+            json(Kind::Heartbeat(vec![0x0000_00ff, 0xa513_a047]))
+                .ends_with(r#""kind":"heartbeat","off":["000000ff","a513a047"]}"#)
+        );
+    }
+
+    /// Spec peer-group "More services left out than fit": the largest
+    /// heartbeat, with [`crate::quorum::MAX_OFF_TAGS`] tags, fits one
+    /// datagram.
+    #[test]
+    fn largest_heartbeat_fits_one_datagram() {
+        let from = SocketAddr::V6(std::net::SocketAddrV6::new(
+            "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+                .parse()
+                .expect("a valid IPv6 address"),
+            65535,
+            0,
+            u32::MAX,
+        ));
+        let tags = vec![u32::MAX; crate::quorum::MAX_OFF_TAGS];
+        let m = Message {
+            from,
+            site: "s".repeat(63),
+            boot: u64::MAX,
+            seq: u64::MAX,
+            ts: u64::MAX,
+            kind: Kind::Heartbeat(tags),
+        };
+        let data = encode(&m, KEY);
+        assert!(data.len() <= MAX_DATAGRAM, "{} bytes", data.len());
+        assert_eq!(decode(&data), Some(m));
+    }
+
+    /// Spec peer-group "Kept tags follow the latest heartbeat": only
+    /// heartbeats replace a member's tags, and a member that stops being
+    /// live forgets them.
+    #[test]
+    fn kept_tags_follow_the_latest_heartbeat() {
+        let now = Instant::now();
+        let g = group(now);
+        let targets = Targets::default();
+        let quorum = Quorum::new(addr(ME));
+        let from = addr(B);
+        quorum.set_live([from]);
+        let tag = 0xa513_a047;
+        let steps = [
+            (Kind::Heartbeat(vec![tag]), vec![tag]),
+            (result(Outcome::Up), vec![tag]),
+            (down("refused"), vec![tag]),
+            (Kind::Unknown("assign".into()), vec![tag]),
+            (Kind::Heartbeat(Vec::new()), vec![]),
+            (Kind::Heartbeat(vec![tag]), vec![tag]),
+        ];
+        for (seq, (kind, want)) in steps.into_iter().enumerate() {
+            let m = msg(B, 1, seq as u64 + 1, 1, kind);
+            received(&g, &targets, &quorum, &m, now);
+            assert_eq!(quorum.member_tags(from), want, "{:?}", m.kind);
+        }
+        quorum.set_live([]);
+        assert!(quorum.member_tags(from).is_empty());
+    }
+
     /// Spec peer-group "acceptance checks" table.
     #[test]
     fn acceptance_checks() {
         let now = Instant::now();
         let t = 1_763_000_000_000u64;
-        let hb = |seq| msg(B, 1, seq, t, Kind::Heartbeat);
+        let hb = |seq| msg(B, 1, seq, t, Kind::Heartbeat(Vec::new()));
         type Case<'a> = (&'a str, Vec<u8>, &'a str, Result<(), Reject>);
         let cases: Vec<Case> = vec![
             ("valid heartbeat", encode(&hb(1), KEY), B, Ok(())),
@@ -1290,7 +1414,10 @@ mod tests {
             ),
             (
                 "not a member",
-                encode(&msg("10.0.0.8:5302", 1, 1, t, Kind::Heartbeat), KEY),
+                encode(
+                    &msg("10.0.0.8:5302", 1, 1, t, Kind::Heartbeat(Vec::new())),
+                    KEY,
+                ),
                 "10.0.0.8:5302",
                 Err(Reject::Sender),
             ),
@@ -1357,7 +1484,7 @@ mod tests {
         assert!(g.accept(&encode(&hb(6), KEY), addr(B), t, now).is_ok());
         // A message from this daemon itself.
         let mut g = group(now);
-        let own = encode(&msg(ME, 1, 1, t, Kind::Heartbeat), KEY);
+        let own = encode(&msg(ME, 1, 1, t, Kind::Heartbeat(Vec::new())), KEY);
         assert_eq!(
             g.accept(&own, addr(ME), t, now).map(|_| ()),
             Err(Reject::Sender)
@@ -1370,12 +1497,30 @@ mod tests {
         let now = Instant::now();
         let t = 1_763_000_000_000u64;
         let mut g = group(now);
-        let old = msg(B, 0xaaaa_aaaa_aaaa_aaaa, 900, t, Kind::Heartbeat);
+        let old = msg(
+            B,
+            0xaaaa_aaaa_aaaa_aaaa,
+            900,
+            t,
+            Kind::Heartbeat(Vec::new()),
+        );
         assert!(g.accept(&encode(&old, KEY), addr(B), t, now).is_ok());
-        let new = msg(B, 0xbbbb_bbbb_bbbb_bbbb, 1, t + 10, Kind::Heartbeat);
+        let new = msg(
+            B,
+            0xbbbb_bbbb_bbbb_bbbb,
+            1,
+            t + 10,
+            Kind::Heartbeat(Vec::new()),
+        );
         assert!(g.accept(&encode(&new, KEY), addr(B), t + 10, now).is_ok());
         // The old boot replayed afterwards, still within 5s: rejected.
-        let replayed = msg(B, 0xaaaa_aaaa_aaaa_aaaa, 901, t + 5, Kind::Heartbeat);
+        let replayed = msg(
+            B,
+            0xaaaa_aaaa_aaaa_aaaa,
+            901,
+            t + 5,
+            Kind::Heartbeat(Vec::new()),
+        );
         assert_eq!(
             g.accept(&encode(&replayed, KEY), addr(B), t + 20, now)
                 .map(|_| ()),
@@ -1391,7 +1536,7 @@ mod tests {
         let mut g = group(start);
         assert!(g.keys.rotate(vec![9u8; 32], start));
         assert!(!g.keys.rotate(vec![9u8; 32], start));
-        let old = |seq| encode(&msg(B, 1, seq, t, Kind::Heartbeat), KEY);
+        let old = |seq| encode(&msg(B, 1, seq, t, Kind::Heartbeat(Vec::new())), KEY);
         for (secs, seq) in [(30, 1), (90, 2)] {
             let at = start + Duration::from_secs(secs);
             assert!(g.accept(&old(seq), addr(B), t, at).is_ok(), "{secs}s");
@@ -1401,7 +1546,7 @@ mod tests {
             g.accept(&old(3), addr(B), t, at130).map(|_| ()),
             Err(Reject::Auth)
         );
-        let new = encode(&msg(B, 1, 4, t, Kind::Heartbeat), &[9u8; 32]);
+        let new = encode(&msg(B, 1, 4, t, Kind::Heartbeat(Vec::new())), &[9u8; 32]);
         assert!(g.accept(&new, addr(B), t, at130).is_ok());
     }
 
@@ -1438,21 +1583,29 @@ mod tests {
             if secs == 40 {
                 b.keys.rotate(new.clone(), now);
             }
-            let from_a = a.encode(Kind::Heartbeat, t, now);
+            let from_a = a.encode(Kind::Heartbeat(Vec::new()), t, now);
             assert!(
                 b.accept(&from_a, addr(ME), t, now).is_ok(),
                 "A to B at {secs}s"
             );
-            let from_b = b.encode(Kind::Heartbeat, t, now);
+            let from_b = b.encode(Kind::Heartbeat(Vec::new()), t, now);
             assert!(
                 a.accept(&from_b, addr(B), t, now).is_ok(),
                 "B to A at {secs}s"
             );
         }
         // Signing switches to the new secret 60 seconds after the change.
-        let mine = a.encode(Kind::Heartbeat, t, start + Duration::from_secs(59));
+        let mine = a.encode(
+            Kind::Heartbeat(Vec::new()),
+            t,
+            start + Duration::from_secs(59),
+        );
         assert!(Keys::new(KEY.to_vec()).verifies(&mine[HEADER_LEN..], &mine[4..HEADER_LEN], start));
-        let mine = a.encode(Kind::Heartbeat, t, start + Duration::from_secs(60));
+        let mine = a.encode(
+            Kind::Heartbeat(Vec::new()),
+            t,
+            start + Duration::from_secs(60),
+        );
         assert!(Keys::new(new).verifies(&mine[HEADER_LEN..], &mine[4..HEADER_LEN], start));
     }
 
@@ -1507,7 +1660,7 @@ mod tests {
         assert_eq!(g.stats.up(), vec![(addr(B), false)]);
         assert!(
             g.accept(
-                &encode(&msg(B, 1, 1, t, Kind::Heartbeat), KEY),
+                &encode(&msg(B, 1, 1, t, Kind::Heartbeat(Vec::new())), KEY),
                 addr(B),
                 t,
                 start
@@ -1644,7 +1797,7 @@ mod tests {
         assert!(matches!(
             decode(&buf[..n]),
             Some(Message {
-                kind: Kind::Heartbeat,
+                kind: Kind::Heartbeat(_),
                 ..
             })
         ));

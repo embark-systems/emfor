@@ -52,8 +52,9 @@ ttl = "1s"                   # whole seconds, 0s to 3600s
 # lists the same members, including itself; listen is this host's entry.
 # The secret file needs at least 32 bytes and mode 0600 or 0640.
 # Changing listen requires a restart; members and secret_file reload.
-# A service with peers = false (below) stays out of the group; set it the
-# same on every member.
+# A service with peers = false (below) stays out of the group; the host
+# tells the other members, which then leave it out of that service's
+# assigned checkers (every member needs this version for that).
 # [peers]
 # listen = "10.0.0.5:5302"
 # members = ["10.0.0.5:5302", "10.0.0.6:5302", "10.0.0.7:5302"]

@@ -610,7 +610,7 @@ tests:
 When the config has a `[peers]` table, the daemon SHALL keep the key `meta/peers` holding a JSON object with these fields:
 
 - `listen`: this daemon's `[peers] listen`;
-- `members`: an array of `{"addr":<member>,"live":<bool>}` for every member other than this daemon, in config order;
+- `members`: an array of `{"addr":<member>,"live":<bool>,"services_off":[<name>, ...]}` for every member other than this daemon, in config order, where `services_off` holds the names of this daemon's services whose service tag is among the tags this daemon keeps for that member (spec peer-group, "Peer heartbeats and liveness"), in byte order of the name, and is empty when it keeps none;
 - `digest_mismatch`: an array of `{"service":<name>,"member":<member>}` for every current digest mismatch (spec peer-group), ordered by service name and then member;
 - `disagreements`: an array of `{"service":<name>,"backend":<id>,"down":<d>,"fresh":<f>}` for every current disagreement (spec peer-group), ordered by service name and then backend id.
 - `services_off`: an array of the names of this daemon's services whose effective `peers` setting is `false` (spec peer-group, "Services left out of the peer group"), in byte order of the name.
@@ -620,7 +620,7 @@ Members SHALL be written as in the config (IPv6 as `[addr]:port`). On startup th
 #### Scenario: Peer state written at start
 
 - **WHEN** the daemon starts with `[peers] listen = "127.0.0.1:5302"` and `members = ["127.0.0.1:5302", "127.0.0.1:5303"]`
-- **THEN** once `meta/started_at` is written, key `meta/peers` holds `{"listen":"127.0.0.1:5302","members":[{"addr":"127.0.0.1:5303","live":false}],"digest_mismatch":[],"disagreements":[],"services_off":[]}`
+- **THEN** once `meta/started_at` is written, key `meta/peers` holds `{"listen":"127.0.0.1:5302","members":[{"addr":"127.0.0.1:5303","live":false,"services_off":[]}],"digest_mismatch":[],"disagreements":[],"services_off":[]}`
 
 #### Scenario: Peer key from an earlier run removed
 
@@ -630,30 +630,36 @@ Members SHALL be written as in the config (IPv6 as `[addr]:port`). On startup th
 #### Scenario: Liveness and disagreement reach the store
 
 - **WHEN** a daemon with `listen = "127.0.0.1:5302"` and `members = ["127.0.0.1:5302", "127.0.0.1:5303", "127.0.0.1:5304"]` sees both other members become live, and backend `127.0.0.1:8080` of `api.svc.emfor` becomes a disagreement with 2 of 3 votes down
-- **THEN** within 2 seconds `meta/peers` holds `"members":[{"addr":"127.0.0.1:5303","live":true},{"addr":"127.0.0.1:5304","live":true}]` and `"disagreements":[{"service":"api.svc.emfor","backend":"127.0.0.1:8080","down":2,"fresh":3}]`
+- **THEN** within 2 seconds `meta/peers` holds `"members":[{"addr":"127.0.0.1:5303","live":true,"services_off":[]},{"addr":"127.0.0.1:5304","live":true,"services_off":[]}]` and `"disagreements":[{"service":"api.svc.emfor","backend":"127.0.0.1:8080","down":2,"fresh":3}]`
 
 #### Scenario: Services left out are listed
 
 - **WHEN** the daemon runs with `[peers]` and services `web.svc.emfor` and `db.svc.emfor` have `peers = false`, and a reload then sets `peers = true` for `web.svc.emfor`
 - **THEN** `meta/peers` holds `"services_off":["db.svc.emfor","web.svc.emfor"]` at start and `"services_off":["db.svc.emfor"]` within 2 seconds after the reload
 
+#### Scenario: Services another member leaves out
+
+- **WHEN** this daemon has the services `api.svc.emfor` and `db.svc.emfor`, and member `127.0.0.1:5303` sends heartbeats with `"off":["a513a047","99e6433f"]` (the tags of `api.svc.emfor` and of `web.svc.emfor`, a service this daemon does not have)
+- **THEN** within 2 seconds `meta/peers` holds `{"addr":"127.0.0.1:5303","live":true,"services_off":["api.svc.emfor"]}` in `members`, and within 2 seconds after that member stops being live it holds `{"addr":"127.0.0.1:5303","live":false,"services_off":[]}`
+
 <!-- @trace
-source: emfor-peers-service-off
+source: emfor-peers-off-announce
 updated: 2026-11-13
 code:
-  - crates/emfor-daemon/src/writer.rs
-  - docs/manual/03-configuration.md
-  - crates/emfor-daemon/src/quorum.rs
-  - crates/emfor-daemon/src/peers.rs
-  - docs/manual/08-operations.md
-  - crates/emfor-daemon/src/status.rs
-  - crates/emfor-daemon/src/supervisor.rs
-  - crates/emfor-daemon/src/cli.rs
-  - crates/emfor-daemon/src/config.rs
   - examples/emfor.toml
+  - crates/emfor-daemon/src/peers.rs
+  - docs/manual/03-configuration.md
+  - crates/emfor-daemon/src/status.rs
+  - crates/emfor-daemon/src/quorum.rs
   - CHANGELOG.md
+  - docs/manual.zh_TW/03-configuration.md
+  - docs/manual/08-operations.md
+  - docs/manual.zh_TW/01-concepts.md
+  - crates/emfor-daemon/src/supervisor.rs
   - docs/manual/01-concepts.md
-  - crates/emfor-daemon/src/schedule.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - docs/manual.zh_TW/08-operations.md
+  - crates/emfor-daemon/src/writer.rs
 tests:
   - crates/emfor-daemon/tests/peers.rs
 -->

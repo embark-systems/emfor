@@ -32,6 +32,17 @@ pub const FRESH_INTERVALS: u32 = 3;
 /// A digest mismatch is shown until no message showing it arrived for this
 /// long.
 pub const MISMATCH_KEEP: Duration = Duration::from_secs(60);
+/// Most service tags one heartbeat announces (spec peer-group, "Peer
+/// heartbeats and liveness"): with the longest `from`, `site` and `seq`
+/// the datagram then still fits in [`crate::peers::MAX_DATAGRAM`].
+pub const MAX_OFF_TAGS: usize = 80;
+
+/// The service tag of `service`: the first 4 bytes, big endian, of
+/// SHA-256 over its name. Heartbeats write it as 8 lowercase hex digits.
+pub fn service_tag(service: &str) -> u32 {
+    let d = sha2::Sha256::digest(service.as_bytes());
+    u32::from_be_bytes([d[0], d[1], d[2], d[3]])
+}
 
 /// Rendezvous value of `member` for one backend: the first 4 bytes, big
 /// endian, of MD5(`<service>/<backend>/<member>`), as sticky does.
@@ -144,6 +155,14 @@ struct State {
     mismatches: BTreeMap<(String, SocketAddr), Instant>,
     /// Services with `peers = false`, sorted.
     off: Vec<String>,
+    /// The tags this daemon announces: those of `off`, distinct, sorted,
+    /// at most [`MAX_OFF_TAGS`].
+    off_tags: Vec<u32>,
+    /// The service tags of the latest heartbeat of each live member; no
+    /// entry when it announced none.
+    member_tags: HashMap<SocketAddr, BTreeSet<u32>>,
+    /// Every service of this daemon, in or out of the peer group, sorted.
+    services: Vec<String>,
 }
 
 /// Votes, liveness and the lists `meta/peers` shows; shared by the peer
@@ -171,6 +190,8 @@ struct Summary<'a> {
 struct SummaryMember {
     addr: String,
     live: bool,
+    /// This daemon's services whose tag the member announces.
+    services_off: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -208,6 +229,18 @@ fn kept_vote(
     })
 }
 
+/// The live members that are candidates for the assigned checkers of
+/// `service`'s backends: those that do not announce its service tag (spec
+/// peer-group, "Assigned checkers and check results").
+fn candidates<'a>(st: &'a State, service: &str) -> std::borrow::Cow<'a, BTreeSet<SocketAddr>> {
+    if st.member_tags.is_empty() {
+        return std::borrow::Cow::Borrowed(&st.live);
+    }
+    let tag = service_tag(service);
+    let announces = |m: &SocketAddr| st.member_tags.get(m).is_some_and(|t| t.contains(&tag));
+    std::borrow::Cow::Owned(st.live.iter().copied().filter(|m| !announces(m)).collect())
+}
+
 impl Quorum {
     /// `me` is this daemon's `[peers] listen`.
     pub fn new(me: SocketAddr) -> Quorum {
@@ -227,13 +260,77 @@ impl Quorum {
     pub fn set_off(&self, mut names: Vec<String>) {
         names.sort();
         names.dedup();
-        self.state().off = names;
+        let mut st = self.state();
+        if names == st.off {
+            return;
+        }
+        let mut tags: Vec<u32> = names.iter().map(|n| service_tag(n)).collect();
+        tags.sort_unstable();
+        tags.dedup();
+        if tags.len() > MAX_OFF_TAGS {
+            let left = tags.len() - MAX_OFF_TAGS;
+            let not_sent = if left == 1 {
+                "1 tag is not sent".to_string()
+            } else {
+                format!("{left} tags are not sent")
+            };
+            tracing::warn!(
+                "{} services have peers = false but heartbeats announce at most {MAX_OFF_TAGS} service tags; \
+                 {not_sent}, so other members still count this daemon as an assigned checker candidate for those services",
+                names.len(),
+            );
+            tags.truncate(MAX_OFF_TAGS);
+        }
+        st.off = names;
+        st.off_tags = tags;
+    }
+
+    /// Every service of this daemon, for naming what members announce in
+    /// `meta/peers`.
+    pub fn set_services(&self, mut names: Vec<String>) {
+        names.sort();
+        names.dedup();
+        self.state().services = names;
+    }
+
+    /// The service tags to announce in heartbeats, sorted.
+    pub fn off_tags(&self) -> Vec<u32> {
+        self.state().off_tags.clone()
     }
 
     /// The members other than this daemon that are live now.
     pub fn set_live(&self, live: impl IntoIterator<Item = SocketAddr>) {
         let me = self.me;
-        self.state().live = live.into_iter().filter(|m| *m != me).collect();
+        let mut st = self.state();
+        st.live = live.into_iter().filter(|m| *m != me).collect();
+        // A member that stops being live forgets what it announced.
+        let State {
+            live, member_tags, ..
+        } = &mut *st;
+        member_tags.retain(|m, _| live.contains(m));
+    }
+
+    /// Keep `tags`, from an accepted heartbeat of `member`, in place of what
+    /// it announced before (spec peer-group, "Peer heartbeats and
+    /// liveness").
+    pub fn set_member_tags(&self, member: SocketAddr, tags: &[u32]) {
+        let mut st = self.state();
+        if tags.is_empty() {
+            st.member_tags.remove(&member);
+        } else {
+            st.member_tags
+                .insert(member, tags.iter().copied().collect());
+        }
+    }
+
+    /// The service tags kept for `member`, sorted.
+    #[cfg(test)]
+    pub fn member_tags(&self, member: SocketAddr) -> Vec<u32> {
+        let st = self.state();
+        st.member_tags
+            .get(&member)
+            .map(|t| t.iter().copied().collect())
+            .unwrap_or_default()
     }
 
     /// Keep `r` as the latest result of `from` for its backend. The caller
@@ -272,7 +369,7 @@ impl Quorum {
     ) -> Combined {
         let mut st = self.state();
         let key = (service.to_string(), backend.to_string());
-        let ranked = assigned(service, backend, self.me, &st.live);
+        let ranked = assigned(service, backend, self.me, &candidates(&st, service));
         // Votes in rank order: `None` for a down vote's reason means up.
         let votes: Vec<Option<String>> = ranked
             .iter()
@@ -332,7 +429,7 @@ impl Quorum {
     pub fn votes(&self, service: &str, backend: &str, digest: &str, now: Instant) -> Votes {
         let st = self.state();
         let key = (service.to_string(), backend.to_string());
-        let ranked = assigned(service, backend, self.me, &st.live);
+        let ranked = assigned(service, backend, self.me, &candidates(&st, service));
         let votes: Vec<Option<String>> = ranked
             .iter()
             .filter(|m| **m != self.me)
@@ -348,6 +445,13 @@ impl Quorum {
             up: count(votes.len()) - down,
             down_reason: votes.into_iter().flatten().next(),
         }
+    }
+
+    /// The assigned checkers of a backend now, in rank order.
+    #[cfg(test)]
+    pub fn checkers(&self, service: &str, backend: &str) -> Vec<SocketAddr> {
+        let st = self.state();
+        assigned(service, backend, self.me, &candidates(&st, service))
     }
 
     /// Count one check time decided by votes alone.
@@ -378,6 +482,7 @@ impl Quorum {
         }
         st.mismatches.retain(|(_, m), _| members.contains(m));
         st.live.retain(|m| members.contains(m));
+        st.member_tags.retain(|m, _| members.contains(m));
     }
 
     /// The kept result of `from` for a backend.
@@ -413,6 +518,13 @@ impl Quorum {
                 .map(|(a, live)| SummaryMember {
                     addr: a.to_string(),
                     live: *live,
+                    services_off: st.member_tags.get(a).map_or_else(Vec::new, |tags| {
+                        st.services
+                            .iter()
+                            .filter(|s| tags.contains(&service_tag(s)))
+                            .cloned()
+                            .collect()
+                    }),
                 })
                 .collect(),
             digest_mismatch: mismatches
@@ -846,7 +958,7 @@ mod tests {
         let q = Quorum::new(addr("127.0.0.1:5302"));
         assert_eq!(
             q.summary(&[(addr("127.0.0.1:5303"), false)], now),
-            r#"{"listen":"127.0.0.1:5302","members":[{"addr":"127.0.0.1:5303","live":false}],"digest_mismatch":[],"disagreements":[],"services_off":[]}"#
+            r#"{"listen":"127.0.0.1:5302","members":[{"addr":"127.0.0.1:5303","live":false,"services_off":[]}],"digest_mismatch":[],"disagreements":[],"services_off":[]}"#
         );
         let q = quorum();
         q.record(addr("10.0.0.8:5302"), &result(down("refused")), now);
@@ -861,7 +973,7 @@ mod tests {
         assert_eq!(
             q.summary(&peers, now),
             concat!(
-                r#"{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true},{"addr":"[2001:db8::7]:5302","live":false}],"#,
+                r#"{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true,"services_off":[]},{"addr":"[2001:db8::7]:5302","live":false,"services_off":[]}],"#,
                 r#""digest_mismatch":[{"service":"api.svc.emfor","member":"10.0.0.7:5302"},{"service":"db.svc.emfor","member":"10.0.0.9:5302"}],"#,
                 r#""disagreements":[{"service":"api.svc.emfor","backend":"10.0.0.11:8080","down":2,"fresh":3}],"services_off":[]}"#
             )
@@ -880,6 +992,115 @@ mod tests {
         assert!(
             q.summary(&peers, now)
                 .ends_with(r#","services_off":["db.svc.emfor"]}"#)
+        );
+    }
+
+    /// Spec peer-group "service tags".
+    #[test]
+    fn service_tags() {
+        for (name, tag) in [
+            ("api.svc.emfor", "a513a047"),
+            ("db.svc.emfor", "fa6f63b4"),
+            ("web.svc.emfor", "99e6433f"),
+        ] {
+            assert_eq!(format!("{:08x}", service_tag(name)), tag, "{name}");
+        }
+    }
+
+    /// Spec peer-group "Heartbeat announces services left out" and "More
+    /// services left out than fit": distinct sorted tags, at most 80.
+    #[test]
+    fn off_tags_sorted_and_limited() {
+        let q = Quorum::new(addr("10.0.0.5:5302"));
+        assert!(q.off_tags().is_empty());
+        q.set_off(vec![
+            "db.svc.emfor".into(),
+            "api.svc.emfor".into(),
+            "api.svc.emfor".into(),
+        ]);
+        assert_eq!(q.off_tags(), vec![0xa513_a047, 0xfa6f_63b4]);
+        let names: Vec<String> = (0..81).map(|i| format!("s{i}.svc.emfor")).collect();
+        let mut all: Vec<u32> = names.iter().map(|n| service_tag(n)).collect();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), 81, "the test names have distinct tags");
+        q.set_off(names);
+        assert_eq!(q.off_tags(), all[..MAX_OFF_TAGS].to_vec());
+        q.set_off(Vec::new());
+        assert!(q.off_tags().is_empty());
+    }
+
+    /// Spec peer-group "A member announces a service left out".
+    #[test]
+    fn announcing_members_are_not_candidates() {
+        let me = addr("10.0.0.5:5302");
+        let q = Quorum::new(me);
+        q.set_live(members(6..=9));
+        let m = |i: u8| addr(&format!("10.0.0.{i}:5302"));
+        q.set_member_tags(m(8), &[service_tag(SVC)]);
+        assert_eq!(q.checkers(SVC, "10.0.0.11:8080"), vec![me, m(6), m(7)]);
+        assert_eq!(q.checkers(SVC, "10.0.0.12:8080"), vec![m(9), m(6), m(7)]);
+        // Another service is not affected.
+        assert_eq!(
+            q.checkers("db.svc.emfor", "10.0.0.11:8080"),
+            assigned("db.svc.emfor", "10.0.0.11:8080", me, &members(6..=9))
+        );
+        // The votes see the same checkers: this daemon is assigned now.
+        assert!(
+            q.votes(SVC, "10.0.0.11:8080", DIGEST, Instant::now())
+                .assigned
+        );
+        // Two of the four others announcing it leave too few candidates.
+        q.set_member_tags(m(6), &[service_tag(SVC)]);
+        q.set_member_tags(m(7), &[service_tag(SVC)]);
+        assert!(q.checkers(SVC, "10.0.0.11:8080").is_empty());
+        // Announcing nothing makes it a candidate again.
+        q.set_member_tags(m(6), &[]);
+        q.set_member_tags(m(7), &[]);
+        q.set_member_tags(m(8), &[]);
+        assert_eq!(q.checkers(SVC, "10.0.0.11:8080"), vec![me, m(8), m(6)]);
+    }
+
+    /// Two services with the same tag: a member that announces it is left
+    /// out of the candidates of both.
+    #[test]
+    fn same_tag_leaves_the_member_out_of_both() {
+        let (a, b) = ("c48024.svc.emfor", "c99378.svc.emfor");
+        assert_eq!(service_tag(a), service_tag(b));
+        let me = addr("10.0.0.5:5302");
+        let q = Quorum::new(me);
+        q.set_live(members(6..=8));
+        q.set_member_tags(addr("10.0.0.8:5302"), &[service_tag(a)]);
+        for s in [a, b] {
+            assert!(
+                !q.checkers(s, "10.0.0.11:8080")
+                    .contains(&addr("10.0.0.8:5302")),
+                "{s}"
+            );
+        }
+    }
+
+    /// Spec state-store "Services another member leaves out": names of
+    /// this daemon's services only, and nothing once the member is not live.
+    #[test]
+    fn summary_names_what_members_announce() {
+        let now = Instant::now();
+        let q = Quorum::new(addr("127.0.0.1:5302"));
+        let other = addr("127.0.0.1:5303");
+        q.set_services(vec!["db.svc.emfor".into(), "api.svc.emfor".into()]);
+        q.set_live([other]);
+        q.set_member_tags(
+            other,
+            &[service_tag("api.svc.emfor"), service_tag("web.svc.emfor")],
+        );
+        assert!(q.summary(&[(other, true)], now).contains(
+            r#""members":[{"addr":"127.0.0.1:5303","live":true,"services_off":["api.svc.emfor"]}]"#
+        ));
+        q.set_live([]);
+        assert!(
+            q.summary(&[(other, false)], now).contains(
+                r#""members":[{"addr":"127.0.0.1:5303","live":false,"services_off":[]}]"#
+            )
         );
     }
 }

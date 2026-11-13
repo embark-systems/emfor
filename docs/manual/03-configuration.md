@@ -96,10 +96,15 @@ the local store. Without `[peers]` nothing of this runs. See
 A service with `peers = false` (in its table or in `[defaults]`) is left
 out of the group on this host: it sends no reports or results, ignores
 those it receives, and always decides from its own checks. The other
-services stay in the group. The other members do not know which services
-a host leaves out and may still count it as one of a backend's three
-assigned checkers, leaving that backend with two; so set `peers` the same
-on every member.
+services stay in the group. The host announces the services it leaves out
+in its heartbeats (as short hashes of their names, at most 80 of them), and
+the other members then do not count it as one of those services' assigned
+checkers, so their backends keep three where enough members are live. Each
+host can therefore leave out its own services. This needs every member on a
+version that reads the announcement: an older member still counts the host
+as a candidate, which can leave a backend with two assigned checkers that
+vote. With more than 80 services left out the host logs a warning and the
+others still count it for the rest.
 
 ```toml
 site = "dc1"                               # required with [peers]
