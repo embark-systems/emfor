@@ -72,9 +72,45 @@ api.svc.emfor  round-robin  on_all_down=open
 | `emfor_store_last_commit_timestamp_seconds` | 上次成功 commit 的時間；應在幾秒以內 |
 | `emfor_store_used_bytes`、`emfor_store_map_size_bytes` | store 使用量與 `[store] map_size` |
 | `emfor_plugin_up`、`emfor_plugin_restarts_total` | plugin 健康狀況 |
+| `emfor_peer_up{peer}` | 有 `[peers]` 時：該成員存活時為 1 |
+| `emfor_peer_messages_rejected_total{reason}` | 有 `[peers]` 時：依原因分類的丟棄訊息數：`malformed`、`auth`（密鑰錯誤）、`sender`（不是成員，或偽造的位址）、`site`、`stale`（時鐘相差超過 5 秒）、`replay` |
+| `emfor_peer_notifications_total{direction}` | 有 `[peers]` 時：故障通知 `sent`（每個成員算一次）與 `received` |
+| `emfor_peer_results_total{direction}` | 有 `[peers]` 時：負責主機的檢查結果 `sent`（每個成員算一次）與 `received` |
+| `emfor_peer_disagreements` | 有 `[peers]` 時：群組投票判為 down、而本機檢查通過的 backend 數 |
+| `emfor_peer_checks_skipped_total` | 有 `[peers]` 時：因兩台負責主機意見一致而沒有做的檢查次數 |
 | `emfor_build_info{version}`、`emfor_start_time_seconds` | daemon 本身 |
 
 [examples/prometheus/emfor-rules.yml](../../examples/prometheus/emfor-rules.yml) 提供告警規則：endpoint 無法抓取、服務 `ALL DOWN`、store commit 失敗、backend 不健康達 10 分鐘、flapping、大多是 error，或不再被檢查。完整的 metrics 與規則清單見 [docs/deploy/daemon.md](../deploy/daemon.md#metrics)。
+
+### 聯防群組
+
+聯防群組的成員之間需要能以 UDP 連到彼此的 `[peers] listen` port（範例中為 5302），時鐘相差不能超過 5 秒（NTP）。某個成員的 `emfor_peer_up` 一直是 0 時，看兩邊的 `emfor_peer_messages_rejected_total`：`auth` 表示密鑰不同，`stale` 表示時鐘偏移，`sender` 表示 `members` 或 `listen` 不符，`site` 表示兩台主機的 `site` 不同。
+
+原因會說明 `down` 從哪裡來：`peers 2/3: <原因>` 表示三台負責主機中有兩台看到 backend down（原因是它們的）；`local: <原因>` 表示只有這台主機看到 down，投票沒有判 down；沒有前綴的原因表示沒有投票（存活成員少於三台，或沒有夠新的結果）。`emfor status` 在 daemon 那一行下面顯示群組狀態：
+
+```
+peers: 1/2 live, not live 10.0.0.7:5302
+peers: check definition of api.svc.emfor differs at 10.0.0.6:5302
+```
+
+群組投票判為 down、而本機檢查通過的 backend 會標上 `local-up`。這些值得看一下：這台主機連得到其他主機連不到的 backend（常見原因是網路分割，或其他主機上的防火牆規則），`emfor_peer_disagreements` 會計算它們的數量。「check definition differs」那一行表示該成員這個服務的 `check`、`check_options` 或 `timeout` 和這台主機不同，所以它的結果不計入；請讓設定一致。同樣的資料也在 store 的 `meta/peers` key，以及 `emfor status --json` 的 `peers` 中。其中 `services_off` 列出這台主機不參加群組的服務（`peers = false`）；它們的 backend 不會標 `voted`，也沒有 `assigned_checkers`。
+
+四台以上的群組裡，不是某些 backend 負責主機的主機，`emfor_peer_checks_skipped_total` 會增加：大部分的檢查時間讓投票決定，大約每五個 `interval` 才自己檢查那些 backend 一次。`emfor status` 會把那些 backend 標上 `voted`，並在 `peers:` 那一行最後寫出顯示的 backend 中有幾個是這台主機每次都檢查的：
+
+```
+peers: 4/4 live, checks 12/40 backends here
+```
+
+`emfor status --json` 在 `assigned_checkers` 中依排名列出每個 backend 的負責主機：
+
+```json
+"assigned_checkers": [
+  {"service": "api.svc.emfor", "backend": "10.0.0.11:8080",
+   "checkers": ["10.0.0.5:5302", "10.0.0.8:5302", "10.0.0.6:5302"]}
+]
+```
+
+daemon 沒有執行或沒有 `meta/peers` 時它是 `null`。status 依 `meta/peers` 中的存活成員算出這些內容，而 daemon 每秒更新一次 `meta/peers`，所以成員剛加入或離開時最多會落後一秒。`voted` 只表示這台主機不是負責主機；某次檢查時間是否由投票決定，要看當下的票。`emfor_backend_checks_total` 仍然計算每一次檢查時間，不論是否由投票決定。backend 的延遲只由這台主機自己的檢查量測，所以在這種主機上大約每五個 `interval` 才變一次。
 
 ## Log
 
@@ -83,9 +119,9 @@ daemon 把 log 寫到 stderr：systemd 下進 journal，FreeBSD rc.d script 下�
 | 等級 | 看到什麼 |
 | --- | --- |
 | `error` | store commit 失敗、被拒絕的 reload |
-| `warn` | plugin 結束、損毀的 store 被替換、在 DNS zone 之外或 port 不一致的服務、無法解析的 plugin 輸出 |
-| `info` | 啟動與停止、每次 backend 狀態變化與其 reason、plugin 的 stderr 內容 |
-| `debug` | 每次通過的檢查所花的時間 |
+| `warn` | plugin 結束、損毀的 store 被替換、在 DNS zone 之外或 port 不一致的服務、無法解析的 plugin 輸出、被丟棄的聯防訊息（每個來源與原因每分鐘一行）、無法讀取的 `[peers] secret_file` |
+| `info` | 啟動與停止、每次 backend 狀態變化與其 reason、plugin 的 stderr 內容、聯防成員變成存活或不存活、`peer … reports backend … down (…); checking now`、`backend … of … is down at 2/3 peers but up here` |
+| `debug` | 每次通過的檢查所花的時間、被忽略的聯防通知與原因、檢查定義不同的成員送來的結果 |
 
 ## 結束代碼
 

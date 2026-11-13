@@ -24,7 +24,7 @@ site = "dc1"
 
 | Key | 預設值 | 意義 |
 | --- | --- | --- |
-| `site` | 無 | 這台主機所在的資料中心。`balance = "locality"` 會用到。1–63 個 `a-z`、`0-9` 與 `-` 字元（讀取時轉為小寫）。必須寫在第一個 table 之前。 |
+| `site` | 無 | 這台主機所在的資料中心。`balance = "locality"` 會用到，有 `[peers]` 時必填。1–63 個 `a-z`、`0-9` 與 `-` 字元（讀取時轉為小寫）。必須寫在第一個 table 之前。 |
 
 ## [store]
 
@@ -69,6 +69,31 @@ sync = false
 | --- | --- | --- |
 | `listen` | `["127.0.0.1:5301"]` | 提供 `/metrics` 的位址。 |
 
+## [peers]
+
+選用。讓這個 daemon 成為**聯防群組**的成員：同一個 `site`、在這裡列出彼此的 emfor daemon。成員每秒互送一次 heartbeat；其中一台看到 backend 從 `healthy` 變成 `unhealthy` 時通知其他成員，它們立刻重新檢查那個 backend，之後每 200ms 一次（最多 `fall` 次），而不是等到下一個 `interval`。存活成員有三台以上時，每個 backend 有三台負責主機：它們每個 `interval` 檢查一次，並把結果送給其他成員；三台中有兩台回報 `down`，每個成員都把該 backend 標成 down。其他成員讓兩個一致的結果決定，大約每五個 `interval` 才自己檢查一次。投票與分工沒有自己的設定，使用各服務的 `interval`，而且只計入 `check`、`check_options` 與 `timeout` 相同的成員。client 仍然只讀本機的 store。沒有 `[peers]` 時以上都不會執行。見[第 1 章](01-concepts.md#聯防群組)。
+
+設了 `peers = false` 的服務（寫在服務的 table 或 `[defaults]`）在這台主機上不參加群組：不送通知與結果、忽略收到的通知與結果，一律依自己的檢查判斷。其他服務仍在群組裡。其他成員不知道一台主機讓哪些服務不參加，仍可能把它算成某個 backend 的三台負責主機之一，讓那個 backend 只剩兩台；所以每個成員的 `peers` 要設成一樣。
+
+```toml
+site = "dc1"                               # 有 [peers] 時必填
+
+[peers]
+listen = "10.0.0.5:5302"
+members = ["10.0.0.5:5302", "10.0.0.6:5302", "10.0.0.7:5302"]
+secret_file = "/etc/emfor/peers.key"
+```
+
+| Key | 預設值 | 意義 |
+| --- | --- | --- |
+| `listen` | 必填 | 這個 daemon 在群組中的 UDP 位址，必須是 `members` 之一。要寫具體位址，不能是 `0.0.0.0` 或 `::`；其他成員會檢查訊息是否來自這個位址。慣用的 port 是 5302。 |
+| `members` | 必填 | 每個成員的 `listen`，包含這個 daemon 自己：2 到 64 個位址，不可重複，和 `listen` 一樣全是 IPv4 或全是 IPv6。同一個機房的每台主機可以用同一份清單。 |
+| `secret_file` | 必填 | 共用密鑰的絕對路徑，用來簽署每則訊息（HMAC-SHA256）：去掉一個結尾換行後至少 32 bytes，其他使用者不能讀取（`chmod 600` 或 `640`）。 |
+
+只有當某個服務在兩邊的檢查定義相同時，成員之間才會分享該服務的回報：相同的 `check`、`check_options` 與 `timeout`。其他設定（`interval`、`rise`、`fall`、backend 清單）可以不同。
+
+密鑰檔每秒重新讀取一次。要更換密鑰時，在一分鐘內把新密鑰寫到每台主機：主機自己的檔案改變後，仍用舊密鑰簽署 60 秒、接受舊密鑰 120 秒，所以期間不會丟失訊息。和接收端時鐘相差超過 5 秒的訊息會被丟棄，所以要讓主機時鐘保持同步（NTP）。
+
 ## [defaults]
 
 每個服務沒有自行設定時使用的值。內建值如下：
@@ -82,6 +107,7 @@ fall = 3
 jitter = "10%"
 on_all_down = "open"
 balance = "round-robin"
+peers = true
 ```
 
 | Key | 規則 | 意義 |
@@ -93,6 +119,7 @@ balance = "round-robin"
 | `jitter` | `0%` 到 `50%` | `interval` 的隨機浮動，讓檢查不會擠在同一時刻。 |
 | `on_all_down` | `open` 或 `closed` | 沒有 backend 健康時查詢怎麼做（[第 5 章](05-backend-selection.md#沒有任何-backend-健康時)）。 |
 | `balance` | 見[第 5 章](05-backend-selection.md) | 如何選擇 backend。 |
+| `peers` | `true` 或 `false` | 這個服務是否參加[聯防群組](#peers)。沒有 `[peers]` 時沒有作用。 |
 
 ## [services."name"]
 
@@ -112,7 +139,7 @@ path = "/healthz"
 | `check` | 是 | `tcp`、`http`、`exec`，或已宣告的 plugin 名稱。 |
 | `backends` | 是 | 非空的 backend 清單（見下）。 |
 | `check_options` | 否 | checker 的選項（[第 4 章](04-health-checks.md)）。 |
-| `interval`、`timeout`、`rise`、`fall`、`jitter`、`on_all_down`、`balance` | 否 | 為這個服務覆寫 `[defaults]`。 |
+| `interval`、`timeout`、`rise`、`fall`、`jitter`、`on_all_down`、`balance`、`peers` | 否 | 為這個服務覆寫 `[defaults]`。 |
 | `dns_ttl` | 否 | 為這個服務覆寫 `[dns] ttl`；整數秒，`0s` 到 `3600s`。 |
 
 **服務名稱**類似主機名稱：轉為小寫、去掉一個結尾的點，最多 253 個字元，由點分隔的 label 組成，每個 label 1–63 個 `a-z`、`0-9` 與 `-` 字元，且不以 `-` 開頭或結尾。只差在大小寫的兩個名稱視為重複。client 查詢時也用同樣方式正規化名稱。
@@ -171,7 +198,7 @@ services."api.svc.emfor".timeout: timeout must not exceed interval
 | --- | --- |
 | 新增或移除服務與 backend | 套用；新的 backend 從 `unknown` 開始。 |
 | 服務的 `check` 或 `check_options` | 套用；它的 backend 從 `unknown` 重新開始。 |
-| `interval`、`timeout`、`rise`、`fall`、`jitter`、`on_all_down` | 套用；backend 保留原狀態。 |
+| `interval`、`timeout`、`rise`、`fall`、`jitter`、`on_all_down`、`peers` | 套用；backend 保留原狀態。 |
 | `balance`、`weight`、`site`（最上層與 backend）、`dns_ttl` | 套用。 |
 | `[dns] zone`、`[dns] ttl` | 套用。 |
 | `[log] level` | 套用（除非設定了 `RUST_LOG`）。 |
@@ -179,3 +206,5 @@ services."api.svc.emfor".timeout: timeout must not exceed interval
 | `[store]` 中的任何設定 | 拒絕；需要重新啟動。 |
 | `[dns] listen`、新增或移除 `[dns]` | 拒絕（`dns listen settings require restart`）。 |
 | `[metrics] listen`、新增或移除 `[metrics]` | 拒絕（`metrics listen settings require restart`）。 |
+| `[peers] members`、`[peers] secret_file` | 套用；新加入的成員從不存活開始。 |
+| `[peers] listen`、新增或移除 `[peers]` | 拒絕（`peers listen settings require restart`）。 |
