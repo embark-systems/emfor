@@ -14,6 +14,9 @@ use hickory_proto::rr::{Name, RData, RecordType};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
+mod common;
+use common::{Locked, free_port, sockets};
+
 struct Daemon {
     child: Child,
     dir: tempfile::TempDir,
@@ -66,17 +69,6 @@ fn header(dir: &std::path::Path) -> String {
     )
 }
 
-/// A loopback port free for both UDP and TCP.
-fn free_port() -> u16 {
-    loop {
-        let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
-        let port = udp.local_addr().unwrap().port();
-        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return port;
-        }
-    }
-}
-
 fn dns_table(port: u16) -> String {
     format!("[dns]\nlisten = [\"127.0.0.1:{port}\"]\n\n")
 }
@@ -100,7 +92,7 @@ fn spawn(body: &str) -> Daemon {
         .env_remove("RUST_LOG")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut pipe = child.stderr.take().unwrap();
     let log = Arc::new(Mutex::new(String::new()));
@@ -145,7 +137,7 @@ fn rand_id() -> u16 {
 }
 
 fn udp(port: u16, packet: &[u8]) -> Option<Message> {
-    let s = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let s = sockets(|| UdpSocket::bind("127.0.0.1:0")).unwrap();
     s.set_read_timeout(Some(Duration::from_millis(500)))
         .unwrap();
     s.send_to(packet, ("127.0.0.1", port)).ok()?;
@@ -180,7 +172,7 @@ fn a_record(m: &Message) -> Option<(String, u32)> {
 }
 
 fn backend_listener() -> (TcpListener, String) {
-    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let l = sockets(|| TcpListener::bind("127.0.0.1:0")).unwrap();
     let a = l.local_addr().unwrap().to_string();
     (l, a)
 }
@@ -253,7 +245,7 @@ fn no_dns_table_opens_no_dns_socket() {
 
 #[test]
 fn address_in_use_exits_one() {
-    let taken = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let taken = sockets(|| UdpSocket::bind("127.0.0.1:0")).unwrap();
     let port = taken.local_addr().unwrap().port();
     let mut d = spawn(&format!(
         "{}{}",
@@ -336,7 +328,7 @@ fn reload_rejects_listen_change_and_applies_balance_and_ttl() {
     // new port for the rest of the test: tests run in parallel and also
     // serve api.svc.emfor, so another daemon could otherwise bind it and
     // answer there. Holding it, our own silent socket gets the question.
-    let held = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let held = sockets(|| UdpSocket::bind("127.0.0.1:0")).unwrap();
     let other = held.local_addr().unwrap().port();
     d.write_config(&format!(
         "{}{}",
@@ -408,7 +400,7 @@ fn reload_adding_dns_table_requires_restart() {
     // Held for the whole test, as in
     // reload_rejects_listen_change_and_applies_balance_and_ttl: another
     // test's daemon must not answer on it.
-    let held = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let held = sockets(|| UdpSocket::bind("127.0.0.1:0")).unwrap();
     let port = held.local_addr().unwrap().port();
     d.write_config(&format!(
         "{}{}",

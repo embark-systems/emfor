@@ -16,6 +16,9 @@ use emfor_daemon::peers::{Kind, Message, encode};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
+mod common;
+use common::{Locked, free_tcp, free_udp, sockets};
+
 struct Daemon {
     child: Child,
     dir: tempfile::TempDir,
@@ -37,7 +40,15 @@ impl Daemon {
         self.log.lock().expect("log lock").clone()
     }
     fn wait_log(&self, text: &str) {
-        wait_for(text, Duration::from_secs(10), || self.log().contains(text));
+        let limit = Duration::from_secs(10);
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            if self.log().contains(text) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("{text}: not within {limit:?}; log:\n{}", self.log());
     }
     fn wait(&mut self) -> (i32, String) {
         let status = self.child.wait().expect("the daemon can be waited for");
@@ -47,7 +58,8 @@ impl Daemon {
         (status.code().unwrap_or(-1), self.log())
     }
     fn scrape(&self) -> String {
-        let mut s = TcpStream::connect(self.metrics).expect("the metrics endpoint answers");
+        let mut s =
+            sockets(|| TcpStream::connect(self.metrics)).expect("the metrics endpoint answers");
         s.set_read_timeout(Some(Duration::from_secs(10)))
             .expect("a read timeout can be set");
         s.write_all(b"GET /metrics HTTP/1.1\r\nHost: test\r\n\r\n")
@@ -77,18 +89,6 @@ fn wait_for(what: &str, limit: Duration, mut cond: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(20));
     }
     panic!("{what}: not within {limit:?}");
-}
-
-fn free_tcp() -> SocketAddr {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .expect("a loopback TCP port is free")
-}
-
-fn free_udp() -> SocketAddr {
-    UdpSocket::bind("127.0.0.1:0")
-        .and_then(|s| s.local_addr())
-        .expect("a loopback UDP port is free")
 }
 
 /// The secret every test member uses, as written to its file.
@@ -143,7 +143,7 @@ fn spawn_env(
         .envs(env.iter().copied())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .expect("the emfor binary starts");
     let mut pipe = child.stderr.take().expect("stderr is piped");
     let log = Arc::new(Mutex::new(String::new()));
@@ -207,7 +207,7 @@ fn pair(backend: SocketAddr, b_extra: &str) -> (Daemon, Daemon, SocketAddr, Sock
 /// minute on its own, follows A within 2 seconds.
 #[test]
 fn peer_sees_the_failure_first() {
-    let held = TcpListener::bind("127.0.0.1:0").expect("the backend can listen");
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
     let backend = held.local_addr().expect("the backend has an address");
     let (da, db, a, _b) = pair(backend, "");
     drop(held);
@@ -243,7 +243,7 @@ fn peer_sees_the_failure_first() {
 /// it ignores A's report and keeps its own schedule.
 #[test]
 fn digest_differs() {
-    let held = TcpListener::bind("127.0.0.1:0").expect("the backend can listen");
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
     let backend = held.local_addr().expect("the backend has an address");
     let (a, b) = (free_udp(), free_udp());
     let da = spawn(|dir, m| {
@@ -290,7 +290,7 @@ fn digest_differs() {
 /// Spec peer-group "Member stops" and "Member added on reload".
 #[test]
 fn member_stops_and_member_added_on_reload() {
-    let held = TcpListener::bind("127.0.0.1:0").expect("the backend can listen");
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
     let backend = held.local_addr().expect("the backend has an address");
     let (da, mut db, a, b) = pair(backend, "");
     db.signal(Signal::SIGTERM);
@@ -302,7 +302,7 @@ fn member_stops_and_member_added_on_reload() {
     assert!(stopped.elapsed() <= Duration::from_secs(4) + Duration::from_millis(500));
     da.wait_log(&format!("peer {b} is not live"));
 
-    let c = UdpSocket::bind("127.0.0.1:0").expect("C can bind");
+    let c = sockets(|| UdpSocket::bind("127.0.0.1:0")).expect("C can bind");
     c.set_read_timeout(Some(Duration::from_secs(3)))
         .expect("a read timeout can be set");
     let c_addr = c.local_addr().expect("C has an address");
@@ -351,7 +351,7 @@ fn reload_rejects_peers_listen_change() {
     );
     // Still receiving on the old address: a signed heartbeat from B makes B
     // live there.
-    let sb = UdpSocket::bind(b).expect("B's address is free");
+    let sb = sockets(|| UdpSocket::bind(b)).expect("B's address is free");
     let heartbeat = encode(
         &Message {
             from: b,
@@ -375,7 +375,7 @@ fn reload_rejects_peers_listen_change() {
 /// Binding `[peers] listen` at start fails: exit 1 before starting.
 #[test]
 fn occupied_peer_port_exits_1() {
-    let held = UdpSocket::bind("127.0.0.1:0").expect("a UDP port can be held");
+    let held = sockets(|| UdpSocket::bind("127.0.0.1:0")).expect("a UDP port can be held");
     let a = held.local_addr().expect("the held port has an address");
     let b = free_udp();
     let mut d = spawn(|dir, m| config(dir, m, a, &[a, b], free_tcp(), ""));
@@ -416,7 +416,7 @@ fn status(d: &Daemon) -> (String, serde_json::Value) {
         if json {
             c.arg("--json");
         }
-        let out = c.output().expect("emfor status runs");
+        let out = c.output_locked().expect("emfor status runs");
         String::from_utf8(out.stdout).expect("status prints UTF-8")
     };
     let json = serde_json::from_str(&run(true)).expect("status --json prints JSON");
@@ -763,9 +763,10 @@ fn service_left_out_on_one_member() {
 /// live.
 #[test]
 fn services_another_member_leaves_out() {
-    let held = TcpListener::bind("127.0.0.1:0").expect("the backend can listen");
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
     let backend = held.local_addr().expect("the backend has an address");
-    let other_socket = UdpSocket::bind("127.0.0.1:0").expect("the other member's address is free");
+    let other_socket =
+        sockets(|| UdpSocket::bind("127.0.0.1:0")).expect("the other member's address is free");
     let other = other_socket
         .local_addr()
         .expect("the other member has an address");
@@ -837,7 +838,7 @@ fn services_another_member_leaves_out() {
 /// start, and after a reload turns one service back on.
 #[test]
 fn services_off_follow_reloads() {
-    let held = TcpListener::bind("127.0.0.1:0").expect("the backend can listen");
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
     let backend = held.local_addr().expect("the backend has an address");
     let (a, other) = (free_udp(), free_udp());
     let cfg = move |dir: &Path, metrics: SocketAddr, web: bool| {
@@ -917,9 +918,10 @@ fn next_heartbeat_off(socket: &UdpSocket) -> serde_json::Value {
 /// them all back in the group.
 #[test]
 fn heartbeat_announces_services_left_out() {
-    let held = TcpListener::bind("127.0.0.1:0").expect("the backend can listen");
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
     let backend = held.local_addr().expect("the backend has an address");
-    let other = UdpSocket::bind("127.0.0.1:0").expect("the other member's address is free");
+    let other =
+        sockets(|| UdpSocket::bind("127.0.0.1:0")).expect("the other member's address is free");
     other
         .set_read_timeout(Some(Duration::from_secs(3)))
         .expect("a read timeout can be set");
@@ -952,7 +954,7 @@ fn heartbeat_announces_services_left_out() {
 /// changes nothing.
 #[test]
 fn more_services_left_out_than_fit() {
-    let held = TcpListener::bind("127.0.0.1:0").expect("the backend can listen");
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
     let backend = held.local_addr().expect("the backend has an address");
     let (a, other) = (free_udp(), free_udp());
     let extra: String = (1..=80)

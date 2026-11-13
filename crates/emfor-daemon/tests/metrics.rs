@@ -13,6 +13,9 @@ use assert_cmd::cargo::cargo_bin;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
+mod common;
+use common::{Locked, free_tcp, sockets};
+
 struct Daemon {
     child: Child,
     dir: tempfile::TempDir,
@@ -66,14 +69,6 @@ fn header(dir: &std::path::Path) -> String {
     )
 }
 
-/// A loopback TCP address that was free a moment ago.
-fn free_addr() -> SocketAddr {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-}
-
 fn metrics_table(addr: SocketAddr) -> String {
     format!("[metrics]\nlisten = [\"{addr}\"]\n\n")
 }
@@ -97,7 +92,7 @@ fn spawn(body: &str) -> Daemon {
         .env_remove("RUST_LOG")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut pipe = child.stderr.take().unwrap();
     let log = Arc::new(Mutex::new(String::new()));
@@ -131,7 +126,7 @@ fn wait_for(mut cond: impl FnMut() -> bool) {
 
 /// `GET /metrics`; the whole response, head and body.
 fn scrape(addr: SocketAddr) -> String {
-    let mut s = TcpStream::connect(addr).unwrap();
+    let mut s = sockets(|| TcpStream::connect(addr)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     s.write_all(b"GET /metrics HTTP/1.1\r\nHost: test\r\n\r\n")
         .unwrap();
@@ -158,7 +153,7 @@ fn wait_line(addr: SocketAddr, line: &str) -> String {
 /// metrics table".
 #[test]
 fn no_metrics_table_no_server() {
-    let backend = TcpListener::bind("127.0.0.1:0").unwrap();
+    let backend = sockets(|| TcpListener::bind("127.0.0.1:0")).unwrap();
     let addr = backend.local_addr().unwrap();
     let d = spawn(&service("api.svc.emfor", &[addr.to_string()]));
     d.wait_log("emfor started");
@@ -171,9 +166,9 @@ fn no_metrics_table_no_server() {
 /// `emfor started`.
 #[test]
 fn serves_metrics() {
-    let backend = TcpListener::bind("127.0.0.1:0").unwrap();
+    let backend = sockets(|| TcpListener::bind("127.0.0.1:0")).unwrap();
     let up = backend.local_addr().unwrap().to_string();
-    let addr = free_addr();
+    let addr = free_tcp();
     let d = spawn(&format!(
         "{}{}",
         metrics_table(addr),
@@ -211,7 +206,7 @@ fn serves_metrics() {
 /// a plugin's up state and restarts.
 #[test]
 fn store_and_plugin_metrics() {
-    let addr = free_addr();
+    let addr = free_tcp();
     let plugin = env!("CARGO_BIN_EXE_emfor-test-plugin");
     let d = spawn(&format!(
         "{}[plugins.\"p\"]\ncommand = [\"{plugin}\"]\n\n[services.\"x.svc.emfor\"]\ncheck = \"p\"\nbackends = [\"10.0.2.1:6379\"]\ninterval = \"5s\"\ntimeout = \"1s\"\njitter = \"0%\"\n[services.\"x.svc.emfor\".check_options]\nmode = \"crash\"\n\n",
@@ -255,7 +250,7 @@ fn store_and_plugin_metrics() {
 /// Spec scenario "Address in use".
 #[test]
 fn address_in_use_exits_1() {
-    let held = TcpListener::bind("127.0.0.1:0").unwrap();
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).unwrap();
     let addr = held.local_addr().unwrap();
     let mut d = spawn(&metrics_table(addr));
     let (code, log) = d.wait();
@@ -268,10 +263,10 @@ fn address_in_use_exits_1() {
 /// the reload and the old address keeps answering.
 #[test]
 fn reload_rejects_listen_change() {
-    let addr = free_addr();
+    let addr = free_tcp();
     let d = spawn(&metrics_table(addr));
     d.wait_log("emfor started");
-    let other = free_addr();
+    let other = free_tcp();
     d.write_config(&metrics_table(other));
     d.signal(Signal::SIGHUP);
     d.wait_log("reload rejected");
@@ -290,10 +285,10 @@ fn reload_rejects_listen_change() {
 /// meanwhile.
 #[test]
 fn slow_client_closed() {
-    let addr = free_addr();
+    let addr = free_tcp();
     let d = spawn(&metrics_table(addr));
     d.wait_log("emfor started");
-    let mut idle = TcpStream::connect(addr).unwrap();
+    let mut idle = sockets(|| TcpStream::connect(addr)).unwrap();
     idle.set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     let start = Instant::now();
@@ -317,10 +312,10 @@ fn slow_client_closed() {
 #[test]
 fn unhealthy_backend_and_removed_service() {
     // Bound and dropped: connections are refused.
-    let refused = free_addr().to_string();
-    let backend = TcpListener::bind("127.0.0.1:0").unwrap();
+    let refused = free_tcp().to_string();
+    let backend = sockets(|| TcpListener::bind("127.0.0.1:0")).unwrap();
     let up = backend.local_addr().unwrap().to_string();
-    let addr = free_addr();
+    let addr = free_tcp();
     let keep = service("api.svc.emfor", std::slice::from_ref(&up));
     let d = spawn(&format!(
         "{}{keep}{}",
@@ -357,8 +352,8 @@ fn unhealthy_backend_and_removed_service() {
 /// in docs/deploy/daemon.md, section "Metrics served".
 #[test]
 fn series_for_ten_backends() {
-    let backends: Vec<String> = (0..10).map(|_| free_addr().to_string()).collect();
-    let addr = free_addr();
+    let backends: Vec<String> = (0..10).map(|_| free_tcp().to_string()).collect();
+    let addr = free_tcp();
     let d = spawn(&format!(
         "{}{}",
         metrics_table(addr),

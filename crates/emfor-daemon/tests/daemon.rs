@@ -14,6 +14,9 @@ use heed::{Database, Env, EnvFlags, EnvOpenOptions, WithoutTls};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
+mod common;
+use common::{Locked, free_port, sockets};
+
 /// Read-only view of a store, opened the way a client would.
 struct Reader {
     env: Env<WithoutTls>,
@@ -140,7 +143,7 @@ fn start_with_env(dir: tempfile::TempDir, services: &str, env: &[(&str, &Path)])
         .env_remove("RUST_LOG")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let log = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let mut stderr = child.stderr.take().unwrap();
@@ -205,17 +208,6 @@ fn daemon_exits_70_when_the_writer_panics() {
     assert!(log.contains("state writer panicked; exiting"), "{log}");
 }
 
-/// A port that is free for UDP and TCP on 127.0.0.1 at the time of the call.
-fn free_port() -> u16 {
-    loop {
-        let u = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-        let p = u.local_addr().unwrap().port();
-        if TcpListener::bind(("127.0.0.1", p)).is_ok() {
-            return p;
-        }
-    }
-}
-
 /// Start with a `[dns]` table on a free port. Tests run in parallel, so
 /// another test can take the port between `free_port` and the daemon's bind;
 /// then try again with a new port.
@@ -235,7 +227,7 @@ fn start_dns(services: &str) -> (Daemon, String) {
 }
 
 fn listener() -> (TcpListener, String) {
-    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let l = sockets(|| TcpListener::bind("127.0.0.1:0")).unwrap();
     let a = l.local_addr().unwrap().to_string();
     (l, a)
 }
@@ -408,7 +400,7 @@ fn second_daemon_on_same_store_exits_one() {
         .arg("--config")
         .arg(d.config())
         .env_remove("RUST_LOG")
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
@@ -432,7 +424,7 @@ fn check_config_valid_and_invalid() {
     let out = Command::new(cargo_bin("emfor"))
         .args(["check-config", "--config"])
         .arg(&cfg)
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(
@@ -444,7 +436,7 @@ fn check_config_valid_and_invalid() {
     let out = Command::new(cargo_bin("emfor"))
         .args(["check-config", "--config"])
         .arg(&cfg)
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("services.\"api.svc.emfor\".intervall"));
@@ -468,7 +460,7 @@ fn invalid_config_at_startup_exits_two_without_store() {
         .arg("--config")
         .arg(&cfg)
         .env_remove("RUST_LOG")
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("rise must be at least 1"));
@@ -497,7 +489,7 @@ fn example_config_is_valid() {
     let out = Command::new(cargo_bin("emfor"))
         .args(["check-config", "--config"])
         .arg(&example)
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(
         out.status.code(),
@@ -583,7 +575,7 @@ fn backend_goes_unhealthy_and_recovers() {
             .contains("refused")
     );
 
-    let _l2 = TcpListener::bind(&addr).unwrap();
+    let _l2 = sockets(|| TcpListener::bind(&addr)).unwrap();
     wait_for(|| state() == Some(HealthState::Healthy));
     assert_eq!(r.service("api.svc.emfor").unwrap().backends[0].reason, None);
     wait_for(|| latency().is_some());
@@ -636,7 +628,7 @@ fn startup_reports_backends_on_different_ports() {
         Name::from_ascii("api.svc.emfor.").unwrap(),
         RecordType::A,
     ));
-    let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let sock = sockets(|| std::net::UdpSocket::bind("127.0.0.1:0")).unwrap();
     sock.set_read_timeout(Some(Duration::from_millis(500)))
         .unwrap();
     let mut answered = false;
@@ -861,7 +853,7 @@ fn fastest_pool_excludes_slow_backend() {
 fn help_shows_the_built_in_config_path() {
     let out = Command::new(cargo_bin("emfor"))
         .arg("--help")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(out.status.success());
     let help = String::from_utf8_lossy(&out.stdout);
@@ -882,7 +874,7 @@ fn emfor(args: &[&str]) -> (i32, String, String) {
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     while child.try_wait().unwrap().is_none() {
@@ -991,7 +983,7 @@ fn status(cfg: &Path, args: &[&str]) -> (i32, String, String) {
         .arg(cfg)
         .args(args)
         .env_remove("NO_COLOR")
-        .output()
+        .output_locked()
         .unwrap();
     (
         out.status.code().unwrap_or(-1),
@@ -1173,16 +1165,24 @@ fn watch_on_a_pty(cfg: &Path, stop: &WatchStop) -> (Option<i32>, Vec<u8>, libc::
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::sync::{Arc, Mutex};
     let (mut master, mut slave) = (0, 0);
-    // SAFETY: openpty fills two new descriptors, owned below.
-    let rc = unsafe {
-        libc::openpty(
+    // openpty's descriptors are not close-on-exec: mark them before another
+    // test starts a process that would inherit them.
+    // SAFETY: openpty fills two new descriptors, owned below; fcntl only
+    // changes their flags.
+    let rc = sockets(|| unsafe {
+        let rc = libc::openpty(
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-        )
-    };
+        );
+        if rc == 0 {
+            libc::fcntl(master, libc::F_SETFD, libc::FD_CLOEXEC);
+            libc::fcntl(slave, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+        rc
+    });
     assert_eq!(rc, 0);
     let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
     let mut child = Command::new(cargo_bin("emfor"))
@@ -1193,7 +1193,7 @@ fn watch_on_a_pty(cfg: &Path, stop: &WatchStop) -> (Option<i32>, Vec<u8>, libc::
         .stdin(Stdio::from(slave.try_clone().unwrap()))
         .stdout(Stdio::from(slave.try_clone().unwrap()))
         .stderr(Stdio::null())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut input = std::fs::File::from(master.try_clone().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
