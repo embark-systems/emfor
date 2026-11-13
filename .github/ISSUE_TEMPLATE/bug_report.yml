@@ -1,0 +1,69 @@
+name: Bug report
+description: emfor does something other than what its documentation says.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems: do not open an issue. Report them privately as described in SECURITY.md.
+        Remove passwords, and replace host names and addresses you do not want to publish, in everything you paste.
+  - type: input
+    id: version
+    attributes:
+      label: emfor version
+      description: Output of `emfor --version`. If a client is involved, its version too.
+      placeholder: emfor 0.2.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Debian 13 (x86_64), FreeBSD 14.3, ...
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      multiple: true
+      options:
+        - Daemon (checks, store, reload)
+        - emfor-check (redis, MySQL, PostgreSQL, LDAP)
+        - Rust client or libemfor
+        - Go client
+        - Python client
+        - Perl client
+        - PHP client
+        - DNS server
+        - emfor status
+        - Metrics
+        - Plugin protocol
+        - systemd unit, rc.d script or FreeBSD port
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: Include exact error messages.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest config and commands that show the problem.
+      render: toml
+  - type: textarea
+    id: status
+    attributes:
+      label: Output of `emfor status`
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Daemon log
+      description: The lines around the problem (`journalctl -u emfor`, or syslog on FreeBSD).
+      render: text

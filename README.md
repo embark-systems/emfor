@@ -110,6 +110,7 @@ The C library, and every client built on it, must come from the same emfor relea
 | Writing a checker plugin | [docs/plugins/protocol-v1.md](docs/plugins/protocol-v1.md) |
 | Every config option | [examples/emfor.toml](examples/emfor.toml) |
 | systemd unit, FreeBSD rc.d script and port, Prometheus alerting rules | [examples/](examples/) |
+| What stays compatible across upgrades | [docs/compatibility.md](docs/compatibility.md) |
 | Making a release | [RELEASING.md](RELEASING.md) |
 | Requirements (specs) | [docs/spectra/specs/](docs/spectra/specs/) |
 
@@ -140,6 +141,8 @@ make -C clients test
 ```
 
 Changes are planned as specs and change proposals with [Spectra](docs/spectra/): requirements live in `docs/spectra/specs/`, finished changes in `docs/spectra/changes/archive/`.
+
+To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md) (commits are signed off under the DCO) and the [code of conduct](CODE_OF_CONDUCT.md). Report security problems privately as described in [SECURITY.md](SECURITY.md).
 
 ## License
 

@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest a change in what emfor does.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what stops you today? Describe your setup (how many hosts and services, which checks, which clients).
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like emfor to do
+      description: An example config or command helps.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do instead today

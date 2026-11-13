@@ -112,6 +112,7 @@ C 函式庫以及所有建立在它之上的 client，必須和 daemon 來自同
 | 撰寫檢查外掛 | [docs/plugins/protocol-v1.md](docs/plugins/protocol-v1.md) |
 | 所有設定選項 | [examples/emfor.toml](examples/emfor.toml) |
 | systemd 單元檔、FreeBSD rc.d 腳本與 port、Prometheus 告警規則 | [examples/](examples/) |
+| 升級時哪些介面保持相容 | [docs/compatibility.md](docs/compatibility.md)（英文） |
 | 發布新版本 | [RELEASING.md](RELEASING.md) |
 | 需求規格（spec） | [docs/spectra/specs/](docs/spectra/specs/) |
 
@@ -142,6 +143,8 @@ make -C clients test
 ```
 
 變更以 [Spectra](docs/spectra/) 的規格與變更提案規劃：需求在 `docs/spectra/specs/`，完成的變更在 `docs/spectra/changes/archive/`。
+
+想參與貢獻，請先閱讀 [CONTRIBUTING.md](CONTRIBUTING.md)（commit 須依 DCO 加上 sign-off）與[行為準則](CODE_OF_CONDUCT.md)（皆為英文）。安全性問題請依 [SECURITY.md](SECURITY.md) 私下回報。
 
 ## 授權
 
