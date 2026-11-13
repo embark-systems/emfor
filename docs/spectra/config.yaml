@@ -81,7 +81,7 @@ context: |
     當掉時重啟，退避 1 秒起倍增、上限 30 秒，期間檢查回 error。
     載入、重載、--check-config 都實際啟動外掛並請它驗證 check_options；無法啟動、握手失敗、驗證逾時（5 秒）
     皆為設定錯誤。外掛超過 timeout_ms 未回覆算 error（外掛應自行在期限內回 down），不算後端失敗。
-  - 內附外掛（emfor-check-plugins）：emfor-check 一個執行檔，第一個參數選 redis / mysql / pgsql / ldap；
+  - 內附外掛（emfor-check-plugins）：emfor-check 一個執行檔，第一個參數選 redis / mysql / pgsql / ldap / dns；
     crates/emfor-plugin 處理 protocol 1（emfor-check 與其他 Rust 外掛共用）。每次檢查開新連線；
     redis PING（有密碼先 AUTH）、mysql 與 pgsql 登入後 SELECT 1；role：redis master/replica（ROLE）、
     mysql primary（@@global.read_only = 0）、pgsql primary（pg_is_in_recovery() 為 false），可搭配 failover。
@@ -97,6 +97,12 @@ context: |
     StartTLS ExtendedRequest 再以 emfor-tls 握手，TLS 相關鍵需要 tls 或 starttls。原因：auth: <code> <name>[: 診斷]、
     tls: StartTLS refused: <code> <name>、格式錯誤或 Notice of Disconnection 為 query:。實機測試用 OpenLDAP slapd
     （389 StartTLS、636 LDAPS、3389 無 TLS）。
+  - dns 外掛（emfor-check-dns）：emfor-check dns 送一個 DNS 查詢（hickory-proto，與 daemon 同版本），規格在
+    network-checks（資料庫外掛仍在 database-checks）。選項 name、type（A/AAAA/CNAME/MX/NS/PTR/SOA/SRV/TXT）、
+    transport（udp/tcp）、recursion_desired、expect_rcode（預設 NOERROR）、expect_answer；不做 DoT/DoH、DNSSEC。
+    UDP 交換在 net.rs 共用（connected socket、timeout 一半時重送一次、只收相符的回應），後續網路外掛沿用。
+    原因：rcode: <名稱>、answer: no <TYPE> records[ (truncated; set transport = "tcp")]、query:、connect:、timeout。
+    實機測試用 unbound local-zone（5353，UDP 與 TCP）。
   - client（emfor-clients）：emfor_lookup(名稱, affinity_key?) 回傳 "ip:port"（LMDB 後端 id，IPv6 為 [ip]:port）；
     錯誤碼 UNAVAILABLE（LMDB 打不開／lock 格式不符）、INCOMPATIBLE（版本或 JSON 無法解析）、NOT_FOUND、ALL_DOWN，
     各語言依慣例回報。心跳過期（預設 max_staleness 3 秒）或歸零時所有後端視為未知，依 on_all_down 處理，
@@ -151,7 +157,9 @@ context: |
   → emfor-dns-srv → emfor-dns-port-warning → emfor-balance-fastest（fastest、latency_us、pool）
   → emfor-check-plugins（emfor-check 的 redis、mysql、pgsql 外掛與 emfor-plugin crate）
   → emfor-tcp-expect（tcp 檢查的 send / expect）→ emfor-tcp-tls（tcp 檢查的 TLS 與 emfor-tls crate）
-  → emfor-check-ldap（emfor-check 的 ldap 外掛）→ emfor-status（emfor status 與 EMFOR_PREFIX）。
+  → emfor-check-ldap（emfor-check 的 ldap 外掛）→ emfor-status（emfor status 與 EMFOR_PREFIX）
+  → emfor-check-dns（dns 外掛與 network-checks 規格）→ emfor-check-radius → emfor-check-sip → emfor-check-diameter
+  （後三者修改 network-checks，必須依此順序實作與封存）。
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.

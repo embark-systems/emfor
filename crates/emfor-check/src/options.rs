@@ -1,4 +1,5 @@
-//! `check_options` shared by the redis, mysql, pgsql and ldap plugins.
+//! `check_options` shared by the redis, mysql, pgsql and ldap plugins, and
+//! small option helpers the network plugins use too.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -94,7 +95,8 @@ fn parse_with(
         None
     };
     let required: &[(&str, &Option<String>)] = match kind {
-        Kind::Redis | Kind::Ldap => &[],
+        // dns has its own options (crate::dns) and never gets here.
+        Kind::Redis | Kind::Ldap | Kind::Dns => &[],
         Kind::Mysql => &[("user", &user)],
         Kind::Pgsql => &[("user", &user), ("database", &database)],
     };
@@ -147,7 +149,8 @@ fn parse_with(
                 let message = match kind {
                     Kind::Redis => "must be one of master, replica",
                     Kind::Mysql | Kind::Pgsql => "must be primary",
-                    Kind::Ldap => unreachable!("ldap role is skipped above"),
+                    // ldap is skipped above; dns never gets here.
+                    Kind::Ldap | Kind::Dns => "unknown key",
                 };
                 errors.push(OptionError::new("role", message));
             }
@@ -225,7 +228,12 @@ fn non_empty_string(options: &Options, key: &str, errors: &mut Vec<OptionError>)
     }
 }
 
-fn boolean(options: &Options, key: &str, default: bool, errors: &mut Vec<OptionError>) -> bool {
+pub(crate) fn boolean(
+    options: &Options,
+    key: &str,
+    default: bool,
+    errors: &mut Vec<OptionError>,
+) -> bool {
     match options.get(key) {
         None => default,
         Some(Value::Bool(b)) => *b,

@@ -1,7 +1,8 @@
-//! The plugins behind the `emfor-check` executable: redis, mysql, pgsql
-//! and ldap.
+//! The plugins behind the `emfor-check` executable: the database plugins
+//! redis, mysql, pgsql and ldap, and the network plugin dns.
 
 mod ber;
+mod dns;
 mod ldap;
 mod mysql;
 pub mod net;
@@ -19,6 +20,7 @@ pub enum Kind {
     Mysql,
     Pgsql,
     Ldap,
+    Dns,
 }
 
 impl Kind {
@@ -29,6 +31,7 @@ impl Kind {
             "mysql" => Some(Kind::Mysql),
             "pgsql" => Some(Kind::Pgsql),
             "ldap" => Some(Kind::Ldap),
+            "dns" => Some(Kind::Dns),
             _ => None,
         }
     }
@@ -40,6 +43,7 @@ impl Kind {
             Kind::Mysql => "mysql",
             Kind::Pgsql => "pgsql",
             Kind::Ldap => "ldap",
+            Kind::Dns => "dns",
         }
     }
 }
@@ -65,28 +69,51 @@ impl Plugin for Service {
     }
 
     fn validate(&self, options: &Options) -> Vec<OptionError> {
-        options::parse(self.kind, options).err().unwrap_or_default()
+        // The network plugins validate their own options; the database
+        // plugins share `options`.
+        let result = match self.kind {
+            Kind::Dns => dns::parse(options).map(|_| ()),
+            kind => options::parse(kind, options).map(|_| ()),
+        };
+        result.err().unwrap_or_default()
     }
 
     async fn check(&self, req: CheckRequest) -> CheckOutcome {
         // The daemon only sends options that passed `validate`. Files are
         // not read here: each check reads them and reports a missing one as
         // `password_file: ...` or `ca_file: ...`.
+        if self.kind == Kind::Dns {
+            return match dns::parse(&req.options) {
+                Ok(settings) => dns::check(&req, &settings).await,
+                Err(errors) => options_error(errors),
+            };
+        }
         let settings = match options::settings(self.kind, &req.options) {
             Ok(s) => s,
-            Err(errors) => {
-                let list: Vec<String> = errors
-                    .iter()
-                    .map(|e| format!("{}: {}", e.key, e.message))
-                    .collect();
-                return CheckOutcome::Error(format!("check_options: {}", list.join("; ")));
-            }
+            Err(errors) => return options_error(errors),
         };
         match self.kind {
             Kind::Redis => redis::check(&req, &settings).await,
             Kind::Mysql => mysql::check(&req, &settings).await,
             Kind::Pgsql => pgsql::check(&req, &settings).await,
             Kind::Ldap => ldap::check(&req, &settings).await,
+            // Handled above.
+            Kind::Dns => dns_is_not_a_database(),
         }
     }
+}
+
+/// The `error` for options that no longer pass validation at check time.
+fn options_error(errors: Vec<OptionError>) -> CheckOutcome {
+    let list: Vec<String> = errors
+        .iter()
+        .map(|e| format!("{}: {}", e.key, e.message))
+        .collect();
+    CheckOutcome::Error(format!("check_options: {}", list.join("; ")))
+}
+
+/// `Kind::Dns` never reaches the database branch of [`Service::check`];
+/// answering `error` keeps a mistake there visible without a panic.
+fn dns_is_not_a_database() -> CheckOutcome {
+    CheckOutcome::Error("internal: dns check sent to the database plugins".into())
 }

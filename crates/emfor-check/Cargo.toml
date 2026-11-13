@@ -1,6 +1,6 @@
 [package]
 name = "emfor-check"
-description = "emfor checker plugins for redis, MySQL, PostgreSQL and LDAP"
+description = "emfor checker plugins for redis, MySQL, PostgreSQL, LDAP and DNS"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 emfor-plugin = { path = "../emfor-plugin" }
 emfor-tls = { path = "../emfor-tls" }
+hickory-proto = "0.26.3"
 libc = "0.2.191"
 mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust", "rustls-tls"] }
 rustls = "0.23.46"

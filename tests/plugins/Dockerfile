@@ -1,5 +1,5 @@
 # Builds emfor, emfor-check and its live tests, and a Debian image with
-# redis, MariaDB, PostgreSQL and OpenLDAP, for run.sh.
+# redis, MariaDB, PostgreSQL, OpenLDAP and unbound, for run.sh.
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
@@ -18,7 +18,7 @@ RUN cargo test --locked -p emfor-check --test live --no-run --message-format=jso
 FROM debian:bookworm-slim
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends redis-server redis-tools mariadb-server mariadb-client \
-    postgresql postgresql-client openssl dnsutils ca-certificates procps slapd ldap-utils \
+    postgresql postgresql-client openssl dnsutils ca-certificates procps slapd ldap-utils unbound \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/debug/emfor /usr/local/bin/emfor
 COPY --from=build /src/target/debug/emfor-check /src/target/debug/emfor-check

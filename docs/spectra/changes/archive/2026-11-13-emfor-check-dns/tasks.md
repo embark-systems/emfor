@@ -1,0 +1,21 @@
+## 1. 共用基礎
+
+- [x] 1.1 依「Shared UDP exchange in net.rs」實作 "UDP request and response exchange"：`net.rs` 新增 UDP 交換函式（綁定同家族未指定位址並 connect 到後端、送出後以呼叫者的比對函式篩選回應、期限一半時重送同一封包一次、每個封包最多 65535 位元組、逾時為 down `timeout`、ICMP 拒絕為 down `connect: `、本機建立 socket 失敗為 error，符合 "Network check outcome classification"）。驗證：`net.rs` 單元測試以本機假 UDP 伺服器涵蓋 spec 的 "Lost first datagram"（量測第二封約在 450 ms 送出）、"Unrelated datagrams are ignored"、"Nothing listens on the UDP port"、"No answer"（恰送兩封）並通過。
+- [x] 1.2 依「Per-plugin option parsing for network plugins」與「New network-checks capability」調整 `emfor-check` 的分流，並實作 "Plugin selection by argument" 的 dns 部分：`Kind` 加入 `Dns`（引數與握手名稱 `dns`）；`lib.rs` 的 `validate` / `check` 對資料庫外掛仍走 `options::parse` / `options::settings`（"Check options validation" 與 "Check outcome classification" 的行為與訊息不變），對 dns 改走 `dns.rs` 的選項解析；`options.rs` 的布林、非空字串、檔案檢查小工具改為 crate 內共用。驗證：既有 `options.rs` 驗證表測試全部照舊通過；`crates/emfor-check/tests/cli.rs` 新增 `emfor-check dns` 握手測試（spec "DNS plugin handshake"）並通過；`emfor-check memcached` 仍以狀態 2 結束。
+
+## 2. dns 外掛
+
+- [x] 2.1 實作 "DNS check options" [after: 1.2]：`dns.rs` 解析 `name`、`type`、`transport`、`recursion_desired`、`expect_rcode`、`expect_answer`，錯誤訊息與 design Implementation Contract 的表一致，`tls` 等其他鍵為 `unknown key`（符合「No DNS over TLS in this change」）。驗證：單元測試逐列涵蓋 spec "DNS option validation" 範例表十列與 "Minimal options" 的預設值並通過。
+- [x] 2.2 依「Use hickory-proto for DNS messages」實作 "DNS check" [after: 1.1, 2.1]：`crates/emfor-check/Cargo.toml` 以 daemon 相同版本（0.26.3）引用 `hickory-proto`，只開 daemon 已開的 feature；UDP 經 1.1 的交換函式並依 spec 比對 QR、ID、問題；TCP 走長度前綴；依 spec 的四步判斷產生原因。驗證：單元測試以本機假 UDP / TCP 伺服器涵蓋 spec "DNS outcomes" 範例表九列、"Response for another question"、"DNS over TCP"、"TCP port closed" 並通過；`cargo tree -p emfor-check -e normal` 與變更前比對，`Cargo.lock` 沒有新增套件，結果寫進完成紀錄。
+  - 完成紀錄（2026-11-13）：`dns.rs` 單元測試 14 個通過（選項 4 個、檢查 10 個：結果表九列加 SERVFAIL、AAAA up、未命名 rcode 寫數字、ID 相同的 12 位元組亂碼為 `query: `、查詢帶出選項、另一個問題的回應被忽略、名稱大小寫不同仍相符、TCP up、TCP 回應另一個查詢為 down、TCP 埠關閉為 `connect: `）。反向檢查：拿掉問題比對時 `response_for_another_question_is_ignored` 失敗，拿掉截斷提示時 `dns_outcomes` 失敗。`Cargo.lock` 唯一變動是 emfor-check 的相依列多一行 `hickory-proto`，沒有新增套件；hickory-proto 用預設 feature，與 `crates/emfor-daemon/Cargo.toml` 相同。verify / review 後修正：UDP socket bind 失敗（如主機停用 IPv6 的 `EAFNOSUPPORT`、`EMFILE`）改為 `error`（`net::bind_failure`，新增 `udp_socket_the_host_cannot_create_is_error`，改回 `io_failure` 時該測試失敗）；rcode 名稱表加入 `DSOTYPENI`（RFC 8490）；不可能發生的編碼失敗原因前綴由 `query: ` 改為 `internal: `。
+
+## 3. 實機測試
+
+- [x] 3.1 擴充 `tests/plugins/` 加入 DNS 實機測試 [after: 2.2]：先向使用者確認後重建 `emfor-plugins-test` 映像（Dockerfile 加入 unbound）；`inside.sh` 以 unbound 提供一個 local-zone（含 A 記錄、沒有 AAAA 的名稱）並同時監聽 UDP 與 TCP；`crates/emfor-check/tests/live.rs` 新增 `dns_live`，涵蓋 design Acceptance 列出的六種情況。驗證：`tests/plugins/run.sh` 全部通過，完成紀錄記下映像大小變化與結果。
+  - 完成紀錄（2026-11-13）：使用者同意後重建 `emfor-plugins-test`，Dockerfile 加入 unbound（1.17.1），映像由 1.02 GB 變為 1.06 GB。unbound 在 127.0.0.1:5353 監聽 UDP 與 TCP，local-zone `check.test` 只有 `a.check.test A 192.0.2.1`。`dns_live` 涵蓋：A 查詢加 `expect_answer` 為 up、`nope.check.test` 為 `rcode: NXDOMAIN`、接受 NXDOMAIN 時為 up、TCP 以 `A.Check.Test.` 查詢為 up、AAAA 無記錄為 `answer: no AAAA records`、5399 埠 UDP 為 `connect: ` 或 `timeout`、TCP 為 `connect: `。`tests/plugins/run.sh` 通過（5 個實機測試與 failover 流程），修正後重跑仍通過。
+
+## 4. 文件與檢查
+
+- [x] 4.1 文件 [after: 3.1]：`docs/deploy/plugins.md` 的外掛表加入 `dns`，新增 dns 一節（選項表、`expect_rcode` 與 `expect_answer` 的用法、建議檢查伺服器自己負責的名稱、截斷時改用 TCP、不支援 DoT）；`examples/emfor.toml` 加入註解掉的 `[plugins."dns"]` 與服務範例；`crates/emfor-check/Cargo.toml` 的 description 與 `lib.rs` 的模組說明加入 dns；`docs/spectra/config.yaml` 記錄 dns 外掛、`network-checks` 規格，以及 emfor-check-dns → emfor-check-radius → emfor-check-sip → emfor-check-diameter 的順序；CHANGELOG 的 Unreleased 加一筆。驗證：`crates/emfor-daemon/tests/daemon.rs` 的 `example_config_is_valid` 通過，並對照 spec 與 design 審閱內容。
+- [x] 4.2 執行本機檢查 [after: 4.1]：macOS 與 Debian 映像 `emfor-clients-test` 中 `cargo fmt --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`cargo test --workspace --all-features` 通過；Docker 中 `tests/plugins/run.sh` 通過。指令與結果記在本 task 的完成紀錄。
+  - 完成紀錄（2026-11-13）：macOS 與 Debian 映像 `emfor-clients-test` 中 `cargo fmt --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`cargo test --workspace --all-features` 皆通過（各 40 個測試套件，無失敗）；Docker 中 `tests/plugins/run.sh` 通過。verify / review 的修正之後三者全部重跑，結果相同。

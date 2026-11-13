@@ -11,7 +11,7 @@ fn exe() -> Command {
 
 #[test]
 fn each_plugin_names_itself_in_the_handshake() {
-    for name in ["redis", "mysql", "pgsql", "ldap"] {
+    for name in ["redis", "mysql", "pgsql", "ldap", "dns"] {
         let mut child = exe()
             .arg(name)
             .stdin(Stdio::piped())

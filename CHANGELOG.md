@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Plugins
+
+- `emfor-check dns` checks DNS servers: it sends one query (`name`,
+  `type`, over UDP or TCP) and is up when the response code is one of
+  `expect_rcode` (default `NOERROR`) and, with `expect_answer = true`, the
+  answer has a record of the asked type. Over UDP the query is sent again
+  once at half of the `timeout`. Reasons start with `rcode: `, `answer: `,
+  `query: `, `connect: ` or `timeout`. See docs/deploy/plugins.md.
+
 ### Deployment
 
 - The FreeBSD rc.d script failed to start emfor with any `emfor_user`

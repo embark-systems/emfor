@@ -156,7 +156,7 @@ backends = [
 # speaking line-delimited JSON on stdin/stdout. See
 # docs/plugins/protocol-v1.md. The plugin validates check_options itself.
 # emfor-check is the plugin that ships with emfor; its argument picks
-# redis, mysql, pgsql or ldap. See docs/deploy/plugins.md for every option.
+# redis, mysql, pgsql, ldap or dns. See docs/deploy/plugins.md for every option.
 # Commented out because emfor-check is not installed on a fresh host.
 #
 # [plugins."redis"]
@@ -183,3 +183,15 @@ backends = [
 # password_file = "/etc/emfor/ldap.pass"
 # starttls = true                           # or tls = true on port 636
 # server_name = "ldap.example.org"
+#
+# [plugins."dns"]
+# command = ["/usr/local/libexec/emfor-check", "dns"]
+#
+# [services."resolver.svc.emfor"]
+# check = "dns"
+# backends = ["10.0.5.1:53", "10.0.5.2:53"]
+#
+# [services."resolver.svc.emfor".check_options]
+# name = "ns-check.example.org"             # a name the server answers itself
+# type = "A"
+# expect_answer = true                      # NOERROR without records is down

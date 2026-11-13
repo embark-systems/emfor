@@ -1,4 +1,5 @@
-//! `emfor-check` against real redis, MariaDB, PostgreSQL and OpenLDAP servers.
+//! `emfor-check` against real redis, MariaDB, PostgreSQL, OpenLDAP and
+//! unbound servers.
 //!
 //! Ignored by default: these tests need the servers that
 //! tests/plugins/inside.sh starts in the `emfor-plugins-test` container
@@ -16,10 +17,11 @@
 //! | 389 | OpenLDAP, StartTLS available, `cn=monitor,dc=example,dc=org` |
 //! | 636 | the same OpenLDAP, LDAPS |
 //! | 3389 | OpenLDAP without TLS |
+//! | 5353 | unbound, UDP and TCP, local zone `check.test` with only `a.check.test A 192.0.2.1` |
 //!
 //! Server certificates are for `db.test`, signed by `$EMFOR_LIVE_DIR/ca.pem`;
 //! `$EMFOR_LIVE_DIR/good.pass` holds the password, `bad.pass` a wrong one.
-//! Nothing listens on 6399, 3399, 5499 and 3899. The LDAP administrator is
+//! Nothing listens on 6399, 3399, 5499, 3899 and 5399 (TCP and UDP). The LDAP administrator is
 //! `cn=admin,dc=example,dc=org` with password `admin-pw`.
 
 use std::io::{BufRead, BufReader, Write};
@@ -280,4 +282,57 @@ fn ldap_live() {
     down(p.check(389, o.clone()), "auth: 49 invalidCredentials");
     std::fs::write(&rotated, "rotated-pw\n").unwrap();
     up(p.check(389, o));
+}
+
+#[test]
+#[ignore = "needs the emfor-plugins-test container"]
+fn dns_live() {
+    let mut p = Plugin::start("dns");
+    let name = |n: &str, extra: Value| {
+        let mut o = json!({ "name": n });
+        for (k, v) in extra.as_object().unwrap() {
+            o[k] = v.clone();
+        }
+        o
+    };
+    up(p.check(5353, name("a.check.test", json!({ "expect_answer": true }))));
+    assert_eq!(
+        p.check(5353, name("nope.check.test", json!({}))),
+        ("down".into(), "rcode: NXDOMAIN".into())
+    );
+    up(p.check(
+        5353,
+        name(
+            "nope.check.test",
+            json!({ "expect_rcode": ["NOERROR", "NXDOMAIN"] }),
+        ),
+    ));
+    up(p.check(
+        5353,
+        name(
+            "A.Check.Test.",
+            json!({ "transport": "tcp", "expect_answer": true }),
+        ),
+    ));
+    assert_eq!(
+        p.check(
+            5353,
+            name(
+                "a.check.test",
+                json!({ "type": "AAAA", "expect_answer": true })
+            )
+        ),
+        ("down".into(), "answer: no AAAA records".into())
+    );
+    let closed = p.check(5399, name("a.check.test", json!({})));
+    assert_eq!(closed.0, "down", "reason: {}", closed.1);
+    assert!(
+        closed.1.starts_with("connect: ") || closed.1 == "timeout",
+        "reason {:?}",
+        closed.1
+    );
+    down(
+        p.check(5399, name("a.check.test", json!({ "transport": "tcp" }))),
+        "connect: ",
+    );
 }

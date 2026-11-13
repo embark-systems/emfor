@@ -1,6 +1,6 @@
-# Checking redis, MySQL, PostgreSQL and LDAP with emfor-check
+# Checking redis, MySQL, PostgreSQL, LDAP and DNS with emfor-check
 
-`emfor-check` is the plugin program that ships with emfor. One executable holds four plugins; its only argument picks which one runs:
+`emfor-check` is the plugin program that ships with emfor. One executable holds five plugins; its only argument picks which one runs:
 
 | Argument | Checks | Up when |
 | --- | --- | --- |
@@ -8,8 +8,9 @@
 | `mysql` | MySQL, MariaDB | the login succeeds and `SELECT 1` returns 1 |
 | `pgsql` | PostgreSQL | the login succeeds and `SELECT 1` returns 1 |
 | `ldap` | OpenLDAP and other LDAPv3 servers | a simple bind succeeds (resultCode 0) |
+| `dns` | DNS servers (unbound, BIND, PowerDNS, …) | the answer to one query has an expected response code, and records when asked for |
 
-Each plugin runs as one long-lived child process of the emfor daemon, shared by every service that uses it (see [the plugin protocol](../plugins/protocol-v1.md)). Each check opens a new connection to the backend and closes it before answering, so a server that refuses new connections (for example because `max_connections` is reached) is reported as down.
+Each plugin runs as one long-lived child process of the emfor daemon, shared by every service that uses it (see [the plugin protocol](../plugins/protocol-v1.md)). Each check opens a new connection to the backend (for `dns` over UDP, a new socket) and closes it before answering, so a server that refuses new connections (for example because `max_connections` is reached) is reported as down.
 
 ## Installing
 
@@ -22,7 +23,7 @@ install -m 0755 target/release/emfor-check /usr/local/libexec/emfor-check
 
 Or with `cargo install`, which puts it in `<root>/bin`: `cargo install --locked --path crates/emfor-check --root /usr/local` (see [daemon.md](daemon.md#building-with-an-install-prefix)).
 
-The database drivers (and the LDAP encoder) are linked into `emfor-check` only; the `emfor` daemon and libemfor do not contain them.
+The database drivers (and the LDAP and DNS encoders) are linked into `emfor-check` only; the `emfor` daemon and libemfor do not contain them.
 
 ## Configuring
 
@@ -50,6 +51,8 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 The plugin name in `[plugins."<name>"]` is your choice; the argument after the path decides the protocol. `emfor check-config` starts the plugins and has them validate every service's `check_options`, so mistakes are found before a reload.
 
 ### Options
+
+These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns` plugin has its own, see [DNS](#dns).
 
 | Key | Plugins | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
@@ -110,6 +113,38 @@ check_options = { user = "cn=monitor,dc=example,dc=org", password_file = "/etc/e
 - A response that is not valid LDAP, answers another message, is longer than 65536 bytes, or is a Notice of Disconnection is down with `query: `.
 - Every check is a bind, which LDAP servers usually log. Lower the server's log level for this account, or use a longer `interval`.
 
+### DNS
+
+The `dns` plugin sends one DNS query to the backend and judges the answer. It is up when the response code is one of `expect_rcode` and, with `expect_answer = true`, the answer has at least one record of the asked type.
+
+```toml
+[plugins."dns"]
+command = ["/usr/local/libexec/emfor-check", "dns"]
+
+[services."resolver.svc.emfor"]
+check = "dns"
+backends = ["10.0.5.1:53", "10.0.5.2:53"]
+check_options = { name = "ns-check.example.org", type = "A", expect_answer = true }
+```
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `name` | string | required | The name to ask for; a trailing dot is optional, `.` is the root |
+| `type` | string | `A` | `A`, `AAAA`, `CNAME`, `MX`, `NS`, `PTR`, `SOA`, `SRV` or `TXT` |
+| `transport` | string | `udp` | `udp` or `tcp` |
+| `recursion_desired` | boolean | `true` | Set the RD flag; `false` for an authoritative-only server |
+| `expect_rcode` | array of strings | `["NOERROR"]` | Response codes that count as up: `NOERROR`, `FORMERR`, `SERVFAIL`, `NXDOMAIN`, `NOTIMP`, `REFUSED` |
+| `expect_answer` | boolean | `false` | Also require a record of `type` in the answer |
+
+Any other key is an error, including `tls`: DNS over TLS and DNS over HTTPS are not supported, and neither is DNSSEC validation.
+
+- Ask for a name the server answers itself: a `local-zone` or local data on a resolver, or a name in a zone the server is authoritative for. A name the resolver has to look up elsewhere fails with `SERVFAIL` whenever the upstream servers or the network are down, which in a closed site may be the normal state. If you check a name that does not exist on purpose, set `expect_rcode = ["NOERROR", "NXDOMAIN"]`.
+- `expect_answer = true` catches a server that answers `NOERROR` with no records (a name that exists without records of this type).
+- Over UDP the plugin sends the query again once when no answer has come by half of the service `timeout`. It ignores datagrams that are not the answer to its query (another ID or question), so a late answer to an earlier check never counts.
+- When an answer is too big for UDP the server sets the TC flag and may leave out records; with `expect_answer`, the reason then ends with `(truncated; set transport = "tcp")`. Use `transport = "tcp"` for large answers such as TXT records.
+- A response code outside `expect_rcode` is down with `rcode: <name>`, for example `rcode: SERVFAIL`, `rcode: REFUSED` (the server does not serve this client or zone) or `rcode: NXDOMAIN`. Codes without a name show their number.
+- With nothing listening on a UDP port, the reason is `connect: ` when the host sends ICMP port unreachable, and `timeout` when a firewall drops the packets.
+
 ## Reading results
 
 | Reason starts with | Result | Meaning |
@@ -118,10 +153,11 @@ check_options = { user = "cn=monitor,dc=example,dc=org", password_file = "/etc/e
 | `timeout` | down | No answer within the service `timeout` |
 | `tls: ` | down | TLS handshake or certificate check failed, the port does not speak TLS, or the LDAP server refused StartTLS |
 | `auth: ` | down | Login rejected (wrong password, unknown user or database, too many connections); for `ldap`, the resultCode and its name, see [LDAP](#ldap) |
-| `query: ` | down | A query failed or answered something unexpected |
+| `query: ` | down | A query failed or answered something unexpected (for `dns`, a response that cannot be parsed or, over TCP, answers another query) |
 | `role is ` | down | The backend has another role |
+| `rcode: `, `answer: ` | down | `dns`: an unexpected response code, or no records of the asked type, see [DNS](#dns) |
 | `password_file: `, `ca_file: ` | error | The file could not be read during the check |
 
 ## What is tested
 
-`tests/plugins/run.sh` checks all four plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary and a replica, read-only server or standby, and TLS; and OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it. Like the rest of emfor, the plugins have not been tested on FreeBSD yet.
+`tests/plugins/run.sh` checks all five plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary and a replica, read-only server or standby, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; and unbound 1.17 with a local zone, over UDP and TCP. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it. Like the rest of emfor, the plugins have not been tested on FreeBSD yet.

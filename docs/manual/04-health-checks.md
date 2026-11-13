@@ -11,7 +11,7 @@ A service's `check` decides how each backend is tested, and its
 | `tcp` | A TCP connection, optionally TLS and a send/expect exchange | Any TCP service; greeting-based protocols such as SMTP |
 | `http` | One `GET` request and its status code | Web services and health endpoints |
 | `exec` | A program run once per check | Existing Nagios-style scripts, infrequent checks |
-| a plugin name | A long-running plugin program | redis, MySQL, PostgreSQL, LDAP (`emfor-check`), or your own |
+| a plugin name | A long-running plugin program | redis, MySQL, PostgreSQL, LDAP, DNS (`emfor-check`), or your own |
 
 A check that has not finished within the service's `timeout` is `down`
 with reason `timeout`. The one exception is a plugin: a plugin that does not
@@ -128,11 +128,14 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 | `mysql` | The login succeeds and `SELECT 1` returns 1 (tested with MariaDB) |
 | `pgsql` | The login succeeds and `SELECT 1` returns 1 |
 | `ldap` | A simple bind succeeds |
+| `dns` | One query gets an expected response code (and records, with `expect_answer`) |
 
 Main options: `user`, `password_file` (never the password itself; read on
 every check), `database` (`pgsql`), `role` (`master`/`replica` for redis,
 `primary` for MySQL and PostgreSQL, so that `failover` follows the primary),
 and `tls`, `starttls` (`ldap`), `tls_verify`, `server_name`, `ca_file`.
+The `dns` plugin takes `name`, `type`, `transport`, `recursion_desired`,
+`expect_rcode` and `expect_answer` instead.
 [docs/deploy/plugins.md](../deploy/plugins.md) lists every option and
 reason.
 

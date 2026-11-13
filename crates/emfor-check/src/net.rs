@@ -1,9 +1,9 @@
-//! Connections to backends: TCP, optionally wrapped in TLS. The TLS part
-//! (trust, verification, handshake timing) is `emfor-tls`, shared with the
-//! daemon's `tcp` checker.
+//! Connections to backends: TCP, optionally wrapped in TLS, and UDP
+//! request and response exchanges. The TLS part (trust, verification,
+//! handshake timing) is `emfor-tls`, shared with the daemon's `tcp` checker.
 
 use std::io;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use emfor_plugin::CheckOutcome;
@@ -11,7 +11,7 @@ use emfor_tls::{TlsFailure, TlsSettings};
 use rustls::ClientConfig;
 use rustls::pki_types::CertificateDer;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, UdpSocket};
 
 pub use emfor_tls::is_local_io_error;
 
@@ -74,6 +74,75 @@ pub async fn open(
         .await
         .map_err(tls_outcome)?;
     Ok(Box::new(stream))
+}
+
+/// The largest datagram [`udp_exchange`] reads.
+pub const MAX_DATAGRAM: usize = 65535;
+
+/// Send `request` to the backend over UDP and wait for its response.
+///
+/// The socket is connected to the backend, so only its datagrams arrive and
+/// an ICMP port unreachable comes back as a refused connection (`down`,
+/// `connect: `). Each datagram goes to `matches`, which returns `Some` for
+/// the response to this request and `None` for anything else, which is
+/// dropped. With no response by half of `timeout` the same request is sent
+/// once more; with none by `timeout` the result is `down` with reason
+/// `timeout`. A socket the host cannot create is `error`.
+pub async fn udp_exchange<T>(
+    ip: IpAddr,
+    port: u16,
+    request: &[u8],
+    timeout: Duration,
+    mut matches: impl FnMut(&[u8]) -> Option<T>,
+) -> Result<T, CheckOutcome> {
+    let start = tokio::time::Instant::now();
+    let local: SocketAddr = match ip {
+        IpAddr::V4(_) => (Ipv4Addr::UNSPECIFIED, 0).into(),
+        IpAddr::V6(_) => (Ipv6Addr::UNSPECIFIED, 0).into(),
+    };
+    let socket = UdpSocket::bind(local).await.map_err(|e| bind_failure(&e))?;
+    socket
+        .connect((ip, port))
+        .await
+        .map_err(|e| io_failure("connect: ", &e))?;
+    send_datagram(&socket, request).await?;
+
+    let resend_at = start + timeout / 2;
+    let deadline = start + timeout;
+    let mut resent = false;
+    let mut buf = vec![0u8; MAX_DATAGRAM];
+    loop {
+        let wake = if resent { deadline } else { resend_at };
+        match tokio::time::timeout_at(wake, socket.recv(&mut buf)).await {
+            Ok(Ok(n)) => {
+                if let Some(answer) = matches(&buf[..n]) {
+                    return Ok(answer);
+                }
+            }
+            Ok(Err(e)) => return Err(io_failure("connect: ", &e)),
+            Err(_) if resent => return Err(CheckOutcome::Down("timeout".into())),
+            Err(_) => {
+                resent = true;
+                send_datagram(&socket, request).await?;
+            }
+        }
+    }
+}
+
+/// A failed bind to the unspecified address and port 0 is this host's
+/// problem, never the backend's: no socket of the address family (for
+/// example IPv6 disabled), or no free descriptors.
+fn bind_failure(e: &std::io::Error) -> CheckOutcome {
+    CheckOutcome::Error(format!("connect: {e}"))
+}
+
+/// Send one datagram; a datagram socket sends all of it or fails.
+async fn send_datagram(socket: &UdpSocket, datagram: &[u8]) -> Result<(), CheckOutcome> {
+    socket
+        .send(datagram)
+        .await
+        .map(|_| ())
+        .map_err(|e| io_failure("connect: ", &e))
 }
 
 /// The rustls client configuration for one check, see
@@ -274,6 +343,138 @@ mod tests {
         assert!(
             matches!(io_failure("connect: ", &e), CheckOutcome::Down(r) if r.starts_with("tls: "))
         );
+    }
+
+    /// A UDP server on loopback: `answer` gets each datagram's number
+    /// (from 0) and returns what to send back. Returns the server address
+    /// and the arrival times of the datagrams it got.
+    async fn udp_server(
+        answer: impl Fn(usize) -> Vec<Vec<u8>> + Send + 'static,
+    ) -> (SocketAddr, std::sync::Arc<std::sync::Mutex<Vec<Instant>>>) {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        let arrivals = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = std::sync::Arc::clone(&arrivals);
+        tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            while let Ok((_, from)) = socket.recv_from(&mut buf).await {
+                let n = {
+                    let mut seen = seen.lock().unwrap();
+                    seen.push(Instant::now());
+                    seen.len() - 1
+                };
+                for reply in answer(n) {
+                    let _ = socket.send_to(&reply, from).await;
+                }
+            }
+        });
+        (addr, arrivals)
+    }
+
+    fn yes(d: &[u8]) -> Option<&'static str> {
+        (d == b"yes").then_some("matched")
+    }
+
+    #[tokio::test]
+    async fn udp_lost_first_datagram_is_sent_again_at_half_the_timeout() {
+        let (addr, arrivals) = udp_server(|n| {
+            if n == 0 {
+                vec![]
+            } else {
+                vec![b"yes".to_vec()]
+            }
+        })
+        .await;
+        let r = udp_exchange(
+            addr.ip(),
+            addr.port(),
+            b"q",
+            Duration::from_millis(900),
+            yes,
+        )
+        .await;
+        assert_eq!(r.unwrap(), "matched");
+        let arrivals = arrivals.lock().unwrap();
+        assert_eq!(arrivals.len(), 2);
+        let gap = arrivals[1] - arrivals[0];
+        assert!(
+            gap >= Duration::from_millis(400) && gap <= Duration::from_millis(600),
+            "second request {gap:?} after the first"
+        );
+    }
+
+    #[tokio::test]
+    async fn udp_unrelated_datagrams_are_ignored() {
+        let (addr, arrivals) = udp_server(|_| vec![b"nope".to_vec(), b"yes".to_vec()]).await;
+        let r = udp_exchange(
+            addr.ip(),
+            addr.port(),
+            b"q",
+            Duration::from_millis(900),
+            yes,
+        )
+        .await;
+        assert_eq!(r.unwrap(), "matched");
+        assert_eq!(arrivals.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn udp_nothing_listening_is_down_connect() {
+        // Retry with a fresh port if another test takes the freed one.
+        let mut outcome = None;
+        for _ in 0..5 {
+            let s = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let addr = s.local_addr().unwrap();
+            drop(s);
+            let r = udp_exchange(
+                addr.ip(),
+                addr.port(),
+                b"q",
+                Duration::from_millis(900),
+                yes,
+            )
+            .await;
+            if let Err(o) = r {
+                outcome = Some(o);
+                break;
+            }
+        }
+        match outcome {
+            Some(CheckOutcome::Down(r)) => assert!(r.starts_with("connect: "), "{r}"),
+            other => panic!("expected down, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn udp_socket_the_host_cannot_create_is_error() {
+        for errno in [libc::EAFNOSUPPORT, libc::EMFILE] {
+            let e = std::io::Error::from_raw_os_error(errno);
+            match bind_failure(&e) {
+                CheckOutcome::Error(r) => assert!(r.starts_with("connect: "), "{r}"),
+                other => panic!("errno {errno}: expected error, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn udp_no_answer_sends_twice_and_times_out() {
+        let (addr, arrivals) = udp_server(|_| vec![]).await;
+        let start = Instant::now();
+        let r = udp_exchange(
+            addr.ip(),
+            addr.port(),
+            b"q",
+            Duration::from_millis(900),
+            yes,
+        )
+        .await;
+        let took = start.elapsed();
+        assert!(matches!(r, Err(CheckOutcome::Down(ref r)) if r == "timeout"));
+        assert!(
+            took >= Duration::from_millis(850) && took <= Duration::from_millis(1100),
+            "took {took:?}"
+        );
+        assert_eq!(arrivals.lock().unwrap().len(), 2);
     }
 
     #[test]

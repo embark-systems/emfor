@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs inside the emfor-plugins-test container: start redis, MariaDB,
-# PostgreSQL and OpenLDAP as crates/emfor-check/tests/live.rs describes, run those tests,
+# PostgreSQL, OpenLDAP and unbound as crates/emfor-check/tests/live.rs describes, run those tests,
 # then run the emfor daemon with the pgsql plugin.
 set -eu
 
@@ -158,6 +158,33 @@ cn: monitor
 sn: monitor
 userPassword: s3cret
 LDIF
+done
+
+step "unbound"
+cat > "$D/unbound.conf" <<CONF
+server:
+    interface: 127.0.0.1@5353
+    do-ip6: no
+    access-control: 127.0.0.0/8 allow
+    chroot: ""
+    username: ""
+    directory: "$D"
+    pidfile: "$D/unbound.pid"
+    logfile: "$D/unbound.log"
+    use-syslog: no
+    do-daemonize: yes
+    local-zone: "check.test." static
+    local-data: "a.check.test. 60 IN A 192.0.2.1"
+remote-control:
+    control-enable: no
+CONF
+unbound-checkconf "$D/unbound.conf" >/dev/null
+unbound -c "$D/unbound.conf"
+for t in "" +tcp; do
+    i=0
+    until dig @127.0.0.1 -p 5353 $t +short A a.check.test | grep -qx 192.0.2.1; do
+        i=$((i + 1)); [ $i -lt 60 ] || fail "unbound did not answer ($t)"; sleep 0.5
+    done
 done
 
 step "emfor-check against the servers"
