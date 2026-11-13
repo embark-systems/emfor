@@ -664,7 +664,7 @@ tests:
 ---
 ### Requirement: Clients are safe across threads and fork
 
-The client SHALL open the store read-only once per process and reuse it for later lookups. When a lookup finds the store stale or fails, and the file at the store path is now a different file (device and inode) than the open one, the client SHALL close the open store once no lookup in the process uses it, open the file at the path, and repeat the lookup once; a missing file SHALL NOT count as a different file. Lookups from several threads at once SHALL each return a valid result. When a lookup runs in a process whose pid differs from the pid that opened the store (after `fork`), the client SHALL discard the inherited handle without closing it, open the store again, re-read the environment variables, and reset the round-robin counters. Each lookup SHALL end its read transaction before returning.
+The client SHALL open the store read-only once per process and reuse it for later lookups. When a lookup finds the store stale, or fails with an error other than `ALL_DOWN` from a fresh store, the client SHALL check whether the file at the store path is now a different file (device and inode) than the open one, at most once every 100 ms in a process; a missing file SHALL NOT count as a different file. When it is different, the client SHALL switch to it once no lookup in the process uses the open store, and repeat the lookup once. When the lock file (`<path>-lock`) is also a different file or missing, the client SHALL open the new store before closing the open one and SHALL keep using the open one when the new one cannot be opened; when the lock file is the same, it SHALL close the open store first, since LMDB allows one environment per lock file in a process. Lookups from several threads at once SHALL each return a valid result. When a lookup runs in a process whose pid differs from the pid that opened the store (after `fork`), the client SHALL discard the inherited handle without closing it, open the store again, re-read the environment variables, and reset the round-robin counters. Each lookup SHALL end its read transaction before returning.
 
 #### Scenario: Lookup after fork
 
@@ -674,7 +674,17 @@ The client SHALL open the store read-only once per process and reuse it for late
 #### Scenario: Store replaced while the client runs
 
 - **WHEN** a client has looked up a service in a stale store, and the store path is then replaced by a fresh store whose record of that service names another backend
-- **THEN** the next lookup in the same process returns the backend of the new store
+- **THEN** the first lookup in the same process made at least 100 ms after the previous check returns the backend of the new store
+
+#### Scenario: Replacement that cannot be opened yet
+
+- **WHEN** a client reads a stale store whose service is `on_all_down = "open"`, the daemon moves that file aside and removes its lock file, and the store path then holds a file that is not an LMDB store
+- **THEN** lookups go on returning the backend from the open store, and once the path holds a valid store the client switches to it
+
+#### Scenario: ALL_DOWN from a fresh store
+
+- **WHEN** a lookup in a fresh store returns `ALL_DOWN`
+- **THEN** the client does not check the store path for another file
 
 #### Scenario: Concurrent lookups
 

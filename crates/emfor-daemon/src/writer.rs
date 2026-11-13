@@ -413,15 +413,29 @@ impl<S: Sink> Writer<S> {
     async fn heartbeat(&mut self) {
         self.ticks_since_reader_check += 1;
         if self.ticks_since_reader_check >= READER_CHECK_TICKS {
-            self.clear_stale_readers();
+            self.clear_stale_readers().await;
         }
         self.flush(vec![Op::Put(KEY_HEARTBEAT.into(), unix_ms().to_string())])
             .await;
     }
 
-    fn clear_stale_readers(&mut self) {
+    async fn clear_stale_readers(&mut self) {
         self.ticks_since_reader_check = 0;
-        if let Err(e) = self.sink_mut().clear_stale_readers() {
+        // On a blocking thread, like a commit: it takes the reader table's
+        // lock in the lock file, which any process using the store can hold.
+        let mut sink = self.sink.take().expect(
+            "the sink is taken only while a commit or reader check runs and is put back before it returns",
+        );
+        let (sink, result) = tokio::task::spawn_blocking(move || {
+            let result = sink.clear_stale_readers();
+            (sink, result)
+        })
+        .await
+        .expect(
+            "a store reader check panicked; the writer stops, and the daemon exits with status 70",
+        );
+        self.sink = Some(sink);
+        if let Err(e) = result {
             tracing::error!("cannot check the state store's reader slots: {e}");
         }
     }
@@ -429,12 +443,6 @@ impl<S: Sink> Writer<S> {
     async fn shutdown(&mut self) {
         self.flush(vec![Op::Put(KEY_HEARTBEAT.into(), "0".into())])
             .await;
-    }
-
-    fn sink_mut(&mut self) -> &mut S {
-        self.sink.as_mut().expect(
-            "the sink is taken only while a commit runs and is put back before flush returns",
-        )
     }
 
     /// Commit pending ops, `extra`, and every dirty service record in one transaction.
@@ -464,7 +472,7 @@ impl<S: Sink> Writer<S> {
         // sync = true`, or the kernel writing back), and must not hold up a
         // worker that serves DNS, metrics and checks meanwhile.
         let mut sink = self.sink.take().expect(
-            "the sink is taken only while a commit runs and is put back before flush returns",
+            "the sink is taken only while a commit or reader check runs and is put back before it returns",
         );
         let (sink, ops, result, usage) = tokio::task::spawn_blocking(move || {
             #[cfg(feature = "test-hooks")]
@@ -485,7 +493,7 @@ impl<S: Sink> Writer<S> {
             Err(e) => {
                 tracing::error!("state store commit failed, retrying at next heartbeat: {e}");
                 self.live.count_commit_failure();
-                self.clear_stale_readers();
+                self.clear_stale_readers().await;
                 // Keep everything except service and history puts (dirty records and
                 // histories are re-rendered) and stale heartbeats (a fresh one is
                 // written next tick).
@@ -662,6 +670,48 @@ mod tests {
         writer.await.unwrap();
         let threads = threads.lock().unwrap();
         assert_eq!(threads.len(), 2, "layout and shutdown commits");
+        let here = std::thread::current().id();
+        assert!(
+            threads.iter().all(|t| *t != here),
+            "{threads:?} vs {here:?}"
+        );
+    }
+
+    /// Fails every commit and records the thread of each reader check.
+    struct ReaderCheckThreads(Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>>);
+    impl Sink for ReaderCheckThreads {
+        fn commit(&mut self, _ops: &[Op]) -> Result<(), String> {
+            Err("MDB_MAP_FULL: Environment mapsize limit reached".into())
+        }
+        fn clear_stale_readers(&mut self) -> Result<usize, String> {
+            self.0.lock().unwrap().push(std::thread::current().id());
+            Ok(0)
+        }
+    }
+
+    /// Reader checks take a lock other processes can hold, so like commits
+    /// they run off the writer's async thread.
+    #[tokio::test]
+    async fn reader_checks_run_off_the_async_thread() {
+        let threads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (tx, rx) = mpsc::unbounded_channel();
+        let writer = spawn_with_tick(
+            ReaderCheckThreads(threads.clone()),
+            rx,
+            Duration::from_secs(3600),
+        );
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+        })
+        .unwrap();
+        let (done_tx, done_rx) = oneshot::channel();
+        tx.send(WriterMsg::Shutdown(done_tx)).unwrap();
+        done_rx.await.unwrap();
+        writer.await.unwrap();
+        let threads = threads.lock().unwrap();
+        assert_eq!(threads.len(), 2, "one check per failed commit");
         let here = std::thread::current().id();
         assert!(
             threads.iter().all(|t| *t != here),

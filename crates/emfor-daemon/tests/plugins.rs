@@ -613,7 +613,9 @@ fn sigterm_while_starting_stops_cleanly() {
     let d = spawn_loading(&mark);
     let (code, log) = d.stop();
     assert_eq!(code, 0, "{log}");
-    assert!(log.contains("shutting down"), "{log}");
+    // The start is abandoned, not finished first.
+    assert!(log.contains("stop requested while starting"), "{log}");
+    assert!(!log.contains("emfor started"), "{log}");
     wait_for("plugin stopped", || pgrep(&mark).is_empty());
 }
 
@@ -650,6 +652,30 @@ fn sigterm_during_a_reload_does_not_wait_for_it() {
     wait_for("plugins stopped", || {
         pgrep(&mark).is_empty() && pgrep(&hang).is_empty()
     });
+}
+
+/// A stop request while the daemon is still loading its config (here: a
+/// plugin that never answers validate) ends the start at once.
+#[test]
+fn sigterm_during_startup_does_not_wait_for_it() {
+    let hang = marker("start-hang");
+    let d = Daemon::spawn(&format!(
+        "{}{}",
+        plugin_decl("hang", &["EMFOR_TEST_PLUGIN_VALIDATE_HANG=1"], &hang),
+        plugin_service("h.svc.emfor", "hang", "up", FAST)
+    ));
+    wait_for("start waits on validate", || {
+        !d.started_pids("hang").is_empty()
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    let asked = Instant::now();
+    let (code, log) = d.stop();
+    let took = asked.elapsed();
+    assert_eq!(code, 0, "{log}");
+    assert!(took < Duration::from_secs(3), "stopped after {took:?}");
+    assert!(log.contains("stop requested while starting"), "{log}");
+    assert!(!log.contains("emfor started"), "{log}");
+    wait_for("plugin stopped", || pgrep(&hang).is_empty());
 }
 
 /// Spec "Plugin output line limit", oversized answer line.

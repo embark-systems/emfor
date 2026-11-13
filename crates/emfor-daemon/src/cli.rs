@@ -128,12 +128,27 @@ async fn start(config_path: PathBuf, check_only: bool) -> ExitCode {
     // handler exists, SIGHUP's default action kills the daemon. A signal
     // that arrives meanwhile waits for the main loop, where SIGHUP reloads
     // and SIGTERM / SIGINT stop.
-    let Some(signals) = Signals::install() else {
+    let Some(mut signals) = Signals::install() else {
         tracing::error!("cannot install signal handlers");
         return ExitCode::from(EXIT_STARTUP);
     };
     let mut plugins = PluginSet::default();
-    let (prepared, loaded) = load(&config_path, None, &plugins).await;
+    // Loading can wait seconds on plugins (start, handshake, validate); a
+    // stop request ends it there, as during a reload. The plugins started so
+    // far are killed when the runtime shuts down.
+    let outcome = {
+        let startup = load(&config_path, None, &plugins);
+        tokio::pin!(startup);
+        tokio::select! {
+            r = &mut startup => Some(r),
+            _ = signals.term.recv() => None,
+            _ = signals.int.recv() => None,
+        }
+    };
+    let Some((prepared, loaded)) = outcome else {
+        tracing::info!("stop requested while starting; exiting");
+        return ExitCode::from(EXIT_OK);
+    };
     let config = match loaded {
         Ok(c) => c,
         Err(errors) => {

@@ -275,7 +275,12 @@ tests:
 ---
 ### Requirement: Clean shutdown marks the store stale
 
-On `SIGTERM` or `SIGINT` the daemon SHALL stop all checks, set `meta/heartbeat` to `0`, close the store, and exit with status 0. A signal that arrives during a reload SHALL abandon the reload, without applying it, instead of waiting for it to finish.
+On `SIGTERM` or `SIGINT` the daemon SHALL stop all checks, set `meta/heartbeat` to `0`, close the store, and exit with status 0. A signal that arrives during a reload SHALL abandon the reload, without applying it, instead of waiting for it to finish. A signal that arrives while the daemon is still loading its config at start SHALL end the start the same way: the daemon SHALL stop the plugins started so far and exit with status 0 without starting checks.
+
+#### Scenario: Stop during startup
+
+- **WHEN** the daemon receives `SIGTERM` while loading its config at start waits for a plugin's `validate` answer
+- **THEN** the daemon exits 0 within about a second, without logging that it started, and no plugin process is left running
 
 #### Scenario: Stop during a reload
 

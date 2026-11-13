@@ -20,6 +20,16 @@ pub struct Env {
     path: PathBuf,
     /// Device and inode of the file at `path` when it was opened.
     file: (u64, u64),
+    /// Device and inode of `<path>-lock` once opened; `None` if it could not
+    /// be read.
+    lock: Option<(u64, u64)>,
+}
+
+/// LMDB's lock file of a store opened with `MDB_NOSUBDIR`.
+fn lock_path(path: &Path) -> PathBuf {
+    let mut p = path.as_os_str().to_owned();
+    p.push("-lock");
+    PathBuf::from(p)
 }
 
 fn file_id(m: &std::fs::Metadata) -> (u64, u64) {
@@ -135,11 +145,13 @@ impl Env {
                 ffi::mdb_env_close(env);
                 return Err(open_error(path, rc));
             }
+            let lock = std::fs::metadata(lock_path(path)).ok().map(|m| file_id(&m));
             Ok(Env {
                 env,
                 dbi,
                 path: path.to_path_buf(),
                 file,
+                lock,
             })
         }
     }
@@ -150,6 +162,19 @@ impl Env {
     /// replacement: the open file stays the best there is.
     pub fn replaced(&self) -> bool {
         std::fs::metadata(&self.path).is_ok_and(|m| file_id(&m) != self.file)
+    }
+
+    /// True when `<path>-lock` is no longer the lock file this environment
+    /// uses (removed, or another file), as when the daemon sets a damaged
+    /// store aside. The store at the path can then be opened while this one
+    /// is still open: LMDB only forbids two environments on one lock file in
+    /// a process.
+    pub fn lock_file_replaced(&self) -> bool {
+        match (std::fs::metadata(lock_path(&self.path)), self.lock) {
+            (Err(e), Some(_)) => e.kind() == std::io::ErrorKind::NotFound,
+            (Ok(m), Some(lock)) => file_id(&m) != lock,
+            (_, None) => false,
+        }
     }
 
     /// Read schema version, heartbeat and one service record in a single

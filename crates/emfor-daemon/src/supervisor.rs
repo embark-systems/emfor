@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -16,6 +17,29 @@ struct Running {
     generation: u64,
     settings: watch::Sender<Settings>,
     tasks: HashMap<String, JoinHandle<()>>,
+    /// Restarts of check tasks that stopped, by backend id.
+    restarts: HashMap<String, Restarts>,
+}
+
+/// How often one backend's check task was started again, and when last.
+#[derive(Clone, Copy)]
+struct Restarts {
+    count: u32,
+    at: tokio::time::Instant,
+}
+
+/// Longest wait between two restarts of one backend's check task.
+const MAX_RESTART_DELAY: Duration = Duration::from_secs(60);
+/// A task that ran this long since its last restart starts the count over.
+const RESTART_RESET: Duration = Duration::from_secs(300);
+
+/// Least time after the `count`-th restart before the next one: none after
+/// the first stop, then 1s, 2s, 4s and so on up to [`MAX_RESTART_DELAY`].
+fn restart_delay(count: u32) -> Duration {
+    match count {
+        0 => Duration::ZERO,
+        n => Duration::from_secs(1u64 << (n - 1).min(6)).min(MAX_RESTART_DELAY),
+    }
 }
 
 impl Running {
@@ -53,9 +77,12 @@ impl Supervisor {
     /// Start again every check task that ended on its own. A task only ends
     /// by a panic while the daemon runs (or when the writer is gone, at
     /// shutdown), and without this its backend would keep its last state
-    /// for good. The new task starts from `unknown`. Returns how many were
-    /// restarted.
+    /// for good. The new task starts from `unknown`. A task that keeps
+    /// stopping is started again after 1s, 2s, 4s and so on, up to 60s, so
+    /// a checker that always panics does not fill the log; the wait starts
+    /// over once a task ran 5 minutes. Returns how many were restarted.
     pub fn restart_finished(&mut self) -> usize {
+        let now = tokio::time::Instant::now();
         let mut restarted = 0;
         for (name, r) in &mut self.services {
             for b in &r.config.backends {
@@ -65,9 +92,21 @@ impl Supervisor {
                 if !t.is_finished() {
                     continue;
                 }
+                let count = match r.restarts.get(&b.id) {
+                    Some(last) if now.duration_since(last.at) < RESTART_RESET => {
+                        if now.duration_since(last.at) < restart_delay(last.count) {
+                            continue; // too soon after the last restart
+                        }
+                        last.count
+                    }
+                    _ => 0,
+                };
+                let next = restart_delay(count + 1);
                 tracing::error!(
-                    "check task of backend {} of {name} stopped; starting it again from unknown",
-                    b.id
+                    "check task of backend {} of {name} stopped; starting it again from unknown (restart {}; the next one no sooner than {}s after this)",
+                    b.id,
+                    count + 1,
+                    next.as_secs()
                 );
                 *t = spawn_backend(
                     name.clone(),
@@ -76,6 +115,13 @@ impl Supervisor {
                     r.generation,
                     r.settings.subscribe(),
                     self.writer.clone(),
+                );
+                r.restarts.insert(
+                    b.id.clone(),
+                    Restarts {
+                        count: count + 1,
+                        at: now,
+                    },
                 );
                 restarted += 1;
             }
@@ -126,6 +172,7 @@ impl Supervisor {
                     }
                     keep
                 });
+                r.restarts.retain(|id, _| ids.contains(&id.as_str()));
                 for addr in removed {
                     r.config.checker.forget(addr);
                 }
@@ -170,6 +217,7 @@ impl Supervisor {
                     generation: layout.generation,
                     settings: watch::channel(new.settings).0,
                     tasks: HashMap::new(),
+                    restarts: HashMap::new(),
                 });
             let checker = r.config.checker.clone(); // unchanged check: keep the running checker
             r.config = ServiceConfig {
@@ -347,6 +395,62 @@ mod tests {
         .await;
         assert_eq!(sup.restart_finished(), 0, "running tasks are left alone");
         assert!(checker.0.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[test]
+    fn restart_delays_double_up_to_a_minute() {
+        let secs: Vec<u64> = (0..10).map(|n| restart_delay(n).as_secs()).collect();
+        assert_eq!(secs, [0, 1, 2, 4, 8, 16, 32, 60, 60, 60]);
+        assert_eq!(restart_delay(u32::MAX), MAX_RESTART_DELAY);
+    }
+
+    /// A check task that stops again and again is restarted at once, then
+    /// after 1s, 2s, ...; after running 5 minutes the count starts over.
+    #[tokio::test(start_paused = true)]
+    async fn repeated_stops_are_restarted_with_growing_delays() {
+        use crate::checker::{CheckRequest, CheckResult, Checker};
+        use futures::future::BoxFuture;
+        use tokio::time::{Instant, sleep_until};
+
+        #[derive(Debug)]
+        struct AlwaysPanics;
+        impl Checker for AlwaysPanics {
+            fn check(&self, _: CheckRequest) -> BoxFuture<'_, CheckResult> {
+                Box::pin(async { panic!("checker bug") })
+            }
+        }
+
+        let h = harness();
+        let mut config = conf(
+            "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"127.0.0.1:1\"]\ninterval = \"200ms\"\ntimeout = \"100ms\"\nrise = 1\njitter = \"0%\"\n",
+        );
+        config.services[0].checker = Arc::new(AlwaysPanics);
+        let mut sup = Supervisor::start(&config, h.tx.clone());
+        let finished = |sup: &Supervisor| {
+            let r = sup.services.values().next().unwrap();
+            r.tasks.values().next().unwrap().is_finished()
+        };
+        let count = |sup: &Supervisor| {
+            let r = sup.services.values().next().unwrap();
+            r.restarts.values().next().map_or(0, |x| x.count)
+        };
+
+        wait_for("first stop", || finished(&sup)).await;
+        assert_eq!(sup.restart_finished(), 1, "the first restart is at once");
+        let mut last = Instant::now();
+        for (n, delay) in [(1u32, 1u64), (2, 2), (3, 4), (4, 8)] {
+            wait_for("stopped again", || finished(&sup)).await;
+            sleep_until(last + Duration::from_millis(delay * 1000 - 50)).await;
+            assert_eq!(sup.restart_finished(), 0, "too soon after restart {n}");
+            sleep_until(last + Duration::from_secs(delay)).await;
+            assert_eq!(sup.restart_finished(), 1, "{delay}s after restart {n}");
+            assert_eq!(count(&sup), n + 1);
+            last = Instant::now();
+        }
+        wait_for("stopped again", || finished(&sup)).await;
+        sleep_until(last + RESTART_RESET).await;
+        assert_eq!(sup.restart_finished(), 1);
+        assert_eq!(count(&sup), 1, "the count started over");
     }
 
     #[tokio::test]

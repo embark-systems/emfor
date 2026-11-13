@@ -26,9 +26,18 @@ pub struct Client {
     /// Read-locked on each round-robin lookup; written only the first time
     /// a service is looked up.
     counters: RwLock<HashMap<String, Arc<AtomicU64>>>,
+    /// Unix ms of the last check for a replaced store file, and the least
+    /// time between two checks ([`REPLACE_CHECK_MS`]).
+    last_replace_check: AtomicU64,
+    replace_check_ms: u64,
     /// Random per client: each service's counter starts at a random value.
     seed: RandomState,
 }
+
+/// Least time between two checks for a replaced store file. A check costs
+/// a `stat`, and a lookup that finds the store stale or fails would
+/// otherwise pay it every time, just when applications retry the most.
+pub const REPLACE_CHECK_MS: u64 = 100;
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -43,6 +52,8 @@ impl Client {
             max_staleness_ms,
             env: RwLock::new(None),
             counters: RwLock::new(HashMap::new()),
+            last_replace_check: AtomicU64::new(0),
+            replace_check_ms: REPLACE_CHECK_MS,
             seed: RandomState::new(),
         }
     }
@@ -70,22 +81,63 @@ impl Client {
         snapshot
     }
 
-    /// When the store path now holds another file, close the open store and
-    /// open that one. Only called for a stale store, so a running client
-    /// follows a store the daemon replaced without a restart. True when the
-    /// next read sees the new file.
+    /// When the store path now holds another file, switch to it, so a
+    /// running client follows a store the daemon replaced without a
+    /// restart. Called for a lookup that found the store stale or failed;
+    /// checks at most once per [`REPLACE_CHECK_MS`] in the process. True
+    /// when the next read sees the new file.
     fn reopen_if_replaced(&self) -> bool {
-        let mut slot = self.env.write().unwrap_or_else(PoisonError::into_inner);
-        if !slot.as_ref().is_some_and(Env::replaced) {
+        let now = now_ms();
+        let last = self.last_replace_check.load(Ordering::Relaxed);
+        // A clock that went back allows a check.
+        if now >= last && now - last < self.replace_check_ms {
             return false;
         }
-        *slot = None; // closes the old environment first
-        match Env::open(&self.path) {
-            Ok(env) => {
-                *slot = Some(env);
-                true
+        if self
+            .last_replace_check
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return false; // another thread checks now
+        }
+        // Under the read lock, so lookups go on while the file is checked.
+        let replaced = self
+            .env
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(Env::replaced);
+        if !replaced {
+            return false;
+        }
+        // The write lock waits until no lookup uses the open store.
+        let mut slot = self.env.write().unwrap_or_else(PoisonError::into_inner);
+        let Some(old) = slot.as_ref() else {
+            return false;
+        };
+        if !old.replaced() {
+            return true; // switched by another thread meanwhile
+        }
+        if old.lock_file_replaced() {
+            // Another lock file: open the new store first and keep the old
+            // one if that fails (a file still being written, say).
+            match Env::open(&self.path) {
+                Ok(env) => {
+                    *slot = Some(env); // closes the old environment
+                    true
+                }
+                Err(_) => false,
             }
-            Err(_) => false, // opened again on the next lookup
+        } else {
+            // The same lock file: the old environment must be closed first.
+            *slot = None;
+            match Env::open(&self.path) {
+                Ok(env) => {
+                    *slot = Some(env);
+                    true
+                }
+                Err(_) => false, // opened again on the next lookup
+            }
         }
     }
 
@@ -111,8 +163,12 @@ impl Client {
     pub fn lookup(&self, name: &str, affinity_key: Option<&str>) -> Result<String, Error> {
         match self.lookup_once(name, affinity_key, true) {
             // A store that was set aside as damaged may fail to read, and a
-            // service added since is missing from it: errors look too.
-            Err(_) if self.reopen_if_replaced() => self.lookup_once(name, affinity_key, false),
+            // service added since is missing from it: errors look too. Not
+            // ALL_DOWN: a fresh store answers it from the daemon's checks,
+            // and a stale one was looked at already.
+            Err(e) if e.code != ErrorCode::AllDown && self.reopen_if_replaced() => {
+                self.lookup_once(name, affinity_key, false)
+            }
             r => r,
         }
     }
@@ -336,6 +392,13 @@ mod tests {
         let _ = std::fs::remove_file(dir.join("state.mdb-lock"));
     }
 
+    /// No least time between replacement checks, so a test can replace the
+    /// store and look up again at once.
+    fn unthrottled(mut c: Client) -> Client {
+        c.replace_check_ms = 0;
+        c
+    }
+
     fn backend(ip: &str) -> serde_json::Value {
         // `open`: a stale store still answers, with any backend.
         serde_json::json!({"on_all_down": "open", "backends": [{"id": format!("{ip}:8080"), "ip": ip, "port": 8080, "state": "healthy", "checked_at": 1, "reason": null}]})
@@ -349,7 +412,7 @@ mod tests {
             serde_json::json!({"schema_version": "1", "heartbeat": "stale",
                 "services": [svc("api.svc.emfor", backend("10.0.0.11"))]}),
         );
-        let c = Client::new(p, Ok(3000));
+        let c = unthrottled(Client::new(p, Ok(3000)));
         assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
         replace(
             dir.path(),
@@ -367,7 +430,7 @@ mod tests {
             serde_json::json!({"schema_version": "1",
                 "services": [svc("api.svc.emfor", backend("10.0.0.11"))]}),
         );
-        let c = Client::new(p, Ok(3000));
+        let c = unthrottled(Client::new(p, Ok(3000)));
         assert_eq!(code(&c, "db.svc.emfor"), ErrorCode::NotFound);
         replace(
             dir.path(),
@@ -375,6 +438,104 @@ mod tests {
                 "services": [svc("db.svc.emfor", backend("10.0.0.33"))]}),
         );
         assert_eq!(c.lookup("db.svc.emfor", None).unwrap(), "10.0.0.33:8080");
+    }
+
+    fn stale_store(dir: &Path, ip: &str) -> PathBuf {
+        write(
+            dir,
+            serde_json::json!({"schema_version": "1", "heartbeat": "stale",
+                "services": [svc("api.svc.emfor", backend(ip))]}),
+        )
+    }
+
+    /// Replacement checks are at most `REPLACE_CHECK_MS` apart: a lookup
+    /// right after one keeps the open store, a later one follows.
+    #[test]
+    fn replacement_checks_are_spaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Client::new(stale_store(dir.path(), "10.0.0.11"), Ok(3000));
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
+        replace(
+            dir.path(),
+            serde_json::json!({"schema_version": "1",
+                "services": [svc("api.svc.emfor", backend("10.0.0.22"))]}),
+        );
+        assert_eq!(
+            c.lookup("api.svc.emfor", None).unwrap(),
+            "10.0.0.11:8080",
+            "checked less than {REPLACE_CHECK_MS}ms ago"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(REPLACE_CHECK_MS + 20));
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.22:8080");
+    }
+
+    /// ALL_DOWN from a fresh store is the daemon's answer: no check.
+    #[test]
+    fn all_down_in_a_fresh_store_does_not_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let down = serde_json::json!({"all_down": true, "backends": [{"id": "10.0.0.11:8080", "ip": "10.0.0.11", "port": 8080, "state": "unhealthy", "checked_at": 1, "reason": "refused"}]});
+        let p = write(
+            dir.path(),
+            serde_json::json!({"schema_version": "1", "services": [svc("api.svc.emfor", down)]}),
+        );
+        let c = Client::new(p, Ok(3000));
+        assert_eq!(code(&c, "api.svc.emfor"), ErrorCode::AllDown);
+        assert_eq!(c.last_replace_check.load(Ordering::Relaxed), 0);
+        assert_eq!(code(&c, "db.svc.emfor"), ErrorCode::NotFound);
+        assert_ne!(
+            c.last_replace_check.load(Ordering::Relaxed),
+            0,
+            "other errors check"
+        );
+    }
+
+    /// A new file that cannot be opened leaves the open store in use.
+    #[test]
+    fn unreadable_replacement_keeps_the_open_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = stale_store(dir.path(), "10.0.0.11");
+        let c = unthrottled(Client::new(p.clone(), Ok(3000)));
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
+        // As the daemon does: the old file moves away, the lock file goes,
+        // and a new file appears that is not (yet) a store.
+        std::fs::rename(&p, dir.path().join("state.mdb.corrupt")).unwrap();
+        std::fs::remove_file(dir.path().join("state.mdb-lock")).unwrap();
+        std::fs::write(&p, b"not lmdb yet").unwrap();
+        for _ in 0..2 {
+            // The second lookup reads the store again after the failed open.
+            assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
+        }
+        // Once it is a store, the client follows it.
+        std::fs::remove_file(&p).unwrap();
+        let _ = std::fs::remove_file(dir.path().join("state.mdb-lock"));
+        replace(
+            dir.path(),
+            serde_json::json!({"schema_version": "1",
+                "services": [svc("api.svc.emfor", backend("10.0.0.22"))]}),
+        );
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.22:8080");
+    }
+
+    /// A data file replaced under the same lock file is followed too, by
+    /// closing the open store first.
+    #[test]
+    fn replacement_with_the_same_lock_file_is_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = unthrottled(Client::new(stale_store(dir.path(), "10.0.0.11"), Ok(3000)));
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
+        let next = dir.path().join("next.mdb");
+        emfor_fixture::write_store(
+            &serde_json::json!({"schema_version": "1",
+                "services": [svc("api.svc.emfor", backend("10.0.0.22"))]}),
+            3000,
+            emfor_fixture::now_ms(),
+            &next,
+        )
+        .unwrap();
+        std::fs::rename(&next, dir.path().join("state.mdb")).unwrap();
+        let _ = std::fs::remove_file(dir.path().join("next.mdb-lock"));
+        assert!(dir.path().join("state.mdb-lock").exists(), "lock file kept");
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.22:8080");
     }
 
     #[test]

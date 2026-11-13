@@ -25,6 +25,17 @@ must be replaced. See [docs/deploy/daemon.md](docs/deploy/daemon.md#commands).
   unless `host_header` is a domain name (which needs one client per
   backend to connect to it), and no longer builds clients while holding a
   lock.
+- A client lookup that finds the store stale, or fails, checks for a
+  replaced store file at most once every 100 ms per process, under a read
+  lock, instead of taking a write lock and a `stat` every time. Failing and
+  stale lookups were 3–4 times slower than successful ones on 8 threads
+  (about 115k against 335k lookups/s) and slowed other threads' lookups; they
+  now run about as fast. `ALL_DOWN` from a fresh store no longer checks at
+  all. A replacement is followed within about 100 ms.
+- When the store file was replaced but the new file cannot be opened yet,
+  the client keeps reading the old one (when the lock file was replaced too,
+  as when the daemon sets a damaged store aside) instead of failing every
+  lookup with `UNAVAILABLE` until it opens.
 - Client lookups take read locks only, so lookups on many threads no
   longer queue on a mutex, and a round-robin lookup no longer allocates
   the service name each time.
@@ -94,6 +105,17 @@ must be replaced. See [docs/deploy/daemon.md](docs/deploy/daemon.md#commands).
   status 70 (`EX_SOFTWARE`), which the systemd unit restarts. A backend check task that
   stopped left its backend in its last state; it is now started again from
   `unknown` within a second. Both only happen through a bug (a panic).
+- A SIGTERM or SIGINT while the daemon was still loading its config at
+  start (plugins starting and validating) waited until the start finished.
+  It now ends the start at once and exits 0.
+- A check task that stops again and again (a checker that panics on every
+  check) was started again every second, logging an error each time. It is
+  now started again at once, then after 1s, 2s, 4s and so on up to 60s; the
+  wait starts over after the task ran 5 minutes.
+- The state writer's check for reader slots of dead processes ran on the
+  writer's async thread, and could hold it up while another process held
+  the store's reader table lock. It now runs on a blocking thread, like
+  commits.
 - A SIGTERM or SIGINT during a reload waited for the reload, up to about
   10 seconds when a plugin was slow to start or to validate. It now
   abandons the reload and stops at once.

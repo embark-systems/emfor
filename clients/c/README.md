@@ -103,10 +103,13 @@ after `fork`, including when the parent looked up before forking.
 
 Applications follow a store file that is replaced while they run: the
 daemon moved a damaged store aside at start, or the file was deleted and the
-daemon created a new one. When a lookup finds the open store stale, or fails,
-the library checks whether the store path now holds another file and, if so,
-closes the old one and opens the new one. No restart is needed. A fresh store
-costs nothing extra; a stale one costs one `stat` per lookup.
+daemon created a new one. When a lookup finds the open store stale, or fails
+with an error other than `ALL_DOWN` from a fresh store, the library checks
+whether the store path now holds another file and, if so, switches to it and
+looks up again. No restart is needed. It checks at most once every 100 ms in
+a process (one `stat`), so a replacement is followed within about 100 ms and
+lookups in a stopped daemon's store stay fast. If the new file cannot be
+opened yet, lookups keep using the old one.
 
 Do not delete the lock file (`<store>-lock`) alone, and start the daemon
 before applications that run as root or as the daemon's user. If the lock
