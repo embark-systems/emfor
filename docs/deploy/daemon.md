@@ -10,7 +10,7 @@ The `emfor` executable takes a subcommand; `--config <path>` goes before or afte
 | `emfor check-config` | Validates the config, starting and stopping any plugins it declares; prints `config ok: ...` and exits 0, or prints each error and exits 2. |
 | `emfor status` | Shows what the running daemon publishes (see [emfor status](#emfor-status)). |
 
-`emfor` with no subcommand only prints this list and exits 2: it never starts a daemon. Before 0.2.0, `emfor` without a subcommand started the daemon and `--check-config` checked the config; `--check-config` now only prints `--check-config was replaced by "emfor check-config"` and exits 2.
+`emfor` with no subcommand only prints this list and exits 2: it never starts a daemon. In 0.1.1 and earlier, `emfor` without a subcommand started the daemon and `--check-config` checked the config; `--check-config` now only prints `--check-config was replaced by "emfor check-config"` and exits 2.
 
 ## Building with an install prefix
 
@@ -18,7 +18,7 @@ The daemon looks for its config at `/etc/emfor/emfor.toml` unless `--config` say
 
 ```sh
 EMFOR_PREFIX=/usr/local cargo build --release --bin emfor
-install -m 0755 target/release/emfor /usr/local/sbin/emfor
+install -m 0755 target/release/emfor /usr/local/bin/emfor
 ```
 
 | `EMFOR_PREFIX` | Default config path |
@@ -44,11 +44,11 @@ This installs `emfor` and `emfor-check` into `/usr/local/bin`; nothing else in t
 
 ## Running under systemd
 
-[`examples/systemd/emfor.service`](../../examples/systemd/emfor.service) runs the daemon as user `emfor` with the binary at `/usr/local/sbin/emfor` and the config at `/etc/emfor/emfor.toml`:
+[`examples/systemd/emfor.service`](../../examples/systemd/emfor.service) runs the daemon as user `emfor` with the binary at `/usr/local/bin/emfor` and the config at `/etc/emfor/emfor.toml`:
 
 ```sh
 cargo build --release --bin emfor
-install -m 0755 target/release/emfor /usr/local/sbin/emfor
+install -m 0755 target/release/emfor /usr/local/bin/emfor
 useradd --system --no-create-home --shell /usr/sbin/nologin emfor
 install -m 0644 examples/systemd/emfor.service /etc/systemd/system/emfor.service
 systemctl daemon-reload

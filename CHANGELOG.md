@@ -28,7 +28,20 @@ must be replaced. See [docs/deploy/daemon.md](docs/deploy/daemon.md#commands).
 - Client lookups take read locks only, so lookups on many threads no
   longer queue on a mutex, and a round-robin lookup no longer allocates
   the service name each time.
-
+- The FreeBSD rc.d script now has `daemon(8)` start `emfor` again 2
+  seconds after it exits, like `Restart=on-failure` in the systemd unit.
+  `service emfor reload` checks the config first and fails without
+  touching the daemon when it is invalid. The supervisor's pid is in
+  `/var/run/emfor.pid` and emfor's in `/var/run/emfor.child.pid`.
+- The example FreeBSD port installs the rc.d script with `USE_RC_SUBR`
+  from `files/emfor.in`; a test keeps it in step with
+  `examples/rc.d/emfor`.
+- The systemd unit and docs/deploy/daemon.md use `/usr/local/bin/emfor`,
+  where `cargo install` and the FreeBSD port put it, instead of
+  `/usr/local/sbin/emfor`. Change the unit's paths if you installed to
+  `sbin`.
+- The README diagram shows the DNS server answering from the daemon's
+  memory, not from the store.
 - **The store is no longer flushed to disk on every commit.** The new
   `[store] sync` setting defaults to `false` (LMDB's `MDB_NOSYNC`): a
   stalled disk could make the heartbeat late and every client on the host

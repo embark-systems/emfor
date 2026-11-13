@@ -6,15 +6,15 @@ emfor 是在每台應用程式主機上執行的健康檢查 daemon。它檢查�
 
 ```
               經網路檢查
-  後端 <------------------------------ emfor daemon
-                                           |  寫入
-                                           v
-                                   本機 LMDB 狀態儲存
+  後端 <------------------------------ emfor daemon ---------> 127.0.0.1 上的 DNS
+                                           |  寫入            （給沒有 client 的程式；
+                                           v                   由 daemon 記憶體中的
+                                   本機 LMDB 狀態儲存          狀態回答）
                                            |  讀取
-                     +---------------------+---------------------+
-                     |                     |                     |
-          client 函式庫（Rust、C、    127.0.0.1 上的 DNS     emfor status
-          Go、Python、Perl、PHP）    （給沒有 client 的程式）
+                           +---------------+-------------+
+                           |                             |
+                client 函式庫（Rust、C、            emfor status
+                Go、Python、Perl、PHP）
 ```
 
 - **健康檢查**：`tcp`（可選 TLS、送出與比對回應）、`http`/`https`、執行 Nagios 風格腳本的 `exec`，以及常駐的外掛。隨附的 `emfor-check` 提供 redis、MySQL/MariaDB、PostgreSQL 與 LDAP 外掛。後端連續通過 `rise` 次轉為 healthy，連續失敗 `fall` 次轉為 unhealthy。

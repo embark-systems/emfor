@@ -16,6 +16,7 @@ See [Unverified](#unverified) for what to watch.
 | `Makefile` | The port. `DISTVERSION` follows the emfor release. |
 | `pkg-descr` | Package description. |
 | `Makefile.crates` | Every crate in the release's `Cargo.lock`, as `CARGO_CRATES`. `USES=cargo` includes it from the port's directory. |
+| `files/emfor.in` | The rc.d script for `USE_RC_SUBR`: `examples/rc.d/emfor` with `%%PREFIX%%` for `/usr/local` and `emfor_user` defaulting to `emfor`. |
 
 ## Making the port
 
@@ -23,7 +24,7 @@ In a ports tree (or an overlay), as root:
 
 ```sh
 mkdir -p /usr/ports/net-mgmt/emfor
-cp Makefile Makefile.crates pkg-descr /usr/ports/net-mgmt/emfor/
+cp -R Makefile Makefile.crates pkg-descr files /usr/ports/net-mgmt/emfor/
 cd /usr/ports/net-mgmt/emfor
 make makesum                           # fetches the release and every crate
 ```
@@ -52,6 +53,15 @@ awk '/^name = /{n=$3} /^version = /{v=$3}
        {printf " \\\n\t\t%s", $0} END{print ""}' > examples/freebsd/Makefile.crates
 ```
 
+When `examples/rc.d/emfor` changes, regenerate `files/emfor.in`
+(`clients/rust/tests/versions.rs` fails until it matches):
+
+```sh
+sed -e 's|/usr/local|%%PREFIX%%|g' -e 's|emfor_user:=root|emfor_user:=emfor|' \
+    -e 's|(default root)|(default emfor)|' \
+    examples/rc.d/emfor > examples/freebsd/files/emfor.in
+```
+
 On FreeBSD, `make cargo-crates` lists the crates too. It extracts the
 source into `work/` first, so run `make clean` after it: a `work/`
 extracted before `Makefile.crates` listed the crates has none of them,
@@ -63,7 +73,7 @@ and the build stops at `no matching package named ...`.
 | --- | --- |
 | `${PREFIX}/bin/emfor` | The daemon and `emfor status`. Built with `EMFOR_PREFIX=${PREFIX}`, so its default config is `${PREFIX}/etc/emfor/emfor.toml`. |
 | `${PREFIX}/bin/emfor-check` | The redis, MySQL, PostgreSQL and LDAP checks; point a plugin's `command` at it. |
-| `${PREFIX}/etc/rc.d/emfor` | `examples/rc.d/emfor` with `${PREFIX}` paths and `emfor_user` defaulting to `emfor`. |
+| `${PREFIX}/etc/rc.d/emfor` | `files/emfor.in`, installed by `USE_RC_SUBR`. `daemon(8)` restarts `emfor` 2 seconds after it exits. |
 | `${PREFIX}/etc/emfor/emfor.toml.sample` | `examples/emfor.toml`; copied to `emfor.toml` on first install. |
 | `/var/lib/emfor` | The store's directory, owned by `emfor`. |
 

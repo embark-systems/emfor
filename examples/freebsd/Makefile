@@ -25,23 +25,20 @@ CARGO_ENV+=	EMFOR_PREFIX=${PREFIX}
 USERS=		emfor
 GROUPS=		emfor
 
+# files/emfor.in is examples/rc.d/emfor with %%PREFIX%% paths and
+# emfor_user defaulting to emfor (README.md says how to regenerate it).
+USE_RC_SUBR=	emfor
+
 # The store stays at /var/lib/emfor/state.mdb, the default of the daemon and
 # of every client (EMFOR_STORE), so applications need no setting.
 PLIST_FILES=	bin/emfor \
 		bin/emfor-check \
-		etc/rc.d/emfor \
 		"@sample etc/emfor/emfor.toml.sample" \
 		"@dir(emfor,emfor,0755) /var/lib/emfor"
 
-# The rc.d script and the config come from the source's examples/: run as
-# the emfor user, and look in ${PREFIX} rather than /usr/local.
+# The sample config comes from the source's examples/.
 post-install:
-	${MKDIR} ${STAGEDIR}${PREFIX}/etc/rc.d ${STAGEDIR}${PREFIX}/etc/emfor \
-		${STAGEDIR}/var/lib/emfor
-	${SED} -e 's|/usr/local|${PREFIX}|g' -e 's|emfor_user:=root|emfor_user:=emfor|' \
-		-e 's|(default root)|(default emfor)|' \
-		${WRKSRC}/examples/rc.d/emfor > ${STAGEDIR}${PREFIX}/etc/rc.d/emfor
-	${CHMOD} 0555 ${STAGEDIR}${PREFIX}/etc/rc.d/emfor
+	${MKDIR} ${STAGEDIR}${PREFIX}/etc/emfor ${STAGEDIR}/var/lib/emfor
 	${INSTALL_DATA} ${WRKSRC}/examples/emfor.toml \
 		${STAGEDIR}${PREFIX}/etc/emfor/emfor.toml.sample
 

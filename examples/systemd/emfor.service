@@ -24,9 +24,9 @@ After=network-online.target
 Type=exec
 User=emfor
 Group=emfor
-ExecStartPre=/usr/local/sbin/emfor check-config --config /etc/emfor/emfor.toml
-ExecStart=/usr/local/sbin/emfor server --config /etc/emfor/emfor.toml
-ExecReload=/usr/local/sbin/emfor check-config --config /etc/emfor/emfor.toml
+ExecStartPre=/usr/local/bin/emfor check-config --config /etc/emfor/emfor.toml
+ExecStart=/usr/local/bin/emfor server --config /etc/emfor/emfor.toml
+ExecReload=/usr/local/bin/emfor check-config --config /etc/emfor/emfor.toml
 ExecReload=/bin/kill -HUP $MAINPID
 
 # Exit status 1 (a listen address in use, the store held by another emfor)

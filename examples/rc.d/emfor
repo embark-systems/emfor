@@ -18,8 +18,16 @@
 #                 "service emfor configtest" (also run before start) checks
 #                 the config as this user too, so plugins never run as root.
 #
-# "service emfor reload" sends SIGHUP: the config is re-read and applied only
-# if it is fully valid. [store] and [dns] listen changes need a restart.
+# "service emfor reload" checks the config first and fails without touching
+# the daemon if it is invalid; otherwise it sends SIGHUP and the daemon
+# applies the config if it is fully valid. [store], [dns] listen and
+# [metrics] listen changes need "service emfor restart".
+#
+# daemon(8) supervises emfor and starts it again 2 seconds after it exits,
+# like Restart=on-failure in the systemd unit. "service emfor stop" stops
+# the supervisor, which stops emfor. Unlike systemd, daemon(8) also
+# restarts after exit status 1 (a listen address in use, the store held by
+# another emfor); the configtest before start catches an invalid config.
 #
 # Not yet run on FreeBSD: tests/resolver/freebsd.sh exercises start, reload
 # and stop on a FreeBSD host (also the optional CI freebsd job).
@@ -38,16 +46,20 @@ load_rc_config "$name"
 : "${emfor_config:=/usr/local/etc/emfor/emfor.toml}"
 : "${emfor_user:=root}"
 
+emfor_bin="/usr/local/bin/emfor"
+# pidfile: the daemon(8) supervisor, which rc.subr checks, stops and waits
+# for. emfor_pidfile: emfor itself, which reload signals.
 pidfile="/var/run/${name}.pid"
-procname="/usr/local/bin/emfor"
+emfor_pidfile="/var/run/${name}.child.pid"
 command="/usr/sbin/daemon"
-# -p: pid file of emfor itself, so reload and stop signal the daemon directly.
+# -P/-p: pid files of the supervisor and of emfor.
+# -R 2: start emfor again 2 seconds after it exits.
 # -S -T: send emfor's log output (stderr) to syslog with tag "emfor".
-command_args="-p ${pidfile} -S -T ${name} -u ${emfor_user} ${procname} server --config ${emfor_config}"
+command_args="-P ${pidfile} -p ${emfor_pidfile} -R 2 -S -T ${name} -u ${emfor_user} ${emfor_bin} server --config ${emfor_config}"
 required_files="${emfor_config}"
 extra_commands="reload configtest"
-sig_reload="HUP"
 start_precmd="emfor_precmd"
+reload_cmd="emfor_reload"
 configtest_cmd="emfor_configtest"
 
 emfor_configtest()
@@ -56,10 +68,21 @@ emfor_configtest()
 	# config declares, and they must not run as root when the daemon does
 	# not. su -m keeps the shell, since emfor_user may have no login shell.
 	if [ "${emfor_user}" = root ]; then
-		"${procname}" check-config --config "${emfor_config}"
+		"${emfor_bin}" check-config --config "${emfor_config}"
 	else
 		su -m "${emfor_user}" -c \
-		    "\"${procname}\" check-config --config \"${emfor_config}\""
+		    "\"${emfor_bin}\" check-config --config \"${emfor_config}\""
+	fi
+}
+
+emfor_reload()
+{
+	# Check first, so an invalid config never reaches the daemon; errors go
+	# to stderr. Then signal emfor itself, not the daemon(8) supervisor.
+	emfor_configtest >/dev/null || return 1
+	if ! pkill -HUP -F "${emfor_pidfile}" emfor; then
+		echo "${name} is not running." >&2
+		return 1
 	fi
 }
 

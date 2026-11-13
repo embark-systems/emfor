@@ -6,16 +6,15 @@ emfor is a health-check daemon that runs on every application host. It checks th
 
 ```
               checks over the network
-  backends <------------------------------ emfor daemon
-                                               |  writes
-                                               v
-                                     local LMDB state store
+  backends <------------------------------ emfor daemon ---------> DNS on 127.0.0.1
+                                               |  writes           (programs without a
+                                               v                    client; answered from
+                                     local LMDB state store         the daemon's memory)
                                                |  reads
-                     +-------------------------+--------------------+
-                     |                         |                    |
-          client library (Rust, C,       DNS on 127.0.0.1     emfor status
-          Go, Python, Perl, PHP)         (programs without
-                                          a client)
+                             +-----------------+-----------+
+                             |                             |
+                  client library (Rust, C,           emfor status
+                  Go, Python, Perl, PHP)
 ```
 
 - **Health checks**: `tcp` (with optional TLS, send and expect), `http`/`https`, `exec` for Nagios-style scripts, and long-running plugins. `emfor-check` ships plugins for redis, MySQL/MariaDB, PostgreSQL and LDAP. A backend turns healthy after `rise` passes and unhealthy after `fall` failures.

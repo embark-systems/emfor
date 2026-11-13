@@ -29,7 +29,7 @@ CFG
 
 nc -l -k 127.0.0.1 8080 >/dev/null 2>&1 &
 
-# rc.d script: start, configtest, reload, stop.
+# rc.d script: start, configtest, reload, restart after a crash, stop.
 sysrc emfor_enable=YES
 service emfor configtest
 service emfor start
@@ -41,6 +41,20 @@ done
 service emfor reload
 sleep 1
 service emfor status || fail "emfor not running after reload"
+# An invalid config makes reload fail and leaves the daemon alone.
+cp /usr/local/etc/emfor/emfor.toml /tmp/emfor.toml.good
+echo 'nonsense =' >> /usr/local/etc/emfor/emfor.toml
+if service emfor reload; then fail "reload accepted an invalid config"; fi
+cp /tmp/emfor.toml.good /usr/local/etc/emfor/emfor.toml
+# daemon(8) starts emfor again after it dies.
+first=$(cat /var/run/emfor.child.pid)
+kill -KILL "$first"
+i=0
+until [ -s /var/run/emfor.child.pid ] && [ "$(cat /var/run/emfor.child.pid)" != "$first" ] &&
+    pgrep -F /var/run/emfor.child.pid emfor >/dev/null; do
+    i=$((i + 1)); [ "$i" -lt 50 ] || fail "emfor not restarted after it was killed"
+    sleep 0.2
+done
 
 # local_unbound recipe.
 sysrc local_unbound_enable=YES
@@ -58,4 +72,5 @@ drill api.svc.emfor @127.0.0.1 A
 
 service emfor stop
 if service emfor status; then fail "emfor still running after stop"; fi
+if pgrep -x emfor; then fail "emfor left running after stop"; fi
 echo "ok: rc.d script and local_unbound recipe ($out) on $(freebsd-version)"
