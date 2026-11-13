@@ -15,7 +15,7 @@ See [Unverified](#unverified) for what to watch.
 | --- | --- |
 | `Makefile` | The port. `DISTVERSION` follows the emfor release. |
 | `pkg-descr` | Package description. |
-| `Makefile.crates` | Not here: generated, see below. It lists every crate in the release's `Cargo.lock` as `CARGO_CRATES`. |
+| `Makefile.crates` | Every crate in the release's `Cargo.lock`, as `CARGO_CRATES`. |
 
 ## Making the port
 
@@ -23,19 +23,10 @@ In a ports tree (or an overlay), as root:
 
 ```sh
 mkdir -p /usr/ports/net-mgmt/emfor
-cp Makefile pkg-descr /usr/ports/net-mgmt/emfor/
+cp Makefile Makefile.crates pkg-descr /usr/ports/net-mgmt/emfor/
 cd /usr/ports/net-mgmt/emfor
-touch Makefile.crates                  # the Makefile includes it
-make makesum                           # fetches the release tarball
-make cargo-crates > Makefile.crates    # from the tarball's Cargo.lock
-make makesum                           # now with every crate
-make clean                             # see below
+make makesum                           # fetches the release and every crate
 ```
-
-`make cargo-crates` extracts the source into `work/` while
-`Makefile.crates` is still empty, so `work/` has no crates. Without
-`make clean`, the build reuses that `work/` and stops at
-`no matching package named ...` for the first dependency.
 
 `USERS` and `GROUPS` need an `emfor` entry in `/usr/ports/UIDs` and
 `/usr/ports/GIDs`; in a private tree, pick ids that are free there. Then:
@@ -47,8 +38,24 @@ make install
 
 or `poudriere testport -o net-mgmt/emfor`.
 
-For a new emfor release, change `DISTVERSION` and run the commands from
-`touch` on again (`touch` can be skipped).
+## For a new release
+
+`DISTVERSION` and `Makefile.crates` change with each release
+([RELEASING.md](../../RELEASING.md)); `clients/rust/tests/versions.rs`
+fails until both match the workspace. `Makefile.crates` comes from the
+repository's `Cargo.lock`:
+
+```sh
+awk '/^name = /{n=$3} /^version = /{v=$3}
+     /^source = "registry\+/{gsub(/"/,"",n); gsub(/"/,"",v); print n"-"v}' Cargo.lock |
+  awk 'NR==1{printf "CARGO_CRATES=\t%s", $0; next}
+       {printf " \\\n\t\t%s", $0} END{print ""}' > examples/freebsd/Makefile.crates
+```
+
+On FreeBSD, `make cargo-crates` lists the crates too. It extracts the
+source into `work/` first, so run `make clean` after it: a `work/`
+extracted before `Makefile.crates` listed the crates has none of them,
+and the build stops at `no matching package named ...`.
 
 ## What it installs
 

@@ -33,3 +33,38 @@ fn clients_carry_the_release_version() {
         wrong.join("\n")
     );
 }
+
+/// The FreeBSD port's `Makefile.crates` lists every crates.io package in
+/// `Cargo.lock` as `name-version`, in the lock file's order.
+#[test]
+fn freebsd_port_lists_the_locked_crates() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let lock = std::fs::read_to_string(format!("{root}/Cargo.lock")).unwrap();
+    let mut want = Vec::new();
+    for package in lock.split("[[package]]").skip(1) {
+        let field = |key: &str| {
+            package
+                .lines()
+                .find_map(|l| l.strip_prefix(key)?.strip_prefix(" = \""))
+                .map(|v| v.trim_end_matches('"'))
+        };
+        if field("source").is_some_and(|s| s.starts_with("registry+")) {
+            want.push(format!(
+                "{}-{}",
+                field("name").unwrap(),
+                field("version").unwrap()
+            ));
+        }
+    }
+    let crates =
+        std::fs::read_to_string(format!("{root}/examples/freebsd/Makefile.crates")).unwrap();
+    let got: Vec<&str> = crates
+        .trim_start_matches("CARGO_CRATES=")
+        .split(|c: char| c.is_whitespace() || c == '\\')
+        .filter(|s| !s.is_empty())
+        .collect();
+    assert_eq!(
+        got, want,
+        "examples/freebsd/Makefile.crates does not match Cargo.lock; regenerate it (examples/freebsd/README.md)"
+    );
+}
