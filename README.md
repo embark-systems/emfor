@@ -109,7 +109,7 @@ The C library, and every client built on it, must come from the same emfor relea
 | Lookup latency and throughput, measured | [docs/performance.md](docs/performance.md) |
 | Writing a checker plugin | [docs/plugins/protocol-v1.md](docs/plugins/protocol-v1.md) |
 | Every config option | [examples/emfor.toml](examples/emfor.toml) |
-| systemd unit, FreeBSD rc.d script, Prometheus alerting rules | [examples/](examples/) |
+| systemd unit, FreeBSD rc.d script and port, Prometheus alerting rules | [examples/](examples/) |
 | Making a release | [RELEASING.md](RELEASING.md) |
 | Requirements (specs) | [docs/spectra/specs/](docs/spectra/specs/) |
 

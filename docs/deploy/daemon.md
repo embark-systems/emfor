@@ -26,7 +26,7 @@ EMFOR_PREFIX=/usr/local cargo install --locked --path crates/emfor-daemon --root
 cargo install --locked --path crates/emfor-check --root /usr/local
 ```
 
-This installs `emfor` and `emfor-check` into `/usr/local/bin`; nothing else in the crates is installed. Packaging systems that run `cargo install` per crate (for example `CARGO_INSTALL_PATH` in FreeBSD ports) take the same two paths, `crates/emfor-daemon` and `crates/emfor-check`, with `EMFOR_PREFIX` set to the package prefix in the build environment.
+This installs `emfor` and `emfor-check` into `/usr/local/bin`; nothing else in the crates is installed. Packaging systems that run `cargo install` per crate (for example `CARGO_INSTALL_PATH` in FreeBSD ports) take the same two paths, `crates/emfor-daemon` and `crates/emfor-check`, with `EMFOR_PREFIX` set to the package prefix in the build environment; [examples/freebsd/](../../examples/freebsd/) is an example FreeBSD port that does this.
 - `emfor --help` shows the path that was built in, after `--config`.
 - Only the config path changes. The store stays at the `[store] path` of the config (default `/var/lib/emfor/state.mdb`), and clients keep their own default; see the client READMEs.
 

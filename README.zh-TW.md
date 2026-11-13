@@ -110,7 +110,7 @@ C 函式庫以及所有建立在它之上的 client，必須和 daemon 來自同
 | 查詢延遲與吞吐量的實測數據 | [docs/performance.md](docs/performance.md) |
 | 撰寫檢查外掛 | [docs/plugins/protocol-v1.md](docs/plugins/protocol-v1.md) |
 | 所有設定選項 | [examples/emfor.toml](examples/emfor.toml) |
-| systemd 單元檔、FreeBSD rc.d 腳本、Prometheus 告警規則 | [examples/](examples/) |
+| systemd 單元檔、FreeBSD rc.d 腳本與 port、Prometheus 告警規則 | [examples/](examples/) |
 | 發布新版本 | [RELEASING.md](RELEASING.md) |
 | 需求規格（spec） | [docs/spectra/specs/](docs/spectra/specs/) |
 

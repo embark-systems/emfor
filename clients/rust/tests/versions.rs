@@ -1,12 +1,14 @@
-//! Every client carries the emfor release's version: libemfor and the
-//! wrappers must come from the same release as the daemon. A release bumps
-//! the workspace version in Cargo.toml and each place below (RELEASING.md).
+//! Every client, and the FreeBSD port example, carries the emfor release's
+//! version: libemfor and the wrappers must come from the same release as
+//! the daemon. A release bumps the workspace version in Cargo.toml and each
+//! place below (RELEASING.md).
 
 /// (file under the repository root, text that must contain the version).
-const PLACES: [(&str, &str); 4] = [
+const PLACES: [(&str, &str); 5] = [
     ("clients/python/pyproject.toml", "version = \"{}\""),
     ("clients/perl/lib/Emfor.pm", "our $VERSION = '{}';"),
     ("clients/php/emfor.c", "#define PHP_EMFOR_VERSION \"{}\""),
+    ("examples/freebsd/Makefile", "DISTVERSION=\t{}\n"),
     (
         "clients/go/README.md",
         "go get github.com/embark-systems/emfor/clients/go@v{}",
