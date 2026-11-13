@@ -467,6 +467,8 @@ impl<S: Sink> Writer<S> {
             "the sink is taken only while a commit runs and is put back before flush returns",
         );
         let (sink, ops, result, usage) = tokio::task::spawn_blocking(move || {
+            #[cfg(feature = "test-hooks")]
+            commit_panic_hook();
             let result = sink.commit(&ops);
             let usage = result.as_ref().ok().and_then(|()| sink.usage());
             (sink, ops, result, usage)
@@ -497,6 +499,22 @@ impl<S: Sink> Writer<S> {
                     .collect();
             }
         }
+    }
+}
+
+/// Fault injection for emfor's own tests, compiled in only with the
+/// `test-hooks` feature: a commit panics while the file named by
+/// `EMFOR_TEST_COMMIT_PANIC_FILE` exists, so a test can watch the daemon
+/// handle a writer that stops.
+#[cfg(feature = "test-hooks")]
+fn commit_panic_hook() {
+    if let Some(path) = std::env::var_os("EMFOR_TEST_COMMIT_PANIC_FILE")
+        && std::path::Path::new(&path).exists()
+    {
+        panic!(
+            "test hook: a commit panics while {} exists",
+            std::path::Path::new(&path).display()
+        );
     }
 }
 

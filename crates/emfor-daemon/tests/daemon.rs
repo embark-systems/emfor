@@ -125,12 +125,18 @@ fn start(services: &str) -> Daemon {
 }
 
 fn start_in(dir: tempfile::TempDir, services: &str) -> Daemon {
+    start_with_env(dir, services, &[])
+}
+
+/// `start_in` with extra environment variables for the daemon.
+fn start_with_env(dir: tempfile::TempDir, services: &str, env: &[(&str, &Path)]) -> Daemon {
     let cfg = dir.path().join("emfor.toml");
     std::fs::write(&cfg, format!("{}{services}", store_header(dir.path()))).unwrap();
     let mut child = Command::new(cargo_bin("emfor"))
         .arg("server")
         .arg("--config")
         .arg(&cfg)
+        .envs(env.iter().copied())
         .env_remove("RUST_LOG")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -174,6 +180,29 @@ fn wait_for(mut cond: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(50));
     }
     panic!("condition not met within 10s");
+}
+
+/// A state writer that panics while the daemon runs (a store commit that
+/// panics) makes the daemon log it and exit with status 70, which the
+/// systemd unit restarts, instead of running on with a stale store.
+#[test]
+fn daemon_exits_70_when_the_writer_panics() {
+    let dir = tempfile::tempdir().unwrap();
+    let trigger = dir.path().join("panic-now");
+    let mut d = start_with_env(
+        dir,
+        &tcp_service("api.svc.emfor", "127.0.0.1:1"),
+        &[("EMFOR_TEST_COMMIT_PANIC_FILE", &trigger)],
+    );
+    wait_for(|| d.log().contains("emfor started"));
+    assert!(d.running(), "daemon stopped before the commit panicked");
+    std::fs::write(&trigger, "").unwrap();
+    wait_for(|| !d.running());
+    let code = d.wait();
+    let log = d.log();
+    assert_eq!(code, 70, "{log}");
+    assert!(log.contains("test hook: a commit panics"), "{log}");
+    assert!(log.contains("state writer panicked; exiting"), "{log}");
 }
 
 /// A port that is free for UDP and TCP on 127.0.0.1 at the time of the call.

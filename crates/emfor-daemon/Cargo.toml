@@ -19,6 +19,10 @@ required-features = ["test-plugin"]
 
 [features]
 test-plugin = []
+# Fault injection for emfor's own tests (EMFOR_TEST_* environment
+# variables); the dev-dependency below turns it on for `cargo test`. Leave
+# it off in builds you ship.
+test-hooks = []
 
 [dependencies]
 async-trait = "0.1.92"
@@ -44,7 +48,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
-emfor-daemon = { path = ".", features = ["test-plugin"] }
+emfor-daemon = { path = ".", features = ["test-plugin", "test-hooks"] }
 emfor-tls = { path = "../emfor-tls", features = ["testing"] }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["test-util", "full"] }
