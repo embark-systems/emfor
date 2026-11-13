@@ -1,6 +1,6 @@
-# Checking redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP and Diameter with emfor-check
+# Checking redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter and SMTP with emfor-check
 
-`emfor-check` is the plugin program that ships with emfor. One executable holds eight plugins; its only argument picks which one runs:
+`emfor-check` is the plugin program that ships with emfor. One executable holds nine plugins; its only argument picks which one runs:
 
 | Argument | Checks | Up when |
 | --- | --- | --- |
@@ -12,6 +12,7 @@
 | `radius` | RADIUS servers (FreeRADIUS, …) | a Status-Server (or Access-Request) gets a correctly signed accept |
 | `sip` | SIP proxies, registrars and SBCs (Kamailio, OpenSIPS, Asterisk, …) | an OPTIONS request gets a final response with an expected status code |
 | `diameter` | Diameter nodes: HSS, PCRF, OCS, DRA (freeDiameter, …) | the capabilities exchange (CER / CEA) and a device watchdog (DWR / DWA) succeed |
+| `smtp` | SMTP servers (Postfix, Exim, …) | the greeting is 220 and EHLO answers 250, over STARTTLS or TLS when asked for |
 
 Each plugin runs as one long-lived child process of the emfor daemon, shared by every service that uses it (see [the plugin protocol](../plugins/protocol-v1.md)). Each check opens a new connection to the backend (for `dns` over UDP, a new socket) and closes it before answering, so a server that refuses new connections (for example because `max_connections` is reached) is reported as down.
 
@@ -55,7 +56,7 @@ The plugin name in `[plugins."<name>"]` is your choice; the argument after the p
 
 ### Options
 
-These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns`, `radius`, `sip` and `diameter` plugins have their own, see [DNS](#dns), [RADIUS](#radius), [SIP](#sip) and [Diameter](#diameter).
+These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns`, `radius`, `sip`, `diameter` and `smtp` plugins have their own, see [DNS](#dns), [RADIUS](#radius), [SIP](#sip), [Diameter](#diameter) and [SMTP](#smtp).
 
 | Key | Plugins | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
@@ -301,13 +302,41 @@ At least one of `auth_application_ids`, `acct_application_ids` and `vendor_speci
 
 Requests the node sends on its own (for example its own DWR) are ignored and not answered.
 
+### SMTP
+
+The `smtp` plugin opens a new TCP connection (or TLS) on every check, waits for the server's greeting and sends `EHLO`. It is up when the greeting is `220` and `EHLO` answers `250`; it then sends `QUIT` and closes the connection without waiting for the answer. It does not log in or send mail (no `MAIL FROM`, no `AUTH`).
+
+```toml
+[plugins."smtp"]
+command = ["/usr/local/libexec/emfor-check", "smtp"]
+
+[services."mx.svc.emfor"]
+check = "smtp"
+backends = ["10.0.12.1:25", "10.0.12.2:25"]
+check_options = { starttls = true, server_name = "mx.example.org" }
+```
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `helo` | string | the local address of the connection, as `[192.0.2.5]` or `[IPv6:2001:db8::5]` | The `EHLO` argument: a host name of 1 to 255 ASCII letters, digits, `-` and `.` |
+| `starttls` | boolean | `false` | Upgrade with `STARTTLS` (ports 25 and 587), then send `EHLO` again over TLS |
+| `tls` | boolean | `false` | TLS from the start of the connection (port 465); conflicts with `starttls` |
+| `tls_verify`, `server_name`, `ca_file` | | | As for the other plugins, see [TLS](#tls); need `tls = true` or `starttls = true` |
+
+Any other key is an error.
+
+- With `starttls`, a server whose `EHLO` answer does not list `STARTTLS` is down with `tls: STARTTLS not offered`, and one that answers `STARTTLS` with anything but `220` is down with `tls: STARTTLS refused: <code> <text>`. Nothing is sent after either. The server's second `EHLO` answer, over TLS, must be `250` too.
+- A greeting other than `220` (for example `421` or `554` from an overloaded or blocking server) is down with `greeting: <code> <text>`; an `EHLO` answer other than `250` is down with `ehlo: <code> <text>`. The text is the first line of the reply.
+- A reply that is not SMTP, has a line longer than 2048 bytes, or is longer than 65536 bytes in all is down with `query: `; so is a server that closes the connection before answering.
+- Mail servers log every connection, and some count one without mail against the client (Postfix's `anvil`, `postscreen`, fail2ban rules). Allow the emfor hosts there, and use an `interval` of 10 seconds or more.
+
 ## Reading results
 
 | Reason starts with | Result | Meaning |
 | --- | --- | --- |
 | `connect: ` | down | Connection refused or dropped |
 | `timeout` | down | No answer within the service `timeout` (for `radius`, possibly a wrong secret, see [RADIUS](#radius)) |
-| `tls: ` | down | TLS handshake or certificate check failed, the port does not speak TLS, or the LDAP server refused StartTLS |
+| `tls: ` | down | TLS handshake or certificate check failed, the port does not speak TLS, or the LDAP or SMTP server refused or did not offer StartTLS |
 | `auth: ` | down | Login rejected (wrong password, unknown user or database, too many connections); for `ldap`, the resultCode and its name, see [LDAP](#ldap); for `radius`, a reject or a response not signed with the secret, see [RADIUS](#radius) |
 | `query: ` | down | A query failed or answered something unexpected (for `dns`, a response that cannot be parsed or, over TCP, answers another query; for `radius`, a malformed response or an unexpected response code) |
 | `role is ` | down | The backend has another role |
@@ -315,8 +344,9 @@ Requests the node sends on its own (for example its own DWR) are ignored and not
 | `rcode: `, `answer: ` | down | `dns`: an unexpected response code, or no records of the asked type, see [DNS](#dns) |
 | `status: ` | down | `sip`: a final status code outside `expect_status`, see [SIP](#sip) |
 | `cea: `, `dwa: ` | down | `diameter`: a capabilities exchange or watchdog answer with a failed Result-Code, or the node closed the connection, see [Diameter](#diameter) |
+| `greeting: `, `ehlo: ` | down | `smtp`: a greeting other than 220 or an `EHLO` answer other than 250, see [SMTP](#smtp) |
 | `password_file: `, `secret_file: `, `ca_file: `, `tls_cert_file: `, `tls_key_file: ` | error | The file could not be read during the check |
 
 ## What is tested
 
-`tests/plugins/run.sh` checks all eight plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary, a replica that replicates from it, a replica whose primary is unreachable, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; Kamailio 5.6.3 over UDP, TCP and TLS; and freeDiameter 1.2.1 over TCP and over TLS with a client certificate, with an ACL that knows one peer. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, the `sip` plugin against Kamailio only, and the `diameter` plugin against freeDiameter only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it (the replica check reads MySQL's `Replica_*` and `Seconds_Behind_Source` column names too, but only MariaDB's `Slave_*` names are tested). Like the rest of emfor, the plugins have not been tested on FreeBSD yet.
+`tests/plugins/run.sh` checks all nine plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary, a replica that replicates from it, a replica whose primary is unreachable, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; Kamailio 5.6.3 over UDP, TCP and TLS; freeDiameter 1.2.1 over TCP and over TLS with a client certificate, with an ACL that knows one peer; and Postfix 3.7 with STARTTLS, with TLS on port 465 and without TLS. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, the `sip` plugin against Kamailio only, the `diameter` plugin against freeDiameter only, and the `smtp` plugin against Postfix only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it (the replica check reads MySQL's `Replica_*` and `Seconds_Behind_Source` column names too, but only MariaDB's `Slave_*` names are tested). Like the rest of emfor, the plugins have not been tested on FreeBSD yet.

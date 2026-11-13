@@ -1,5 +1,5 @@
 //! `emfor-check` against real redis, MariaDB, PostgreSQL, OpenLDAP,
-//! unbound, FreeRADIUS and Kamailio servers.
+//! unbound, FreeRADIUS, Kamailio, freeDiameter and Postfix servers.
 //!
 //! Ignored by default: these tests need the servers that
 //! tests/plugins/inside.sh starts in the `emfor-plugins-test` container
@@ -23,10 +23,13 @@
 //! | 5353 | unbound, UDP and TCP, local zone `check.test` with only `a.check.test A 192.0.2.1` |
 //! | 1812, 1813 | FreeRADIUS authentication and accounting, Status-Server on, secret `testing123`, user `probe` with password `probe-pw` |
 //! | 5060, 5061 | Kamailio, UDP and TCP on 5060, TLS on 5061; OPTIONS is 200, or 404 for user `nobody` |
+//! | 2525 | Postfix, plaintext with STARTTLS |
+//! | 4465 | the same Postfix, TLS from the start |
+//! | 2526 | the same Postfix without STARTTLS |
 //!
 //! Server certificates are for `db.test`, signed by `$EMFOR_LIVE_DIR/ca.pem`;
 //! `$EMFOR_LIVE_DIR/good.pass` holds the password, `bad.pass` a wrong one.
-//! Nothing listens on 6399, 3399, 5499, 3899, 5399, 1899 and 5099 (TCP and
+//! Nothing listens on 6399, 3399, 5499, 3899, 5399, 1899, 5099 and 2599 (TCP and
 //! UDP).
 //! `radius.secret`, `wrong.secret` and `probe.pass` hold the RADIUS secret,
 //! another secret and the password of `probe`. The LDAP administrator is
@@ -532,4 +535,25 @@ fn diameter_live() {
         ("down".into(), "cea: 5010 DIAMETER_NO_COMMON_APPLICATION".into())
     );
     down(p.check(3999, peer("emfor.test", json!({}))), "connect: ");
+}
+
+#[test]
+#[ignore = "needs the emfor-plugins-test container"]
+fn smtp_live() {
+    let mut p = Plugin::start("smtp");
+    up(p.check(2525, json!({})));
+    up(p.check(2525, json!({"helo": "app1.test"})));
+    let verified = json!({"server_name": "db.test", "ca_file": file("ca.pem")});
+    let mut starttls = verified.clone();
+    starttls["starttls"] = json!(true);
+    up(p.check(2525, starttls.clone()));
+    let mut wrong_name = starttls.clone();
+    wrong_name["server_name"] = json!("nope.test");
+    down(p.check(2525, wrong_name), "tls: ");
+    let mut implicit = verified;
+    implicit["tls"] = json!(true);
+    up(p.check(4465, implicit.clone()));
+    down(p.check(2525, implicit), "tls: ");
+    down(p.check(2526, starttls), "tls: STARTTLS not offered");
+    down(p.check(2599, json!({})), "connect: ");
 }

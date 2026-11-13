@@ -1,9 +1,11 @@
 //! `emfor-check`: emfor checker plugins for redis, MySQL, PostgreSQL,
-//! LDAP, DNS, RADIUS, SIP and Diameter.
+//! LDAP, DNS, RADIUS, SIP, Diameter and SMTP.
 //!
-//! Usage: `emfor-check redis|mysql|pgsql|ldap|dns|radius|sip|diameter`. The argument picks the plugin;
-//! the process then speaks plugin protocol 1 on stdin and stdout
-//! (docs/plugins/protocol-v1.md). See docs/deploy/plugins.md.
+//! Usage:
+//! `emfor-check redis|mysql|pgsql|ldap|dns|radius|sip|diameter|smtp`.
+//! The argument picks the plugin; the process then speaks plugin protocol 1
+//! on stdin and stdout (docs/plugins/protocol-v1.md). See
+//! docs/deploy/plugins.md.
 
 use std::process::ExitCode;
 
@@ -16,7 +18,7 @@ fn main() -> ExitCode {
         _ => None,
     };
     let Some(kind) = kind else {
-        eprintln!("usage: emfor-check redis|mysql|pgsql|ldap|dns|radius|sip|diameter");
+        eprintln!("usage: emfor-check redis|mysql|pgsql|ldap|dns|radius|sip|diameter|smtp");
         return ExitCode::from(2);
     };
     // The drivers build their own rustls configurations from the process

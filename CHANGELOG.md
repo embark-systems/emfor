@@ -20,6 +20,12 @@
 - `max_lag`: with `role = "replica"`, the seconds a replica may be behind
   before it is down. See [Replicas](docs/deploy/plugins.md#replicas) for
   what each plugin measures and the rights the checks need.
+- `emfor-check smtp` checks SMTP servers: the greeting must be 220 and
+  `EHLO` must answer 250, on a new connection, optionally upgraded with
+  `STARTTLS` (`starttls = true`) or TLS from the start (`tls = true`,
+  port 465); then it sends `QUIT`. It never logs in or sends mail. It is
+  down with `greeting: `, `ehlo: ` or `tls: STARTTLS not offered`. See
+  [docs/deploy/plugins.md](docs/deploy/plugins.md#smtp).
 
 ## 0.3.0 — 2026-11-14
 

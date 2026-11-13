@@ -171,8 +171,8 @@ backends = [
 # speaking line-delimited JSON on stdin/stdout. See
 # docs/plugins/protocol-v1.md. The plugin validates check_options itself.
 # emfor-check is the plugin that ships with emfor; its argument picks
-# redis, mysql, pgsql, ldap, dns, radius, sip or diameter. See docs/deploy/plugins.md for
-# every option.
+# redis, mysql, pgsql, ldap, dns, radius, sip, diameter or
+# smtp. See docs/deploy/plugins.md for every option.
 # Commented out because emfor-check is not installed on a fresh host.
 #
 # [plugins."redis"]
@@ -261,3 +261,15 @@ backends = [
 # origin_realm = "example.org"
 # vendor_specific_application_ids = [{ vendor_id = 10415, auth_application_id = 16777238 }]  # Gx
 # supported_vendor_ids = [10415]
+#
+# [plugins."smtp"]
+# command = ["/usr/local/libexec/emfor-check", "smtp"]
+#
+# [services."mx.svc.emfor"]
+# check = "smtp"
+# backends = ["10.0.12.1:25", "10.0.12.2:25"]
+# interval = "10s"                          # mail servers log every connection
+#
+# [services."mx.svc.emfor".check_options]
+# starttls = true                           # or tls = true on port 465
+# server_name = "mx.example.org"

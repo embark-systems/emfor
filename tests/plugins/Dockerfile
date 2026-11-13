@@ -1,6 +1,6 @@
 # Builds emfor, emfor-check and its live tests, and a Debian image with
-# redis, MariaDB, PostgreSQL, OpenLDAP, unbound, FreeRADIUS, Kamailio and
-# freeDiameter, for run.sh.
+# redis, MariaDB, PostgreSQL, OpenLDAP, unbound, FreeRADIUS, Kamailio,
+# freeDiameter and Postfix, for run.sh.
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
@@ -20,7 +20,7 @@ FROM debian:bookworm-slim
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends redis-server redis-tools mariadb-server mariadb-client \
     postgresql postgresql-client openssl dnsutils ca-certificates procps slapd ldap-utils unbound freeradius kamailio kamailio-tls-modules \
-    freediameterd freediameter-extensions \
+    freediameterd freediameter-extensions postfix \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/debug/emfor /usr/local/bin/emfor
 COPY --from=build /src/target/debug/emfor-check /src/target/debug/emfor-check

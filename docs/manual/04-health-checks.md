@@ -11,7 +11,7 @@ A service's `check` decides how each backend is tested, and its
 | `tcp` | A TCP connection, optionally TLS and a send/expect exchange | Any TCP service; greeting-based protocols such as SMTP |
 | `http` | One `GET` request and its status code | Web services and health endpoints |
 | `exec` | A program run once per check | Existing Nagios-style scripts, infrequent checks |
-| a plugin name | A long-running plugin program | redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter (`emfor-check`), or your own |
+| a plugin name | A long-running plugin program | redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP (`emfor-check`), or your own |
 
 A check that has not finished within the service's `timeout` is `down`
 with reason `timeout`. The one exception is a plugin: a plugin that does not
@@ -140,6 +140,7 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 | `radius` | A Status-Server (or Access-Request) gets an accept signed with the shared secret |
 | `sip` | An OPTIONS request gets a final status code in `expect_status` (default 200 to 499) |
 | `diameter` | A capabilities exchange (CER / CEA) and a device watchdog (DWR / DWA) succeed |
+| `smtp` | The greeting is 220 and `EHLO` answers 250, over STARTTLS or TLS when asked for |
 
 Main options: `user`, `password_file` (never the password itself; read on
 every check), `database` (`pgsql`), `role` (`master`/`replica` for redis,
@@ -155,7 +156,8 @@ the `sip` plugin `transport`, `tls` (with the TLS keys), `uri`, `from` and
 `expect_status`, and the `diameter` plugin `origin_host`, `origin_realm`,
 the application ids, `supported_vendor_ids`, `host_ip_address` and `tls`
 (with the TLS keys and the client certificate `tls_cert_file` and
-`tls_key_file`).
+`tls_key_file`), and the `smtp` plugin `helo`, `starttls` and `tls` (with
+the TLS keys).
 [docs/deploy/plugins.md](../deploy/plugins.md) lists every option and
 reason.
 

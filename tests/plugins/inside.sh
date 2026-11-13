@@ -1,7 +1,8 @@
 #!/bin/sh
 # Runs inside the emfor-plugins-test container: start redis, MariaDB
 # (with replication),
-# PostgreSQL, OpenLDAP, unbound, FreeRADIUS, Kamailio and freeDiameter as crates/emfor-check/tests/live.rs describes, run those tests,
+# PostgreSQL, OpenLDAP, unbound, FreeRADIUS, Kamailio, freeDiameter and
+# Postfix as crates/emfor-check/tests/live.rs describes, run those tests,
 # then run the emfor daemon with the pgsql plugin.
 set -eu
 
@@ -341,6 +342,25 @@ until grep -qi ':0F1C [0-9A-F:]* 0A ' /proc/net/tcp && grep -qi ':161A [0-9A-F:]
     i=$((i + 1)); [ $i -lt 60 ] || { cat "$D/dra.log" "$D/hss.log"; fail "freeDiameter did not start"; }; sleep 0.5
 done
 grep -m1 "libfdcore" "$D/dra.log" || true
+
+step "postfix"
+# 2525: plaintext with STARTTLS; 4465: TLS from the start (wrapper mode);
+# 2526: no STARTTLS. The log must be under maillog_file_prefixes (/var).
+postconf -e "myhostname = mx.test" "mydestination =" "inet_interfaces = 127.0.0.1" \
+    "inet_protocols = ipv4" "maillog_file = /var/log/postfix.log" "compatibility_level = 3.6" \
+    "smtpd_tls_cert_file = $D/server.crt" "smtpd_tls_key_file = $D/server.key"
+cat >> /etc/postfix/master.cf <<'CONF'
+127.0.0.1:2525 inet n - n - - smtpd -o smtpd_tls_security_level=may
+127.0.0.1:4465 inet n - n - - smtpd -o smtpd_tls_wrappermode=yes -o smtpd_tls_security_level=encrypt
+127.0.0.1:2526 inet n - n - - smtpd -o smtpd_tls_security_level=none
+CONF
+postfix check || { tail -20 /var/log/postfix.log; fail "postfix config is invalid"; }
+postfix start >/dev/null 2>&1 || { tail -20 /var/log/postfix.log; fail "postfix did not start"; }
+i=0
+# 2525 is 09DD, 4465 is 1171 and 2526 is 09DE in /proc/net; 0A is LISTEN.
+until [ "$(grep -cE ':(09DD|1171|09DE) 00000000:0000 0A' /proc/net/tcp)" = 3 ]; do
+    i=$((i + 1)); [ $i -lt 60 ] || { tail -20 /var/log/postfix.log; fail "postfix is not listening"; }; sleep 0.5
+done
 
 step "emfor-check against the servers"
 EMFOR_LIVE_DIR="$D" emfor-check-live-test --ignored --test-threads=1

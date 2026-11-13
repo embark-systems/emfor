@@ -104,7 +104,13 @@ fn parse_with(
     };
     let required: &[(&str, &Option<String>)] = match kind {
         // The network plugins have their own options and never get here.
-        Kind::Redis | Kind::Ldap | Kind::Dns | Kind::Radius | Kind::Sip | Kind::Diameter => &[],
+        Kind::Redis
+        | Kind::Ldap
+        | Kind::Dns
+        | Kind::Radius
+        | Kind::Sip
+        | Kind::Diameter
+        | Kind::Smtp => &[],
         Kind::Mysql => &[("user", &user)],
         Kind::Pgsql => &[("user", &user), ("database", &database)],
     };
@@ -159,9 +165,12 @@ fn parse_with(
                     Kind::Redis => "must be one of master, replica",
                     Kind::Mysql | Kind::Pgsql => "must be one of primary, replica",
                     // ldap is skipped above; the network plugins never get here.
-                    Kind::Ldap | Kind::Dns | Kind::Radius | Kind::Sip | Kind::Diameter => {
-                        "unknown key"
-                    }
+                    Kind::Ldap
+                    | Kind::Dns
+                    | Kind::Radius
+                    | Kind::Sip
+                    | Kind::Diameter
+                    | Kind::Smtp => "unknown key",
                 };
                 errors.push(OptionError::new("role", message));
             }
