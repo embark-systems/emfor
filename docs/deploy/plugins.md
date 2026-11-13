@@ -457,10 +457,11 @@ Any other key is an error. The server must register the health service: in Go `g
 | `role is ` | down | The backend has another role |
 | `replication: ` | down | A replica that is not replicating or is more than `max_lag` behind, see [Replicas](#replicas) |
 | `rcode: `, `answer: ` | down | `dns`: an unexpected response code, or no records of the asked type, see [DNS](#dns) |
-| `status: ` | down | `sip`: a final status code outside `expect_status`, see [SIP](#sip) |
+| `status: ` | down | `sip`: a final status code outside `expect_status`, see [SIP](#sip); `grpc`: a health status other than `SERVING`, see [gRPC](#grpc) |
 | `cea: `, `dwa: ` | down | `diameter`: a capabilities exchange or watchdog answer with a failed Result-Code, or the node closed the connection, see [Diameter](#diameter) |
 | `greeting: `, `ehlo: ` | down | `smtp`: a greeting other than 220 or an `EHLO` answer other than 250, see [SMTP](#smtp) |
 | `vhost: ` | down | `amqp`: the broker refused to open the vhost, see [AMQP](#amqp) |
+| `grpc: ` | down | `grpc`: a `grpc-status` other than 0, for example no health service (`12 UNIMPLEMENTED`) or an unknown `service` (`5 NOT_FOUND`), see [gRPC](#grpc) |
 | `password_file: `, `secret_file: `, `ca_file: `, `tls_cert_file: `, `tls_key_file: ` | error | The file could not be read during the check |
 
 ## What is tested
