@@ -212,6 +212,8 @@ The server answers only `GET /metrics` (a query string is ignored): other paths 
 | `emfor_peer_up` | gauge | `peer` | With `[peers]`: one per other member, 1 while a message from it was accepted in the last 3 seconds; a member removed on reload loses its series |
 | `emfor_peer_messages_rejected_total` | counter | `reason` | With `[peers]`: dropped peer messages by the first check they failed: `malformed`, `auth`, `sender`, `site`, `stale`, `replay`; all six from 0 |
 | `emfor_peer_notifications_total` | counter | `direction` | With `[peers]`: backend failure reports `sent` (one per receiving member) and `received` (accepted, whether acted on or not) |
+| `emfor_peer_results_total` | counter | `direction` | With `[peers]`: check results of assigned checkers `sent` (one per receiving member) and `received` (accepted, whether counted or not) |
+| `emfor_peer_disagreements` | gauge | | With `[peers]`: backends the group votes down while this daemon's own check passes |
 
 The two counters start at 0 when a backend first appears in the running daemon, keep counting across reloads (also when `check` or `check_options` change), and start again from 0 if the backend is removed and added back. They restart with the daemon; Prometheus handles that as a counter reset.
 
@@ -219,7 +221,7 @@ Services are listed by name and backends in config order. Measured with one serv
 
 ## Peer groups
 
-The daemons of one site can pass backend failures on to each other (see docs/manual/01-concepts.md, "Peer groups"). To set one up:
+The daemons of one site can pass backend failures on to each other and, with three or more members, vote on each backend (see docs/manual/01-concepts.md, "Peer groups"). To set one up:
 
 1. Make a secret and put the same file on every host of the site:
 
@@ -242,6 +244,8 @@ The daemons of one site can pass backend failures on to each other (see docs/man
 
 3. Allow UDP on port 5302 between the members, and keep their clocks in sync (NTP): messages more than 5 seconds off are dropped.
 4. Restart each daemon (adding `[peers]` needs a restart). At start it logs `peer group on <listen> with <n> other members`, and `peer <address> is live` as the others come up. Hosts not yet configured just get no reports; nothing else changes for them.
+
+Every member checks every backend. With three or more live members, three of them (chosen per backend) also send their results to the others, so each host sends and receives about `3 × backends ÷ interval` result messages a second (estimated: 1000 backends at a 2-second interval are about 1500 messages and 375 KB a second, whatever the group size). With members of different versions during an upgrade, older members do not vote, so the vote falls back to each host's own checks more often; nothing is marked down wrongly.
 
 To leave the group, remove `[peers]` and restart. To change the secret, replace the file on every host within a minute of each other. Each host reads the file every second; after its file changed it still signs with the previous secret for 60 seconds and accepts it for 120 seconds, so no message is dropped while the hosts change one by one.
 

@@ -15,6 +15,17 @@
   New metrics `emfor_peer_up`, `emfor_peer_messages_rejected_total` and
   `emfor_peer_notifications_total`. Without `[peers]` nothing changes.
   See docs/manual/03-configuration.md and docs/deploy/daemon.md.
+- Majority vote: with three or more live members, each backend has three
+  assigned checkers, chosen by rendezvous hashing over the live members.
+  They send their own check results to the others, and two `down` votes
+  mark the backend down on every member, also where its own check passes;
+  the reason then reads `peers 2/3: …`, and a failure only this host sees
+  reads `local: …`. With fewer members or no recent vote each daemon
+  decides from its own checks as before. `emfor status` shows a `peers:`
+  line, members whose check definition differs, and the marker `local-up`;
+  `--json` has `peers`, from the new store key `meta/peers` (format
+  version stays 1, clients ignore it). New metrics
+  `emfor_peer_results_total` and `emfor_peer_disagreements`.
 
 ### Status
 

@@ -321,7 +321,7 @@ tests:
 ---
 ### Requirement: Health state machine with rise and fall
 
-Each backend SHALL have a health state of `unknown`, `healthy`, or `unhealthy`, a consecutive-success counter, and a consecutive-failure counter, all starting at `unknown`, 0, 0 when the daemon starts. An `up` result SHALL increment the success counter and reset the failure counter; reaching `rise` SHALL set the state to `healthy`. A `down` result SHALL increment the failure counter and reset the success counter; reaching `fall` SHALL set the state to `unhealthy`. An `error` result SHALL change neither counter nor the state, except that when a backend has received only `error` results for longer than `fall × interval`, its state SHALL become `unknown` and both counters SHALL reset to 0.
+Each backend SHALL have a health state of `unknown`, `healthy`, or `unhealthy`, a consecutive-success counter, and a consecutive-failure counter, all starting at `unknown`, 0, 0 when the daemon starts. An `up` result SHALL increment the success counter and reset the failure counter; reaching `rise` SHALL set the state to `healthy`. A `down` result SHALL increment the failure counter and reset the success counter; reaching `fall` SHALL set the state to `unhealthy`. An `error` result SHALL change neither counter nor the state, except that when a backend has received only `error` results for longer than `fall × interval`, its state SHALL become `unknown` and both counters SHALL reset to 0. In a daemon with `[peers]`, the result of a check, as used by this requirement and by every other requirement of this spec (scheduling, fast recheck runs, logging, latency and counters), SHALL be the combined result of that check defined in spec peer-group ("Region verdict and combined result"); without `[peers]` it SHALL be the result the checker returned.
 
 #### Scenario: Backend becomes healthy
 
@@ -346,32 +346,34 @@ Each backend SHALL have a health state of `unknown`, `healthy`, or `unhealthy`, 
 - **WHEN** a `healthy` backend with `interval = "2s"` and `fall = 3` receives only `error` results for more than 6s
 - **THEN** its state becomes `unknown` and both counters are 0
 
+#### Scenario: Combined result feeds the state machine
+
+- **WHEN** a daemon in a peer group of three has a `healthy` backend with `fall = 3`, its own checks give `up`, and the two other assigned checkers keep reporting `down`
+- **THEN** after 3 checks the backend is `unhealthy` with a reason starting with `peers 2/`
+
 
 <!-- @trace
-source: emfor-core
-updated: 2026-11-12
+source: emfor-peers-quorum
+updated: 2026-11-13
 code:
-  - crates/emfor-daemon/src/checker/http.rs
-  - crates/emfor-daemon/src/writer.rs
-  - Cargo.toml
-  - crates/emfor-daemon/src/cli.rs
-  - CLAUDE.md
-  - crates/emfor-daemon/src/main.rs
-  - crates/emfor-daemon/src/state.rs
   - crates/emfor-daemon/Cargo.toml
-  - .spectra.yaml
-  - crates/emfor-daemon/src/checker/tcp.rs
-  - crates/emfor-daemon/src/checker/mod.rs
+  - docs/manual/03-configuration.md
+  - CHANGELOG.md
+  - crates/emfor-daemon/src/status.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - docs/manual/08-operations.md
+  - crates/emfor-daemon/src/peers.rs
   - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/src/config.rs
-  - crates/emfor-daemon/src/supervisor.rs
-  - crates/emfor-daemon/src/store.rs
-  - crates/emfor-format/src/lib.rs
-  - examples/emfor.toml
-  - crates/emfor-format/Cargo.toml
   - crates/emfor-daemon/src/schedule.rs
+  - crates/emfor-daemon/src/quorum.rs
+  - crates/emfor-daemon/src/writer.rs
+  - crates/emfor-daemon/src/cli.rs
+  - crates/emfor-format/src/lib.rs
+  - docs/deploy/daemon.md
+  - crates/emfor-daemon/src/supervisor.rs
+  - docs/manual/01-concepts.md
 tests:
-  - crates/emfor-daemon/tests/daemon.rs
+  - crates/emfor-daemon/tests/peers.rs
 -->
 
 ---

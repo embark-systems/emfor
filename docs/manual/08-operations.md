@@ -92,6 +92,8 @@ no TLS; keep it on loopback or firewall it.
 | `emfor_peer_up{peer}` | With `[peers]`: 1 while that member is live |
 | `emfor_peer_messages_rejected_total{reason}` | With `[peers]`: dropped messages by reason: `malformed`, `auth` (wrong secret), `sender` (not a member, or a spoofed address), `site`, `stale` (clocks more than 5 seconds apart), `replay` |
 | `emfor_peer_notifications_total{direction}` | With `[peers]`: failure reports `sent` (one per member) and `received` |
+| `emfor_peer_results_total{direction}` | With `[peers]`: check results of assigned checkers `sent` (one per member) and `received` |
+| `emfor_peer_disagreements` | With `[peers]`: backends the group votes down while this host's own check passes |
 | `emfor_build_info{version}`, `emfor_start_time_seconds` | The daemon |
 
 [examples/prometheus/emfor-rules.yml](../../examples/prometheus/emfor-rules.yml)
@@ -109,6 +111,27 @@ other (NTP). If `emfor_peer_up` stays 0 for a member, look at
 secrets differ, `stale` that the clocks drift, `sender` that `members` or
 `listen` do not match, `site` that the hosts have different `site` values.
 
+Reasons tell where a `down` came from: `peers 2/3: <reason>` means two of
+the three assigned checkers saw the backend down (the reason is theirs),
+`local: <reason>` that only this host sees it down while the vote did not
+say down, and a reason without a prefix that there was no vote (fewer than
+three live members, or no recent result). `emfor status` shows the group
+under the daemon line:
+
+```
+peers: 1/2 live, not live 10.0.0.7:5302
+peers: check definition of api.svc.emfor differs at 10.0.0.6:5302
+```
+
+and marks backends with `local-up` when the group votes them down while
+this host's own check passes. Those are worth a look: this host reaches a
+backend the others do not (often a network partition or a firewall rule on
+the other hosts), and `emfor_peer_disagreements` counts them. A "check
+definition differs" line means that member's `check`, `check_options` or
+`timeout` for the service differ from this host's, so its results are not
+counted; make the configs match. The same data is in the store key
+`meta/peers` and in `emfor status --json` as `peers`.
+
 ## Logs
 
 The daemon logs to stderr: the journal under systemd, syslog (tag `emfor`)
@@ -120,8 +143,8 @@ only when stderr is a terminal and `NO_COLOR` is not set.
 | --- | --- |
 | `error` | Store commit failures, rejected reloads |
 | `warn` | Plugin exits, damaged store replaced, services outside the DNS zone or with mixed ports, unparsable plugin output, dropped peer messages (one line per source and reason a minute), an unreadable `[peers] secret_file` |
-| `info` | Start and stop, every backend state change with its reason, plugin stderr lines, peer members becoming live or not live, `peer … reports backend … down (…); checking now` |
-| `debug` | The duration of every passed check, peer reports that were ignored and why |
+| `info` | Start and stop, every backend state change with its reason, plugin stderr lines, peer members becoming live or not live, `peer … reports backend … down (…); checking now`, `backend … of … is down at 2/3 peers but up here` |
+| `debug` | The duration of every passed check, peer reports that were ignored and why, results from a member with another check definition |
 
 ## Exit codes
 

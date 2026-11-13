@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::config::{Config, ServiceConfig, Settings};
-use crate::peers::{DownSender, Recheck, ServiceTargets, Targets};
+use crate::peers::{PeerHooks, Recheck, ServiceTargets, Targets};
 use crate::schedule::{PeerLink, spawn_backend};
 use crate::writer::{ServiceLayout, WriterMsg};
 
@@ -61,8 +61,8 @@ pub struct Supervisor {
     next_generation: u64,
     /// Every backend's recheck channel, for the peer task.
     targets: Targets,
-    /// Where backend tasks announce failures; `None` without `[peers]`.
-    peers_down: Option<DownSender>,
+    /// What backend tasks use of the peer group; `None` without `[peers]`.
+    peers: Option<PeerHooks>,
 }
 
 impl Supervisor {
@@ -73,26 +73,38 @@ impl Supervisor {
     }
 
     /// [`Supervisor::start`] for a daemon in a peer group: every backend's
-    /// recheck channel is kept in `targets`, and failures go to `down`.
+    /// recheck channel is kept in `targets`, and backend tasks get `peers`.
     pub fn start_with_peers(
         config: &Config,
         writer: mpsc::UnboundedSender<WriterMsg>,
         targets: Targets,
-        down: Option<DownSender>,
+        peers: Option<PeerHooks>,
     ) -> Self {
         let mut s = Supervisor {
             writer,
             services: BTreeMap::new(),
             next_generation: 1,
             targets,
-            peers_down: down,
+            peers,
         };
         s.sync(config, true);
         s
     }
 
-    /// Publish every service's digest and recheck channels to the peer task.
+    /// Publish every service's digest and recheck channels to the peer task,
+    /// and drop the votes and disagreements of removed services and backends.
     fn publish_targets(&self) {
+        if let Some(p) = &self.peers {
+            let keep = self
+                .services
+                .iter()
+                .map(|(name, r)| {
+                    let ids = r.config.backends.iter().map(|b| b.id.clone()).collect();
+                    (name.to_string(), ids)
+                })
+                .collect();
+            p.quorum.retain(&keep);
+        }
         let services = self
             .services
             .iter()
@@ -124,7 +136,7 @@ impl Supervisor {
     pub fn restart_finished(&mut self) -> usize {
         let now = tokio::time::Instant::now();
         let mut restarted = 0;
-        let down = self.peers_down.clone();
+        let peers = self.peers.clone();
         for (name, r) in &mut self.services {
             for b in &r.config.backends {
                 let Some(t) = r.tasks.get_mut(&b.id) else {
@@ -159,7 +171,7 @@ impl Supervisor {
                     self.writer.clone(),
                     PeerLink {
                         recheck,
-                        down: down.clone(),
+                        peers: peers.clone(),
                     },
                 );
                 r.restarts.insert(
@@ -278,7 +290,7 @@ impl Supervisor {
                     r.rechecks.entry(b.id.clone()).or_default();
                     let link = PeerLink {
                         recheck: r.rechecks[&b.id].clone(),
-                        down: self.peers_down.clone(),
+                        peers: self.peers.clone(),
                     };
                     let t = spawn_backend(
                         layout.name.clone(),
@@ -686,8 +698,27 @@ mod tests {
             ))
         };
         let first = svc("\"10.0.0.1:80\", \"10.0.0.2:80\"", "1s");
-        let mut sup = Supervisor::start_with_peers(&first, h.tx.clone(), targets.clone(), None);
+        let (out, _out_rx) = mpsc::unbounded_channel();
+        let quorum = Arc::new(crate::quorum::Quorum::new("10.0.0.5:5302".parse().unwrap()));
+        let hooks = crate::peers::PeerHooks {
+            out,
+            quorum: quorum.clone(),
+            targets: targets.clone(),
+        };
+        let mut sup =
+            Supervisor::start_with_peers(&first, h.tx.clone(), targets.clone(), Some(hooks));
         let digest = first.services[0].digest.clone();
+        let vote = |backend: &str| crate::peers::ResultMsg {
+            service: "a".into(),
+            digest: digest.clone(),
+            backend: backend.into(),
+            outcome: crate::peers::Outcome::Up,
+            interval_ms: 1000,
+        };
+        let now = tokio::time::Instant::now();
+        let six = "10.0.0.6:5302".parse().unwrap();
+        quorum.record(six, &vote("10.0.0.1:80"), now);
+        quorum.record(six, &vote("10.0.0.2:80"), now);
         assert_eq!(targets.digest("a"), Some(digest.clone()));
         let down = |backend: &str, digest: &str| Down {
             service: "a".into(),
@@ -697,12 +728,38 @@ mod tests {
         };
         let from = "10.0.0.6:5302".parse().unwrap();
         assert_eq!(targets.deliver(&down("10.0.0.2:80", &digest), from), Ok(()));
+        // Make 10.0.0.2:80 a disagreement: .5, .6 and .7 are its assigned
+        // checkers, .6 and .7 see it down, this daemon up. No await until
+        // the reload, so the backend tasks cannot clear it first.
+        let seven = "10.0.0.7:5302".parse().unwrap();
+        quorum.set_live([six, seven]);
+        let gone = crate::peers::ResultMsg {
+            outcome: crate::peers::Outcome::Down("refused".into()),
+            ..vote("10.0.0.2:80")
+        };
+        quorum.record(six, &gone, now);
+        quorum.record(seven, &gone, now);
+        let c = quorum.combine(
+            "a",
+            "10.0.0.2:80",
+            &digest,
+            &crate::checker::CheckResult::Up,
+            now,
+        );
+        assert_eq!(c.disagreement, Some((2, 3)));
+        assert_eq!(quorum.disagreements(), 1);
         sup.reload(&svc("\"10.0.0.1:80\"", "1s"));
+        assert_eq!(quorum.disagreements(), 0, "removed backend's disagreement");
         assert_eq!(
             targets.deliver(&down("10.0.0.2:80", &digest), from),
             Err("no such backend here")
         );
         assert_eq!(targets.deliver(&down("10.0.0.1:80", &digest), from), Ok(()));
+        assert!(
+            quorum.kept("a", "10.0.0.2:80", six).is_none(),
+            "removed backend"
+        );
+        assert!(quorum.kept("a", "10.0.0.1:80", six).is_some());
         let changed = svc("\"10.0.0.1:80\"", "500ms");
         sup.reload(&changed);
         assert_ne!(changed.services[0].digest, digest);
@@ -714,6 +771,10 @@ mod tests {
             "[services.b]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
         ));
         assert_eq!(targets.digest("a"), None);
+        assert!(
+            quorum.kept("a", "10.0.0.1:80", six).is_none(),
+            "removed service"
+        );
         sup.stop();
     }
 }

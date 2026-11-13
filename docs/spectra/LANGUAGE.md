@@ -41,6 +41,8 @@
 | 快組 | `pool` | `fastest` 服務中被 daemon 判定為快的後端：健康且有檢查延遲，延遲不超過最低者的 1.5 倍或加 1 ms 時進入，超過最低者的 2 倍且超過最低者加 2 ms 才離開。daemon 依設定檔順序把它們的 `id` 寫進服務記錄的 `pool`，DNS 也用同一份。client 與 DNS 只在快組裡輪流挑選，不自行判斷快慢；快組沒有該挑的後端時改用 `round-robin`。 | 快速群組、fast flag；用 pool 稱呼服務 |
 | 機房 | `site` | 資料中心的標籤（`[a-z0-9-]`，1–63 字元，讀入時轉小寫）。設定檔最上層的 `site` 是本機所在機房，daemon 寫進 LMDB 的 `meta/site`，DNS 與 client 都讀它；後端表格的 `site` 是該後端所在機房。只有 `locality` 使用。 | zone（保留給 DNS 負責網域）、datacenter、region |
 | 聯防群組 | peer group（`[peers]`） | 同一個 `site` 裡、列在彼此設定檔 `[peers]` 的 emfor daemon。成員互相交換檢查結果，用來更快發現故障、以多數決避免誤判、分工減少對後端的檢查；交換的資料只是本機 daemon 判斷的參考，查詢仍只讀本機 store。收不到成員的資料時退回完全本機的判斷。不跨 `site`，也沒有 master。 | 區域、cluster、master / slave |
+| 負責主機 | assigned checker | 聯防群組中負責某台後端的 3 台成員：在「本機加上存活成員」中以 rendezvous hashing（MD5(`<服務>/<後端 id>/<成員 listen>`) 前 4 bytes）取最大的 3 台。負責主機每次 up / down 檢查後把本機結果送給其他成員。存活成員連同本機少於 3 台時沒有負責主機。 | 檢查者、voter、leader |
+| 全區判斷 | region verdict | 每次本機檢查後，以負責主機的新鮮結果計票：至少 2 票 down 時全區判 down（原因 `peers d/f:`），優先於本機檢查；否則用本機結果（本機 down 時原因 `local:`）；沒有負責主機或沒有新鮮票時完全依本機。全區判 down 而本機 up 的後端稱為不一致，status 標 `local-up`。 | 共識、quorum（只指 change 名稱） |
 
 ### 分配方式的值
 

@@ -123,6 +123,14 @@ fn config(
 }
 
 fn spawn(config_for: impl FnOnce(&Path, SocketAddr) -> String) -> Daemon {
+    spawn_env(config_for, &[])
+}
+
+/// [`spawn`] with extra environment variables for the daemon process.
+fn spawn_env(
+    config_for: impl FnOnce(&Path, SocketAddr) -> String,
+    env: &[(&str, &Path)],
+) -> Daemon {
     let dir = tempfile::tempdir().expect("a temporary directory can be created");
     let metrics = free_tcp();
     let cfg = dir.path().join("emfor.toml");
@@ -132,6 +140,7 @@ fn spawn(config_for: impl FnOnce(&Path, SocketAddr) -> String) -> Daemon {
         .arg("--config")
         .arg(&cfg)
         .env_remove("RUST_LOG")
+        .envs(env.iter().copied())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -211,6 +220,15 @@ fn peer_sees_the_failure_first() {
     });
     assert!(first.elapsed() <= Duration::from_secs(2));
     let log = db.log();
+    // Two members: no majority, B's reason is its own.
+    let line = log
+        .lines()
+        .find(|l| l.contains(UNHEALTHY))
+        .expect("B logged the change");
+    assert!(
+        !line.contains("(peers ") && !line.contains("(local: "),
+        "{line}"
+    );
     assert!(
         log.contains(&format!(
             "peer {a} reports backend {backend} of api.svc.emfor down"
@@ -368,4 +386,142 @@ fn occupied_peer_port_exits_1() {
         "{log}"
     );
     assert!(!log.contains("emfor started"), "{log}");
+}
+
+/// One member of a group of three with an `exec` service whose result the
+/// test controls per daemon: the command is the same everywhere (so is the
+/// digest), and it fails while the file named by the daemon's own
+/// `EMFOR_TEST_FLAG` exists.
+fn exec_config(
+    dir: &Path,
+    metrics: SocketAddr,
+    listen: SocketAddr,
+    members: &[SocketAddr],
+) -> String {
+    let members: Vec<String> = members.iter().map(|m| format!("\"{m}\"")).collect();
+    format!(
+        "site = \"dc1\"\n\n[store]\npath = \"{}\"\nmap_size = \"4MiB\"\n\n[metrics]\nlisten = [\"{metrics}\"]\n\n[peers]\nlisten = \"{listen}\"\nmembers = [{}]\nsecret_file = \"{}\"\n\n[services.\"api.svc.emfor\"]\ncheck = \"exec\"\nbackends = [\"127.0.0.1:9\"]\ninterval = \"1s\"\ntimeout = \"900ms\"\nrise = 1\nfall = 3\njitter = \"0%\"\n[services.\"api.svc.emfor\".check_options]\ncommand = [\"/bin/sh\", \"-c\", 'if [ -e \"$EMFOR_TEST_FLAG\" ]; then echo refused; exit 1; fi']\n",
+        dir.join("state.mdb").display(),
+        members.join(", "),
+        secret(dir).display(),
+    )
+}
+
+/// `emfor status` for daemon `d`: (stdout of the text output, `--json`).
+fn status(d: &Daemon) -> (String, serde_json::Value) {
+    let cfg = d.dir.path().join("emfor.toml");
+    let run = |json: bool| {
+        let mut c = Command::new(cargo_bin("emfor"));
+        c.arg("status").arg("--config").arg(&cfg);
+        if json {
+            c.arg("--json");
+        }
+        let out = c.output().expect("emfor status runs");
+        String::from_utf8(out.stdout).expect("status prints UTF-8")
+    };
+    let json = serde_json::from_str(&run(true)).expect("status --json prints JSON");
+    (run(false), json)
+}
+
+/// Sum of a counter over all its series whose labels contain `label`.
+fn counter(body: &str, name: &str, label: &str) -> u64 {
+    body.lines()
+        .filter(|l| l.starts_with(&format!("{name}{{")) && l.contains(label))
+        .filter_map(|l| l.rsplit(' ').next()?.parse::<u64>().ok())
+        .sum()
+}
+
+/// Spec peer-group "Two of three assigned checkers see the backend down"
+/// and "Only one daemon sees the backend down".
+#[test]
+fn majority_of_three() {
+    let flags = tempfile::tempdir().expect("a temporary directory can be created");
+    let flag = |i: usize| flags.path().join(format!("down-{i}"));
+    let members = [free_udp(), free_udp(), free_udp()];
+    let daemons: Vec<Daemon> = (0..3)
+        .map(|i| {
+            let f = flag(i);
+            spawn_env(
+                |dir, m| exec_config(dir, m, members[i], &members),
+                &[("EMFOR_TEST_FLAG", &f)],
+            )
+        })
+        .collect();
+    for d in &daemons {
+        d.wait_log(HEALTHY);
+    }
+    wait_for(
+        "every member live everywhere",
+        Duration::from_secs(10),
+        || {
+            daemons.iter().all(|d| {
+                let body = d.scrape();
+                counter(&body, "emfor_peer_up", "") == 2
+            })
+        },
+    );
+    let [a, b, c] = [&daemons[0], &daemons[1], &daemons[2]];
+
+    // A and B see the backend down, C's own checks pass.
+    for i in [0, 1] {
+        std::fs::write(flag(i), "").expect("the flag can be written");
+    }
+    // C's own checks keep passing: only the vote can make it unhealthy
+    // (about `fall` = 3 checks of 1s; wait_log allows 10s for slow hosts).
+    c.wait_log("changed from healthy to unhealthy (peers 2/3: refused)");
+    c.wait_log("is down at 2/3 peers but up here");
+    wait_for("C counts the disagreement", Duration::from_secs(10), || {
+        c.has_line("emfor_peer_disagreements 1")
+    });
+    wait_for("meta/peers lists it", Duration::from_secs(10), || {
+        status(c).1["peers"]["disagreements"]
+            == serde_json::json!([{"service":"api.svc.emfor","backend":"127.0.0.1:9","down":2,"fresh":3}])
+    });
+    let (text, json) = status(c);
+    assert!(text.contains("peers: 2/2 live"), "{text}");
+    assert!(
+        text.lines()
+            .any(|l| l.contains("127.0.0.1:9") && l.contains("local-up")),
+        "{text}"
+    );
+    assert_eq!(
+        json["peers"]["listen"],
+        serde_json::json!(members[2].to_string())
+    );
+    // Each own up or down check of an assigned checker goes to both others.
+    wait_for(
+        "one round of results per check",
+        Duration::from_secs(10),
+        || {
+            let body = c.scrape();
+            let checks = counter(&body, "emfor_backend_checks_total", "result=\"up\"")
+                + counter(&body, "emfor_backend_checks_total", "result=\"down\"");
+            counter(&body, "emfor_peer_results_total", "direction=\"sent\"") == 2 * checks
+        },
+    );
+
+    // Everyone sees it up again.
+    for i in [0, 1] {
+        std::fs::remove_file(flag(i)).expect("the flag can be removed");
+    }
+    wait_for("all healthy again", Duration::from_secs(10), || {
+        daemons
+            .iter()
+            .all(|d| d.log().contains("changed from unhealthy to healthy"))
+    });
+    wait_for("C clears the disagreement", Duration::from_secs(10), || {
+        c.has_line("emfor_peer_disagreements 0")
+    });
+
+    // Only A sees it down: A alone marks it, with a local reason.
+    let before: Vec<usize> = daemons
+        .iter()
+        .map(|d| d.log().matches(UNHEALTHY).count())
+        .collect();
+    std::fs::write(flag(0), "").expect("the flag can be written");
+    a.wait_log("changed from healthy to unhealthy (local: refused)");
+    std::thread::sleep(Duration::from_secs(4));
+    for (d, n) in [(b, before[1]), (c, before[2])] {
+        assert_eq!(d.log().matches(UNHEALTHY).count(), n, "{}", d.log());
+    }
 }

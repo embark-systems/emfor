@@ -322,34 +322,40 @@ async fn run(
     // Validation makes `site` required with `[peers]`.
     let peer_site = |c: &Config| c.site.clone().unwrap_or_default();
     let targets = Targets::default();
+    let (tx, rx) = mpsc::unbounded_channel();
     let peers = match &config.peers {
-        Some(p) => match peers::start(p, &peer_site(&config), targets.clone()).await {
-            Ok(handle) => {
-                tracing::info!(
-                    "peer group on {} with {} other members",
-                    p.listen,
-                    p.others().count()
-                );
-                Some(handle)
+        Some(p) => {
+            match peers::start(p, &peer_site(&config), targets.clone(), Some(tx.clone())).await {
+                Ok(handle) => {
+                    tracing::info!(
+                        "peer group on {} with {} other members",
+                        p.listen,
+                        p.others().count()
+                    );
+                    Some(handle)
+                }
+                Err(e) => {
+                    tracing::error!("cannot start peer group: {e}");
+                    return ExitCode::from(EXIT_STARTUP);
+                }
             }
-            Err(e) => {
-                tracing::error!("cannot start peer group: {e}");
-                return ExitCode::from(EXIT_STARTUP);
-            }
-        },
+        }
         None => None,
     };
     live.set_peers(peers.as_ref().map(|h| h.stats.clone()));
 
-    let (tx, rx) = mpsc::unbounded_channel();
     let history = load_history(&store);
-    let mut writer = writer::spawn_live(store, rx, live.clone(), history, listen_keys(&config));
+    let keys = writer::ListenKeys {
+        peers: peers.as_ref().map(|h| h.initial_state.clone()),
+        ..listen_keys(&config)
+    };
+    let mut writer = writer::spawn_live(store, rx, live.clone(), history, keys);
     live.set_plugins(plugins.statuses());
     let mut supervisor = Supervisor::start_with_peers(
         &config,
         tx.clone(),
         targets,
-        peers.as_ref().map(|h| h.down.clone()),
+        peers.as_ref().map(peers::PeersHandle::hooks),
     );
     tracing::info!(
         "emfor started: {} services, {} backends, store {}",
@@ -454,6 +460,7 @@ fn listen_keys(config: &Config) -> writer::ListenKeys {
     writer::ListenKeys {
         dns: config.dns.as_ref().map(|d| strings(&d.listen)),
         metrics: config.metrics.as_ref().map(|m| strings(&m.listen)),
+        peers: None,
     }
 }
 
@@ -615,6 +622,7 @@ mod tests {
             writer::ListenKeys {
                 dns: Some(vec!["127.0.0.1:5300".into(), "[::1]:5300".into()]),
                 metrics: Some(vec!["127.0.0.1:5301".into(), "[::1]:5301".into()]),
+                peers: None,
             }
         );
         assert_eq!(listen_keys(&parse("")), writer::ListenKeys::default());

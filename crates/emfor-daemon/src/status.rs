@@ -26,12 +26,13 @@ use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyM
 use crossterm::{cursor, terminal};
 use emfor_format::{
     HIST_KEY_PREFIX, HealthState, HistoryEntry, KEY_DNS_LISTEN, KEY_HEARTBEAT, KEY_METRICS_LISTEN,
-    KEY_SCHEMA_VERSION, KEY_SITE, KEY_STARTED_AT, SCHEMA_VERSION, SERVICE_KEY_PREFIX,
+    KEY_PEERS, KEY_SCHEMA_VERSION, KEY_SITE, KEY_STARTED_AT, SCHEMA_VERSION, SERVICE_KEY_PREFIX,
     ServiceHistory, ServiceRecord,
 };
 use futures::StreamExt;
 use heed::types::Str;
 use heed::{Database, Env, EnvFlags, EnvOpenOptions, WithoutTls};
+use serde::Deserialize;
 
 use crate::config::{self, StoreConfig};
 use crate::schedule::unix_ms;
@@ -76,6 +77,8 @@ pub struct Snapshot {
     pub dns_listen: Option<Vec<String>>,
     /// `meta/metrics_listen`; `None` when absent or not an array of strings.
     pub metrics_listen: Option<Vec<String>>,
+    /// `meta/peers` when it holds a JSON object; shown by `--json` as is.
+    pub peers: Option<serde_json::Value>,
     /// In name order.
     pub services: Vec<ServiceRecord>,
     /// Backend state history by service name; unreadable values are left out.
@@ -179,6 +182,7 @@ impl Reader {
         let site = get(KEY_SITE)?.map(str::to_owned);
         let dns_listen = listen_value(get(KEY_DNS_LISTEN)?);
         let metrics_listen = listen_value(get(KEY_METRICS_LISTEN)?);
+        let peers = peers_value(get(KEY_PEERS)?);
         let mut services = Vec::new();
         for item in self
             .db
@@ -208,6 +212,7 @@ impl Reader {
             site,
             dns_listen,
             metrics_listen,
+            peers,
             services,
             history,
         })
@@ -335,6 +340,81 @@ fn listen_value(value: Option<&str>) -> Option<Vec<String>> {
     value.and_then(|v| serde_json::from_str(v).ok())
 }
 
+/// A `meta/peers` value; anything but a JSON object reads as absent.
+fn peers_value(value: Option<&str>) -> Option<serde_json::Value> {
+    value
+        .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
+        .filter(serde_json::Value::is_object)
+}
+
+/// `meta/peers` as the text output reads it (spec state-store, "Peer group
+/// state in the store").
+#[derive(Debug, Deserialize)]
+struct PeerState {
+    members: Vec<PeerMember>,
+    digest_mismatch: Vec<PeerMismatch>,
+    disagreements: Vec<PeerDisagreement>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PeerMember {
+    addr: String,
+    live: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct PeerMismatch {
+    service: String,
+    member: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PeerDisagreement {
+    service: String,
+    backend: String,
+}
+
+/// The peer state to show: only while the daemon is running and when
+/// `meta/peers` has the expected shape.
+fn peer_state(snap: &Snapshot, now_ms: u64) -> Option<PeerState> {
+    if daemon_state(snap.heartbeat_ms, now_ms).0 != Daemon::Running {
+        return None;
+    }
+    serde_json::from_value(snap.peers.clone()?).ok()
+}
+
+/// The `peers:` lines (spec "Status text output").
+fn peer_lines(state: &PeerState, snap: &Snapshot) -> Vec<String> {
+    let live = state.members.iter().filter(|m| m.live).count();
+    let mut line = format!("peers: {live}/{} live", state.members.len());
+    let not_live: Vec<&str> = state
+        .members
+        .iter()
+        .filter(|m| !m.live)
+        .map(|m| m.addr.as_str())
+        .collect();
+    if !not_live.is_empty() {
+        append!(line, ", not live {}", not_live.join(" "));
+    }
+    let mut lines = vec![line];
+    for svc in &snap.services {
+        let at: Vec<&str> = state
+            .digest_mismatch
+            .iter()
+            .filter(|m| m.service == svc.name)
+            .map(|m| m.member.as_str())
+            .collect();
+        if !at.is_empty() {
+            lines.push(format!(
+                "peers: check definition of {} differs at {}",
+                svc.name,
+                at.join(" ")
+            ));
+        }
+    }
+    lines
+}
+
 /// The `store:` and `daemon:` lines.
 fn header(snap: &Snapshot, store: &Path, now_ms: u64, style: Style) -> Vec<String> {
     let mut lines = vec![format!("store: {}", store.display())];
@@ -384,7 +464,11 @@ fn services_lines(
     style: Style,
     marked: &HashSet<Row>,
 ) -> Vec<String> {
-    let mut lines = Vec::new();
+    let peers = peer_state(snap, now_ms);
+    let mut lines = peers
+        .as_ref()
+        .map(|p| peer_lines(p, snap))
+        .unwrap_or_default();
     let flaps = flapping(snap, now_ms);
 
     // Backend cells: id, state, checked, latency, pool; reason unpadded.
@@ -462,6 +546,13 @@ fn services_lines(
                     padded
                 });
             }
+            if peers.as_ref().is_some_and(|p| {
+                p.disagreements
+                    .iter()
+                    .any(|d| d.service == svc.name && d.backend == backend.id)
+            }) {
+                parts.push(paint(style, YELLOW, "local-up"));
+            }
             if let Some((.., n)) = flaps
                 .iter()
                 .find(|(name, id, _)| *name == svc.name && *id == backend.id)
@@ -496,6 +587,7 @@ pub fn json(snap: &Snapshot, store: &Path, now_ms: u64) -> serde_json::Value {
         "metrics_listen": snap.metrics_listen,
         "services": snap.services,
         "history": snap.history,
+        "peers": snap.peers,
         "flapping": flapping(snap, now_ms)
             .into_iter()
             .map(|(service, backend, changes)| {
@@ -1054,6 +1146,7 @@ mod tests {
             site: Some("tpe1".into()),
             dns_listen: None,
             metrics_listen: None,
+            peers: None,
             services,
             history: BTreeMap::new(),
         }
@@ -1332,6 +1425,82 @@ mod tests {
         assert_eq!(
             json(&s, Path::new("/s.mdb"), NOW)["dns_listen"],
             serde_json::json!(["127.0.0.1:5300"])
+        );
+    }
+
+    const PEERS: &str = r#"{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true},{"addr":"10.0.0.7:5302","live":false},{"addr":"10.0.0.8:5302","live":true}],"digest_mismatch":[{"service":"api.svc.emfor","member":"10.0.0.8:5302"}],"disagreements":[{"service":"api.svc.emfor","backend":"10.0.0.11:8080","down":2,"fresh":3}]}"#;
+
+    /// Spec "Status text output", scenario "Peer group lines".
+    #[test]
+    fn peer_group_lines() {
+        let mut s = snap(Some(400), vec![api()]);
+        s.peers = peers_value(Some(PEERS));
+        let lines = render(&s);
+        assert_eq!(lines[2], "peers: 2/3 live, not live 10.0.0.7:5302");
+        assert_eq!(
+            lines[3],
+            "peers: check definition of api.svc.emfor differs at 10.0.0.8:5302"
+        );
+        let b11 = lines.iter().find(|l| l.contains("10.0.0.11:8080")).unwrap();
+        assert!(b11.ends_with("1.2ms  local-up"), "{b11:?}");
+        let b12 = lines.iter().find(|l| l.contains("10.0.0.12:8080")).unwrap();
+        assert!(!b12.contains("local-up"));
+        // A service not shown has no mismatch line.
+        let mut only_db = snap(Some(400), vec![service("db.svc.emfor", false, vec![])]);
+        only_db.peers = s.peers.clone();
+        assert_eq!(
+            render(&only_db)[2],
+            "peers: 2/3 live, not live 10.0.0.7:5302"
+        );
+        assert!(!render(&only_db)[3].starts_with("peers:"));
+    }
+
+    /// Spec "Status text output", example "peers line".
+    #[test]
+    fn peers_line_table() {
+        let both_live = r#"{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true},{"addr":"10.0.0.7:5302","live":true}],"digest_mismatch":[],"disagreements":[]}"#;
+        let none_live = both_live.replace("true", "false");
+        let rows: [(Option<&str>, Option<u64>, Option<&str>); 5] = [
+            (Some(both_live), Some(400), Some("peers: 2/2 live")),
+            (
+                Some(&none_live),
+                Some(400),
+                Some("peers: 0/2 live, not live 10.0.0.6:5302 10.0.0.7:5302"),
+            ),
+            (None, Some(400), None),
+            (Some("not json"), Some(400), None),
+            (Some(both_live), None, None),
+        ];
+        for (value, heartbeat_ago, want) in rows {
+            let mut s = snap(heartbeat_ago, vec![api()]);
+            s.peers = peers_value(value);
+            let lines = render(&s);
+            let got = lines
+                .iter()
+                .find(|l| l.starts_with("peers:"))
+                .map(String::as_str);
+            assert_eq!(got, want, "{value:?} {heartbeat_ago:?}");
+        }
+        // Stopped: no marker either.
+        let mut s = snap(None, vec![api()]);
+        s.peers = peers_value(Some(PEERS));
+        assert!(render(&s).iter().all(|l| !l.contains("local-up")));
+    }
+
+    /// Spec "Status filtering and JSON output", scenario "JSON peer state".
+    #[test]
+    fn json_peer_state() {
+        let value = r#"{"listen":"127.0.0.1:5302","members":[{"addr":"127.0.0.1:5303","live":true}],"digest_mismatch":[],"disagreements":[]}"#;
+        let mut s = snap(Some(400), vec![api()]);
+        assert_eq!(
+            json(&s, Path::new("/s.mdb"), NOW)["peers"],
+            serde_json::Value::Null
+        );
+        s.peers = peers_value(Some(value));
+        let s = filter(s, Some("api.svc.emfor")).unwrap();
+        assert_eq!(
+            json(&s, Path::new("/s.mdb"), NOW)["peers"],
+            serde_json::from_str::<serde_json::Value>(value).unwrap()
         );
     }
 

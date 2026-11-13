@@ -19,8 +19,9 @@ use std::time::Duration;
 
 use emfor_format::{
     BackendRecord, Balance, HIST_KEY_PREFIX, HealthState, HistoryEntry, KEY_DNS_LISTEN,
-    KEY_HEARTBEAT, KEY_METRICS_LISTEN, KEY_SCHEMA_VERSION, KEY_SITE, KEY_STARTED_AT, OnAllDown,
-    SCHEMA_VERSION, SERVICE_KEY_PREFIX, ServiceHistory, ServiceRecord, hist_key, service_key,
+    KEY_HEARTBEAT, KEY_METRICS_LISTEN, KEY_PEERS, KEY_SCHEMA_VERSION, KEY_SITE, KEY_STARTED_AT,
+    OnAllDown, SCHEMA_VERSION, SERVICE_KEY_PREFIX, ServiceHistory, ServiceRecord, hist_key,
+    service_key,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::MissedTickBehavior;
@@ -135,6 +136,8 @@ pub enum WriterMsg {
         site: Option<String>,
         services: Vec<ServiceLayout>,
     },
+    /// New value of `meta/peers`, written with the next commit.
+    PeerState(String),
     /// Flush, write `meta/heartbeat = "0"`, and stop.
     Shutdown(oneshot::Sender<()>),
     /// Answered once every earlier message is handled (and committed, when
@@ -156,9 +159,10 @@ struct Writer<S: Sink> {
     histories: BTreeMap<Arc<str>, ServiceHistory>,
     /// Services whose history changed since the last commit.
     hist_dirty: BTreeSet<Arc<str>>,
-    /// `meta/dns_listen` and `meta/metrics_listen` with their JSON values,
-    /// written at a fresh start; a key is deleted when its value is `None`.
-    listen: [(&'static str, Option<String>); 2],
+    /// `meta/dns_listen`, `meta/metrics_listen` and `meta/peers` with their
+    /// JSON values, written at a fresh start; a key is deleted when its
+    /// value is `None`.
+    listen: [(&'static str, Option<String>); 3],
     /// Updated before every commit attempt.
     live: LiveState,
     /// Heartbeats since the last reader slot check.
@@ -166,12 +170,15 @@ struct Writer<S: Sink> {
 }
 
 /// The listen addresses of the running daemon, written to `meta/dns_listen`
-/// and `meta/metrics_listen` at a fresh start. `None`: the config has no
-/// such table, and the key is deleted.
+/// and `meta/metrics_listen` at a fresh start, and the first value of
+/// `meta/peers`. `None`: the config has no such table, and the key is
+/// deleted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ListenKeys {
     pub dns: Option<Vec<String>>,
     pub metrics: Option<Vec<String>>,
+    /// JSON object for `meta/peers`.
+    pub peers: Option<String>,
 }
 
 /// Spawn the writer task. It runs until it receives [`WriterMsg::Shutdown`]
@@ -224,6 +231,7 @@ fn spawn_inner<S: Sink>(
     let listen = [
         (KEY_DNS_LISTEN, json(listen.dns)),
         (KEY_METRICS_LISTEN, json(listen.metrics)),
+        (KEY_PEERS, listen.peers),
     ];
     tokio::spawn(async move {
         let mut w = Writer {
@@ -249,6 +257,7 @@ fn spawn_inner<S: Sink>(
                 msg = rx.recv() => match msg {
                     Some(WriterMsg::Update(u)) => w.update(u).await,
                     Some(WriterMsg::SetLayout { fresh_start, site, services }) => w.set_layout(fresh_start, site, services).await,
+                    Some(WriterMsg::PeerState(json)) => w.peer_state(json),
                     Some(WriterMsg::Shutdown(done)) => {
                         w.shutdown().await;
                         let _ = done.send(());
@@ -301,6 +310,17 @@ impl<S: Sink> Writer<S> {
             self.hist_dirty.insert(u.service.clone());
             self.flush(Vec::new()).await;
         }
+    }
+
+    /// Queue the new `meta/peers` value and remember it, so a later fresh
+    /// start writes this value and not the one from when the daemon began.
+    fn peer_state(&mut self, json: String) {
+        for (key, value) in &mut self.listen {
+            if *key == KEY_PEERS {
+                *value = Some(json.clone());
+            }
+        }
+        self.pending.push(Op::Put(KEY_PEERS.into(), json));
     }
 
     async fn set_layout(
@@ -799,6 +819,7 @@ mod tests {
         let listen = ListenKeys {
             dns: Some(vec!["127.0.0.1:5300".into(), "[::1]:5300".into()]),
             metrics: Some(vec!["127.0.0.1:5301".into(), "[::1]:5301".into()]),
+            peers: Some(PEERS_AT_START.into()),
         };
         let start = |tx: &mpsc::UnboundedSender<WriterMsg>, fresh_start| {
             tx.send(WriterMsg::SetLayout {
@@ -812,11 +833,13 @@ mod tests {
             (
                 store.get(KEY_DNS_LISTEN).unwrap(),
                 store.get(KEY_METRICS_LISTEN).unwrap(),
+                store.get(KEY_PEERS).unwrap(),
             )
         };
         let want = (
             Some(r#"["127.0.0.1:5300","[::1]:5300"]"#.to_owned()),
             Some(r#"["127.0.0.1:5301","[::1]:5301"]"#.to_owned()),
+            Some(PEERS_AT_START.to_owned()),
         );
         let (tx, rx) = mpsc::unbounded_channel();
         let w = spawn_inner(
@@ -836,12 +859,83 @@ mod tests {
         drop(tx);
         w.await.unwrap();
 
-        // Next run without [dns] or [metrics]: the earlier values are gone.
+        // Next run without [dns], [metrics] or [peers]: the earlier values
+        // are gone.
         let (tx, rx) = mpsc::unbounded_channel();
         spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
         start(&tx, true);
         settled(&tx).await;
-        assert_eq!(keys(&store), (None, None));
+        assert_eq!(keys(&store), (None, None, None));
+    }
+
+    /// State-store "Peer state written at start".
+    const PEERS_AT_START: &str = r#"{"listen":"127.0.0.1:5302","members":[{"addr":"127.0.0.1:5303","live":false}],"digest_mismatch":[],"disagreements":[]}"#;
+
+    /// A new `meta/peers` value is written with the next commit (here the
+    /// next heartbeat).
+    #[tokio::test]
+    async fn peer_state_written_with_the_next_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_inner(
+            store.clone(),
+            rx,
+            Duration::from_millis(50),
+            LiveState::default(),
+            BTreeMap::new(),
+            ListenKeys {
+                peers: Some(PEERS_AT_START.into()),
+                ..ListenKeys::default()
+            },
+        );
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+        })
+        .unwrap();
+        settled(&tx).await;
+        assert_eq!(
+            store.get(KEY_PEERS).unwrap().as_deref(),
+            Some(PEERS_AT_START)
+        );
+        let live = PEERS_AT_START.replace("false", "true");
+        tx.send(WriterMsg::PeerState(live.clone())).unwrap();
+        settled(&tx).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(store.get(KEY_PEERS).unwrap(), Some(live));
+    }
+
+    /// A peer state that arrives before the start transaction is not
+    /// overwritten by the value from when the daemon began.
+    #[tokio::test]
+    async fn peer_state_before_start_survives_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_inner(
+            store.clone(),
+            rx,
+            Duration::from_millis(50),
+            LiveState::default(),
+            BTreeMap::new(),
+            ListenKeys {
+                peers: Some(PEERS_AT_START.into()),
+                ..ListenKeys::default()
+            },
+        );
+        let live = PEERS_AT_START.replace("false", "true");
+        tx.send(WriterMsg::PeerState(live.clone())).unwrap();
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+        })
+        .unwrap();
+        settled(&tx).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(store.get(KEY_PEERS).unwrap(), Some(live));
     }
 
     #[tokio::test]

@@ -717,6 +717,7 @@ dependencies = [
  "hmac",
  "humantime",
  "libc",
+ "md-5",
  "nix",
  "rand 0.10.3",
  "reqwest",

@@ -11,7 +11,7 @@ use tokio::time::Instant;
 
 use crate::checker::{CheckRequest, CheckResult, Checker, run_check};
 use crate::config::{Backend, Settings};
-use crate::peers::{BackendDown, DownSender, Recheck};
+use crate::peers::{BackendDown, BackendResult, Outcome, PeerHooks, PeerOut, Recheck};
 use crate::state::{BackendHealth, Thresholds, Transition, next_latency};
 use crate::writer::WriterMsg;
 
@@ -121,9 +121,46 @@ pub fn starts_fast_run(
 pub struct PeerLink {
     /// Woken when a peer reports this backend down.
     pub recheck: Arc<Recheck>,
-    /// Where a healthy → unhealthy transition is announced; `None` without
-    /// `[peers]`.
-    pub down: Option<DownSender>,
+    /// The peer group: where a healthy → unhealthy transition is announced
+    /// and own results are sent, and the votes each check is combined
+    /// with; `None` without `[peers]`.
+    pub peers: Option<PeerHooks>,
+}
+
+/// The combined result of this daemon's own result `own` (spec peer-group,
+/// "Region verdict and combined result"); when this daemon is an assigned
+/// checker of the backend, its own `up` or `down` result is sent to the
+/// other members.
+fn combine(
+    p: &PeerHooks,
+    service: &Arc<str>,
+    backend: &str,
+    own: CheckResult,
+    interval: Duration,
+) -> CheckResult {
+    // A service the peer task does not know yet has no digest: no kept
+    // result matches, so the own result stands.
+    let digest = p.targets.digest(service).unwrap_or_default();
+    let c = p
+        .quorum
+        .combine(service, backend, &digest, &own, Instant::now());
+    let outcome = match &own {
+        CheckResult::Up => Some(Outcome::Up),
+        CheckResult::Down(r) => Some(Outcome::Down(r.clone())),
+        CheckResult::Error(_) => None,
+    };
+    if c.assigned
+        && let Some(outcome) = outcome
+    {
+        // The peer task is gone only while the daemon stops.
+        let _ = p.out.send(PeerOut::Result(BackendResult {
+            service: service.clone(),
+            backend: backend.to_string(),
+            outcome,
+            interval,
+        }));
+    }
+    c.result
 }
 
 /// Spawn the check loop of one backend. Settings changes that do not reset
@@ -153,8 +190,12 @@ pub fn spawn_backend(
             // timed part, so it does not inflate the first latency sample.
             checker.prepare(backend.addr);
             let started = Instant::now();
-            let result = run_check(checker.as_ref(), req).await;
+            let own = run_check(checker.as_ref(), req).await;
             let sample_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let result = match &peers.peers {
+                Some(p) => combine(p, &service, &backend.id, own, s.interval),
+                None => own,
+            };
             let thresholds = Thresholds {
                 rise: s.rise,
                 fall: s.fall,
@@ -205,13 +246,13 @@ pub fn spawn_backend(
             };
             let announce = transition
                 .is_some_and(|t| t.from == HealthState::Healthy && t.to == HealthState::Unhealthy);
-            if announce && let Some(down) = &peers.down {
+            if announce && let Some(p) = &peers.peers {
                 // The peer task is gone only while the daemon stops.
-                let _ = down.send(BackendDown {
+                let _ = p.out.send(PeerOut::Down(BackendDown {
                     service: service.clone(),
                     backend: backend.id.clone(),
                     reason: update.reason.clone().unwrap_or_default(),
-                });
+                }));
             }
             if updates.send(WriterMsg::Update(update)).is_err() {
                 return; // writer gone: daemon is shutting down
@@ -545,6 +586,145 @@ mod tests {
         }
     }
 
+    const DIGEST: &str = "0123456789abcdef0123456789abcdef";
+
+    fn member(i: u8) -> std::net::SocketAddr {
+        format!("10.0.0.{i}:5302").parse().unwrap()
+    }
+
+    /// Peer hooks of a daemon at `me` whose service `a` has [`DIGEST`]; no
+    /// member is live yet.
+    fn hooks(out: mpsc::UnboundedSender<PeerOut>, me: &str) -> PeerHooks {
+        let targets = crate::peers::Targets::default();
+        targets.replace(std::collections::HashMap::from([(
+            "a".to_string(),
+            crate::peers::ServiceTargets {
+                digest: DIGEST.into(),
+                backends: std::collections::HashMap::new(),
+            },
+        )]));
+        PeerHooks {
+            out,
+            quorum: Arc::new(crate::quorum::Quorum::new(me.parse().unwrap())),
+            targets,
+        }
+    }
+
+    /// A backend of service `a` checked by `chk` (interval 1s, fall 3, no
+    /// jitter) at daemon 10.0.0.`me` with members .5 to .9 live, which
+    /// already holds the results `kept` (by member) for it. For backend
+    /// 10.0.0.11:8080 of `a` the assigned checkers are .7, .6 and .9 in
+    /// that order. Runs for 5 seconds.
+    async fn with_votes(
+        me: u8,
+        kept: &[(u8, Outcome)],
+        chk: Arc<Switch>,
+    ) -> (Vec<BackendUpdate>, Vec<PeerOut>) {
+        let (otx, mut orx) = mpsc::unbounded_channel();
+        let h = hooks(otx, &member(me).to_string());
+        h.quorum.set_live((5..=9).map(member));
+        for (from, outcome) in kept {
+            let r = crate::peers::ResultMsg {
+                service: "a".into(),
+                digest: DIGEST.into(),
+                backend: "10.0.0.11:8080".into(),
+                outcome: outcome.clone(),
+                interval_ms: 3_600_000,
+            };
+            h.quorum.record(member(*from), &r, Instant::now());
+        }
+        let settings = Settings {
+            interval: Duration::from_secs(1),
+            jitter: 0.0,
+            ..Settings::default()
+        };
+        let (_stx, srx) = watch::channel(settings);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let link = PeerLink {
+            recheck: Arc::new(Recheck::default()),
+            peers: Some(h),
+        };
+        let task = spawn_backend("a".into(), backend(), chk, 0, srx, tx, link);
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        task.abort();
+        let mut updates = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            updates.push(update(u));
+        }
+        let mut out = Vec::new();
+        while let Ok(o) = orx.try_recv() {
+            out.push(o);
+        }
+        (updates, out)
+    }
+
+    /// Spec health-checking "Combined result feeds the state machine": two
+    /// other assigned checkers report down, this daemon's own checks pass.
+    #[tokio::test(start_paused = true)]
+    async fn two_down_votes_make_an_up_backend_unhealthy() {
+        let refused = || Outcome::Down("refused".into());
+        let (updates, out) = with_votes(
+            7,
+            &[(6, refused()), (9, refused())],
+            Arc::new(Switch::default()),
+        )
+        .await;
+        let states: Vec<_> = updates.iter().map(|u| u.state).collect();
+        assert_eq!(
+            &states[..3],
+            &[
+                HealthState::Unknown,
+                HealthState::Unknown,
+                HealthState::Unhealthy
+            ]
+        );
+        assert_eq!(updates[2].reason.as_deref(), Some("peers 2/3: refused"));
+        assert_eq!(
+            updates[2].latency_us, None,
+            "a combined down is no latency sample"
+        );
+        // Assigned: every own result (up) goes out, nothing else.
+        assert_eq!(out.len(), updates.len());
+        for o in &out {
+            let PeerOut::Result(r) = o else {
+                panic!("only results are sent: {o:?}");
+            };
+            assert_eq!(
+                (&*r.service, r.backend.as_str(), &r.outcome, r.interval),
+                ("a", "10.0.0.11:8080", &Outcome::Up, Duration::from_secs(1))
+            );
+        }
+    }
+
+    /// Spec peer-group "Only one daemon sees the backend down".
+    #[tokio::test(start_paused = true)]
+    async fn own_down_against_up_votes_is_local() {
+        let chk = Arc::new(Switch::default());
+        chk.down.store(true, Ordering::SeqCst);
+        let (updates, out) = with_votes(7, &[(6, Outcome::Up), (9, Outcome::Up)], chk).await;
+        assert_eq!(updates[2].state, HealthState::Unhealthy);
+        assert_eq!(
+            updates[2].reason.as_deref(),
+            Some("local: connection refused")
+        );
+        assert!(
+            matches!(&out[0], PeerOut::Result(r) if r.outcome == Outcome::Down("connection refused".into()))
+        );
+    }
+
+    /// Spec peer-group "Not an assigned checker" and "Error results are not
+    /// sent".
+    #[tokio::test(start_paused = true)]
+    async fn results_only_from_assigned_checkers_and_not_for_errors() {
+        let (updates, out) = with_votes(5, &[], Arc::new(Switch::default())).await;
+        assert_eq!(updates.last().unwrap().state, HealthState::Healthy);
+        assert!(out.is_empty(), "{out:?}");
+        let chk = Arc::new(Switch::default());
+        chk.error.store(true, Ordering::SeqCst);
+        let (_updates, out) = with_votes(7, &[], chk).await;
+        assert!(out.is_empty(), "{out:?}");
+    }
+
     fn report() -> crate::peers::PeerReport {
         crate::peers::PeerReport {
             from: "10.0.0.6:5302".parse().unwrap(),
@@ -557,7 +737,7 @@ mod tests {
     async fn healthy_switch() -> (
         Arc<Switch>,
         PeerLink,
-        mpsc::UnboundedReceiver<BackendDown>,
+        mpsc::UnboundedReceiver<PeerOut>,
         mpsc::UnboundedReceiver<WriterMsg>,
         JoinHandle<()>,
         watch::Sender<Settings>,
@@ -573,7 +753,7 @@ mod tests {
         let (dtx, drx) = mpsc::unbounded_channel();
         let link = PeerLink {
             recheck: Arc::new(Recheck::default()),
-            down: Some(dtx),
+            peers: Some(hooks(dtx, "10.0.0.5:5302")),
         };
         let h = spawn_backend("a".into(), backend(), chk.clone(), 0, srx, tx, link.clone());
         tokio::time::sleep(Duration::from_secs(8)).await;
@@ -618,7 +798,9 @@ mod tests {
             ]
         );
         // The healthy -> unhealthy transition is announced once.
-        let d = drx.try_recv().expect("the failure is announced");
+        let Ok(PeerOut::Down(d)) = drx.try_recv() else {
+            panic!("the failure is announced");
+        };
         assert_eq!(
             (&*d.service, d.backend.as_str(), d.reason.as_str()),
             ("a", "10.0.0.11:8080", "connection refused")
@@ -677,7 +859,7 @@ mod tests {
         let (dtx, mut drx) = mpsc::unbounded_channel();
         let link = PeerLink {
             recheck: Arc::new(Recheck::default()),
-            down: Some(dtx),
+            peers: Some(hooks(dtx, "10.0.0.5:5302")),
         };
         let h = spawn_backend("a".into(), backend(), chk, 0, srx, tx, link);
         tokio::time::sleep(Duration::from_secs(5)).await;

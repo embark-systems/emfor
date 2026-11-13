@@ -28,8 +28,7 @@ microsecond, and keeps working when other hosts, or the network, fail.
 Each host runs its own daemon with its own config and sees the backends
 from where it stands. There is no central server. The daemons of one data
 centre can optionally form a [peer group](#peer-groups) to pass failures on
-to each other; even then each daemon decides from its own checks, and
-lookups read only the local store.
+and to vote on each backend; lookups still read only the local store.
 
 ## The parts
 
@@ -124,21 +123,39 @@ authenticated UDP messages:
   every 200 ms, up to `fall` checks, instead of waiting for its next
   `interval`.
 
-A report never changes a backend's state by itself; only the daemon's own
-checks do, and lookups still read only the local store. Members that are
-not reachable change nothing: each daemon goes on checking on its own.
-There is no master, and a group never spans two sites.
+A report never changes a backend's state by itself. What does is the
+**majority vote**: with at least three live members (this one included),
+every backend has three **assigned checkers**, chosen from the live members
+by hashing the service, the backend and each member's address, so every
+member picks the same three. After each of its own checks an assigned
+checker sends its result (`up` or `down`) to the others. After each of its
+own checks, every member counts the results of that backend's assigned
+checkers that are recent (from the last three of the sender's intervals)
+and come from a member with the same check definition:
 
-Two later steps are planned on the same group: a majority vote among a few
-members chosen per backend, so one host's network trouble does not mark a
-backend down for the whole site, and splitting the full checks among those
-members so each backend gets fewer checks.
+- two or more `down` votes: the backend counts as down here too, even if
+  this host's own check passed; the reason reads `peers 2/3: <reason>`
+  (down votes / votes counted);
+- otherwise this host's own result counts, and a `down` reads
+  `local: <reason>`: this host sees a problem the others do not;
+- with fewer than three live members, or no vote at all, the own result
+  counts unchanged, as without a group.
+
+The counted result then goes through `rise` and `fall` as usual. A backend
+that the group sees down while this host's own check passes is shown by
+`emfor status` with the marker `local-up`. Lookups still read only the
+local store. Members that are not reachable change nothing: the vote falls
+back to each daemon's own checks. There is no master, and a group never
+spans two sites.
+
+A later step is planned on the same group: splitting the full checks among
+the assigned checkers so each backend gets fewer checks.
 
 ## Failure behavior at a glance
 
 | What fails | What applications see |
 | --- | --- |
-| One backend | It turns `unhealthy` after `fall` failed checks (about 6 seconds with the defaults) and is no longer returned. In a peer group, once one member has noticed, the others follow within about a second. |
+| One backend | It turns `unhealthy` after `fall` failed checks (about 6 seconds with the defaults) and is no longer returned. In a peer group, once one member has noticed, the others follow within about a second; when two of its three assigned checkers see it down, every member marks it down after `fall` checks, also where it still answers. |
 | Every backend of a service | `open`: any backend; `closed`: `ALL_DOWN` / `SERVFAIL`. |
 | The emfor daemon stops or hangs | After 3 seconds the store is stale: `open` services return any backend, `closed` services fail. Lookups never block. |
 | The store file is missing or unreadable | Lookups fail with `UNAVAILABLE`. |

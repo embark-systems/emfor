@@ -361,6 +361,29 @@ pub fn render(view: &LiveView, version: &str) -> String {
             "emfor_peer_notifications_total{{direction=\"received\"}} {}",
             peers.received()
         );
+        family(
+            &mut out,
+            "emfor_peer_results_total",
+            "counter",
+            "Check result messages sent (one per member) and accepted.",
+        );
+        put!(
+            out,
+            "emfor_peer_results_total{{direction=\"sent\"}} {}",
+            peers.results_sent()
+        );
+        put!(
+            out,
+            "emfor_peer_results_total{{direction=\"received\"}} {}",
+            peers.results_received()
+        );
+        family(
+            &mut out,
+            "emfor_peer_disagreements",
+            "gauge",
+            "Backends that a majority of their assigned checkers see down while this daemon's own check passes.",
+        );
+        put!(out, "emfor_peer_disagreements {}", peers.disagreements());
     }
 
     let mut names: Vec<&String> = view.services.keys().collect();
@@ -620,14 +643,27 @@ mod tests {
         assert!(g.accept(&hb(2, &[2u8; 32]), other, t, now).is_err());
         let mut v = view(vec![]);
         assert!(!render(&v, "0.1.0").contains("emfor_peer_"));
-        v.peers = Some(stats);
+        v.peers = Some(stats.clone());
         let body = render(&v, "0.1.0");
         for line in [
+            "emfor_peer_results_total{direction=\"sent\"} 0",
+            "emfor_peer_disagreements 0",
             "emfor_peer_up{peer=\"127.0.0.1:5303\"} 1",
             "emfor_peer_messages_rejected_total{reason=\"auth\"} 1",
             "emfor_peer_messages_rejected_total{reason=\"replay\"} 0",
             "emfor_peer_notifications_total{direction=\"sent\"} 0",
             "emfor_peer_notifications_total{direction=\"received\"} 0",
+        ] {
+            assert!(body.lines().any(|l| l == line), "{line}: {body}");
+        }
+        // Spec metrics-endpoint "Peer result metrics": an assigned checker
+        // in a group of three made 4 up checks and has one disagreement.
+        stats.set_results(8, 3, 1);
+        let body = render(&v, "0.1.0");
+        for line in [
+            "emfor_peer_results_total{direction=\"sent\"} 8",
+            "emfor_peer_results_total{direction=\"received\"} 3",
+            "emfor_peer_disagreements 1",
         ] {
             assert!(body.lines().any(|l| l == line), "{line}: {body}");
         }

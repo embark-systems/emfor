@@ -9,6 +9,7 @@ pub mod live;
 pub mod metrics;
 pub mod peers;
 pub mod plugin;
+pub mod quorum;
 pub mod schedule;
 pub mod select;
 pub mod state;

@@ -603,3 +603,54 @@ tests:
   - crates/emfor-daemon/tests/plugins.rs
   - crates/emfor-daemon/tests/daemon.rs
 -->
+
+---
+### Requirement: Peer group state in the store
+
+When the config has a `[peers]` table, the daemon SHALL keep the key `meta/peers` holding a JSON object with these fields:
+
+- `listen`: this daemon's `[peers] listen`;
+- `members`: an array of `{"addr":<member>,"live":<bool>}` for every member other than this daemon, in config order;
+- `digest_mismatch`: an array of `{"service":<name>,"member":<member>}` for every current digest mismatch (spec peer-group), ordered by service name and then member;
+- `disagreements`: an array of `{"service":<name>,"backend":<id>,"down":<d>,"fresh":<f>}` for every current disagreement (spec peer-group), ordered by service name and then backend id.
+
+Members SHALL be written as in the config (IPv6 as `[addr]:port`). On startup the daemon SHALL write the key in the same transaction that writes `meta/started_at`, with every member `live` false and both arrays empty; when the config has no `[peers]` table it SHALL delete the key in that transaction. While running, the daemon SHALL compare the content with the last one handed to the writer once per second and, when it changed, write the new content in the next commit. A failed commit SHALL be retried like any other key. Clients and the DNS server SHALL NOT read the key, and `meta/schema_version` SHALL stay `1`.
+
+#### Scenario: Peer state written at start
+
+- **WHEN** the daemon starts with `[peers] listen = "127.0.0.1:5302"` and `members = ["127.0.0.1:5302", "127.0.0.1:5303"]`
+- **THEN** once `meta/started_at` is written, key `meta/peers` holds `{"listen":"127.0.0.1:5302","members":[{"addr":"127.0.0.1:5303","live":false}],"digest_mismatch":[],"disagreements":[]}`
+
+#### Scenario: Peer key from an earlier run removed
+
+- **WHEN** the store holds `meta/peers` from an earlier run and the daemon starts with a config that has no `[peers]` table
+- **THEN** key `meta/peers` does not exist once `meta/started_at` is written
+
+#### Scenario: Liveness and disagreement reach the store
+
+- **WHEN** a daemon with `listen = "127.0.0.1:5302"` and `members = ["127.0.0.1:5302", "127.0.0.1:5303", "127.0.0.1:5304"]` sees both other members become live, and backend `127.0.0.1:8080` of `api.svc.emfor` becomes a disagreement with 2 of 3 votes down
+- **THEN** within 2 seconds `meta/peers` holds `"members":[{"addr":"127.0.0.1:5303","live":true},{"addr":"127.0.0.1:5304","live":true}]` and `"disagreements":[{"service":"api.svc.emfor","backend":"127.0.0.1:8080","down":2,"fresh":3}]`
+
+<!-- @trace
+source: emfor-peers-quorum
+updated: 2026-11-13
+code:
+  - crates/emfor-daemon/Cargo.toml
+  - docs/manual/03-configuration.md
+  - CHANGELOG.md
+  - crates/emfor-daemon/src/status.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - docs/manual/08-operations.md
+  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/lib.rs
+  - crates/emfor-daemon/src/schedule.rs
+  - crates/emfor-daemon/src/quorum.rs
+  - crates/emfor-daemon/src/writer.rs
+  - crates/emfor-daemon/src/cli.rs
+  - crates/emfor-format/src/lib.rs
+  - docs/deploy/daemon.md
+  - crates/emfor-daemon/src/supervisor.rs
+  - docs/manual/01-concepts.md
+tests:
+  - crates/emfor-daemon/tests/peers.rs
+-->

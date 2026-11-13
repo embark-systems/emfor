@@ -35,6 +35,10 @@ pub const KEY_METRICS_LISTEN: &str = "meta/metrics_listen";
 /// `[dns] listen` of the running daemon as a JSON array of strings; absent
 /// when the config has no `[dns]` table.
 pub const KEY_DNS_LISTEN: &str = "meta/dns_listen";
+/// Peer group state of the running daemon as a JSON object (`listen`,
+/// `members`, `digest_mismatch`, `disagreements`); absent when the config
+/// has no `[peers]` table. `emfor status` reads it; clients ignore it.
+pub const KEY_PEERS: &str = "meta/peers";
 /// Prefix of service record keys: `svc/<service name>`.
 pub const SERVICE_KEY_PREFIX: &str = "svc/";
 
