@@ -15,7 +15,7 @@
 
 #include "emfor_arginfo.h"
 
-#define PHP_EMFOR_VERSION "0.1.1"
+#define PHP_EMFOR_VERSION "0.2.0"
 
 static zend_class_entry *emfor_lookup_exception_ce;
 
