@@ -34,6 +34,10 @@
   the votes do not agree. A failure only such a member sees is noticed up
   to about five intervals later. New metric
   `emfor_peer_checks_skipped_total`.
+- `emfor status` marks backends this daemon is not an assigned checker of
+  with `voted`, adds `checks N/M backends here` to the `peers:` line when
+  there are any, and `--json` has `assigned_checkers` (each backend's
+  assigned checkers, worked out from `meta/peers`).
 
 ### Status
 

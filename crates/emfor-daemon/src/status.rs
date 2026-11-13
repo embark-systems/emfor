@@ -351,6 +351,8 @@ fn peers_value(value: Option<&str>) -> Option<serde_json::Value> {
 /// state in the store").
 #[derive(Debug, Deserialize)]
 struct PeerState {
+    #[serde(default)]
+    listen: Option<String>,
     members: Vec<PeerMember>,
     digest_mismatch: Vec<PeerMismatch>,
     disagreements: Vec<PeerDisagreement>,
@@ -383,8 +385,50 @@ fn peer_state(snap: &Snapshot, now_ms: u64) -> Option<PeerState> {
     serde_json::from_value(snap.peers.clone()?).ok()
 }
 
-/// The `peers:` lines (spec "Status text output").
-fn peer_lines(state: &PeerState, snap: &Snapshot) -> Vec<String> {
+/// The assigned checkers of each shown backend (service, backend id →
+/// checkers in rank order), computed from `meta/peers` as the daemon does
+/// (spec status-command, "Status text output"); `None` when `listen` or a
+/// member address is missing or not an `ip:port`.
+type Checkers = BTreeMap<(String, String), Vec<std::net::SocketAddr>>;
+
+fn assigned_checkers(
+    state: &PeerState,
+    snap: &Snapshot,
+) -> Option<(std::net::SocketAddr, Checkers)> {
+    let me: std::net::SocketAddr = state.listen.as_deref()?.parse().ok()?;
+    let mut live = std::collections::BTreeSet::new();
+    for m in &state.members {
+        let addr: std::net::SocketAddr = m.addr.parse().ok()?;
+        if m.live {
+            live.insert(addr);
+        }
+    }
+    let map = snap
+        .services
+        .iter()
+        .flat_map(|svc| {
+            svc.backends.iter().map(|b| {
+                let checkers = crate::quorum::assigned(&svc.name, &b.id, me, &live);
+                ((svc.name.clone(), b.id.clone()), checkers)
+            })
+        })
+        .collect();
+    Some((me, map))
+}
+
+/// Whether this daemon is not an assigned checker of a backend that has
+/// assigned checkers.
+fn is_voted(me: std::net::SocketAddr, checkers: &[std::net::SocketAddr]) -> bool {
+    !checkers.is_empty() && !checkers.contains(&me)
+}
+
+/// The `peers:` lines (spec "Status text output"); `checkers` is
+/// [`assigned_checkers`] of `state`.
+fn peer_lines(
+    state: &PeerState,
+    snap: &Snapshot,
+    checkers: Option<&(std::net::SocketAddr, Checkers)>,
+) -> Vec<String> {
     let live = state.members.iter().filter(|m| m.live).count();
     let mut line = format!("peers: {live}/{} live", state.members.len());
     let not_live: Vec<&str> = state
@@ -395,6 +439,17 @@ fn peer_lines(state: &PeerState, snap: &Snapshot) -> Vec<String> {
         .collect();
     if !not_live.is_empty() {
         append!(line, ", not live {}", not_live.join(" "));
+    }
+    if let Some((me, map)) = checkers {
+        let voted = map.values().filter(|c| is_voted(*me, c)).count();
+        if voted > 0 {
+            append!(
+                line,
+                ", checks {}/{} backends here",
+                map.len() - voted,
+                map.len()
+            );
+        }
     }
     let mut lines = vec![line];
     for svc in &snap.services {
@@ -465,9 +520,10 @@ fn services_lines(
     marked: &HashSet<Row>,
 ) -> Vec<String> {
     let peers = peer_state(snap, now_ms);
+    let checkers = peers.as_ref().and_then(|p| assigned_checkers(p, snap));
     let mut lines = peers
         .as_ref()
-        .map(|p| peer_lines(p, snap))
+        .map(|p| peer_lines(p, snap, checkers.as_ref()))
         .unwrap_or_default();
     let flaps = flapping(snap, now_ms);
 
@@ -553,6 +609,12 @@ fn services_lines(
             }) {
                 parts.push(paint(style, YELLOW, "local-up"));
             }
+            if checkers.as_ref().is_some_and(|(me, map)| {
+                map.get(&(svc.name.clone(), backend.id.clone()))
+                    .is_some_and(|c| is_voted(*me, c))
+            }) {
+                parts.push("voted".to_owned());
+            }
             if let Some((.., n)) = flaps
                 .iter()
                 .find(|(name, id, _)| *name == svc.name && *id == backend.id)
@@ -588,6 +650,21 @@ pub fn json(snap: &Snapshot, store: &Path, now_ms: u64) -> serde_json::Value {
         "services": snap.services,
         "history": snap.history,
         "peers": snap.peers,
+        "assigned_checkers": peer_state(snap, now_ms)
+            .and_then(|p| assigned_checkers(&p, snap))
+            .map(|(_, map)| {
+                // In service name order, then store order.
+                snap.services
+                    .iter()
+                    .flat_map(|svc| svc.backends.iter().map(move |b| (svc, b)))
+                    .map(|(svc, b)| {
+                        let checkers: Vec<String> = map
+                            .get(&(svc.name.clone(), b.id.clone()))
+                            .map_or_else(Vec::new, |c| c.iter().map(ToString::to_string).collect());
+                        serde_json::json!({"service": svc.name, "backend": b.id, "checkers": checkers})
+                    })
+                    .collect::<Vec<_>>()
+            }),
         "flapping": flapping(snap, now_ms)
             .into_iter()
             .map(|(service, backend, changes)| {
@@ -1504,6 +1581,94 @@ mod tests {
         );
     }
 
+    /// `meta/peers` at 10.0.0.5:5302 with members .6 to .9, `live` as
+    /// given, and `listen` as given.
+    fn peers_at(listen: &str, live: [bool; 4]) -> String {
+        let members: Vec<String> = (6..=9)
+            .zip(live)
+            .map(|(i, l)| format!(r#"{{"addr":"10.0.0.{i}:5302","live":{l}}}"#))
+            .collect();
+        format!(
+            r#"{{"listen":"{listen}","members":[{}],"digest_mismatch":[],"disagreements":[]}}"#,
+            members.join(",")
+        )
+    }
+
+    /// Spec "Status text output", scenario "Backends this daemon is not an
+    /// assigned checker of" and example "voted backends of api.svc.emfor
+    /// at 10.0.0.5:5302".
+    #[test]
+    fn voted_backends_table() {
+        let me = "10.0.0.5:5302";
+        let rows = [
+            (
+                peers_at(me, [true; 4]),
+                false,
+                true,
+                "live, checks 1/2 backends here",
+            ),
+            (
+                peers_at(me, [true, true, false, true]),
+                false,
+                true,
+                "not live 10.0.0.8:5302, checks 1/2 backends here",
+            ),
+            (
+                peers_at(me, [true, false, false, false]),
+                false,
+                false,
+                "not live 10.0.0.7:5302 10.0.0.8:5302 10.0.0.9:5302",
+            ),
+            (peers_at("bad", [true; 4]), false, false, "4/4 live"),
+        ];
+        for (i, (value, voted11, voted12, end)) in rows.into_iter().enumerate() {
+            let mut s = snap(Some(400), vec![api()]);
+            s.peers = peers_value(Some(&value));
+            let lines = render(&s);
+            assert!(lines[2].ends_with(end), "row {i}: {:?}", lines[2]);
+            let line = |id| lines.iter().find(|l| l.contains(id)).unwrap();
+            assert_eq!(line("10.0.0.11:8080").contains("voted"), voted11, "row {i}");
+            assert_eq!(line("10.0.0.12:8080").contains("voted"), voted12, "row {i}");
+        }
+        // The scenario's line in full; a stopped daemon shows none of it.
+        let mut s = snap(Some(400), vec![api()]);
+        s.peers = peers_value(Some(&peers_at(me, [true; 4])));
+        assert_eq!(render(&s)[2], "peers: 4/4 live, checks 1/2 backends here");
+        let mut stopped = snap(None, vec![api()]);
+        stopped.peers = s.peers.clone();
+        assert!(render(&stopped).iter().all(|l| !l.contains("voted")));
+    }
+
+    /// Spec "Status filtering and JSON output", scenario "JSON assigned
+    /// checkers".
+    #[test]
+    fn json_assigned_checkers() {
+        let mut s = snap(Some(400), vec![api()]);
+        assert!(json(&s, Path::new("/s.mdb"), NOW)["assigned_checkers"].is_null());
+        s.peers = peers_value(Some(&peers_at("10.0.0.5:5302", [true; 4])));
+        let s = filter(s, Some("api.svc.emfor")).unwrap();
+        assert_eq!(
+            json(&s, Path::new("/s.mdb"), NOW)["assigned_checkers"],
+            serde_json::json!([
+                {"service":"api.svc.emfor","backend":"10.0.0.11:8080","checkers":["10.0.0.5:5302","10.0.0.8:5302","10.0.0.6:5302"]},
+                {"service":"api.svc.emfor","backend":"10.0.0.12:8080","checkers":["10.0.0.9:5302","10.0.0.6:5302","10.0.0.7:5302"]}
+            ])
+        );
+        let mut stopped = snap(None, vec![api()]);
+        stopped.peers = s.peers.clone();
+        assert!(json(&stopped, Path::new("/s.mdb"), NOW)["assigned_checkers"].is_null());
+        // A `listen` or member address that is not an ip:port: null.
+        let bad_member = peers_at("10.0.0.5:5302", [true; 4]).replace("10.0.0.7:5302", "nope");
+        for value in [peers_at("bad", [true; 4]), bad_member] {
+            let mut s = snap(Some(400), vec![api()]);
+            s.peers = peers_value(Some(&value));
+            assert!(
+                json(&s, Path::new("/s.mdb"), NOW)["assigned_checkers"].is_null(),
+                "{value}"
+            );
+        }
+    }
+
     /// Spec "Status filtering and JSON output", scenario "JSON metrics
     /// addresses".
     #[test]
@@ -1533,6 +1698,8 @@ mod tests {
             v["services"][0]["backends"][1]["reason"],
             "connect: Connection refused"
         );
+        // No `meta/peers`: no assigned checkers to show.
+        assert!(v["assigned_checkers"].is_null());
         let stopped = json(&snap(None, vec![]), Path::new("/s.mdb"), NOW);
         assert_eq!(stopped["daemon"], "stopped");
         assert!(stopped["heartbeat_age_ms"].is_null());

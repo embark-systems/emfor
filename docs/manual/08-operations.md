@@ -136,8 +136,32 @@ counted; make the configs match. The same data is in the store key
 In a group of four or more, `emfor_peer_checks_skipped_total` grows on
 hosts that are not an assigned checker of some backends: they let the
 votes decide most check times and check those backends themselves about
-every fifth `interval`. `emfor_backend_checks_total` still counts every
-check time, decided by votes or not. A backend's latency is measured only
+every fifth `interval`. `emfor status` marks those backends `voted` and
+ends the `peers:` line with how many of the shown backends this host
+checks every time:
+
+```
+peers: 4/4 live, checks 12/40 backends here
+```
+
+`emfor status --json` lists each backend's assigned checkers under
+`assigned_checkers`, in rank order:
+
+```json
+"assigned_checkers": [
+  {"service": "api.svc.emfor", "backend": "10.0.0.11:8080",
+   "checkers": ["10.0.0.5:5302", "10.0.0.8:5302", "10.0.0.6:5302"]}
+]
+```
+
+It is `null` while the daemon is not running or `meta/peers` is missing.
+status works these out from the live members in
+`meta/peers`, which the daemon updates every second, so right after a
+member comes or goes they can be up to a second behind. `voted` only says
+that this host is not an assigned checker; whether a given check time was
+decided by votes depends on the votes at that moment.
+`emfor_backend_checks_total` still counts every check time, decided by
+votes or not. A backend's latency is measured only
 by this host's own checks, so on such a host it changes about every fifth
 `interval`.
 
