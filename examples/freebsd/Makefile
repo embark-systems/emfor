@@ -45,5 +45,4 @@ post-install:
 	${INSTALL_DATA} ${WRKSRC}/examples/emfor.toml \
 		${STAGEDIR}${PREFIX}/etc/emfor/emfor.toml.sample
 
-.include "${.CURDIR}/Makefile.crates"
 .include <bsd.port.mk>

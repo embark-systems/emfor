@@ -15,7 +15,7 @@ See [Unverified](#unverified) for what to watch.
 | --- | --- |
 | `Makefile` | The port. `DISTVERSION` follows the emfor release. |
 | `pkg-descr` | Package description. |
-| `Makefile.crates` | Every crate in the release's `Cargo.lock`, as `CARGO_CRATES`. |
+| `Makefile.crates` | Every crate in the release's `Cargo.lock`, as `CARGO_CRATES`. `USES=cargo` includes it from the port's directory. |
 
 ## Making the port
 
