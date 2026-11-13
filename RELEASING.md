@@ -17,7 +17,7 @@ git status            # nothing to commit
 
 ## 2. Set the version
 
-Change `0.1.0` (the old version) to `X.Y.Z` in each of these:
+Change the current version to `X.Y.Z` in each of these:
 
 | File | What |
 | --- | --- |
@@ -59,6 +59,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 make -C clients test
 ```
+
+`make -C clients test` needs every client's toolchain; on a Mac without
+PHP, run `make -C clients perl` there (it runs C, Go, Python and Perl in
+turn) and leave PHP to the Debian run.
 
 For the Debian run, build the image from `tests/clients/Dockerfile` once,
 then run the same commands in it. The named volumes keep the cargo
@@ -105,7 +109,7 @@ for the tag, and publish it:
 
 ```sh
 awk '/^## X.Y.Z /{f=1;next} /^## /{f=0} f' CHANGELOG.md \
-  | sed -E 's#\]\(((docs|examples|clients)/[^)]*)\)#](https://github.com/embark-systems/emfor/blob/vX.Y.Z/\1)#g' \
+  | sed -E 's#\]\(([^)#:]+)\)#](https://github.com/embark-systems/emfor/blob/vX.Y.Z/\1)#g' \
   > /tmp/emfor-notes.md
 grep -n '](' /tmp/emfor-notes.md   # every link starts with https://
 gh release create vX.Y.Z --title "emfor X.Y.Z" --notes-file /tmp/emfor-notes.md --verify-tag

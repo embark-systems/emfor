@@ -599,7 +599,7 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "emfor-check"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "emfor-plugin",
  "emfor-tls",
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "emfor-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "emfor-fixture",
  "emfor-format",
@@ -629,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "emfor-daemon"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "emfor-fixture"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "emfor-format",
  "heed",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "emfor-format"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "emfor-plugin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -686,14 +686,14 @@ dependencies = [
 
 [[package]]
 name = "emfor-spike-probe"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "heed",
 ]
 
 [[package]]
 name = "emfor-tls"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "rcgen",

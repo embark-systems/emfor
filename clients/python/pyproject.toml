@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "emfor"
-version = "0.1.0"
+version = "0.1.1"
 description = "Look up a healthy backend in the local emfor state store (wraps libemfor)"
 requires-python = ">=3.9"
 license = { text = "BSD-2-Clause" }

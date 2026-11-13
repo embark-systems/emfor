@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.1.1 — 2026-11-13
+
+The repository moved to `github.com/embark-systems/emfor`. The daemon,
+`emfor-check`, the store format and the clients behave as in 0.1.0. As
+with every release, install `libemfor` from the same release as the
+daemon.
+
+### Packaging
+
+- `cargo install --path crates/emfor-daemon` installs only `emfor`. In
+  0.1.0 it also installed `emfor-test-plugin`, a plugin used only by
+  emfor's own tests; it is now built only with the `test-plugin` feature.
+- [docs/deploy/daemon.md](docs/deploy/daemon.md) gives the `cargo install`
+  commands for `crates/emfor-daemon` and `crates/emfor-check`, including
+  for packaging systems that run `cargo install` per crate. The repository
+  root is a workspace, so `cargo install --path .` fails.
+
+### Clients
+
+- The Go module path is `github.com/embark-systems/emfor/clients/go`
+  (was `github.com/vanillahsu/emfor/clients/go`). Its versions are tags
+  `clients/go/vX.Y.Z`:
+  `go get github.com/embark-systems/emfor/clients/go@v0.1.1`.
+
+### Development
+
+- [RELEASING.md](RELEASING.md) lists the steps of a release; a test checks
+  that the Python, Perl, PHP and Go clients carry the workspace version.
+- `tests/clients/Dockerfile` describes the Debian image the local checks
+  run in.
+
+### Known limits
+
+- Unchanged from 0.1.0: FreeBSD has not been tested on a host yet, and
+  lookup throughput across threads levels off at about two million a
+  second on Linux ([docs/performance.md](docs/performance.md)).
+
 ## 0.1.0 — 2026-11-13
 
 The first release. The daemon, `emfor-check` and every client come from
