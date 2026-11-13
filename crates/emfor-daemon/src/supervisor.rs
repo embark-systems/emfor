@@ -9,7 +9,8 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::config::{Config, ServiceConfig, Settings};
-use crate::schedule::spawn_backend;
+use crate::peers::{DownSender, Recheck, ServiceTargets, Targets};
+use crate::schedule::{PeerLink, spawn_backend};
 use crate::writer::{ServiceLayout, WriterMsg};
 
 struct Running {
@@ -17,6 +18,9 @@ struct Running {
     generation: u64,
     settings: watch::Sender<Settings>,
     tasks: HashMap<String, JoinHandle<()>>,
+    /// "Recheck now" channel of each backend task, by backend id; kept when
+    /// a task is started again.
+    rechecks: HashMap<String, Arc<Recheck>>,
     /// Restarts of check tasks that stopped, by backend id.
     restarts: HashMap<String, Restarts>,
 }
@@ -47,6 +51,7 @@ impl Running {
         for (_, t) in self.tasks.drain() {
             t.abort();
         }
+        self.rechecks.clear();
     }
 }
 
@@ -54,19 +59,54 @@ pub struct Supervisor {
     writer: mpsc::UnboundedSender<WriterMsg>,
     services: BTreeMap<Arc<str>, Running>,
     next_generation: u64,
+    /// Every backend's recheck channel, for the peer task.
+    targets: Targets,
+    /// Where backend tasks announce failures; `None` without `[peers]`.
+    peers_down: Option<DownSender>,
 }
 
 impl Supervisor {
     /// Fresh start: the store drops every previous `svc/*` record and all
     /// backends start `unknown`.
     pub fn start(config: &Config, writer: mpsc::UnboundedSender<WriterMsg>) -> Self {
+        Self::start_with_peers(config, writer, Targets::default(), None)
+    }
+
+    /// [`Supervisor::start`] for a daemon in a peer group: every backend's
+    /// recheck channel is kept in `targets`, and failures go to `down`.
+    pub fn start_with_peers(
+        config: &Config,
+        writer: mpsc::UnboundedSender<WriterMsg>,
+        targets: Targets,
+        down: Option<DownSender>,
+    ) -> Self {
         let mut s = Supervisor {
             writer,
             services: BTreeMap::new(),
             next_generation: 1,
+            targets,
+            peers_down: down,
         };
         s.sync(config, true);
         s
+    }
+
+    /// Publish every service's digest and recheck channels to the peer task.
+    fn publish_targets(&self) {
+        let services = self
+            .services
+            .iter()
+            .map(|(name, r)| {
+                (
+                    name.to_string(),
+                    ServiceTargets {
+                        digest: r.config.digest.clone(),
+                        backends: r.rechecks.clone(),
+                    },
+                )
+            })
+            .collect();
+        self.targets.replace(services);
     }
 
     /// Apply a validated reload.
@@ -84,6 +124,7 @@ impl Supervisor {
     pub fn restart_finished(&mut self) -> usize {
         let now = tokio::time::Instant::now();
         let mut restarted = 0;
+        let down = self.peers_down.clone();
         for (name, r) in &mut self.services {
             for b in &r.config.backends {
                 let Some(t) = r.tasks.get_mut(&b.id) else {
@@ -108,6 +149,7 @@ impl Supervisor {
                     count + 1,
                     next.as_secs()
                 );
+                let recheck = r.rechecks.entry(b.id.clone()).or_default().clone();
                 *t = spawn_backend(
                     name.clone(),
                     b.clone(),
@@ -115,6 +157,10 @@ impl Supervisor {
                     r.generation,
                     r.settings.subscribe(),
                     self.writer.clone(),
+                    PeerLink {
+                        recheck,
+                        down: down.clone(),
+                    },
                 );
                 r.restarts.insert(
                     b.id.clone(),
@@ -173,6 +219,7 @@ impl Supervisor {
                     keep
                 });
                 r.restarts.retain(|id, _| ids.contains(&id.as_str()));
+                r.rechecks.retain(|id, _| ids.contains(&id.as_str()));
                 for addr in removed {
                     r.config.checker.forget(addr);
                 }
@@ -217,6 +264,7 @@ impl Supervisor {
                     generation: layout.generation,
                     settings: watch::channel(new.settings).0,
                     tasks: HashMap::new(),
+                    rechecks: HashMap::new(),
                     restarts: HashMap::new(),
                 });
             let checker = r.config.checker.clone(); // unchanged check: keep the running checker
@@ -227,6 +275,11 @@ impl Supervisor {
             r.settings.send_replace(new.settings);
             for b in &new.backends {
                 if !r.tasks.contains_key(&b.id) {
+                    r.rechecks.entry(b.id.clone()).or_default();
+                    let link = PeerLink {
+                        recheck: r.rechecks[&b.id].clone(),
+                        down: self.peers_down.clone(),
+                    };
                     let t = spawn_backend(
                         layout.name.clone(),
                         b.clone(),
@@ -234,11 +287,13 @@ impl Supervisor {
                         layout.generation,
                         r.settings.subscribe(),
                         self.writer.clone(),
+                        link,
                     );
                     r.tasks.insert(b.id.clone(), t);
                 }
             }
         }
+        self.publish_targets();
     }
 }
 
@@ -616,5 +671,49 @@ mod tests {
             states(&h.store, "api.svc.emfor"),
             vec![HealthState::Healthy, HealthState::Unknown]
         );
+    }
+
+    /// The peer registry follows reloads: removed backends leave it, a
+    /// changed check gets a new digest, and reports reach running tasks.
+    #[tokio::test]
+    async fn peer_targets_follow_reloads() {
+        use crate::peers::Down;
+        let h = harness();
+        let targets = Targets::default();
+        let svc = |b: &str, timeout: &str| {
+            conf(&format!(
+                "[services.a]\ncheck = \"tcp\"\ntimeout = \"{timeout}\"\nbackends = [{b}]\n"
+            ))
+        };
+        let first = svc("\"10.0.0.1:80\", \"10.0.0.2:80\"", "1s");
+        let mut sup = Supervisor::start_with_peers(&first, h.tx.clone(), targets.clone(), None);
+        let digest = first.services[0].digest.clone();
+        assert_eq!(targets.digest("a"), Some(digest.clone()));
+        let down = |backend: &str, digest: &str| Down {
+            service: "a".into(),
+            digest: digest.into(),
+            backend: backend.into(),
+            reason: "refused".into(),
+        };
+        let from = "10.0.0.6:5302".parse().unwrap();
+        assert_eq!(targets.deliver(&down("10.0.0.2:80", &digest), from), Ok(()));
+        sup.reload(&svc("\"10.0.0.1:80\"", "1s"));
+        assert_eq!(
+            targets.deliver(&down("10.0.0.2:80", &digest), from),
+            Err("no such backend here")
+        );
+        assert_eq!(targets.deliver(&down("10.0.0.1:80", &digest), from), Ok(()));
+        let changed = svc("\"10.0.0.1:80\"", "500ms");
+        sup.reload(&changed);
+        assert_ne!(changed.services[0].digest, digest);
+        assert_eq!(
+            targets.digest("a"),
+            Some(changed.services[0].digest.clone())
+        );
+        sup.reload(&conf(
+            "[services.b]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
+        ));
+        assert_eq!(targets.digest("a"), None);
+        sup.stop();
     }
 }

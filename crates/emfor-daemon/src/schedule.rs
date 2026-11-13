@@ -11,6 +11,7 @@ use tokio::time::Instant;
 
 use crate::checker::{CheckRequest, CheckResult, Checker, run_check};
 use crate::config::{Backend, Settings};
+use crate::peers::{BackendDown, DownSender, Recheck};
 use crate::state::{BackendHealth, Thresholds, Transition, next_latency};
 use crate::writer::WriterMsg;
 
@@ -100,6 +101,31 @@ pub fn next_wait(interval: Duration, jitter: f64, rng: &mut impl RngExt) -> Dura
     interval.mul_f64(1.0 + rng.random_range(-jitter..=jitter))
 }
 
+/// Whether a peer's `down` report starts a fast recheck run: the backend is
+/// healthy here, no run is in progress, and the last run ended more than
+/// `fall × interval` ago.
+pub fn starts_fast_run(
+    state: HealthState,
+    in_run: bool,
+    last_run_end: Option<Instant>,
+    now: Instant,
+    s: &Settings,
+) -> bool {
+    state == HealthState::Healthy
+        && !in_run
+        && last_run_end.is_none_or(|end| now.duration_since(end) > s.interval * s.fall)
+}
+
+/// The peer side of one backend task: reports in, failures out.
+#[derive(Debug, Clone, Default)]
+pub struct PeerLink {
+    /// Woken when a peer reports this backend down.
+    pub recheck: Arc<Recheck>,
+    /// Where a healthy → unhealthy transition is announced; `None` without
+    /// `[peers]`.
+    pub down: Option<DownSender>,
+}
+
 /// Spawn the check loop of one backend. Settings changes that do not reset
 /// state (timing, thresholds) arrive through `settings`.
 pub fn spawn_backend(
@@ -109,11 +135,15 @@ pub fn spawn_backend(
     generation: u64,
     settings: watch::Receiver<Settings>,
     updates: mpsc::UnboundedSender<WriterMsg>,
+    peers: PeerLink,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut rng = StdRng::from_rng(&mut rand::rng());
         let mut health = BackendHealth::new();
         let mut latency_us: Option<u64> = None;
+        // Checks left in the current fast recheck run (0: no run).
+        let mut fast_left: u32 = 0;
+        let mut last_run_end: Option<Instant> = None;
         let first = first_delay(settings.borrow().interval, &mut rng);
         tokio::time::sleep(first).await;
         loop {
@@ -142,6 +172,15 @@ pub fn spawn_backend(
                 );
             }
             latency_us = next_latency(latency_us, &result, sample_us, transition);
+            if fast_left > 0 {
+                fast_left -= 1;
+                if matches!(result, CheckResult::Up) || health.state == HealthState::Unhealthy {
+                    fast_left = 0;
+                }
+                if fast_left == 0 {
+                    last_run_end = Some(Instant::now());
+                }
+            }
             if let Some(t) = transition {
                 tracing::info!(
                     service = %service,
@@ -164,11 +203,54 @@ pub fn spawn_backend(
                 outcome: CheckOutcome::of(&result),
                 latency_us,
             };
+            let announce = transition
+                .is_some_and(|t| t.from == HealthState::Healthy && t.to == HealthState::Unhealthy);
+            if announce && let Some(down) = &peers.down {
+                // The peer task is gone only while the daemon stops.
+                let _ = down.send(BackendDown {
+                    service: service.clone(),
+                    backend: backend.id.clone(),
+                    reason: update.reason.clone().unwrap_or_default(),
+                });
+            }
             if updates.send(WriterMsg::Update(update)).is_err() {
                 return; // writer gone: daemon is shutting down
             }
-            let wait = wait_after(health.state, &result, s.interval, s.jitter, &mut rng);
-            tokio::time::sleep(wait).await;
+            let wait = if fast_left > 0 {
+                fast_interval(s.interval)
+            } else {
+                wait_after(health.state, &result, s.interval, s.jitter, &mut rng)
+            };
+            let sleep = tokio::time::sleep(wait);
+            tokio::pin!(sleep);
+            loop {
+                tokio::select! {
+                    _ = &mut sleep => break,
+                    _ = peers.recheck.notified() => {
+                        let Some(report) = peers.recheck.take() else { continue };
+                        let s = *settings.borrow();
+                        if starts_fast_run(health.state, fast_left > 0, last_run_end, Instant::now(), &s) {
+                            tracing::info!(
+                                service = %service,
+                                backend = %backend.id,
+                                peer = %report.from,
+                                "peer {} reports backend {} of {} down ({}); checking now",
+                                report.from, backend.id, service, report.reason,
+                            );
+                            fast_left = s.fall;
+                            break;
+                        }
+                        tracing::debug!(
+                            service = %service,
+                            backend = %backend.id,
+                            peer = %report.from,
+                            "peer {} reports backend {} of {} down; not rechecking now (state {}, fast run {})",
+                            report.from, backend.id, service, health.state,
+                            if fast_left > 0 { "in progress" } else { "recently ended" },
+                        );
+                    }
+                }
+            }
         }
     })
 }
@@ -285,7 +367,15 @@ mod tests {
         };
         let (_stx, srx) = watch::channel(settings);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let h = spawn_backend("api.svc.emfor".into(), backend(), chk.clone(), 0, srx, tx);
+        let h = spawn_backend(
+            "api.svc.emfor".into(),
+            backend(),
+            chk.clone(),
+            0,
+            srx,
+            tx,
+            PeerLink::default(),
+        );
         tokio::time::sleep(Duration::from_secs(20)).await;
         h.abort();
         assert_eq!(chk.max_in_flight.load(Ordering::SeqCst), 1);
@@ -352,7 +442,15 @@ mod tests {
         });
         let (_stx, srx) = watch::channel(Settings::default());
         let (tx, _rx) = mpsc::unbounded_channel();
-        let h = spawn_backend("api.svc.emfor".into(), backend(), chk, 0, srx, tx);
+        let h = spawn_backend(
+            "api.svc.emfor".into(),
+            backend(),
+            chk,
+            0,
+            srx,
+            tx,
+            PeerLink::default(),
+        );
         tokio::time::sleep(Duration::from_secs(20)).await;
         h.abort();
         assert!(logs_contain("INFO"));
@@ -371,7 +469,15 @@ mod tests {
         };
         let (stx, srx) = watch::channel(s1);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let h = spawn_backend("a".into(), backend(), chk.clone(), 0, srx, tx);
+        let h = spawn_backend(
+            "a".into(),
+            backend(),
+            chk.clone(),
+            0,
+            srx,
+            tx,
+            PeerLink::default(),
+        );
         tokio::time::sleep(Duration::from_secs(5)).await;
         stx.send(Settings {
             interval: Duration::from_secs(3),
@@ -388,5 +494,199 @@ mod tests {
         let starts = chk.starts.lock().unwrap().clone();
         let gap = starts[starts.len() - 1] - starts[starts.len() - 2];
         assert_eq!(gap, Duration::from_millis(3001));
+    }
+
+    /// Spec peer-group "whether a received down message starts a fast
+    /// recheck run" (interval 2s, fall 3: cooldown 6s).
+    #[test]
+    fn whether_a_report_starts_a_fast_run() {
+        use HealthState::*;
+        let s = Settings::default();
+        let now = Instant::now() + Duration::from_secs(100);
+        let ago = |secs: u64| Some(now - Duration::from_secs(secs));
+        for (state, in_run, last_end, want) in [
+            (Healthy, false, None, true),
+            (Healthy, false, ago(7), true),
+            (Healthy, false, ago(1), false),
+            (Healthy, true, None, false),
+            (Unhealthy, false, None, false),
+            (Unknown, false, None, false),
+        ] {
+            assert_eq!(
+                starts_fast_run(state, in_run, last_end, now, &s),
+                want,
+                "{state} in_run={in_run} {last_end:?}"
+            );
+        }
+    }
+
+    /// Checker that is `up` until `down` is set; each check takes 10ms.
+    #[derive(Debug, Default)]
+    struct Switch {
+        down: std::sync::atomic::AtomicBool,
+        /// Answer `error` (checked before `down`).
+        error: std::sync::atomic::AtomicBool,
+        starts: Mutex<Vec<Instant>>,
+    }
+
+    impl Checker for Switch {
+        fn check(&self, _: CheckRequest) -> BoxFuture<'_, CheckResult> {
+            Box::pin(async move {
+                self.starts.lock().unwrap().push(Instant::now());
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                if self.error.load(Ordering::SeqCst) {
+                    CheckResult::Error("plugin p unavailable".into())
+                } else if self.down.load(Ordering::SeqCst) {
+                    CheckResult::Down("connection refused".into())
+                } else {
+                    CheckResult::Up
+                }
+            })
+        }
+    }
+
+    fn report() -> crate::peers::PeerReport {
+        crate::peers::PeerReport {
+            from: "10.0.0.6:5302".parse().unwrap(),
+            reason: "connection refused".into(),
+        }
+    }
+
+    /// Spawn a `Switch` backend with interval 5s, fall 3, jitter 10% and a
+    /// peer link; returns once it is healthy and waiting.
+    async fn healthy_switch() -> (
+        Arc<Switch>,
+        PeerLink,
+        mpsc::UnboundedReceiver<BackendDown>,
+        mpsc::UnboundedReceiver<WriterMsg>,
+        JoinHandle<()>,
+        watch::Sender<Settings>,
+    ) {
+        let chk = Arc::new(Switch::default());
+        let settings = Settings {
+            interval: Duration::from_secs(5),
+            jitter: 0.10,
+            ..Settings::default()
+        };
+        let (stx, srx) = watch::channel(settings);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (dtx, drx) = mpsc::unbounded_channel();
+        let link = PeerLink {
+            recheck: Arc::new(Recheck::default()),
+            down: Some(dtx),
+        };
+        let h = spawn_backend("a".into(), backend(), chk.clone(), 0, srx, tx, link.clone());
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        (chk, link, drx, rx, h, stx)
+    }
+
+    /// Spec health-checking "Fast recheck run after a peer report".
+    #[tokio::test(start_paused = true)]
+    async fn fast_recheck_run_after_a_peer_report() {
+        let (chk, link, mut drx, mut rx, h, _stx) = healthy_switch().await;
+        let mut last = None;
+        while let Ok(u) = rx.try_recv() {
+            last = Some(update(u));
+        }
+        assert_eq!(last.unwrap().state, HealthState::Healthy);
+        let before = chk.starts.lock().unwrap().len();
+        chk.down.store(true, Ordering::SeqCst);
+        let at = Instant::now();
+        link.recheck.send(report());
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        h.abort();
+        let starts = chk.starts.lock().unwrap()[before..].to_vec();
+        assert!(starts.len() >= 4, "{starts:?}");
+        assert_eq!(starts[0], at);
+        assert_eq!(starts[1] - starts[0], Duration::from_millis(210));
+        assert_eq!(starts[2] - starts[1], Duration::from_millis(210));
+        let gap = starts[3] - starts[2] - Duration::from_millis(10);
+        assert!(
+            gap >= Duration::from_millis(4500) && gap <= Duration::from_millis(5500),
+            "{gap:?}"
+        );
+        let mut states = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            states.push(update(u).state);
+        }
+        assert_eq!(
+            &states[..3],
+            &[
+                HealthState::Healthy,
+                HealthState::Healthy,
+                HealthState::Unhealthy
+            ]
+        );
+        // The healthy -> unhealthy transition is announced once.
+        let d = drx.try_recv().expect("the failure is announced");
+        assert_eq!(
+            (&*d.service, d.backend.as_str(), d.reason.as_str()),
+            ("a", "10.0.0.11:8080", "connection refused")
+        );
+        assert!(drx.try_recv().is_err());
+    }
+
+    /// A run whose checks neither pass nor make the backend unhealthy (here
+    /// every result is `error`) stops after `fall` checks.
+    #[tokio::test(start_paused = true)]
+    async fn run_stops_after_fall_checks() {
+        let (chk, link, mut drx, _rx, h, _stx) = healthy_switch().await;
+        let before = chk.starts.lock().unwrap().len();
+        chk.error.store(true, Ordering::SeqCst);
+        let at = Instant::now();
+        link.recheck.send(report());
+        tokio::time::sleep(Duration::from_secs(7)).await;
+        h.abort();
+        let starts = chk.starts.lock().unwrap()[before..].to_vec();
+        assert!(starts.len() >= 4, "{starts:?}");
+        assert_eq!(starts[0], at);
+        assert_eq!(starts[1] - starts[0], Duration::from_millis(210));
+        assert_eq!(starts[2] - starts[1], Duration::from_millis(210));
+        let gap = starts[3] - starts[2] - Duration::from_millis(10);
+        assert!(
+            gap >= Duration::from_millis(4500) && gap <= Duration::from_millis(5500),
+            "{gap:?}"
+        );
+        assert!(drx.try_recv().is_err());
+    }
+
+    /// A run stops at the first `up`; a report during the cooldown that
+    /// follows is ignored.
+    #[tokio::test(start_paused = true)]
+    async fn run_stops_on_up_and_cooldown_ignores_reports() {
+        let (chk, link, mut drx, _rx, h, _stx) = healthy_switch().await;
+        let before = chk.starts.lock().unwrap().len();
+        let at = Instant::now();
+        link.recheck.send(report());
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        link.recheck.send(report()); // within fall × interval = 15s
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        h.abort();
+        let starts = chk.starts.lock().unwrap()[before..].to_vec();
+        assert_eq!(starts, vec![at], "one check, then the normal pace");
+        assert!(drx.try_recv().is_err());
+    }
+
+    /// `unknown` -> `unhealthy` (just started) is not announced.
+    #[tokio::test(start_paused = true)]
+    async fn startup_failures_are_not_announced() {
+        let chk = Arc::new(Switch::default());
+        chk.down.store(true, Ordering::SeqCst);
+        let (_stx, srx) = watch::channel(Settings::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (dtx, mut drx) = mpsc::unbounded_channel();
+        let link = PeerLink {
+            recheck: Arc::new(Recheck::default()),
+            down: Some(dtx),
+        };
+        let h = spawn_backend("a".into(), backend(), chk, 0, srx, tx, link);
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        h.abort();
+        let mut last = None;
+        while let Ok(u) = rx.try_recv() {
+            last = Some(update(u));
+        }
+        assert_eq!(last.unwrap().state, HealthState::Unhealthy);
+        assert!(drx.try_recv().is_err());
     }
 }

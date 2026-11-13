@@ -164,10 +164,19 @@ context: |
 
   跨語言相容規格（皆帶版本號，以共用測試資料把關）：LMDB 資料格式、外掛訊息格式、affinity_key 分配演算法。
 
-  第一版不做：多台 emfor 同步、stick-table、DNS 名稱帶條件、DNS 轉發其他網域、發佈到套件庫、
+  聯防群組（emfor-peers，用語見 LANGUAGE.md「聯防群組」）：同一個 site、列在 [peers] 的 daemon 以 UDP 交換訊息
+  （EMP1 + HMAC-SHA256 + JSON；secret_file 每秒重讀、換密鑰後舊密鑰再簽 60 秒、再接受 120 秒；時間差 5 秒內、boot/seq 防重送；
+  每秒心跳、3 秒內有訊息為存活；檢查定義摘要 = checker、check_options、timeout 的 SHA-256 前 16 bytes，不同就不聯防）。
+  第一階段只做故障快速通知：healthy → unhealthy 時通知其他成員，收到者若本機仍 healthy 就立刻重查並以 200ms 連查最多 fall 次；
+  通知本身不改變狀態，查詢只讀本機 store。[peers] listen 變更需重啟。
+  後兩階段已在 emfor-peers 的 design.md 定案：emfor-peers-quorum（k=3 負責主機多數決、全區 down 優先、
+  原因 peers 2/3: / local:、status 列出不一致）→ emfor-peers-split-checks（只有負責主機完整檢查、其他主機
+  interval×5 本機 TCP 探測、成員失聯重算）。
+
+  第一版不做：多台 emfor 共用狀態（聯防群組只交換參考資料，見上）、stick-table、DNS 名稱帶條件、DNS 轉發其他網域、發佈到套件庫、
   Docker / Kubernetes 的 DNS 部署（容器內 DNS 路徑不同，需另行設計）。
 
-  後續規劃（已決定要做、尚未排入 change；用語見 LANGUAGE.md「分配方式的值」）：目前沒有。
+  後續規劃（已決定要做、尚未排入 change；用語見 LANGUAGE.md「分配方式的值」）：emfor-peers-quorum、emfor-peers-split-checks（聯防群組第二、三階段）。
   不做：balance = "random"（client 的 round-robin 起點本來就隨機，效果幾乎相同）。
 
   變更拆分：emfor-core（已完成）→ emfor-dns（含 balance 設定欄位、LMDB 欄位、DNS 端行為、resolver 部署文件、FreeBSD CI 與 rc.d 範例）

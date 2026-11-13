@@ -26,8 +26,10 @@ microsecond, and keeps working when other hosts, or the network, fail.
 ```
 
 Each host runs its own daemon with its own config and sees the backends
-from where it stands. There is no central server and no communication
-between emfor daemons.
+from where it stands. There is no central server. The daemons of one data
+centre can optionally form a [peer group](#peer-groups) to pass failures on
+to each other; even then each daemon decides from its own checks, and
+lookups read only the local store.
 
 ## The parts
 
@@ -39,7 +41,7 @@ between emfor daemons.
 | DNS server | Optional. Answers A, AAAA and SRV queries for service names in one zone, from the daemon's memory, for programs that cannot use a client library. |
 | `emfor status` | Shows what the daemon has published. Also usable as a monitoring check. |
 | `/metrics` | Optional Prometheus endpoint. |
-| `emfor-check` | A plugin program with checks for redis, MySQL/MariaDB, PostgreSQL and LDAP. |
+| `emfor-check` | A plugin program with checks for redis, MySQL/MariaDB, PostgreSQL, LDAP, DNS, RADIUS, SIP and Diameter. |
 
 ## Services and backends
 
@@ -108,11 +110,35 @@ When the daemon starts it rewrites every service record with all backends
 backend is `unknown` it is checked about every 200 ms, so with the default
 settings every backend is known within about half a second of a start.
 
+## Peer groups
+
+Hosts in one data centre see the same backends. Without help, each daemon
+needs `fall` failed checks of its own to notice that a backend went down.
+In a **peer group**, the daemons of one `site` that list each other under
+`[peers]` ([chapter 3](03-configuration.md#peers)) send each other
+authenticated UDP messages:
+
+- a heartbeat every second, so each member knows which others are live;
+- when a member sees a backend go from `healthy` to `unhealthy`, a report
+  to every other member, which then rechecks that backend at once and
+  every 200 ms, up to `fall` checks, instead of waiting for its next
+  `interval`.
+
+A report never changes a backend's state by itself; only the daemon's own
+checks do, and lookups still read only the local store. Members that are
+not reachable change nothing: each daemon goes on checking on its own.
+There is no master, and a group never spans two sites.
+
+Two later steps are planned on the same group: a majority vote among a few
+members chosen per backend, so one host's network trouble does not mark a
+backend down for the whole site, and splitting the full checks among those
+members so each backend gets fewer checks.
+
 ## Failure behavior at a glance
 
 | What fails | What applications see |
 | --- | --- |
-| One backend | It turns `unhealthy` after `fall` failed checks (about 6 seconds with the defaults) and is no longer returned. |
+| One backend | It turns `unhealthy` after `fall` failed checks (about 6 seconds with the defaults) and is no longer returned. In a peer group, once one member has noticed, the others follow within about a second. |
 | Every backend of a service | `open`: any backend; `closed`: `ALL_DOWN` / `SERVFAIL`. |
 | The emfor daemon stops or hangs | After 3 seconds the store is stale: `open` services return any backend, `closed` services fail. Lookups never block. |
 | The store file is missing or unreadable | Lookups fail with `UNAVAILABLE`. |

@@ -7,6 +7,7 @@ pub mod config;
 pub mod dns;
 pub mod live;
 pub mod metrics;
+pub mod peers;
 pub mod plugin;
 pub mod schedule;
 pub mod select;

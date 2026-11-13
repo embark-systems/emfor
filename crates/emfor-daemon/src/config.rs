@@ -158,6 +158,100 @@ impl Default for MetricsConfig {
     }
 }
 
+/// The `[peers]` table: this daemon's peer group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeersConfig {
+    /// This daemon's UDP address, also its identity in the group; one of
+    /// `members`.
+    pub listen: SocketAddr,
+    /// Every member, this daemon included, in config order.
+    pub members: Vec<SocketAddr>,
+    pub secret_file: PathBuf,
+}
+
+impl PeersConfig {
+    /// Members other than this daemon.
+    pub fn others(&self) -> impl Iterator<Item = SocketAddr> + '_ {
+        self.members.iter().copied().filter(|m| *m != self.listen)
+    }
+}
+
+/// Fewest and most entries of `[peers] members`.
+pub const MIN_MEMBERS: usize = 2;
+pub const MAX_MEMBERS: usize = 64;
+/// Shortest peer secret, in bytes.
+pub const MIN_SECRET_LEN: usize = 32;
+
+/// Read a peer secret: the file's bytes without one trailing line feed.
+/// Errors are the messages config validation reports for `secret_file`.
+pub fn read_secret(path: &Path) -> Result<Vec<u8>, String> {
+    use std::os::unix::fs::PermissionsExt;
+    if !path.is_absolute() {
+        return Err("must be an absolute path".into());
+    }
+    let meta =
+        std::fs::metadata(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    if meta.permissions().mode() & 0o004 != 0 {
+        return Err(format!(
+            "{} must not be readable by other users (chmod o-r)",
+            path.display()
+        ));
+    }
+    let mut bytes =
+        std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+    }
+    if bytes.len() < MIN_SECRET_LEN {
+        return Err(format!(
+            "secret must be at least {MIN_SECRET_LEN} bytes (has {})",
+            bytes.len()
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Check definition digest of a service: the first 16 bytes, in lowercase
+/// hex, of the SHA-256 of
+/// `{"checker":<checker_id>,"options":<check_options>,"timeout_ms":<n>}`
+/// with every object's keys sorted and no whitespace. Only what decides the
+/// meaning of one check result is included, so hosts that differ in
+/// `interval`, `rise`, `backends` and the like still share results.
+pub fn check_digest(checker_id: &str, check_options: &toml::Table, timeout: Duration) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+
+    /// The value with every object's keys sorted, whatever the map type keeps.
+    fn canonical(v: serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Object(m) => {
+                let sorted: BTreeMap<String, serde_json::Value> =
+                    m.into_iter().map(|(k, v)| (k, canonical(v))).collect();
+                serde_json::Value::Object(sorted.into_iter().collect())
+            }
+            serde_json::Value::Array(a) => {
+                serde_json::Value::Array(a.into_iter().map(canonical).collect())
+            }
+            other => other,
+        }
+    }
+
+    // A TOML table always converts to JSON (datetimes become objects).
+    let options = serde_json::to_value(check_options).unwrap_or(serde_json::Value::Null);
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    let mut doc = serde_json::Map::new();
+    doc.insert("checker".into(), checker_id.into());
+    doc.insert("options".into(), options);
+    doc.insert("timeout_ms".into(), timeout_ms.into());
+    let text = canonical(serde_json::Value::Object(doc)).to_string();
+    let hash = Sha256::digest(text.as_bytes());
+    let mut out = String::with_capacity(32);
+    for b in &hash[..16] {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
 /// True when `name` equals `zone` or is under it. Both normalized.
 pub fn in_zone(name: &str, zone: &str) -> bool {
     name == zone
@@ -230,6 +324,9 @@ pub struct ServiceConfig {
     pub backends: Vec<Backend>,
     /// Per-service override of `[dns] ttl`, in seconds.
     pub dns_ttl: Option<u32>,
+    /// Check definition digest (see [`check_digest`]): peers exchange
+    /// results for this service only when their digests are equal.
+    pub digest: String,
 }
 
 impl ServiceConfig {
@@ -248,6 +345,7 @@ pub struct Config {
     pub log: LogConfig,
     pub dns: Option<DnsConfig>,
     pub metrics: Option<MetricsConfig>,
+    pub peers: Option<PeersConfig>,
     /// Sorted by name.
     pub services: Vec<ServiceConfig>,
 }
@@ -370,6 +468,19 @@ pub fn parse_metrics_listen(text: &str) -> Option<Option<Vec<SocketAddr>>> {
     };
     let listen = v.listen(t, "metrics", MetricsConfig::default().listen);
     v.errors.is_empty().then_some(Some(listen))
+}
+
+/// Parse only `[peers] listen`, like [`parse_dns_listen`]: `Some(None)`
+/// without a `[peers]` table, `None` when the TOML is unreadable or the
+/// listen value is missing or invalid.
+pub fn parse_peers_listen(text: &str) -> Option<Option<SocketAddr>> {
+    let root: toml::Table = text.parse().ok()?;
+    let mut v = Validator::default();
+    let Some(t) = v.table(&root, "peers") else {
+        return v.errors.is_empty().then_some(None);
+    };
+    let listen = v.socket_addr(t.get("listen")?, "peers.listen", "listen address")?;
+    Some(Some(listen))
 }
 
 /// Lowercase and strip one trailing dot.
@@ -515,7 +626,8 @@ impl Validator {
             root,
             "",
             &[
-                "site", "store", "log", "dns", "metrics", "defaults", "plugins", "services",
+                "site", "store", "log", "dns", "metrics", "peers", "defaults", "plugins",
+                "services",
             ],
         );
         let site = self.site(root, "");
@@ -524,6 +636,10 @@ impl Validator {
         let log = self.log(root);
         let dns = self.dns(root);
         let metrics = self.metrics(root);
+        let peers = self.peers(root);
+        if root.contains_key("peers") && site.is_none() && !root.contains_key("site") {
+            self.err("site", "site is required when [peers] is set");
+        }
 
         let defaults_table = self.table(root, "defaults");
         let defaults_partial = match defaults_table {
@@ -569,6 +685,7 @@ impl Validator {
             log,
             dns,
             metrics,
+            peers,
             services,
         }
     }
@@ -645,6 +762,116 @@ impl Validator {
             Some(_) => self.err(path, "must be an array of \"ip:port\" strings"),
         }
         default
+    }
+
+    /// One `ip:port` with a port of 1-65535 (error recorded otherwise).
+    fn socket_addr(&mut self, v: &toml::Value, path: &str, what: &str) -> Option<SocketAddr> {
+        match v.as_str().map(str::parse::<SocketAddr>) {
+            Some(Ok(addr)) if addr.port() != 0 => Some(addr),
+            _ => {
+                self.err(
+                    path,
+                    format!("{what} must be an IP literal with port: IPv4:port or [IPv6]:port, port 1-65535"),
+                );
+                None
+            }
+        }
+    }
+
+    /// `[peers]`; `None` without the table or when any of it is invalid
+    /// (errors recorded).
+    fn peers(&mut self, root: &toml::Table) -> Option<PeersConfig> {
+        let t = self.table(root, "peers")?;
+        let before = self.errors.len();
+        self.unknown_keys(t, "peers", &["listen", "members", "secret_file"]);
+        let listen = match t.get("listen") {
+            None => {
+                self.err("peers.listen", "missing: this daemon's peer address");
+                None
+            }
+            Some(v) => self.socket_addr(v, "peers.listen", "listen address"),
+        };
+        if let Some(l) = listen
+            && l.ip().is_unspecified()
+        {
+            self.err(
+                "peers.listen",
+                "listen must be a specific address, not 0.0.0.0 or ::",
+            );
+        }
+        let mut members = Vec::new();
+        match t.get("members") {
+            None => self.err("peers.members", "missing: the addresses of every member"),
+            Some(toml::Value::Array(a)) => {
+                for (i, item) in a.iter().enumerate() {
+                    let ipath = format!("peers.members[{i}]");
+                    if let Some(addr) = self.socket_addr(item, &ipath, "member") {
+                        if members.contains(&addr) {
+                            self.err(ipath, format!("duplicate member \"{addr}\""));
+                        } else {
+                            members.push(addr);
+                        }
+                    }
+                }
+                if !(MIN_MEMBERS..=MAX_MEMBERS).contains(&a.len()) {
+                    self.err(
+                        "peers.members",
+                        format!("members must list {MIN_MEMBERS} to {MAX_MEMBERS} addresses"),
+                    );
+                }
+            }
+            Some(_) => self.err("peers.members", "must be an array of \"ip:port\" strings"),
+        }
+        if let Some(l) = listen
+            && !l.ip().is_unspecified()
+            && t.get("members").is_some()
+            && !members.contains(&l)
+        {
+            self.err("peers.listen", "listen must be one of members");
+        }
+        // One socket bound to `listen` sends to every member, so they must
+        // all be of its address family.
+        if let (Some(l), Some(toml::Value::Array(a))) = (listen, t.get("members")) {
+            for (i, item) in a.iter().enumerate() {
+                if let Some(Ok(m)) = item.as_str().map(str::parse::<SocketAddr>)
+                    && m.is_ipv4() != l.is_ipv4()
+                {
+                    self.err(
+                        format!("peers.members[{i}]"),
+                        "member must be of the same address family (IPv4 or IPv6) as listen",
+                    );
+                }
+            }
+        }
+        let secret_file = match self.string(t, "peers", "secret_file") {
+            None => {
+                if !t.contains_key("secret_file") {
+                    self.err(
+                        "peers.secret_file",
+                        "missing: the file holding the peer secret",
+                    );
+                }
+                None
+            }
+            Some(s) => {
+                let path = PathBuf::from(s);
+                match read_secret(&path) {
+                    Ok(_) => Some(path),
+                    Err(m) => {
+                        self.err("peers.secret_file", m);
+                        None
+                    }
+                }
+            }
+        };
+        if self.errors.len() != before {
+            return None;
+        }
+        Some(PeersConfig {
+            listen: listen?,
+            members,
+            secret_file: secret_file?,
+        })
     }
 
     fn metrics(&mut self, root: &toml::Table) -> Option<MetricsConfig> {
@@ -934,15 +1161,18 @@ impl Validator {
                 return None;
             }
         };
+        let checker_id = factory.checker_id();
+        let digest = check_digest(&checker_id, &check_options, settings.timeout);
         Some(ServiceConfig {
             name,
-            checker_id: factory.checker_id(),
+            checker_id,
             check,
             check_options,
             checker,
             settings,
             backends: backends?,
             dns_ttl,
+            digest,
         })
     }
 
@@ -1055,6 +1285,244 @@ pub(crate) mod tests {
 check = "tcp"
 backends = ["10.0.0.1:80"]
 "#;
+
+    /// A peer secret file with `content` and `mode`, in its own temp dir.
+    pub(crate) fn secret_file(content: &[u8], mode: u32) -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("a temporary directory can be created");
+        let path = dir.path().join("peers.key");
+        std::fs::write(&path, content).expect("the temporary secret file can be written");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+            .expect("the temporary secret file's mode can be set");
+        (dir, path)
+    }
+
+    fn peers_conf(site: &str, peers: &str, secret: &Path) -> String {
+        format!(
+            "{site}[peers]\n{peers}secret_file = \"{}\"\n{SVC}",
+            secret.display()
+        )
+    }
+
+    const LISTEN_MEMBERS: &str =
+        "listen = \"127.0.0.1:5302\"\nmembers = [\"127.0.0.1:5302\", \"127.0.0.1:5303\"]\n";
+
+    /// Spec peer-group "Key order does not matter" and "what changes the digest".
+    #[test]
+    fn check_definition_digest() {
+        let svc = |extra: &str| {
+            parse_ok(&format!(
+                "[services.a]\ncheck = \"http\"\nbackends = [\"10.0.0.1:80\"]\n{extra}"
+            ))
+            .services[0]
+                .digest
+                .clone()
+        };
+        let base = svc("check_options = { path = \"/health\", expect_status = [\"200\"] }\n");
+        assert_eq!(base.len(), 32);
+        assert!(
+            base.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        );
+        assert_eq!(
+            base,
+            svc("check_options = { expect_status = [\"200\"], path = \"/health\" }\n")
+        );
+        let opts = "check_options = { path = \"/health\", expect_status = [\"200\"] }\n";
+        for (extra, same) in [
+            ("interval = \"5s\"\n", true),
+            ("rise = 3\n", true),
+            ("balance = \"failover\"\n", true),
+            ("timeout = \"500ms\"\n", false),
+        ] {
+            assert_eq!(svc(&format!("{opts}{extra}")) == base, same, "{extra}");
+        }
+        let more = parse_ok(&format!(
+            "[services.a]\ncheck = \"http\"\nbackends = [\"10.0.0.1:80\", \"10.0.0.2:80\"]\n{opts}"
+        ));
+        assert_eq!(more.services[0].digest, base);
+        let ready = svc("check_options = { path = \"/ready\", expect_status = [\"200\"] }\n");
+        assert_ne!(ready, base);
+        let tcp = parse_ok(SVC).services[0].digest.clone();
+        let http = parse_ok(
+            "[services.\"api.svc.emfor\"]\ncheck = \"http\"\nbackends = [\"10.0.0.1:80\"]\n",
+        )
+        .services[0]
+            .digest
+            .clone();
+        assert_ne!(tcp, http);
+        // The exact text hashed, so other implementations can match it.
+        assert_eq!(
+            check_digest("tcp", &toml::Table::new(), Duration::from_secs(1)),
+            {
+                use sha2::{Digest, Sha256};
+                let h = Sha256::digest(br#"{"checker":"tcp","options":{},"timeout_ms":1000}"#);
+                h[..16]
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            }
+        );
+    }
+
+    /// Spec peer-group "Valid peer group".
+    #[test]
+    fn valid_peer_group() {
+        let (_d, key) = secret_file(&[b'k'; 64], 0o600);
+        let c = parse_ok(&peers_conf("site = \"dc1\"\n", LISTEN_MEMBERS, &key));
+        let p = c.peers.expect("[peers] is parsed");
+        assert_eq!(p.listen, "127.0.0.1:5302".parse().unwrap());
+        assert_eq!(
+            p.others().collect::<Vec<_>>(),
+            vec!["127.0.0.1:5303".parse::<SocketAddr>().unwrap()]
+        );
+        assert_eq!(p.secret_file, key);
+        assert_eq!(parse_ok(SVC).peers, None);
+    }
+
+    /// Spec peer-group "peer config validation" and the service-config rows.
+    #[test]
+    fn peer_config_validation() {
+        let (_d, key) = secret_file(&[b'k'; 64], 0o600);
+        let (_d2, short) = secret_file(
+            &[b'k'; 32][..31]
+                .iter()
+                .chain(b"\n")
+                .copied()
+                .collect::<Vec<_>>(),
+            0o600,
+        );
+        let (_d3, open) = secret_file(&[b'k'; 64], 0o644);
+        let (_d4, exact) = secret_file(
+            &[b'k'; 33][..32]
+                .iter()
+                .chain(b"\n")
+                .copied()
+                .collect::<Vec<_>>(),
+            0o640,
+        );
+        let site = "site = \"dc1\"\n";
+        let m2 = "members = [\"10.0.0.5:5302\", \"10.0.0.6:5302\"]\n";
+        let rows: Vec<(String, &str, &str)> = vec![
+            (
+                peers_conf("", LISTEN_MEMBERS, &key),
+                "site",
+                "site is required when [peers] is set",
+            ),
+            (
+                peers_conf(site, &format!("listen = \"0.0.0.0:5302\"\n{m2}"), &key),
+                "peers.listen",
+                "listen must be a specific address",
+            ),
+            (
+                peers_conf(site, &format!("listen = \"localhost:5302\"\n{m2}"), &key),
+                "peers.listen",
+                "listen address must be an IP literal with port",
+            ),
+            (
+                peers_conf(site, &format!("listen = \"10.0.0.9:5302\"\n{m2}"), &key),
+                "peers.listen",
+                "listen must be one of members",
+            ),
+            (
+                peers_conf(
+                    site,
+                    "listen = \"10.0.0.5:5302\"\nmembers = [\"10.0.0.5:5302\"]\n",
+                    &key,
+                ),
+                "peers.members",
+                "members must list 2 to 64 addresses",
+            ),
+            (
+                peers_conf(
+                    site,
+                    "listen = \"10.0.0.5:5302\"\nmembers = [\"10.0.0.5:5302\", \"10.0.0.6:5302\", \"10.0.0.6:5302\"]\n",
+                    &key,
+                ),
+                "peers.members[2]",
+                "duplicate member",
+            ),
+            (
+                format!(
+                    "{site}[peers]\nlisten = \"10.0.0.5:5302\"\n{m2}secret_file = \"peers.key\"\n{SVC}"
+                ),
+                "peers.secret_file",
+                "must be an absolute path",
+            ),
+            (
+                format!(
+                    "{site}[peers]\nlisten = \"10.0.0.5:5302\"\n{m2}secret_file = \"/nonexistent/emfor/peers.key\"\n{SVC}"
+                ),
+                "peers.secret_file",
+                "cannot read",
+            ),
+            (
+                peers_conf(site, &format!("listen = \"10.0.0.5:5302\"\n{m2}"), &short),
+                "peers.secret_file",
+                "secret must be at least 32 bytes",
+            ),
+            (
+                peers_conf(site, &format!("listen = \"10.0.0.5:5302\"\n{m2}"), &open),
+                "peers.secret_file",
+                "must not be readable by other users",
+            ),
+            (
+                peers_conf(
+                    site,
+                    &format!("listen = \"10.0.0.5:5302\"\n{m2}port = 5302\n"),
+                    &key,
+                ),
+                "peers.port",
+                "unknown key",
+            ),
+            (
+                peers_conf(
+                    site,
+                    "listen = \"10.0.0.5:5302\"\nmembers = [\"10.0.0.5:5302\", \"[2001:db8::6]:5302\"]\n",
+                    &key,
+                ),
+                "peers.members[1]",
+                "same address family",
+            ),
+        ];
+        for (text, path, message) in rows {
+            let e = parse_err(&text);
+            assert!(
+                e.iter()
+                    .any(|e| e.path == path && e.message.contains(message)),
+                "{path}: {message}: {e:?}"
+            );
+        }
+        let members = (0..65)
+            .map(|i| format!("\"10.0.1.{i}:5302\""))
+            .collect::<Vec<_>>();
+        let e = parse_err(&peers_conf(
+            site,
+            &format!(
+                "listen = \"10.0.1.0:5302\"\nmembers = [{}]\n",
+                members.join(", ")
+            ),
+            &key,
+        ));
+        assert!(e.iter().any(|e| e.message.contains("2 to 64")), "{e:?}");
+        // Exactly 32 bytes after the trailing line feed, group-readable: ok.
+        let c = parse_ok(&peers_conf(
+            site,
+            &format!("listen = \"10.0.0.5:5302\"\n{m2}"),
+            &exact,
+        ));
+        assert!(c.peers.is_some());
+        // Reported together with other errors.
+        let e = parse_err(&format!(
+            "{}interval = \"50ms\"\n",
+            peers_conf("", LISTEN_MEMBERS, &key)
+        ));
+        assert!(e.iter().any(|e| e.path == "site"), "{e:?}");
+        assert!(
+            e.iter().any(|e| e.message.contains("interval below 100ms")),
+            "{e:?}"
+        );
+    }
 
     #[test]
     fn effective_settings_resolution() {

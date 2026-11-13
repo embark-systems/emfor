@@ -89,6 +89,9 @@ no TLS; keep it on loopback or firewall it.
 | `emfor_store_last_commit_timestamp_seconds` | Last successful commit; should be under a few seconds old |
 | `emfor_store_used_bytes`, `emfor_store_map_size_bytes` | Store use against `[store] map_size` |
 | `emfor_plugin_up`, `emfor_plugin_restarts_total` | Plugin health |
+| `emfor_peer_up{peer}` | With `[peers]`: 1 while that member is live |
+| `emfor_peer_messages_rejected_total{reason}` | With `[peers]`: dropped messages by reason: `malformed`, `auth` (wrong secret), `sender` (not a member, or a spoofed address), `site`, `stale` (clocks more than 5 seconds apart), `replay` |
+| `emfor_peer_notifications_total{direction}` | With `[peers]`: failure reports `sent` (one per member) and `received` |
 | `emfor_build_info{version}`, `emfor_start_time_seconds` | The daemon |
 
 [examples/prometheus/emfor-rules.yml](../../examples/prometheus/emfor-rules.yml)
@@ -96,6 +99,15 @@ has alerting rules: the endpoint is down, a service is `ALL DOWN`, store
 commits fail, a backend is unhealthy for 10 minutes, flaps, mostly errors,
 or is no longer checked. The full list of metrics and rules is in
 [docs/deploy/daemon.md](../deploy/daemon.md#metrics).
+
+### Peer groups
+
+Members of a peer group need UDP between each other on their `[peers]
+listen` port (5302 in the examples) and clocks within 5 seconds of each
+other (NTP). If `emfor_peer_up` stays 0 for a member, look at
+`emfor_peer_messages_rejected_total` on both sides: `auth` means the
+secrets differ, `stale` that the clocks drift, `sender` that `members` or
+`listen` do not match, `site` that the hosts have different `site` values.
 
 ## Logs
 
@@ -107,9 +119,9 @@ only when stderr is a terminal and `NO_COLOR` is not set.
 | Level | What you see |
 | --- | --- |
 | `error` | Store commit failures, rejected reloads |
-| `warn` | Plugin exits, damaged store replaced, services outside the DNS zone or with mixed ports, unparsable plugin output |
-| `info` | Start and stop, every backend state change with its reason, plugin stderr lines |
-| `debug` | The duration of every passed check |
+| `warn` | Plugin exits, damaged store replaced, services outside the DNS zone or with mixed ports, unparsable plugin output, dropped peer messages (one line per source and reason a minute), an unreadable `[peers] secret_file` |
+| `info` | Start and stop, every backend state change with its reason, plugin stderr lines, peer members becoming live or not live, `peer … reports backend … down (…); checking now` |
+| `debug` | The duration of every passed check, peer reports that were ignored and why |
 
 ## Exit codes
 

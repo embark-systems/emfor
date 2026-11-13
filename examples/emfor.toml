@@ -4,8 +4,8 @@
 # check_options, then stops them before it exits.
 
 # The data centre this host is in (optional): services with
-# balance = "locality" prefer backends whose site matches. Must come before
-# the first table.
+# balance = "locality" prefer backends whose site matches; required with
+# [peers]. Must come before the first table.
 site = "dc1"
 
 [store]
@@ -46,6 +46,16 @@ ttl = "1s"                   # whole seconds, 0s to 3600s
 # see docs/deploy/daemon.md. Changing listen requires a restart.
 # [metrics]
 # listen = ["127.0.0.1:5301"]
+
+# Peer group: the emfor daemons of this site that pass backend failures on
+# to each other over UDP (see docs/manual/03-configuration.md). Every member
+# lists the same members, including itself; listen is this host's entry.
+# The secret file needs at least 32 bytes and mode 0600 or 0640.
+# Changing listen requires a restart; members and secret_file reload.
+# [peers]
+# listen = "10.0.0.5:5302"
+# members = ["10.0.0.5:5302", "10.0.0.6:5302", "10.0.0.7:5302"]
+# secret_file = "/etc/emfor/peers.key"
 
 # Built-in defaults, shown here explicitly. Any service can override them.
 [defaults]

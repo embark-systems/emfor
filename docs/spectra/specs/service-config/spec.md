@@ -95,6 +95,7 @@ The daemon SHALL reject a config that violates any of these rules and SHALL repo
 - `check` names a registered checker and `check_options` passes that checker's validation.
 - `[dns] listen` is a non-empty array of `IPv4:port` or `[IPv6]:port` with port 1–65535 and no repeats; `[dns] zone` follows the service name rules after the same normalization and is at most 242 characters, so that the SOA name `hostmaster.<zone>` fits in 253; `[dns] ttl` is a whole number of seconds from 0s to 3600s.
 - `[metrics] listen` is a non-empty array of `IPv4:port` or `[IPv6]:port` with port 1–65535 and no repeats; `[metrics]` has no keys other than `listen`.
+- `[peers]` follows the peer group configuration rules (spec peer-group), and the top-level `site` is set when `[peers]` is present.
 - No unknown keys anywhere in the file.
 
 #### Scenario: Multiple errors reported together
@@ -137,24 +138,31 @@ The daemon SHALL reject a config that violates any of these rules and SHALL repo
 | `[metrics] listen` | `["localhost:5301"]` | error: listen address must be an IP literal with port |
 | `[metrics] listen` | `["127.0.0.1:5301", "127.0.0.1:5301"]` | error: duplicate listen address |
 | `[metrics] path` | `"/m"` | error: unknown key |
+| `[peers]` | present, no top-level `site` | error: site is required when [peers] is set |
+| `[peers] members` | `["10.0.0.5:5302"]` | error: members must list 2 to 64 addresses |
 
 
 <!-- @trace
-source: emfor-metrics
+source: emfor-peers
 updated: 2026-11-13
 code:
-  - examples/emfor.toml
+  - docs/manual/01-concepts.md
+  - crates/emfor-daemon/Cargo.toml
   - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/src/live.rs
-  - crates/emfor-daemon/src/config.rs
   - docs/deploy/daemon.md
-  - crates/emfor-daemon/src/dns.rs
+  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/supervisor.rs
   - crates/emfor-daemon/src/schedule.rs
-  - crates/emfor-daemon/src/metrics.rs
+  - docs/manual/03-configuration.md
+  - crates/emfor-daemon/src/live.rs
+  - docs/manual/08-operations.md
   - crates/emfor-daemon/src/cli.rs
-  - crates/emfor-daemon/src/writer.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - examples/emfor.toml
+  - crates/emfor-daemon/src/config.rs
+  - CHANGELOG.md
 tests:
-  - crates/emfor-daemon/tests/metrics.rs
+  - crates/emfor-daemon/tests/peers.rs
 -->
 
 ---
@@ -241,7 +249,7 @@ tests:
 ---
 ### Requirement: Reload on SIGHUP applies only a fully valid config
 
-On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes validation, the daemon SHALL apply it. If any validation error exists, the daemon SHALL log every error at `error` level and continue running the previous config unchanged. A change to any key in the `[store]` table SHALL be a validation error on reload. A change to `[dns] listen`, including adding or removing the `[dns]` table, SHALL be a validation error on reload with the message "dns listen settings require restart". A change to `[metrics] listen`, including adding or removing the `[metrics]` table, SHALL be a validation error on reload with the message "metrics listen settings require restart". Changes to `[dns] zone`, `[dns] ttl`, `dns_ttl`, and `balance` SHALL take effect on reload.
+On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes validation, the daemon SHALL apply it. If any validation error exists, the daemon SHALL log every error at `error` level and continue running the previous config unchanged. A change to any key in the `[store]` table SHALL be a validation error on reload. A change to `[dns] listen`, including adding or removing the `[dns]` table, SHALL be a validation error on reload with the message "dns listen settings require restart". A change to `[metrics] listen`, including adding or removing the `[metrics]` table, SHALL be a validation error on reload with the message "metrics listen settings require restart". A change to `[peers] listen`, including adding or removing the `[peers]` table, SHALL be a validation error on reload with the message "peers listen settings require restart". Changes to `[dns] zone`, `[dns] ttl`, `dns_ttl`, `balance`, `[peers] members` and `[peers] secret_file` SHALL take effect on reload.
 
 #### Scenario: Valid reload adds a service
 
@@ -273,23 +281,33 @@ On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes v
 - **WHEN** the daemon runs with `[metrics] listen = ["127.0.0.1:5301"]`, the config file is changed to `["127.0.0.1:5302"]`, and the daemon receives `SIGHUP`
 - **THEN** the reload is rejected with the error "metrics listen settings require restart" and `GET /metrics` keeps answering on 127.0.0.1:5301
 
+#### Scenario: Peers listen change requires restart
+
+- **WHEN** the daemon runs with `[peers] listen = "127.0.0.1:5302"`, the config file is changed to `"127.0.0.1:5305"`, and the daemon receives `SIGHUP`
+- **THEN** the reload is rejected with the error "peers listen settings require restart"
+
 
 <!-- @trace
-source: emfor-metrics
+source: emfor-peers
 updated: 2026-11-13
 code:
-  - examples/emfor.toml
+  - docs/manual/01-concepts.md
+  - crates/emfor-daemon/Cargo.toml
   - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/src/live.rs
-  - crates/emfor-daemon/src/config.rs
   - docs/deploy/daemon.md
-  - crates/emfor-daemon/src/dns.rs
+  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/supervisor.rs
   - crates/emfor-daemon/src/schedule.rs
-  - crates/emfor-daemon/src/metrics.rs
+  - docs/manual/03-configuration.md
+  - crates/emfor-daemon/src/live.rs
+  - docs/manual/08-operations.md
   - crates/emfor-daemon/src/cli.rs
-  - crates/emfor-daemon/src/writer.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - examples/emfor.toml
+  - crates/emfor-daemon/src/config.rs
+  - CHANGELOG.md
 tests:
-  - crates/emfor-daemon/tests/metrics.rs
+  - crates/emfor-daemon/tests/peers.rs
 -->
 
 ---

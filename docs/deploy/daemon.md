@@ -209,10 +209,41 @@ The server answers only `GET /metrics` (a query string is ignored): other paths 
 | `emfor_store_map_size_bytes` | gauge | | `[store] map_size`; commits fail with `MDB_MAP_FULL` when `emfor_store_used_bytes` reaches it |
 | `emfor_plugin_up` | gauge | `plugin` | 1 while the plugin runs and has answered the handshake, 0 while it is down or restarting; only with `[plugins]` |
 | `emfor_plugin_restarts_total` | counter | `plugin` | Times the plugin was started again after it exited; from 0 when the plugin is started for a config |
+| `emfor_peer_up` | gauge | `peer` | With `[peers]`: one per other member, 1 while a message from it was accepted in the last 3 seconds; a member removed on reload loses its series |
+| `emfor_peer_messages_rejected_total` | counter | `reason` | With `[peers]`: dropped peer messages by the first check they failed: `malformed`, `auth`, `sender`, `site`, `stale`, `replay`; all six from 0 |
+| `emfor_peer_notifications_total` | counter | `direction` | With `[peers]`: backend failure reports `sent` (one per receiving member) and `received` (accepted, whether acted on or not) |
 
 The two counters start at 0 when a backend first appears in the running daemon, keep counting across reloads (also when `check` or `check_options` change), and start again from 0 if the backend is removed and added back. They restart with the daemon; Prometheus handles that as a counter reset.
 
 Services are listed by name and backends in config order. Measured with one service of 10 unreachable backends: 107 series and 11.6 KB per scrape, that is 10 series per backend plus 7 for the daemon and the service (the test `series_for_ten_backends` in `crates/emfor-daemon/tests/metrics.rs` keeps it so). A backend has no last-check series before its first check, a healthy backend adds the latency series, and a backend of a `fastest` service adds `in_pool`, so a backend has 9 to 12 series.
+
+## Peer groups
+
+The daemons of one site can pass backend failures on to each other (see docs/manual/01-concepts.md, "Peer groups"). To set one up:
+
+1. Make a secret and put the same file on every host of the site:
+
+   ```sh
+   openssl rand -hex 32 > /etc/emfor/peers.key
+   chown root:emfor /etc/emfor/peers.key   # the user the daemon runs as must read it
+   chmod 640 /etc/emfor/peers.key
+   ```
+
+2. On every host set the top-level `site` and a `[peers]` table with the same `members` and that host's own `listen`:
+
+   ```toml
+   site = "dc1"
+
+   [peers]
+   listen = "10.0.0.5:5302"
+   members = ["10.0.0.5:5302", "10.0.0.6:5302", "10.0.0.7:5302"]
+   secret_file = "/etc/emfor/peers.key"
+   ```
+
+3. Allow UDP on port 5302 between the members, and keep their clocks in sync (NTP): messages more than 5 seconds off are dropped.
+4. Restart each daemon (adding `[peers]` needs a restart). At start it logs `peer group on <listen> with <n> other members`, and `peer <address> is live` as the others come up. Hosts not yet configured just get no reports; nothing else changes for them.
+
+To leave the group, remove `[peers]` and restart. To change the secret, replace the file on every host within a minute of each other. Each host reads the file every second; after its file changed it still signs with the previous secret for 60 seconds and accepts it for 120 seconds, so no message is dropped while the hosts change one by one.
 
 ### Scraping
 

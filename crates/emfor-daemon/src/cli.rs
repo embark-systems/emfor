@@ -17,6 +17,7 @@ use crate::config::{self, Config, ConfigError, DEFAULT_CONFIG_PATH, DnsConfig, i
 use crate::dns::{self, DnsSettings};
 use crate::live::LiveState;
 use crate::metrics;
+use crate::peers::{self, Targets};
 use crate::plugin::{PluginSet, Prepared};
 use crate::store::Store;
 use crate::supervisor::Supervisor;
@@ -318,11 +319,38 @@ async fn run(
         None => None,
     };
 
+    // Validation makes `site` required with `[peers]`.
+    let peer_site = |c: &Config| c.site.clone().unwrap_or_default();
+    let targets = Targets::default();
+    let peers = match &config.peers {
+        Some(p) => match peers::start(p, &peer_site(&config), targets.clone()).await {
+            Ok(handle) => {
+                tracing::info!(
+                    "peer group on {} with {} other members",
+                    p.listen,
+                    p.others().count()
+                );
+                Some(handle)
+            }
+            Err(e) => {
+                tracing::error!("cannot start peer group: {e}");
+                return ExitCode::from(EXIT_STARTUP);
+            }
+        },
+        None => None,
+    };
+    live.set_peers(peers.as_ref().map(|h| h.stats.clone()));
+
     let (tx, rx) = mpsc::unbounded_channel();
     let history = load_history(&store);
     let mut writer = writer::spawn_live(store, rx, live.clone(), history, listen_keys(&config));
     live.set_plugins(plugins.statuses());
-    let mut supervisor = Supervisor::start(&config, tx.clone());
+    let mut supervisor = Supervisor::start_with_peers(
+        &config,
+        tx.clone(),
+        targets,
+        peers.as_ref().map(|h| h.down.clone()),
+    );
     tracing::info!(
         "emfor started: {} services, {} backends, store {}",
         config.services.len(),
@@ -387,6 +415,9 @@ async fn run(
                             tx.send_replace(dns_settings(d));
                         }
                         warn_dns(&new);
+                        if let (Some(h), Some(p)) = (&peers, &new.peers) {
+                            h.reload(p, &peer_site(&new));
+                        }
                         tracing::info!("config reloaded: {} services, {} backends", new.services.len(), new.backend_count());
                         current = new;
                     }
@@ -475,8 +506,8 @@ fn warn_outside_zone(config: &Config) {
 
 /// Load a config: start its plugins (reusing running ones whose command is
 /// unchanged), then parse and validate with them on a blocking thread. On a
-/// reload (`current` set), a changed `[store]` table, `[dns] listen` or
-/// `[metrics] listen` is an error too. Every error is returned together. The
+/// reload (`current` set), a changed `[store]` table, `[dns] listen`,
+/// `[metrics] listen` or `[peers] listen` is an error too. Every error is returned together. The
 /// caller commits or rolls back the returned plugins.
 async fn load(
     path: &Path,
@@ -527,6 +558,13 @@ async fn load(
             errors.push(ConfigError {
                 path: "metrics.listen".into(),
                 message: "metrics listen settings require restart".into(),
+            });
+        }
+        let current_listen = current.peers.as_ref().map(|p| p.listen);
+        if config::parse_peers_listen(&text).is_some_and(|l| l != current_listen) {
+            errors.push(ConfigError {
+                path: "peers.listen".into(),
+                message: "peers listen settings require restart".into(),
             });
         }
     }

@@ -172,7 +172,7 @@ tests:
 ---
 ### Requirement: Daemon metrics
 
-The body SHALL also contain `emfor_build_info{version="<emfor version>"} 1` (gauge), `emfor_start_time_seconds` (gauge) with the daemon start time in Unix seconds, and `emfor_store_commit_failures_total` (counter), the number of failed state store commits since the daemon started. After the first successful commit it SHALL contain `emfor_store_last_commit_timestamp_seconds` (gauge), the Unix time of the last successful commit, `emfor_store_used_bytes` (gauge), the bytes of the store up to its last used page, and `emfor_store_map_size_bytes` (gauge), the map size. For each plugin of the applied config it SHALL contain `emfor_plugin_up{plugin="<name>"}` (gauge), 1 while the plugin process runs and has completed the handshake and 0 otherwise, and `emfor_plugin_restarts_total{plugin="<name>"}` (counter), the number of times the plugin was started again after it exited.
+The body SHALL also contain `emfor_build_info{version="<emfor version>"} 1` (gauge), `emfor_start_time_seconds` (gauge) with the daemon start time in Unix seconds, and `emfor_store_commit_failures_total` (counter), the number of failed state store commits since the daemon started. After the first successful commit it SHALL contain `emfor_store_last_commit_timestamp_seconds` (gauge), the Unix time of the last successful commit, `emfor_store_used_bytes` (gauge), the bytes of the store up to its last used page, and `emfor_store_map_size_bytes` (gauge), the map size. For each plugin of the applied config it SHALL contain `emfor_plugin_up{plugin="<name>"}` (gauge), 1 while the plugin process runs and has completed the handshake and 0 otherwise, and `emfor_plugin_restarts_total{plugin="<name>"}` (counter), the number of times the plugin was started again after it exited. When `[peers]` is configured it SHALL contain `emfor_peer_up{peer="<ip:port>"}` (gauge) for every member other than this daemon, 1 while the member is live and 0 otherwise; `emfor_peer_messages_rejected_total{reason="<reason>"}` (counter) for each of the reasons `malformed`, `auth`, `sender`, `site`, `stale` and `replay`, starting at 0; and `emfor_peer_notifications_total{direction="sent"}` and `{direction="received"}` (counters), the `down` messages sent (one per receiving member) and the `down` messages accepted. Without `[peers]` it SHALL contain no series whose name starts with `emfor_peer_`.
 
 #### Scenario: Plugin restart counted
 
@@ -184,20 +184,30 @@ The body SHALL also contain `emfor_build_info{version="<emfor version>"} 1` (gau
 - **WHEN** one commit to the state store fails
 - **THEN** `emfor_store_commit_failures_total` increases by 1
 
+#### Scenario: Peer metrics
+
+- **WHEN** a daemon with `members = ["127.0.0.1:5302", "127.0.0.1:5303"]` and `listen = "127.0.0.1:5302"` has accepted a heartbeat from 127.0.0.1:5303 within the last 3 seconds and has dropped one message with a wrong tag
+- **THEN** the body contains `emfor_peer_up{peer="127.0.0.1:5303"} 1` and `emfor_peer_messages_rejected_total{reason="auth"} 1`
+
 <!-- @trace
-source: emfor-metrics
+source: emfor-peers
 updated: 2026-11-13
 code:
-  - examples/emfor.toml
+  - docs/manual/01-concepts.md
+  - crates/emfor-daemon/Cargo.toml
   - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/src/live.rs
-  - crates/emfor-daemon/src/config.rs
   - docs/deploy/daemon.md
-  - crates/emfor-daemon/src/dns.rs
+  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/supervisor.rs
   - crates/emfor-daemon/src/schedule.rs
-  - crates/emfor-daemon/src/metrics.rs
+  - docs/manual/03-configuration.md
+  - crates/emfor-daemon/src/live.rs
+  - docs/manual/08-operations.md
   - crates/emfor-daemon/src/cli.rs
-  - crates/emfor-daemon/src/writer.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - examples/emfor.toml
+  - crates/emfor-daemon/src/config.rs
+  - CHANGELOG.md
 tests:
-  - crates/emfor-daemon/tests/metrics.rs
+  - crates/emfor-daemon/tests/peers.rs
 -->

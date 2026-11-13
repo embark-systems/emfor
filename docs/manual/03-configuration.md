@@ -29,7 +29,7 @@ site = "dc1"
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `site` | none | The data centre this host is in. Used by `balance = "locality"`. 1–63 characters of `a-z`, `0-9` and `-` (lowercased when read). Must come before the first table. |
+| `site` | none | The data centre this host is in. Used by `balance = "locality"`, and required with `[peers]`. 1–63 characters of `a-z`, `0-9` and `-` (lowercased when read). Must come before the first table. |
 
 ## [store]
 
@@ -74,6 +74,43 @@ The Prometheus endpoint runs only when the table is present.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `listen` | `["127.0.0.1:5301"]` | Addresses to serve `/metrics` on. |
+
+## [peers]
+
+Optional. Makes this daemon a member of a **peer group**: the emfor daemons
+of one `site` that list each other here. Members send each other a
+heartbeat every second, and when one of them sees a backend go from
+`healthy` to `unhealthy` it tells the others, which recheck that backend at
+once and every 200ms (up to `fall` checks) instead of waiting for their
+next `interval`. A report never changes a backend's state by itself: every
+daemon still decides from its own checks, and clients still read only the
+local store. Without `[peers]` nothing of this runs. See
+[chapter 1](01-concepts.md#peer-groups).
+
+```toml
+site = "dc1"                               # required with [peers]
+
+[peers]
+listen = "10.0.0.5:5302"
+members = ["10.0.0.5:5302", "10.0.0.6:5302", "10.0.0.7:5302"]
+secret_file = "/etc/emfor/peers.key"
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `listen` | required | This daemon's UDP address in the group, one of `members`. A specific address, not `0.0.0.0` or `::`; other members check that messages come from it. 5302 is the usual port. |
+| `members` | required | Every member's `listen`, this daemon included: 2 to 64 addresses, no repeats, all IPv4 or all IPv6 like `listen`. The same list can go on every host of the site. |
+| `secret_file` | required | Absolute path to the shared secret that signs every message (HMAC-SHA256): at least 32 bytes after one trailing line feed is removed, not readable by other users (`chmod 600` or `640`). |
+
+Members only share reports for a service when its check is defined the
+same way on both: the same `check`, `check_options` and `timeout`. Other
+settings (`interval`, `rise`, `fall`, the backend list) may differ.
+
+The secret file is read again every second. To change the secret, write the
+new one on every host within a minute of each other: after its own file
+changed, a host still signs with the previous secret for 60 seconds and
+accepts it for 120 seconds, so no message is dropped meanwhile. Messages more than 5 seconds off the
+receiver's clock are dropped, so keep the hosts' clocks in sync (NTP).
 
 ## [defaults]
 
@@ -199,3 +236,5 @@ error and keeps running the old config.
 | Anything in `[store]` | Rejected; needs a restart. |
 | `[dns] listen`, adding or removing `[dns]` | Rejected (`dns listen settings require restart`). |
 | `[metrics] listen`, adding or removing `[metrics]` | Rejected (`metrics listen settings require restart`). |
+| `[peers] members`, `[peers] secret_file` | Applied; added members start as not live. |
+| `[peers] listen`, adding or removing `[peers]` | Rejected (`peers listen settings require restart`). |

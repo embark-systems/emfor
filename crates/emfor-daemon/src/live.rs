@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 use emfor_format::{HealthState, ServiceRecord};
 
+use crate::peers::PeerStats;
 use crate::schedule::CheckOutcome;
 use crate::select::Family;
 use crate::state::Transition;
@@ -91,6 +92,9 @@ pub struct LiveView {
     pub store_usage: Option<(u64, u64)>,
     /// Plugins of the applied config, by name.
     pub plugins: Vec<(String, Arc<PluginStatus>)>,
+    /// Counters and member liveness of the peer group; `None` without
+    /// `[peers]`.
+    pub peers: Option<Arc<PeerStats>>,
 }
 
 /// Kept up to date by a plugin's host, read by `/metrics`.
@@ -212,6 +216,11 @@ impl LiveState {
     pub fn set_plugins(&self, plugins: Vec<(String, Arc<PluginStatus>)>) {
         let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
         v.plugins = plugins;
+    }
+
+    pub fn set_peers(&self, peers: Option<Arc<PeerStats>>) {
+        let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
+        v.peers = peers;
     }
 
     pub(crate) fn set_started_at(&self, ms: u64) {

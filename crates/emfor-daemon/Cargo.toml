@@ -32,6 +32,7 @@ emfor-format.workspace = true
 emfor-tls = { path = "../emfor-tls" }
 futures = "0.3.34"
 heed = "0.22"
+hmac = "0.13"
 hickory-proto = "0.26.3"
 hickory-server = "0.26.3"
 humantime = "2.4.0"
@@ -41,6 +42,7 @@ rand = "0.10.3"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.11"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["full"] }
 toml = "1.2.1"

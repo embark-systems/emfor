@@ -321,6 +321,48 @@ pub fn render(view: &LiveView, version: &str) -> String {
         }
     }
 
+    if let Some(peers) = &view.peers {
+        family(
+            &mut out,
+            "emfor_peer_up",
+            "gauge",
+            "1 while a message from this peer group member was accepted in the last 3s.",
+        );
+        for (member, live) in peers.up() {
+            put!(out, "emfor_peer_up{{peer=\"{member}\"}} {}", u8::from(live));
+        }
+        family(
+            &mut out,
+            "emfor_peer_messages_rejected_total",
+            "counter",
+            "Peer messages dropped, by the first check they failed.",
+        );
+        for r in crate::peers::Reject::ALL {
+            put!(
+                out,
+                "emfor_peer_messages_rejected_total{{reason=\"{}\"}} {}",
+                r.as_str(),
+                peers.rejected(r)
+            );
+        }
+        family(
+            &mut out,
+            "emfor_peer_notifications_total",
+            "counter",
+            "Backend failure messages sent (one per member) and accepted.",
+        );
+        put!(
+            out,
+            "emfor_peer_notifications_total{{direction=\"sent\"}} {}",
+            peers.sent()
+        );
+        put!(
+            out,
+            "emfor_peer_notifications_total{{direction=\"received\"}} {}",
+            peers.received()
+        );
+    }
+
     let mut names: Vec<&String> = view.services.keys().collect();
     names.sort();
     let records: Vec<_> = names.iter().map(|n| &view.services[*n].record).collect();
@@ -540,6 +582,63 @@ mod tests {
         ] {
             assert!(body.lines().any(|l| l == line), "{line}: {body}");
         }
+    }
+
+    /// Spec metrics-endpoint "Peer metrics", and no peer series without
+    /// `[peers]`.
+    #[test]
+    fn peer_metrics() {
+        use crate::peers::{Group, Keys, Kind, Message, PeerStats, encode};
+        use std::sync::Arc;
+        let me: std::net::SocketAddr = "127.0.0.1:5302".parse().unwrap();
+        let other: std::net::SocketAddr = "127.0.0.1:5303".parse().unwrap();
+        let stats = Arc::new(PeerStats::default());
+        let mut g = Group::new(
+            me,
+            "dc1".into(),
+            vec![me, other],
+            Keys::new(vec![1u8; 32]),
+            7,
+            stats.clone(),
+        );
+        let now = tokio::time::Instant::now();
+        let t = 1_763_000_000_000;
+        let hb = |seq, key: &[u8]| {
+            encode(
+                &Message {
+                    from: other,
+                    site: "dc1".into(),
+                    boot: 1,
+                    seq,
+                    ts: t,
+                    kind: Kind::Heartbeat,
+                },
+                key,
+            )
+        };
+        assert!(g.accept(&hb(1, &[1u8; 32]), other, t, now).is_ok());
+        assert!(g.accept(&hb(2, &[2u8; 32]), other, t, now).is_err());
+        let mut v = view(vec![]);
+        assert!(!render(&v, "0.1.0").contains("emfor_peer_"));
+        v.peers = Some(stats);
+        let body = render(&v, "0.1.0");
+        for line in [
+            "emfor_peer_up{peer=\"127.0.0.1:5303\"} 1",
+            "emfor_peer_messages_rejected_total{reason=\"auth\"} 1",
+            "emfor_peer_messages_rejected_total{reason=\"replay\"} 0",
+            "emfor_peer_notifications_total{direction=\"sent\"} 0",
+            "emfor_peer_notifications_total{direction=\"received\"} 0",
+        ] {
+            assert!(body.lines().any(|l| l == line), "{line}: {body}");
+        }
+        // A member removed on reload loses its series.
+        g.set_members(vec![me, "127.0.0.1:5304".parse().unwrap()]);
+        let body = render(&v, "0.1.0");
+        assert!(!body.contains("127.0.0.1:5303"), "{body}");
+        assert!(
+            body.contains("emfor_peer_up{peer=\"127.0.0.1:5304\"} 0"),
+            "{body}"
+        );
     }
 
     fn api() -> ServiceRecord {

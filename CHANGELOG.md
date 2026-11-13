@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Peer groups
+
+- New optional `[peers]` table: the emfor daemons of one `site` that list
+  each other form a peer group. Members send each other a heartbeat every
+  second over UDP, signed with HMAC-SHA256 using the secret in
+  `secret_file`. When a member sees a backend go from healthy to unhealthy
+  it tells the others, which recheck that backend at once and every 200 ms
+  (up to `fall` checks) instead of waiting for their next interval. A
+  report never changes a backend's state by itself. Reports are shared
+  only for services whose `check`, `check_options` and `timeout` match.
+  New metrics `emfor_peer_up`, `emfor_peer_messages_rejected_total` and
+  `emfor_peer_notifications_total`. Without `[peers]` nothing changes.
+  See docs/manual/03-configuration.md and docs/deploy/daemon.md.
+
 ### Status
 
 - `emfor status --watch` scrolls when the services and recent changes do
