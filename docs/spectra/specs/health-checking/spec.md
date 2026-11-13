@@ -203,7 +203,7 @@ tests:
 ---
 ### Requirement: HTTP checker
 
-The `http` checker SHALL send one `GET` request per check to the backend IP and port using `scheme` (`http` or `https`, default `http`) and `path` (default `/`), with the `Host` header set to `host_header` when configured. It SHALL NOT follow redirects. The result SHALL be `up` when the response status matches any entry of `expect_status` (default `["200-399"]`; each entry is a status code or an inclusive `lo-hi` range) and `down` otherwise, with the status code in the reason. For `https`, certificate verification SHALL be on unless `tls_verify = false`.
+The `http` checker SHALL send one `GET` request per check to the backend IP and port using `scheme` (`http` or `https`, default `http`) and `path` (default `/`), with the `Host` header set to `host_header` when configured. It SHALL NOT follow redirects. The result SHALL be `up` when the response status matches any entry of `expect_status` (default `["200-399"]`; each entry is a status code or an inclusive `lo-hi` range) and `down` otherwise, with the status code in the reason. For `https`, certificate verification SHALL be on unless `tls_verify = false`. When `expect_body` is set (a string of 1 to 16384 bytes), a response whose status matches SHALL also be read, up to 65536 bytes and stopping as soon as `expect_body` is found as a case-sensitive byte substring; the result SHALL be `up` only when it is found, and otherwise `down` with reason `expect_body: got "<first 64 bytes of the body, escaped>"`. A failure while reading the body SHALL be `down` with a reason starting `body: `. Without `expect_body`, the checker SHALL NOT read the body.
 
 #### Scenario: Status inside expected range
 
@@ -230,32 +230,68 @@ The `http` checker SHALL send one `GET` request per check to the backend IP and 
 - **WHEN** a service sets `host_header = "api.internal"`
 - **THEN** each check request carries `Host: api.internal`
 
+#### Scenario: Body must contain expect_body
+
+- **WHEN** a service sets `expect_body = "\"status\":\"UP\""` and the backend answers 200 with body `{"status":"DOWN"}`
+- **THEN** the result is `down` with reason `expect_body: got "{\"status\":\"DOWN\"}"`
+
+##### Example: body matching
+
+| `expect_body` | Response | Result |
+| --- | --- | --- |
+| (not set) | 200, body `{"status":"DOWN"}` | up |
+| `"status":"UP"` | 200, body `{"status":"UP"}` | up |
+| `"status":"UP"` | 200, body `{"status":"up"}` | down: `expect_body: got "{\"status\":\"up\"}"` |
+| `"status":"UP"` | 503, body `{"status":"UP"}` | down: `unexpected status 503` |
+| `ok` | 200, body sent in two parts `o` and `k` | up |
+| `ok` | 200, 70000 bytes of `a` followed by `ok` | down: `expect_body: got "aaaa…"` (first 64 bytes) |
+| `ok` | 200, empty body | down: `expect_body: got ""` |
+
+#### Scenario: Invalid expect_body
+
+- **WHEN** a service sets `expect_body = ""`
+- **THEN** validation fails on `expect_body` with `must not be empty`
+
+##### Example: expect_body validation
+
+| `expect_body` | Error |
+| --- | --- |
+| `""` | `expect_body`: must not be empty |
+| 16385 bytes | `expect_body`: must be at most 16384 bytes |
+| `200` (integer) | `expect_body`: must be a string |
+
 
 <!-- @trace
-source: emfor-core
-updated: 2026-11-12
+source: emfor-http-expect-body
+updated: 2026-11-14
 code:
-  - crates/emfor-daemon/src/checker/http.rs
-  - crates/emfor-daemon/src/writer.rs
-  - Cargo.toml
-  - crates/emfor-daemon/src/cli.rs
-  - CLAUDE.md
-  - crates/emfor-daemon/src/main.rs
-  - crates/emfor-daemon/src/state.rs
-  - crates/emfor-daemon/Cargo.toml
-  - .spectra.yaml
-  - crates/emfor-daemon/src/checker/tcp.rs
-  - crates/emfor-daemon/src/checker/mod.rs
-  - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/src/config.rs
-  - crates/emfor-daemon/src/supervisor.rs
-  - crates/emfor-daemon/src/store.rs
-  - crates/emfor-format/src/lib.rs
+  - CHANGELOG.md
   - examples/emfor.toml
-  - crates/emfor-format/Cargo.toml
-  - crates/emfor-daemon/src/schedule.rs
+  - docs/manual/04-health-checks.md
+  - crates/emfor-check/src/pgsql.rs
+  - tests/plugins/Dockerfile
+  - crates/emfor-check/src/grpc.rs
+  - crates/emfor-check/src/amqp.rs
+  - crates/emfor-check/src/smtp.rs
+  - tests/plugins/grpc_server.py
+  - crates/emfor-check/src/mysql.rs
+  - tests/plugins/inside.sh
+  - docs/deploy/plugins.md
+  - crates/emfor-check/src/radius.rs
+  - crates/emfor-check/src/main.rs
+  - crates/emfor-check/src/replica.rs
+  - docs/manual.zh_TW/04-health-checks.md
+  - tests/plugins/run.sh
+  - crates/emfor-daemon/src/checker/http.rs
+  - examples/freebsd/Makefile.crates
+  - crates/emfor-check/Cargo.toml
+  - crates/emfor-check/src/options.rs
+  - crates/emfor-check/src/mongodb.rs
+  - crates/emfor-check/src/redis.rs
+  - crates/emfor-check/src/lib.rs
 tests:
-  - crates/emfor-daemon/tests/daemon.rs
+  - crates/emfor-check/tests/live.rs
+  - crates/emfor-check/tests/cli.rs
 -->
 
 ---

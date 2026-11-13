@@ -627,3 +627,562 @@ tests:
   - crates/emfor-check/tests/cli.rs
   - crates/emfor-check/tests/live.rs
 -->
+
+---
+### Requirement: SMTP check options
+
+The `smtp` plugin SHALL accept these `check_options` keys and SHALL report every other key as `unknown key`:
+
+- `helo`: a host name of 1 to 255 bytes made of ASCII letters, digits, `-` and `.`. Otherwise the error is `must be a host name`. When it is not set, the EHLO argument SHALL be the local address of the connection as an address literal: `[<IPv4>]` or `[IPv6:<IPv6>]`.
+- `tls` and `starttls`: booleans, default `false`. Both `true` SHALL be an error on `starttls`: `conflicts with tls`.
+- `tls_verify`, `server_name` and `ca_file`: the rules they have for the other `emfor-check` plugins, except that without `tls = true` or `starttls = true` each SHALL be an error: `requires tls = true or starttls = true`.
+
+Type errors SHALL be `must be a string` and `must be a boolean`.
+
+#### Scenario: Defaults
+
+- **WHEN** a service with `check = "smtp"` sets no `check_options` and the plugin connects from `10.0.0.5`
+- **THEN** the plugin reports no errors and sends `EHLO [10.0.0.5]` in plaintext
+
+##### Example: SMTP option validation
+
+| `check_options` | Errors |
+| --- | --- |
+| `{}` | none |
+| `{ helo = "app1.example.org" }` | none |
+| `{ helo = "bad name" }` | `helo`: must be a host name |
+| `{ helo = "" }` | `helo`: must be a host name |
+| `{ starttls = true, ca_file = "/etc/emfor/ca.pem" }` | none |
+| `{ tls = true, starttls = true }` | `starttls`: conflicts with tls |
+| `{ server_name = "mx.example.org" }` | `server_name`: requires tls = true or starttls = true |
+| `{ starttls = "yes" }` | `starttls`: must be a boolean |
+| `{ user = "emfor" }` | `user`: unknown key |
+
+
+<!-- @trace
+source: emfor-check-smtp
+updated: 2026-11-14
+code:
+  - crates/emfor-check/src/amqp.rs
+  - crates/emfor-check/src/smtp.rs
+  - crates/emfor-check/Cargo.toml
+  - tests/plugins/grpc_server.py
+  - crates/emfor-check/src/replica.rs
+  - crates/emfor-check/src/pgsql.rs
+  - crates/emfor-check/src/redis.rs
+  - crates/emfor-check/src/mysql.rs
+  - examples/emfor.toml
+  - crates/emfor-check/src/lib.rs
+  - crates/emfor-check/src/mongodb.rs
+  - crates/emfor-check/src/grpc.rs
+  - tests/plugins/inside.sh
+  - crates/emfor-check/src/radius.rs
+  - tests/plugins/run.sh
+  - CHANGELOG.md
+  - tests/plugins/Dockerfile
+  - crates/emfor-check/src/main.rs
+  - crates/emfor-daemon/src/checker/http.rs
+  - docs/manual/04-health-checks.md
+  - crates/emfor-check/src/options.rs
+  - examples/freebsd/Makefile.crates
+  - docs/deploy/plugins.md
+  - docs/manual.zh_TW/04-health-checks.md
+tests:
+  - crates/emfor-check/tests/cli.rs
+  - crates/emfor-check/tests/live.rs
+-->
+
+---
+### Requirement: SMTP check
+
+The `smtp` plugin SHALL open a new TCP connection per check (a failure is `down` with a reason starting `connect: `) and, with `tls = true`, perform the TLS handshake first. It SHALL then read the greeting, send `EHLO <helo>`, and with `starttls = true` send `STARTTLS`, perform the TLS handshake on the same connection and send `EHLO <helo>` again; finally it SHALL send `QUIT` and close the connection without waiting for the answer. Commands SHALL end in CRLF. A reply SHALL be read line by line, each line ending in LF with an optional CR before it, a line starting with three digits and `-` continuing the reply and a line starting with the same three digits and a space or nothing else ending it. A line longer than 2048 bytes or a reply longer than 65536 bytes SHALL be `down` with reason `query: reply too long`; a line that does not start with three digits, or a continuation with another code, SHALL be `down` with reason `query: malformed reply`; the connection closing before a reply ends SHALL be `down` with reason `query: connection closed`. The result SHALL be `up` only when the greeting is 220 and each EHLO is answered 250, and with `starttls = true` the first EHLO reply has a line whose text after the code is `STARTTLS` (case-insensitive), `STARTTLS` is answered 220 and the TLS handshake succeeds. Otherwise it SHALL be `down` with these reasons, where `<code> <text>` is the code and text of the reply's first line:
+
+- greeting other than 220: `greeting: <code> <text>`;
+- EHLO other than 250: `ehlo: <code> <text>`;
+- STARTTLS not in the EHLO reply: `tls: STARTTLS not offered`, without sending `STARTTLS`;
+- STARTTLS answered with another code: `tls: STARTTLS refused: <code> <text>`;
+- a TLS handshake or certificate failure: a reason starting `tls: `.
+
+The plugin SHALL NOT continue in plaintext after `STARTTLS` fails.
+
+#### Scenario: Healthy server with STARTTLS
+
+- **WHEN** `starttls = true`, the server greets with `220 mx ESMTP`, answers EHLO with `250-mx`, `250-STARTTLS` and `250 8BITMIME`, answers STARTTLS with `220 ready`, completes the TLS handshake and answers the second EHLO with 250
+- **THEN** the check result is `up`
+
+#### Scenario: STARTTLS not offered
+
+- **WHEN** `starttls = true` and the EHLO reply has no `STARTTLS` line
+- **THEN** the check result is `down` with reason `tls: STARTTLS not offered` and the plugin sends no `STARTTLS` command
+
+##### Example: SMTP replies
+
+| Options | Server behavior | Result |
+| --- | --- | --- |
+| `{}` | `220 mx ESMTP`, EHLO `250 mx` | up |
+| `{}` | `554 5.3.2 no service` | down: `greeting: 554 5.3.2 no service` |
+| `{}` | `421 4.3.2 busy` | down: `greeting: 421 4.3.2 busy` |
+| `{}` | `220-mx`, `220 ESMTP` (two lines), EHLO `250 mx` | up |
+| `{}` | `220 mx`, EHLO `550 5.7.1 go away` | down: `ehlo: 550 5.7.1 go away` |
+| `{}` | `220-mx`, `250 x` | down: `query: malformed reply` |
+| `{}` | `hello` | down: `query: malformed reply` |
+| `{}` | `220 mx`, then closes | down: `query: connection closed` |
+| `{}` | a 3000-byte greeting line | down: `query: reply too long` |
+| `{ starttls = true }` | EHLO `250-mx`, `250 starttls` (lower case), STARTTLS `220`, TLS, EHLO `250 mx` | up |
+| `{ starttls = true }` | EHLO `250 mx` | down: `tls: STARTTLS not offered` |
+| `{ starttls = true }` | EHLO `250-mx`, `250 STARTTLS`, STARTTLS `454 4.7.0 TLS not available` | down: `tls: STARTTLS refused: 454 4.7.0 TLS not available` |
+| `{ tls = true }` | plaintext `220 mx` instead of a TLS handshake | down: reason starts with `tls: ` |
+
+<!-- @trace
+source: emfor-check-smtp
+updated: 2026-11-14
+code:
+  - crates/emfor-check/src/amqp.rs
+  - crates/emfor-check/src/smtp.rs
+  - crates/emfor-check/Cargo.toml
+  - tests/plugins/grpc_server.py
+  - crates/emfor-check/src/replica.rs
+  - crates/emfor-check/src/pgsql.rs
+  - crates/emfor-check/src/redis.rs
+  - crates/emfor-check/src/mysql.rs
+  - examples/emfor.toml
+  - crates/emfor-check/src/lib.rs
+  - crates/emfor-check/src/mongodb.rs
+  - crates/emfor-check/src/grpc.rs
+  - tests/plugins/inside.sh
+  - crates/emfor-check/src/radius.rs
+  - tests/plugins/run.sh
+  - CHANGELOG.md
+  - tests/plugins/Dockerfile
+  - crates/emfor-check/src/main.rs
+  - crates/emfor-daemon/src/checker/http.rs
+  - docs/manual/04-health-checks.md
+  - crates/emfor-check/src/options.rs
+  - examples/freebsd/Makefile.crates
+  - docs/deploy/plugins.md
+  - docs/manual.zh_TW/04-health-checks.md
+tests:
+  - crates/emfor-check/tests/cli.rs
+  - crates/emfor-check/tests/live.rs
+-->
+
+---
+### Requirement: AMQP check options
+
+The `amqp` plugin SHALL accept these `check_options` keys and SHALL report every other key as `unknown key`:
+
+- `user`: required, a string of 1 to 255 bytes. A missing key is `missing required key`; an empty or longer string is `must be 1 to 255 bytes`.
+- `password_file`: required, with the rules it has for the other `emfor-check` plugins.
+- `vhost`: a string of 1 to 255 bytes, default `/`. Otherwise the error is `must be 1 to 255 bytes`.
+- `tls`, `tls_verify`, `server_name` and `ca_file`: the rules they have for the `redis`, `mysql` and `pgsql` plugins, including the error `requires tls = true`.
+
+Type errors SHALL be `must be a string` and `must be a boolean`.
+
+#### Scenario: Minimal options
+
+- **WHEN** a service with `check = "amqp"` sets `check_options = { user = "emfor", password_file = "/etc/emfor/amqp.pass" }`
+- **THEN** the plugin reports no errors and opens vhost `/`
+
+##### Example: AMQP option validation
+
+| `check_options` | Errors |
+| --- | --- |
+| `{}` | `user`: missing required key; `password_file`: missing required key |
+| `{ user = "emfor" }` | `password_file`: missing required key |
+| `{ user = "emfor", password_file = "/etc/emfor/amqp.pass", vhost = "orders" }` | none |
+| `{ user = "emfor", password_file = "/etc/emfor/amqp.pass", vhost = "" }` | `vhost`: must be 1 to 255 bytes |
+| `{ user = "", password_file = "/etc/emfor/amqp.pass" }` | `user`: must be 1 to 255 bytes |
+| `{ user = "emfor", password_file = "/etc/emfor/amqp.pass", server_name = "mq.internal" }` | `server_name`: requires tls = true |
+| `{ user = "emfor", password_file = "/etc/emfor/amqp.pass", password = "x" }` | `password`: unknown key |
+
+
+<!-- @trace
+source: emfor-check-amqp
+updated: 2026-11-14
+code:
+  - crates/emfor-check/Cargo.toml
+  - crates/emfor-check/src/grpc.rs
+  - examples/freebsd/Makefile.crates
+  - crates/emfor-check/src/amqp.rs
+  - docs/deploy/plugins.md
+  - tests/plugins/run.sh
+  - crates/emfor-check/src/main.rs
+  - examples/emfor.toml
+  - docs/manual.zh_TW/04-health-checks.md
+  - crates/emfor-check/src/lib.rs
+  - crates/emfor-check/src/pgsql.rs
+  - crates/emfor-check/src/mongodb.rs
+  - crates/emfor-check/src/mysql.rs
+  - docs/manual/04-health-checks.md
+  - crates/emfor-check/src/redis.rs
+  - tests/plugins/grpc_server.py
+  - crates/emfor-check/src/radius.rs
+  - crates/emfor-check/src/smtp.rs
+  - crates/emfor-daemon/src/checker/http.rs
+  - CHANGELOG.md
+  - tests/plugins/Dockerfile
+  - tests/plugins/inside.sh
+  - crates/emfor-check/src/replica.rs
+  - crates/emfor-check/src/options.rs
+tests:
+  - crates/emfor-check/tests/cli.rs
+  - crates/emfor-check/tests/live.rs
+-->
+
+---
+### Requirement: AMQP check
+
+The `amqp` plugin SHALL open a new TCP connection per check (a failure is `down` with a reason starting `connect: `), perform the TLS handshake first when `tls = true` (a failure is `down` with a reason starting `tls: `), and speak AMQP 0-9-1 on it:
+
+1. Send the protocol header `AMQP` followed by the bytes 0, 0, 9, 1.
+2. Receive Connection.Start. When its mechanisms do not include `PLAIN`, the result SHALL be `down` with reason `auth: server does not offer PLAIN`.
+3. Send Connection.Start-Ok with mechanism `PLAIN`, response `\0<user>\0<password>`, locale `en_US`, and client properties containing `product` = `emfor` and a `capabilities` table with `authentication_failure_close` = true.
+4. Receive Connection.Tune and send Connection.Tune-Ok with the proposed channel-max, the proposed frame-max (131072 when it is 0) and heartbeat 0.
+5. Send Connection.Open with `vhost` and receive Connection.Open-Ok; the result is then `up`.
+6. Send Connection.Close with reply code 200, wait up to 200 ms for Connection.Close-Ok, and close the connection.
+
+Each frame SHALL be read as type, channel, size, payload and the end byte `0xCE`. Heartbeat frames SHALL be skipped. A size above 131072 SHALL be `down` with reason `query: frame too large`; a wrong end byte or a payload that cannot be decoded SHALL be `down` with reason `query: malformed frame`; the connection closing before the expected frame SHALL be `down` with reason `query: connection closed`, except after Start-Ok, where it SHALL be `auth: connection closed after login`. When the server answers the protocol header with its own protocol header, the result SHALL be `down` with reason `query: server speaks AMQP <a>-<b>-<c>`, the last three bytes of that header. Another method than the expected one SHALL be `down` with reason `query: unexpected method <class-id>.<method-id>`.
+
+When the server sends Connection.Close, the plugin SHALL answer Connection.Close-Ok, close the connection, and the result SHALL be `down` with reason `<prefix>: <reply-code> <reply-text>`, where the prefix is `auth` when the Close arrives after Start-Ok and before Tune, `vhost` when it arrives after Open, and `query` otherwise.
+
+#### Scenario: Successful handshake
+
+- **WHEN** a broker offers `PLAIN AMQPLAIN`, accepts the login, proposes channel-max 2047, frame-max 131072 and heartbeat 60, and answers Open for vhost `/` with Open-Ok
+- **THEN** the check result is `up`, and the plugin sent Tune-Ok with channel-max 2047, frame-max 131072 and heartbeat 0
+
+#### Scenario: Wrong password
+
+- **WHEN** the broker answers Start-Ok with Connection.Close 403 `ACCESS_REFUSED - Login was refused using authentication mechanism PLAIN`
+- **THEN** the check result is `down` with reason `auth: 403 ACCESS_REFUSED - Login was refused using authentication mechanism PLAIN`, and the reason does not contain the password
+
+##### Example: AMQP broker answers
+
+| Broker behavior | Result |
+| --- | --- |
+| Start, Tune, Open-Ok | up |
+| Start with mechanisms `AMQPLAIN` | down: `auth: server does not offer PLAIN` |
+| Start, then Close 403 `ACCESS_REFUSED - Login was refused` after Start-Ok | down: `auth: 403 ACCESS_REFUSED - Login was refused` |
+| Start, then closes the connection after Start-Ok | down: `auth: connection closed after login` |
+| Start, Tune, then Close 530 `NOT_ALLOWED - vhost orders not found` after Open | down: `vhost: 530 NOT_ALLOWED - vhost orders not found` |
+| a heartbeat frame between Tune and Open-Ok | up |
+| `AMQP` 0 1 0 0 instead of Start | down: `query: server speaks AMQP 1-0-0` |
+| a frame with size 200000 | down: `query: frame too large` |
+| a frame ending in `0x00` | down: `query: malformed frame` |
+| Connection.Secure (10.20) instead of Tune | down: `query: unexpected method 10.20` |
+| closes the connection before Start | down: `query: connection closed` |
+| Start, Tune, Open-Ok, no Close-Ok within 200 ms | up |
+
+<!-- @trace
+source: emfor-check-amqp
+updated: 2026-11-14
+code:
+  - crates/emfor-check/Cargo.toml
+  - crates/emfor-check/src/grpc.rs
+  - examples/freebsd/Makefile.crates
+  - crates/emfor-check/src/amqp.rs
+  - docs/deploy/plugins.md
+  - tests/plugins/run.sh
+  - crates/emfor-check/src/main.rs
+  - examples/emfor.toml
+  - docs/manual.zh_TW/04-health-checks.md
+  - crates/emfor-check/src/lib.rs
+  - crates/emfor-check/src/pgsql.rs
+  - crates/emfor-check/src/mongodb.rs
+  - crates/emfor-check/src/mysql.rs
+  - docs/manual/04-health-checks.md
+  - crates/emfor-check/src/redis.rs
+  - tests/plugins/grpc_server.py
+  - crates/emfor-check/src/radius.rs
+  - crates/emfor-check/src/smtp.rs
+  - crates/emfor-daemon/src/checker/http.rs
+  - CHANGELOG.md
+  - tests/plugins/Dockerfile
+  - tests/plugins/inside.sh
+  - crates/emfor-check/src/replica.rs
+  - crates/emfor-check/src/options.rs
+tests:
+  - crates/emfor-check/tests/cli.rs
+  - crates/emfor-check/tests/live.rs
+-->
+
+---
+### Requirement: MongoDB check options
+
+The `mongodb` plugin SHALL accept these `check_options` keys and SHALL report every other key as `unknown key`:
+
+- `user`: a string of 1 to 255 bytes, otherwise `must be 1 to 255 bytes`. Without `password_file` it SHALL be an error on `user`: `requires password_file`.
+- `password_file`: the rules it has for the other `emfor-check` plugins. Without `user` it SHALL be an error on `password_file`: `requires user`.
+- `auth_source`: 1 to 64 ASCII letters, digits, `_` or `-`, default `admin`, otherwise `must be a database name`. Without `user` it SHALL be an error: `requires user`.
+- `role`: `primary` or `secondary`, otherwise `must be one of primary, secondary`.
+- `tls`, `tls_verify`, `server_name` and `ca_file`: the rules they have for the `redis`, `mysql` and `pgsql` plugins, including the error `requires tls = true`.
+
+Type errors SHALL be `must be a string` and `must be a boolean`.
+
+#### Scenario: No credentials
+
+- **WHEN** a service with `check = "mongodb"` sets `check_options = { role = "primary" }`
+- **THEN** the plugin reports no errors and checks without logging in
+
+##### Example: MongoDB option validation
+
+| `check_options` | Errors |
+| --- | --- |
+| `{}` | none |
+| `{ user = "emfor", password_file = "/etc/emfor/mongo.pass", auth_source = "app" }` | none |
+| `{ user = "emfor" }` | `user`: requires password_file |
+| `{ password_file = "/etc/emfor/mongo.pass" }` | `password_file`: requires user |
+| `{ auth_source = "app" }` | `auth_source`: requires user |
+| `{ user = "emfor", password_file = "/etc/emfor/mongo.pass", auth_source = "a.b" }` | `auth_source`: must be a database name |
+| `{ role = "replica" }` | `role`: must be one of primary, secondary |
+| `{ server_name = "db.internal" }` | `server_name`: requires tls = true |
+| `{ database = "app" }` | `database`: unknown key |
+
+
+<!-- @trace
+source: emfor-check-mongodb
+updated: 2026-11-14
+code:
+  - crates/emfor-check/Cargo.toml
+  - CHANGELOG.md
+  - docs/manual/04-health-checks.md
+  - crates/emfor-check/src/replica.rs
+  - crates/emfor-check/src/amqp.rs
+  - crates/emfor-check/src/pgsql.rs
+  - docs/manual.zh_TW/04-health-checks.md
+  - crates/emfor-check/src/lib.rs
+  - crates/emfor-check/src/options.rs
+  - tests/plugins/run.sh
+  - crates/emfor-check/src/mysql.rs
+  - crates/emfor-check/src/radius.rs
+  - crates/emfor-check/src/redis.rs
+  - tests/plugins/Dockerfile
+  - tests/plugins/grpc_server.py
+  - examples/emfor.toml
+  - examples/freebsd/Makefile.crates
+  - crates/emfor-check/src/smtp.rs
+  - crates/emfor-check/src/mongodb.rs
+  - tests/plugins/inside.sh
+  - crates/emfor-daemon/src/checker/http.rs
+  - crates/emfor-check/src/main.rs
+  - crates/emfor-check/src/grpc.rs
+  - docs/deploy/plugins.md
+tests:
+  - crates/emfor-check/tests/cli.rs
+  - crates/emfor-check/tests/live.rs
+-->
+
+---
+### Requirement: MongoDB check
+
+The `mongodb` plugin SHALL open a new TCP connection per check (a failure is `down` with a reason starting `connect: `) and, with `tls = true`, perform the TLS handshake first (a failure is `down` with a reason starting `tls: `). It SHALL send commands as OP_MSG messages (opCode 2013, flagBits 0, one kind 0 section) and read each reply as one OP_MSG message of at most 65536 bytes, ignoring a trailing checksum when the reply's checksumPresent flag is set. A larger reply SHALL be `down` with reason `query: reply too large`; a reply that is not an OP_MSG answering the request or whose BSON cannot be decoded SHALL be `down` with reason `query: malformed reply`; the connection closing before a reply is complete SHALL be `down` with reason `query: connection closed`.
+
+The plugin SHALL first send `{hello: 1, $db: "admin"}`. With `user` set it SHALL then authenticate with SCRAM-SHA-256 (RFC 7677) against `auth_source` using `saslStart` with `options: {skipEmptyExchange: true}` and `saslContinue`, escaping `=` and `,` in the user name as RFC 5802 requires, and SHALL verify the server signature. A password that is not printable ASCII SHALL be `error` with reason `password_file: only printable ASCII passwords are supported`. A command answered with `ok: 0` SHALL be `down` with reason `<prefix>: <codeName>: <errmsg>`, where the prefix is `auth` for `saslStart` and `saslContinue` and `query` for `hello`. A server-first-message with an iteration count below 4096, a nonce that does not start with the client nonce, or a missing field SHALL be `down` with reason `auth: malformed SCRAM message`; a server signature that does not match SHALL be `down` with reason `auth: server signature does not match`.
+
+With `role` set, the plugin SHALL derive the actual role from the `hello` reply in this order: `arbiter` when `arbiterOnly` is true; `mongos` when `msg` is `isdbgrid`; `primary` when `isWritablePrimary` is true and `setName` is present; `standalone` when `isWritablePrimary` is true without `setName`; `secondary` when `secondary` is true; otherwise `unknown`. `role = "primary"` SHALL accept `primary`, `standalone` and `mongos`; `role = "secondary"` SHALL accept `secondary` only. Any other actual role SHALL be `down` with reason `role is <actual>, want <role>`. The result SHALL be `up` when every step succeeded and the role, if set, is accepted.
+
+#### Scenario: Primary of a replica set
+
+- **WHEN** `role = "primary"` and the server answers `hello` with `isWritablePrimary: true` and `setName: "rs0"`
+- **THEN** the check result is `up`
+
+#### Scenario: SCRAM example from RFC 7677
+
+- **WHEN** the plugin authenticates user `user` with password `pencil`, client nonce `rOprNGfwEbeRWgbNEkqO`, and the server-first-message `r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096`
+- **THEN** the client-final-message is `c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=` and the server signature `v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=` is accepted
+
+##### Example: MongoDB replies
+
+| Options | Server behavior | Result |
+| --- | --- | --- |
+| `{}` | `hello` ok, standalone | up |
+| `{ role = "primary" }` | `hello` with `isWritablePrimary: true`, `setName: "rs0"` | up |
+| `{ role = "primary" }` | `hello` with `isWritablePrimary: true`, no `setName` | up |
+| `{ role = "primary" }` | `hello` with `isWritablePrimary: true`, `msg: "isdbgrid"` | up |
+| `{ role = "primary" }` | `hello` with `secondary: true`, `setName: "rs0"` | down: `role is secondary, want primary` |
+| `{ role = "secondary" }` | `hello` with `secondary: true`, `setName: "rs0"` | up |
+| `{ role = "secondary" }` | `hello` with `isWritablePrimary: true`, no `setName` | down: `role is standalone, want secondary` |
+| `{ role = "primary" }` | `hello` with `arbiterOnly: true`, `secondary: false` | down: `role is arbiter, want primary` |
+| `{ role = "secondary" }` | `hello` with `isWritablePrimary: false`, `secondary: false`, `setName: "rs0"` | down: `role is unknown, want secondary` |
+| `{}` | `hello` answered `ok: 0`, `codeName: "CommandNotFound"`, `errmsg: "no such command: 'hello'"` | down: `query: CommandNotFound: no such command: 'hello'` |
+| user and password | `saslStart` answered `ok: 0`, `codeName: "AuthenticationFailed"`, `errmsg: "Authentication failed."` | down: `auth: AuthenticationFailed: Authentication failed.` |
+| user and password | server-first-message with `i=1000` | down: `auth: malformed SCRAM message` |
+| user and password | server-final-message with a wrong `v=` | down: `auth: server signature does not match` |
+| user and password (`pässword`) | (no request sent after `hello`) | error: `password_file: only printable ASCII passwords are supported` |
+| `{}` | a reply of 70000 bytes | down: `query: reply too large` |
+| `{}` | closes the connection after the request | down: `query: connection closed` |
+
+<!-- @trace
+source: emfor-check-mongodb
+updated: 2026-11-14
+code:
+  - crates/emfor-check/Cargo.toml
+  - CHANGELOG.md
+  - docs/manual/04-health-checks.md
+  - crates/emfor-check/src/replica.rs
+  - crates/emfor-check/src/amqp.rs
+  - crates/emfor-check/src/pgsql.rs
+  - docs/manual.zh_TW/04-health-checks.md
+  - crates/emfor-check/src/lib.rs
+  - crates/emfor-check/src/options.rs
+  - tests/plugins/run.sh
+  - crates/emfor-check/src/mysql.rs
+  - crates/emfor-check/src/radius.rs
+  - crates/emfor-check/src/redis.rs
+  - tests/plugins/Dockerfile
+  - tests/plugins/grpc_server.py
+  - examples/emfor.toml
+  - examples/freebsd/Makefile.crates
+  - crates/emfor-check/src/smtp.rs
+  - crates/emfor-check/src/mongodb.rs
+  - tests/plugins/inside.sh
+  - crates/emfor-daemon/src/checker/http.rs
+  - crates/emfor-check/src/main.rs
+  - crates/emfor-check/src/grpc.rs
+  - docs/deploy/plugins.md
+tests:
+  - crates/emfor-check/tests/cli.rs
+  - crates/emfor-check/tests/live.rs
+-->
+
+---
+### Requirement: gRPC check options
+
+The `grpc` plugin SHALL accept these `check_options` keys and SHALL report every other key as `unknown key`:
+
+- `service`: a string of 0 to 256 bytes, default the empty string (the whole server). A longer string is `must be at most 256 bytes`.
+- `tls`, `tls_verify`, `server_name` and `ca_file`: the rules they have for the `redis`, `mysql` and `pgsql` plugins, including the error `requires tls = true`.
+
+Type errors SHALL be `must be a string` and `must be a boolean`.
+
+#### Scenario: Defaults
+
+- **WHEN** a service with `check = "grpc"` sets no `check_options`
+- **THEN** the plugin reports no errors and checks the whole server over plaintext HTTP/2
+
+##### Example: gRPC option validation
+
+| `check_options` | Errors |
+| --- | --- |
+| `{}` | none |
+| `{ service = "orders.v1.Orders" }` | none |
+| `{ service = "" }` | none |
+| `{ service = "<300 bytes>" }` | `service`: must be at most 256 bytes |
+| `{ tls = true, server_name = "orders.internal" }` | none |
+| `{ server_name = "orders.internal" }` | `server_name`: requires tls = true |
+| `{ service = 1 }` | `service`: must be a string |
+| `{ authority = "orders" }` | `authority`: unknown key |
+
+
+<!-- @trace
+source: emfor-check-grpc
+updated: 2026-11-14
+code:
+  - crates/emfor-check/Cargo.toml
+  - crates/emfor-check/src/amqp.rs
+  - crates/emfor-check/src/mysql.rs
+  - crates/emfor-check/src/lib.rs
+  - docs/manual/04-health-checks.md
+  - crates/emfor-check/src/smtp.rs
+  - examples/emfor.toml
+  - crates/emfor-check/src/mongodb.rs
+  - crates/emfor-check/src/redis.rs
+  - crates/emfor-check/src/pgsql.rs
+  - crates/emfor-daemon/src/checker/http.rs
+  - CHANGELOG.md
+  - examples/freebsd/Makefile.crates
+  - crates/emfor-check/src/radius.rs
+  - docs/deploy/plugins.md
+  - crates/emfor-check/src/grpc.rs
+  - crates/emfor-check/src/replica.rs
+  - tests/plugins/run.sh
+  - tests/plugins/grpc_server.py
+  - tests/plugins/inside.sh
+  - crates/emfor-check/src/options.rs
+  - tests/plugins/Dockerfile
+  - crates/emfor-check/src/main.rs
+  - docs/manual.zh_TW/04-health-checks.md
+tests:
+  - crates/emfor-check/tests/cli.rs
+  - crates/emfor-check/tests/live.rs
+-->
+
+---
+### Requirement: gRPC check
+
+The `grpc` plugin SHALL open a new TCP connection per check (a failure is `down` with a reason starting `connect: `). With `tls = true` it SHALL perform the TLS handshake offering ALPN `h2` (a failure is `down` with a reason starting `tls: `; a server that does not select `h2` is `down` with reason `tls: server did not select h2 (ALPN)`); without TLS it SHALL start HTTP/2 with the connection preface (prior knowledge). It SHALL send one request: `POST /grpc.health.v1.Health/Check` with `:authority` set to `server_name` when it is set and otherwise to the backend address (`ip:port`, IPv6 in brackets), headers `content-type: application/grpc`, `te: trailers` and `user-agent: emfor-check/<package version>`, and a body of one uncompressed message holding `HealthCheckRequest` with field 1 set to `service`. It SHALL then read the response headers, the body and the trailers, and close the connection.
+
+The result SHALL be decided in this order, and the first matching rule SHALL apply:
+
+1. An HTTP/2 connection or stream error: `down`, `query: HTTP/2: <error>`.
+2. A status other than 200: `down`, `query: HTTP status <status>`.
+3. A `content-type` that does not start with `application/grpc`: `down`, `query: not a gRPC response (content-type <value>)`.
+4. `grpc-status` (from the trailers, or from the headers when the response has no body) other than 0: `down`, `grpc: <code> <NAME>`, followed by `: ` and the percent-decoded `grpc-message` when it is present and not empty; `<NAME>` is the gRPC status code name, or `UNKNOWN_CODE` for a code above 16.
+5. No `grpc-status`: `down`, `query: no grpc-status`.
+6. The message: a compressed flag of 1 is `down`, `query: compressed message`; a length above 65536 is `down`, `query: reply too large`; no message is `down`, `query: no message`; protobuf that cannot be decoded is `down`, `query: malformed message`. Fields other than 1 SHALL be skipped by wire type, and a missing field 1 SHALL read as 0.
+7. The health status: 1 (SERVING) is `up`; 0, 2 and 3 are `down` with reasons `status: UNKNOWN`, `status: NOT_SERVING` and `status: SERVICE_UNKNOWN`; any other value is `down` with reason `status: <value>`.
+
+#### Scenario: Serving
+
+- **WHEN** the server answers 200 with `content-type: application/grpc`, a message `08 01` and trailers `grpc-status: 0`
+- **THEN** the check result is `up`
+
+#### Scenario: No health service
+
+- **WHEN** the server answers with headers only, holding `grpc-status: 12`
+- **THEN** the check result is `down` with reason `grpc: 12 UNIMPLEMENTED`
+
+##### Example: gRPC responses
+
+| Server behavior | Result |
+| --- | --- |
+| 200, message `08 01`, `grpc-status: 0` | up |
+| 200, message `08 02`, `grpc-status: 0` | down: `status: NOT_SERVING` |
+| 200, message `08 03`, `grpc-status: 0` | down: `status: SERVICE_UNKNOWN` |
+| 200, empty message (length 0), `grpc-status: 0` | down: `status: UNKNOWN` |
+| 200, message `08 07`, `grpc-status: 0` | down: `status: 7` |
+| 200, message `10 05 08 01` (an unknown field 2, then field 1), `grpc-status: 0` | up |
+| 200, headers only, `grpc-status: 5`, `grpc-message: unknown%20service` | down: `grpc: 5 NOT_FOUND: unknown service` |
+| 200, headers only, `grpc-status: 12` | down: `grpc: 12 UNIMPLEMENTED` |
+| 200, headers only, `grpc-status: 99` | down: `grpc: 99 UNKNOWN_CODE` |
+| 200, message `08 01`, no trailers | down: `query: no grpc-status` |
+| 200, compressed flag 1 | down: `query: compressed message` |
+| 200, message length 70000 | down: `query: reply too large` |
+| 200, no message, `grpc-status: 0` | down: `query: no message` |
+| 200, message `08`, `grpc-status: 0` | down: `query: malformed message` |
+| 404, `content-type: application/grpc` | down: `query: HTTP status 404` |
+| 200, `content-type: text/html` | down: `query: not a gRPC response (content-type text/html)` |
+| an HTTP/1.1 server on the port | down: reason starts with `query: HTTP/2: ` |
+| `tls = true`, server selects ALPN `http/1.1` | down: `tls: server did not select h2 (ALPN)` |
+
+<!-- @trace
+source: emfor-check-grpc
+updated: 2026-11-14
+code:
+  - crates/emfor-check/Cargo.toml
+  - crates/emfor-check/src/amqp.rs
+  - crates/emfor-check/src/mysql.rs
+  - crates/emfor-check/src/lib.rs
+  - docs/manual/04-health-checks.md
+  - crates/emfor-check/src/smtp.rs
+  - examples/emfor.toml
+  - crates/emfor-check/src/mongodb.rs
+  - crates/emfor-check/src/redis.rs
+  - crates/emfor-check/src/pgsql.rs
+  - crates/emfor-daemon/src/checker/http.rs
+  - CHANGELOG.md
+  - examples/freebsd/Makefile.crates
+  - crates/emfor-check/src/radius.rs
+  - docs/deploy/plugins.md
+  - crates/emfor-check/src/grpc.rs
+  - crates/emfor-check/src/replica.rs
+  - tests/plugins/run.sh
+  - tests/plugins/grpc_server.py
+  - tests/plugins/inside.sh
+  - crates/emfor-check/src/options.rs
+  - tests/plugins/Dockerfile
+  - crates/emfor-check/src/main.rs
+  - docs/manual.zh_TW/04-health-checks.md
+tests:
+  - crates/emfor-check/tests/cli.rs
+  - crates/emfor-check/tests/live.rs
+-->
