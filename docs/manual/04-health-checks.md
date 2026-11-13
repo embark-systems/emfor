@@ -135,7 +135,9 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 
 Main options: `user`, `password_file` (never the password itself; read on
 every check), `database` (`pgsql`), `role` (`master`/`replica` for redis,
-`primary` for MySQL and PostgreSQL, so that `failover` follows the primary),
+`primary`/`replica` for MySQL and PostgreSQL; `primary` lets `failover`
+follow the primary, and `replica` also needs replication to be running),
+`max_lag` (with `role = "replica"`, the seconds a replica may be behind),
 and `tls`, `starttls` (`ldap`), `tls_verify`, `server_name`, `ca_file`.
 The `dns` plugin takes `name`, `type`, `transport`, `recursion_desired`,
 `expect_rcode` and `expect_answer` instead, and the `radius` plugin

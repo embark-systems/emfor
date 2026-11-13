@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### emfor-check
+
+- `role = "replica"` for `mysql` and `pgsql`, and for all three database
+  plugins it now means a replica that is replicating: a redis replica
+  whose link to its master is `connected`, a MySQL or MariaDB replica
+  whose IO and SQL threads both run, a PostgreSQL standby with a WAL
+  receiver. Otherwise the backend is down with a `replication: ` reason.
+  **A redis replica that was up with `role = "replica"` while its link
+  was down is now down.**
+- `max_lag`: with `role = "replica"`, the seconds a replica may be behind
+  before it is down. See [Replicas](docs/deploy/plugins.md#replicas) for
+  what each plugin measures and the rights the checks need.
+
 ## 0.3.0 — 2026-11-14
 
 **Breaking, on FreeBSD only: the rc.d script keeps its pid files in

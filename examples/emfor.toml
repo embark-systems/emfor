@@ -186,6 +186,20 @@ backends = [
 # password_file = "/etc/emfor/redis.pass"   # never the password itself
 # role = "master"                           # only the master is healthy
 #
+# [plugins."pgsql"]
+# command = ["/usr/local/libexec/emfor-check", "pgsql"]
+#
+# [services."reports-db.svc.emfor"]
+# check = "pgsql"
+# backends = ["10.0.3.2:5432", "10.0.3.3:5432"]
+#
+# [services."reports-db.svc.emfor".check_options]
+# user = "emfor"
+# database = "postgres"
+# password_file = "/etc/emfor/pg.pass"
+# role = "replica"                          # a standby receiving WAL
+# max_lag = 30                              # at most 30 seconds behind
+#
 # [plugins."ldap"]
 # command = ["/usr/local/libexec/emfor-check", "ldap"]
 #

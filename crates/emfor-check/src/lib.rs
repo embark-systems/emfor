@@ -12,6 +12,7 @@ pub mod options;
 mod pgsql;
 mod radius;
 mod redis;
+mod replica;
 mod resp;
 mod sip;
 

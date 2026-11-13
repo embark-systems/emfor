@@ -62,7 +62,8 @@ These are the options of the database plugins `redis`, `mysql`, `pgsql` and `lda
 | `user` | all; required for `mysql`, `pgsql` | string | none | Account to log in with; for `ldap` a DN, and without it the bind is anonymous |
 | `password_file` | all | absolute path | none (no password) | File holding the password; see below |
 | `database` | `pgsql` only, required | string | none | Database to connect to |
-| `role` | all but `ldap` | string | none (any role) | `redis`: `master` or `replica`; `mysql`, `pgsql`: `primary` |
+| `role` | all but `ldap` | string | none (any role) | `redis`: `master` or `replica`; `mysql`, `pgsql`: `primary` or `replica` |
+| `max_lag` | all but `ldap`, needs `role = "replica"` | integer, 1 to 86400 | none (any lag) | Seconds a replica may be behind; see [Replicas](#replicas) |
 | `tls` | all | boolean | `false` | Connect with TLS; `true` never falls back to plaintext. For `ldap` this is LDAPS (usually port 636) |
 | `starttls` | `ldap` only | boolean | `false` | Connect in plaintext, then upgrade with StartTLS before the bind; never binds without TLS. Conflicts with `tls` |
 | `tls_verify` | all, needs `tls = true` (or `starttls = true`) | boolean | `true` | Verify the server certificate |
@@ -81,6 +82,40 @@ With `role` set, a backend in another role is down, with a reason such as `role 
 | `redis` | `replica` | `ROLE` says `slave` |
 | `mysql` | `primary` | `SELECT @@global.read_only` is 0 |
 | `pgsql` | `primary` | `SELECT pg_is_in_recovery()` is false |
+| `redis`, `mysql`, `pgsql` | `replica` | see [Replicas](#replicas) |
+
+### Replicas
+
+`role = "replica"` accepts only a replica that is replicating, so that applications reading from replicas are not sent to one that has stopped receiving changes:
+
+| Plugin | Up when | Down reasons |
+| --- | --- | --- |
+| `redis` | `ROLE` says `slave` and its link state is `connected` | `role is master, want replica`, `replication: link to master is connect` (or `connecting`, `sync`, …) |
+| `mysql` | `SHOW REPLICA STATUS` (`SHOW SLAVE STATUS` on servers that do not know it) has a row, and both the IO and the SQL thread say `Yes` | `role is not a replica, want replica`, `replication: IO thread is Connecting: <Last_IO_Error>`, `replication: SQL thread is No: <Last_SQL_Error>` |
+| `pgsql` | `pg_is_in_recovery()` is true and `pg_stat_wal_receiver` has a row | `role is primary, want replica`, `replication: no WAL receiver` |
+
+With `max_lag` the replica is also down, with `replication: <N>s behind, max <M>s`, when it is more than `max_lag` whole seconds behind, and with `replication: lag unknown` when the server cannot say:
+
+| Plugin | Lag is |
+| --- | --- |
+| `redis` | `master_last_io_seconds_ago` from `INFO replication`: seconds since the replica last heard from its master. The master pings its replicas every 10 seconds by default (`repl-ping-replica-period`), so use a `max_lag` of 15 or more |
+| `mysql` | `Seconds_Behind_Source` (`Seconds_Behind_Master`); NULL is "lag unknown" |
+| `pgsql` | 0 when all received WAL has been replayed, otherwise the time since the last replayed transaction (`pg_last_xact_replay_timestamp()`); an idle primary therefore does not make the lag grow |
+
+The checks need these rights besides logging in:
+
+- `redis`: the `ROLE` command, and `INFO` with `max_lag`;
+- `mysql`: `REPLICATION CLIENT` (MySQL), or `REPLICA MONITOR` (MariaDB 10.5.9 and later), for the replica status; without it the reason is the server's `query: ` error;
+- `pgsql`: none.
+
+```toml
+[services."reports-db.svc.emfor"]
+check = "pgsql"
+backends = ["10.0.3.2:5432", "10.0.3.3:5432"]
+check_options = { user = "emfor", database = "postgres", role = "replica", max_lag = 30, password_file = "/etc/emfor/pg.pass" }
+```
+
+MariaDB Galera, multi-source replication (only the default connection is read), and redis Sentinel and Cluster are not covered.
 
 ### Passwords
 
@@ -276,6 +311,7 @@ Requests the node sends on its own (for example its own DWR) are ignored and not
 | `auth: ` | down | Login rejected (wrong password, unknown user or database, too many connections); for `ldap`, the resultCode and its name, see [LDAP](#ldap); for `radius`, a reject or a response not signed with the secret, see [RADIUS](#radius) |
 | `query: ` | down | A query failed or answered something unexpected (for `dns`, a response that cannot be parsed or, over TCP, answers another query; for `radius`, a malformed response or an unexpected response code) |
 | `role is ` | down | The backend has another role |
+| `replication: ` | down | A replica that is not replicating or is more than `max_lag` behind, see [Replicas](#replicas) |
 | `rcode: `, `answer: ` | down | `dns`: an unexpected response code, or no records of the asked type, see [DNS](#dns) |
 | `status: ` | down | `sip`: a final status code outside `expect_status`, see [SIP](#sip) |
 | `cea: `, `dwa: ` | down | `diameter`: a capabilities exchange or watchdog answer with a failed Result-Code, or the node closed the connection, see [Diameter](#diameter) |
@@ -283,4 +319,4 @@ Requests the node sends on its own (for example its own DWR) are ignored and not
 
 ## What is tested
 
-`tests/plugins/run.sh` checks all eight plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary and a replica, read-only server or standby, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; Kamailio 5.6.3 over UDP, TCP and TLS; and freeDiameter 1.2.1 over TCP and over TLS with a client certificate, with an ACL that knows one peer. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, the `sip` plugin against Kamailio only, and the `diameter` plugin against freeDiameter only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it. Like the rest of emfor, the plugins have not been tested on FreeBSD yet.
+`tests/plugins/run.sh` checks all eight plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary, a replica that replicates from it, a replica whose primary is unreachable, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; Kamailio 5.6.3 over UDP, TCP and TLS; and freeDiameter 1.2.1 over TCP and over TLS with a client certificate, with an ACL that knows one peer. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, the `sip` plugin against Kamailio only, and the `diameter` plugin against freeDiameter only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it (the replica check reads MySQL's `Replica_*` and `Seconds_Behind_Source` column names too, but only MariaDB's `Slave_*` names are tested). Like the rest of emfor, the plugins have not been tested on FreeBSD yet.

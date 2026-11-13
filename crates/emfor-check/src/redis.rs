@@ -1,10 +1,13 @@
-//! The `redis` plugin: optional AUTH, PING, and an optional ROLE check.
+//! The `redis` plugin: optional AUTH, PING, and an optional ROLE check;
+//! a replica must also be connected to its master and, with `max_lag`,
+//! have heard from it recently.
 
 use emfor_plugin::{CheckOutcome, CheckRequest};
 use tokio::io::AsyncWriteExt;
 
 use crate::net::{self, Stream, io_failure};
 use crate::options::{Role, Settings, read_password};
+use crate::replica::lag_outcome;
 use crate::resp::{ReadError, Reader, Reply, encode};
 
 /// Check one redis backend with validated settings.
@@ -59,9 +62,18 @@ async fn session(
     let Some(want) = settings.role else {
         return CheckOutcome::Up;
     };
-    let actual = match call(conn, &mut reader, &encode(&[b"ROLE"]), "query: ").await {
+    let (actual, link) = match call(conn, &mut reader, &encode(&[b"ROLE"]), "query: ").await {
         Ok(Reply::Array(Some(items))) => match items.first() {
-            Some(Reply::Bulk(Some(name))) => String::from_utf8_lossy(name).into_owned(),
+            Some(Reply::Bulk(Some(name))) => {
+                // A replica's reply is [slave, host, port, state, offset].
+                let link = match items.get(3) {
+                    Some(Reply::Bulk(Some(state))) => {
+                        Some(String::from_utf8_lossy(state).into_owned())
+                    }
+                    _ => None,
+                };
+                (String::from_utf8_lossy(name).into_owned(), link)
+            }
             _ => return CheckOutcome::Down("query: ROLE answered an unexpected reply".into()),
         },
         Ok(Reply::Error(e)) => return CheckOutcome::Down(format!("query: {e}")),
@@ -70,19 +82,58 @@ async fn session(
         }
         Err(outcome) => return outcome,
     };
-    role_outcome(want, &actual)
+    let outcome = role_outcome(want, &actual, link.as_deref());
+    let (CheckOutcome::Up, Some(max_lag)) = (&outcome, settings.max_lag) else {
+        return outcome;
+    };
+    let info = match call(
+        conn,
+        &mut reader,
+        &encode(&[b"INFO", b"replication"]),
+        "query: ",
+    )
+    .await
+    {
+        Ok(Reply::Bulk(Some(text))) => text,
+        Ok(Reply::Error(e)) => return CheckOutcome::Down(format!("query: {e}")),
+        Ok(other) => {
+            return CheckOutcome::Down(format!("query: INFO answered {}", describe(&other)));
+        }
+        Err(outcome) => return outcome,
+    };
+    lag_outcome(last_io_seconds(&info), max_lag)
 }
 
-/// Compare the first element of a `ROLE` reply with the wanted role.
-fn role_outcome(want: Role, actual: &str) -> CheckOutcome {
+/// `master_last_io_seconds_ago` from an `INFO replication` reply; `None`
+/// when it is missing or negative (no link to the master).
+fn last_io_seconds(info: &[u8]) -> Option<f64> {
+    String::from_utf8_lossy(info).lines().find_map(|line| {
+        let value = line
+            .trim_end()
+            .strip_prefix("master_last_io_seconds_ago:")?;
+        let n: i64 = value.parse().ok()?;
+        (n >= 0).then_some(n as f64)
+    })
+}
+
+/// Compare the first element of a `ROLE` reply with the wanted role; a
+/// wanted replica must also have the link state `connected`.
+fn role_outcome(want: Role, actual: &str, link: Option<&str>) -> CheckOutcome {
     let actual = match actual {
         "slave" => "replica",
         other => other,
     };
-    if actual == want.name() {
-        CheckOutcome::Up
-    } else {
-        CheckOutcome::Down(format!("role is {actual}, want {}", want.name()))
+    if actual != want.name() {
+        return CheckOutcome::Down(format!("role is {actual}, want {}", want.name()));
+    }
+    match (want, link) {
+        (Role::Replica, Some("connected")) | (Role::Master | Role::Primary, _) => CheckOutcome::Up,
+        (Role::Replica, Some(state)) => {
+            CheckOutcome::Down(format!("replication: link to master is {state}"))
+        }
+        (Role::Replica, None) => {
+            CheckOutcome::Down("query: ROLE answered a replica without a link state".into())
+        }
     }
 }
 
@@ -170,61 +221,142 @@ mod tests {
         }
     }
 
-    fn role_server(role: &'static str) -> fn(&[String]) -> Vec<u8> {
-        match role {
-            "master" => |w| match w[0].as_str() {
-                "PING" => b"+PONG\r\n".to_vec(),
-                "ROLE" => b"*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n".to_vec(),
-                _ => b"-ERR unknown\r\n".to_vec(),
-            },
-            "slave" => |w| match w[0].as_str() {
-                "PING" => b"+PONG\r\n".to_vec(),
-                "ROLE" => {
-                    b"*5\r\n$5\r\nslave\r\n$9\r\n127.0.0.1\r\n:6379\r\n$9\r\nconnected\r\n:1\r\n"
-                        .to_vec()
-                }
-                _ => b"-ERR unknown\r\n".to_vec(),
-            },
-            _ => |w| match w[0].as_str() {
-                "PING" => b"+PONG\r\n".to_vec(),
-                "ROLE" => b"*2\r\n$8\r\nsentinel\r\n*0\r\n".to_vec(),
-                _ => b"-ERR unknown\r\n".to_vec(),
-            },
-        }
+    /// A server whose `ROLE` reply is `role` (`master`, `sentinel` or
+    /// `slave/<link state>`) and whose `INFO replication` reports `last_io`.
+    async fn role_server(role: &'static str, last_io: i64) -> SocketAddr {
+        let role_reply = match role {
+            "master" => b"*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n".to_vec(),
+            "sentinel" => b"*2\r\n$8\r\nsentinel\r\n*0\r\n".to_vec(),
+            state => {
+                let state = state.strip_prefix("slave/").unwrap_or("connected");
+                format!(
+                    "*5\r\n$5\r\nslave\r\n$9\r\n127.0.0.1\r\n:6379\r\n${}\r\n{state}\r\n:1\r\n",
+                    state.len()
+                )
+                .into_bytes()
+            }
+        };
+        let info =
+            format!("# Replication\r\nrole:slave\r\nmaster_last_io_seconds_ago:{last_io}\r\n");
+        let info_reply = format!("${}\r\n{info}\r\n", info.len()).into_bytes();
+        scripted_redis(role_reply, info_reply).await
+    }
+
+    /// A fake redis answering PING, ROLE and INFO with fixed replies.
+    async fn scripted_redis(role_reply: Vec<u8>, info_reply: Vec<u8>) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = listener.accept().await {
+                let (role_reply, info_reply) = (role_reply.clone(), info_reply.clone());
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    loop {
+                        while let Ok(Some((Reply::Array(Some(items)), used))) = parse(&buf) {
+                            buf.drain(..used);
+                            let reply = match items.first() {
+                                Some(Reply::Bulk(Some(w))) if w == b"PING" => b"+PONG\r\n".to_vec(),
+                                Some(Reply::Bulk(Some(w))) if w == b"ROLE" => role_reply.clone(),
+                                Some(Reply::Bulk(Some(w))) if w == b"INFO" => info_reply.clone(),
+                                _ => b"-ERR unknown\r\n".to_vec(),
+                            };
+                            if s.write_all(&reply).await.is_err() {
+                                return;
+                            }
+                        }
+                        match s.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                });
+            }
+        });
+        addr
     }
 
     #[tokio::test]
     async fn redis_role_table() {
+        let down = |r: &str| CheckOutcome::Down(r.into());
         let rows = [
-            (None, "slave", CheckOutcome::Up),
-            (Some(Role::Master), "master", CheckOutcome::Up),
+            (None, None, "slave/connect", 3, CheckOutcome::Up),
+            (Some(Role::Master), None, "master", -1, CheckOutcome::Up),
             (
                 Some(Role::Master),
-                "slave",
-                CheckOutcome::Down("role is replica, want master".into()),
+                None,
+                "slave/connected",
+                3,
+                down("role is replica, want master"),
             ),
-            (Some(Role::Replica), "slave", CheckOutcome::Up),
             (
                 Some(Role::Replica),
+                None,
+                "slave/connected",
+                3,
+                CheckOutcome::Up,
+            ),
+            (
+                Some(Role::Replica),
+                None,
                 "master",
-                CheckOutcome::Down("role is master, want replica".into()),
+                -1,
+                down("role is master, want replica"),
             ),
             (
                 Some(Role::Master),
+                None,
                 "sentinel",
-                CheckOutcome::Down("role is sentinel, want master".into()),
+                -1,
+                down("role is sentinel, want master"),
+            ),
+            (
+                Some(Role::Replica),
+                None,
+                "slave/sync",
+                3,
+                down("replication: link to master is sync"),
+            ),
+            (
+                Some(Role::Replica),
+                Some(15),
+                "slave/connected",
+                3,
+                CheckOutcome::Up,
+            ),
+            (
+                Some(Role::Replica),
+                Some(15),
+                "slave/connected",
+                15,
+                CheckOutcome::Up,
+            ),
+            (
+                Some(Role::Replica),
+                Some(15),
+                "slave/connected",
+                16,
+                down("replication: 16s behind, max 15s"),
+            ),
+            (
+                Some(Role::Replica),
+                Some(15),
+                "slave/connected",
+                -1,
+                down("replication: lag unknown"),
             ),
         ];
-        for (role, server_role, want) in rows {
-            let addr = fake_redis(role_server(server_role)).await;
+        for (role, max_lag, server_role, last_io, want) in rows {
+            let addr = role_server(server_role, last_io).await;
             let settings = Settings {
                 role,
+                max_lag,
                 ..Settings::default()
             };
             assert_eq!(
                 check(&req(addr), &settings).await,
                 want,
-                "{role:?} vs {server_role}"
+                "{role:?} {max_lag:?} vs {server_role} {last_io}"
             );
         }
     }

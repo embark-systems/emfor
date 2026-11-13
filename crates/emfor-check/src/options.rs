@@ -9,23 +9,28 @@ use serde_json::Value;
 
 use crate::Kind;
 
-/// Options every plugin accepts (`role` is not one of ldap's).
+/// Options every plugin accepts (`role` and `max_lag` are not ldap's).
 const COMMON: &[&str] = &[
     "user",
     "password_file",
     "role",
+    "max_lag",
     "tls",
     "tls_verify",
     "server_name",
     "ca_file",
 ];
 
+/// The largest `max_lag`, in seconds (one day).
+const MAX_LAG_LIMIT: u64 = 86_400;
+
 /// Role a backend has to have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     /// redis `master`.
     Master,
-    /// redis `replica` (`ROLE` says `slave`).
+    /// A replica that is replicating: redis (`ROLE` says `slave`), a mysql
+    /// replica or a pgsql standby.
     Replica,
     /// mysql or pgsql primary (writable, not in recovery).
     Primary,
@@ -51,6 +56,8 @@ pub struct Settings {
     pub user: Option<String>,
     pub password_file: Option<PathBuf>,
     pub role: Option<Role>,
+    /// Seconds a replica may lag; set only with `role = "replica"`.
+    pub max_lag: Option<u64>,
     pub tls: Option<TlsSettings>,
     /// ldap: upgrade a plaintext connection with StartTLS (`tls` then holds
     /// the TLS settings).
@@ -80,7 +87,8 @@ fn parse_with(
 ) -> Result<Settings, Vec<OptionError>> {
     let mut errors = Vec::new();
     for key in options.keys() {
-        let known = (COMMON.contains(&key.as_str()) && !(kind == Kind::Ldap && key == "role"))
+        let ldap_only_lacks = key == "role" || key == "max_lag";
+        let known = (COMMON.contains(&key.as_str()) && !(kind == Kind::Ldap && ldap_only_lacks))
             || (kind == Kind::Pgsql && key == "database")
             || (kind == Kind::Ldap && key == "starttls");
         if !known {
@@ -143,12 +151,13 @@ fn parse_with(
                 (Kind::Redis, Some("master")) => Some(Role::Master),
                 (Kind::Redis, Some("replica")) => Some(Role::Replica),
                 (Kind::Mysql | Kind::Pgsql, Some("primary")) => Some(Role::Primary),
+                (Kind::Mysql | Kind::Pgsql, Some("replica")) => Some(Role::Replica),
                 _ => None,
             };
             if role.is_none() {
                 let message = match kind {
                     Kind::Redis => "must be one of master, replica",
-                    Kind::Mysql | Kind::Pgsql => "must be primary",
+                    Kind::Mysql | Kind::Pgsql => "must be one of primary, replica",
                     // ldap is skipped above; the network plugins never get here.
                     Kind::Ldap | Kind::Dns | Kind::Radius | Kind::Sip | Kind::Diameter => {
                         "unknown key"
@@ -158,6 +167,27 @@ fn parse_with(
             }
             role
         }
+    };
+
+    let max_lag = match options.get("max_lag") {
+        // ldap has no max_lag; the key was reported as unknown.
+        None => None,
+        Some(_) if kind == Kind::Ldap => None,
+        Some(v) => match v.as_u64() {
+            Some(n) if (1..=MAX_LAG_LIMIT).contains(&n) => {
+                if role != Some(Role::Replica) {
+                    errors.push(OptionError::new("max_lag", "requires role = \"replica\""));
+                }
+                Some(n)
+            }
+            _ => {
+                errors.push(OptionError::new(
+                    "max_lag",
+                    format!("must be an integer from 1 to {MAX_LAG_LIMIT}"),
+                ));
+                None
+            }
+        },
     };
 
     let tls_on = boolean(options, "tls", false, &mut errors);
@@ -183,6 +213,7 @@ fn parse_with(
             user,
             password_file,
             role,
+            max_lag,
             starttls,
             tls,
             database,
@@ -421,7 +452,57 @@ mod tests {
             (
                 Kind::Mysql,
                 json!({"user": "emfor", "role": "master"}),
-                one("role", "must be primary"),
+                one("role", "must be one of primary, replica"),
+            ),
+            (
+                Kind::Pgsql,
+                json!({"user": "emfor", "database": "app", "role": "standby"}),
+                one("role", "must be one of primary, replica"),
+            ),
+            (
+                Kind::Redis,
+                json!({"role": "replica", "max_lag": 15}),
+                vec![],
+            ),
+            (
+                Kind::Pgsql,
+                json!({"user": "emfor", "database": "app", "role": "replica", "max_lag": 86400}),
+                vec![],
+            ),
+            (
+                Kind::Mysql,
+                json!({"user": "emfor", "role": "replica", "max_lag": 30}),
+                vec![],
+            ),
+            (
+                Kind::Mysql,
+                json!({"user": "emfor", "max_lag": 30}),
+                one("max_lag", "requires role = \"replica\""),
+            ),
+            (
+                Kind::Mysql,
+                json!({"user": "emfor", "role": "primary", "max_lag": 30}),
+                one("max_lag", "requires role = \"replica\""),
+            ),
+            (
+                Kind::Redis,
+                json!({"role": "replica", "max_lag": 0}),
+                one("max_lag", "must be an integer from 1 to 86400"),
+            ),
+            (
+                Kind::Redis,
+                json!({"role": "replica", "max_lag": 86401}),
+                one("max_lag", "must be an integer from 1 to 86400"),
+            ),
+            (
+                Kind::Redis,
+                json!({"role": "replica", "max_lag": "30s"}),
+                one("max_lag", "must be an integer from 1 to 86400"),
+            ),
+            (
+                Kind::Ldap,
+                json!({"max_lag": 30}),
+                one("max_lag", "unknown key"),
             ),
             (
                 Kind::Redis,

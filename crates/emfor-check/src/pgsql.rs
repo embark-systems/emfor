@@ -1,5 +1,7 @@
 //! The `pgsql` plugin: log in, `SELECT 1`, and with `role = "primary"`
-//! check that the server is not in recovery (a standby).
+//! check that the server is not in recovery (a standby); with
+//! `role = "replica"` check that it is a standby receiving WAL and, with
+//! `max_lag`, how far its replay is behind.
 
 use std::error::Error as _;
 use std::io;
@@ -11,6 +13,15 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 
 use crate::net::{self, io_failure};
 use crate::options::{Role, Settings, read_password};
+use crate::replica::lag_outcome;
+
+/// Recovery state, WAL receiver and replay lag in one query, so that the
+/// three values come from the same moment. The lag is 0 when all received
+/// WAL has been replayed: an idle primary would otherwise make it grow.
+const REPLICA_QUERY: &str = "SELECT pg_is_in_recovery(), \
+     EXISTS (SELECT 1 FROM pg_stat_wal_receiver), \
+     CASE WHEN pg_last_wal_receive_lsn() = pg_last_wal_replay_lsn() THEN 0 \
+     ELSE EXTRACT(EPOCH FROM now() - pg_last_xact_replay_timestamp()) END::float8";
 
 /// Which step failed, for the reason prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,8 +105,10 @@ async fn session(client: &Client, settings: &Settings) -> CheckOutcome {
         },
         Err(e) => return failure(Step::Query, &e),
     }
-    if settings.role != Some(Role::Primary) {
-        return CheckOutcome::Up;
+    match settings.role {
+        Some(Role::Primary) => {}
+        Some(Role::Replica) => return replica(client, settings.max_lag).await,
+        Some(Role::Master) | None => return CheckOutcome::Up,
     }
     match client.query_one("SELECT pg_is_in_recovery()", &[]).await {
         Ok(row) => match row.try_get::<_, bool>(0) {
@@ -104,6 +117,48 @@ async fn session(client: &Client, settings: &Settings) -> CheckOutcome {
             Err(e) => failure(Step::Query, &e),
         },
         Err(e) => failure(Step::Query, &e),
+    }
+}
+
+/// Check a standby with [`REPLICA_QUERY`].
+async fn replica(client: &Client, max_lag: Option<u64>) -> CheckOutcome {
+    let row = match client.query_one(REPLICA_QUERY, &[]).await {
+        Ok(row) => row,
+        Err(e) => return failure(Step::Query, &e),
+    };
+    let status = (|| {
+        Ok::<_, Error>(ReplicaStatus {
+            in_recovery: row.try_get(0)?,
+            receiving: row.try_get(1)?,
+            lag: row.try_get(2)?,
+        })
+    })();
+    match status {
+        Ok(status) => replica_outcome(&status, max_lag),
+        Err(e) => failure(Step::Query, &e),
+    }
+}
+
+/// What [`REPLICA_QUERY`] returns.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ReplicaStatus {
+    in_recovery: bool,
+    /// `pg_stat_wal_receiver` has a row.
+    receiving: bool,
+    /// Replay lag in seconds; `None` when it cannot be told.
+    lag: Option<f64>,
+}
+
+fn replica_outcome(status: &ReplicaStatus, max_lag: Option<u64>) -> CheckOutcome {
+    if !status.in_recovery {
+        return CheckOutcome::Down("role is primary, want replica".into());
+    }
+    if !status.receiving {
+        return CheckOutcome::Down("replication: no WAL receiver".into());
+    }
+    match max_lag {
+        Some(max_lag) => lag_outcome(status.lag, max_lag),
+        None => CheckOutcome::Up,
     }
 }
 
@@ -152,6 +207,48 @@ mod tests {
     use tokio::net::TcpListener;
 
     const SSL_REQUEST: i32 = 80877103;
+
+    #[test]
+    fn pgsql_replica_status_table() {
+        let st = |in_recovery, receiving, lag| ReplicaStatus {
+            in_recovery,
+            receiving,
+            lag,
+        };
+        let down = |r: &str| CheckOutcome::Down(r.into());
+        let rows = [
+            (
+                None,
+                st(false, false, None),
+                down("role is primary, want replica"),
+            ),
+            (
+                None,
+                st(true, false, Some(0.0)),
+                down("replication: no WAL receiver"),
+            ),
+            (None, st(true, true, Some(500.0)), CheckOutcome::Up),
+            (Some(30), st(true, true, Some(0.0)), CheckOutcome::Up),
+            (Some(30), st(true, true, Some(30.9)), CheckOutcome::Up),
+            (
+                Some(30),
+                st(true, true, Some(31.0)),
+                down("replication: 31s behind, max 30s"),
+            ),
+            (
+                Some(30),
+                st(true, true, None),
+                down("replication: lag unknown"),
+            ),
+        ];
+        for (max_lag, status, want) in rows {
+            assert_eq!(
+                replica_outcome(&status, max_lag),
+                want,
+                "{max_lag:?} {status:?}"
+            );
+        }
+    }
 
     /// A fake server that refuses TLS (answers `N` to SSLRequest) and then
     /// rejects the login with SQLSTATE 28P01.

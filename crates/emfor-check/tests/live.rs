@@ -9,11 +9,14 @@
 //! | --- | --- |
 //! | 6379 | redis primary, plaintext, user `emfor` |
 //! | 6380 | redis replica of 6379, plaintext |
+//! | 6381 | redis replica of 6399 (nothing there), plaintext |
 //! | 6390 | redis primary, TLS |
 //! | 3306 | MariaDB, TLS available, user `emfor` |
-//! | 3307 | MariaDB with `read_only = 1`, no TLS |
+//! | 3307 | MariaDB replica of 3306 with `read_only = 1`, no TLS |
+//! | 3308 | MariaDB replica of 3399 (nothing there), no TLS |
 //! | 5432 | PostgreSQL primary, TLS available, user `emfor`, database `app` |
 //! | 5433 | PostgreSQL standby of 5432, no TLS |
+//! | 5434 | PostgreSQL standby of 5499 (nothing there), no TLS |
 //! | 389 | OpenLDAP, StartTLS available, `cn=monitor,dc=example,dc=org` |
 //! | 636 | the same OpenLDAP, LDAPS |
 //! | 3389 | OpenLDAP without TLS |
@@ -168,6 +171,22 @@ fn redis_live() {
         "role is replica, want master",
     );
     up(p.check(6380, opts("emfor", "good.pass", json!({"role": "replica"}))));
+    up(p.check(
+        6380,
+        opts(
+            "emfor",
+            "good.pass",
+            json!({"role": "replica", "max_lag": 30}),
+        ),
+    ));
+    down(
+        p.check(6379, opts("emfor", "good.pass", json!({"role": "replica"}))),
+        "role is master, want replica",
+    );
+    down(
+        p.check(6381, opts("emfor", "good.pass", json!({"role": "replica"}))),
+        "replication: link to master is ",
+    );
     tls_cases(&mut p, |t| opts("emfor", "good.pass", t), 6390, 6379);
 
     // Rotate the password on the server and in the file; no reload.
@@ -209,6 +228,23 @@ fn mysql_live() {
         "role is read-only, want primary",
     );
     up(p.check(3307, opts("emfor", "good.pass", json!({}))));
+    up(p.check(3307, opts("emfor", "good.pass", json!({"role": "replica"}))));
+    up(p.check(
+        3307,
+        opts(
+            "emfor",
+            "good.pass",
+            json!({"role": "replica", "max_lag": 30}),
+        ),
+    ));
+    down(
+        p.check(3306, opts("emfor", "good.pass", json!({"role": "replica"}))),
+        "role is not a replica, want replica",
+    );
+    down(
+        p.check(3308, opts("emfor", "good.pass", json!({"role": "replica"}))),
+        "replication: IO thread is ",
+    );
     tls_cases(&mut p, |t| opts("emfor", "good.pass", t), 3306, 3307);
 }
 
@@ -238,6 +274,23 @@ fn pgsql_live() {
         "role is standby, want primary",
     );
     up(p.check(5433, db(json!({}))));
+    up(p.check(5433, db(json!({"role": "replica"}))));
+    up(p.check(5433, db(json!({"role": "replica", "max_lag": 30}))));
+    down(
+        p.check(5432, db(json!({"role": "replica"}))),
+        "role is primary, want replica",
+    );
+    // The lost standby retries its primary; between attempts it has no WAL
+    // receiver, so allow a few seconds for a check to see that.
+    let mut lost = p.check(5434, db(json!({"role": "replica"})));
+    for _ in 0..20 {
+        if lost.0 == "down" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        lost = p.check(5434, db(json!({"role": "replica"})));
+    }
+    down(lost, "replication: no WAL receiver");
     tls_cases(&mut p, db, 5432, 5433);
 }
 

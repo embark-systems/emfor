@@ -1,5 +1,6 @@
 #!/bin/sh
-# Runs inside the emfor-plugins-test container: start redis, MariaDB,
+# Runs inside the emfor-plugins-test container: start redis, MariaDB
+# (with replication),
 # PostgreSQL, OpenLDAP, unbound, FreeRADIUS, Kamailio and freeDiameter as crates/emfor-check/tests/live.rs describes, run those tests,
 # then run the emfor daemon with the pgsql plugin.
 set -eu
@@ -53,29 +54,67 @@ replicaof 127.0.0.1 6379
 user default on nopass ~* &* +@all
 user emfor on >s3cret ~* &* +@all
 CONF
+# A replica whose master port has nothing listening: its link never
+# reaches "connected".
+cat > redis-lost.conf <<CONF
+port 6381
+bind 127.0.0.1
+save ""
+daemonize yes
+logfile $D/redis-lost.log
+replicaof 127.0.0.1 6399
+user default on nopass ~* &* +@all
+user emfor on >s3cret ~* &* +@all
+CONF
 redis-server redis-primary.conf
 redis-server redis-replica.conf
+redis-server redis-lost.conf
 
 step "mariadb"
 mkdir -p /run/mysqld && chown mysql:mysql /run/mysqld
-for n in 1 2; do
+for n in 1 2 3; do
     mariadb-install-db --user=mysql --datadir=/var/lib/mysql$n >/dev/null 2>&1
 done
+# 3306 is the primary (with a binary log), 3307 replicates it, and 3308 is
+# a replica whose primary port has nothing listening.
 mariadbd --user=mysql --datadir=/var/lib/mysql1 --port=3306 --bind-address=127.0.0.1 \
-    --socket=/run/mysqld/m1.sock --pid-file=/run/mysqld/m1.pid --skip-log-bin \
+    --socket=/run/mysqld/m1.sock --pid-file=/run/mysqld/m1.pid \
+    --log-bin=mariadb-bin --server-id=1 \
     --ssl-cert="$D/server.crt" --ssl-key="$D/server.key" --ssl-ca="$D/ca.pem" \
     >"$D/mariadb1.log" 2>&1 &
 mariadbd --user=mysql --datadir=/var/lib/mysql2 --port=3307 --bind-address=127.0.0.1 \
     --socket=/run/mysqld/m2.sock --pid-file=/run/mysqld/m2.pid --skip-log-bin \
-    --read-only=1 >"$D/mariadb2.log" 2>&1 &
-for n in 1 2; do
+    --server-id=2 --read-only=1 >"$D/mariadb2.log" 2>&1 &
+mariadbd --user=mysql --datadir=/var/lib/mysql3 --port=3308 --bind-address=127.0.0.1 \
+    --socket=/run/mysqld/m3.sock --pid-file=/run/mysqld/m3.pid --skip-log-bin \
+    --server-id=3 --read-only=1 >"$D/mariadb3.log" 2>&1 &
+for n in 1 2 3; do
     i=0
     until mariadb-admin --socket=/run/mysqld/m$n.sock ping >/dev/null 2>&1; do
         i=$((i + 1)); [ $i -lt 60 ] || fail "mariadb $n did not start"; sleep 0.5
     done
+    # Kept out of the binary log, so that 3307 does not replay them.
     mariadb --socket=/run/mysqld/m$n.sock -e "
+        SET SESSION sql_log_bin = 0;
         CREATE USER 'emfor'@'localhost' IDENTIFIED BY 's3cret';
-        CREATE USER 'emfor'@'127.0.0.1' IDENTIFIED BY 's3cret';"
+        CREATE USER 'emfor'@'127.0.0.1' IDENTIFIED BY 's3cret';
+        GRANT REPLICA MONITOR ON *.* TO 'emfor'@'localhost', 'emfor'@'127.0.0.1';"
+done
+mariadb --socket=/run/mysqld/m1.sock -e "
+    SET SESSION sql_log_bin = 0;
+    CREATE USER 'repl'@'127.0.0.1' IDENTIFIED BY 'repl-pw';
+    GRANT REPLICATION SLAVE ON *.* TO 'repl'@'127.0.0.1';"
+for n in 2 3; do
+    port=3306; [ $n = 2 ] || port=3399
+    mariadb --socket=/run/mysqld/m$n.sock -e "
+        CHANGE MASTER TO MASTER_HOST='127.0.0.1', MASTER_PORT=$port,
+            MASTER_USER='repl', MASTER_PASSWORD='repl-pw', MASTER_CONNECT_RETRY=1;
+        START SLAVE;"
+done
+i=0
+until [ "$(mariadb --socket=/run/mysqld/m2.sock -e 'SHOW SLAVE STATUS\G' \
+        | grep -cE 'Slave_(IO|SQL)_Running: Yes')" = 2 ]; do
+    i=$((i + 1)); [ $i -lt 60 ] || fail "mariadb replica did not start"; sleep 0.5
 done
 
 step "postgresql"
@@ -107,6 +146,16 @@ port = 5433
 ssl = off
 CONF
 runuser -u postgres -- "$PG/pg_ctl" -D /tmp/pg/standby -l /tmp/pg/standby.log -w start >/dev/null
+# A standby whose primary port has nothing listening: it has no WAL
+# receiver.
+runuser -u postgres -- "$PG/pg_basebackup" -h 127.0.0.1 -p 5432 -U postgres \
+    -D /tmp/pg/lost -R -X stream
+sed -i 's/port=5432/port=5499/' /tmp/pg/lost/postgresql.auto.conf
+cat >> /tmp/pg/lost/postgresql.conf <<'CONF'
+port = 5434
+ssl = off
+CONF
+runuser -u postgres -- "$PG/pg_ctl" -D /tmp/pg/lost -l /tmp/pg/lost.log -w start >/dev/null
 i=0
 until [ "$(runuser -u postgres -- psql -tA -h /tmp/pg -p 5433 -U postgres -c 'SELECT pg_is_in_recovery()')" = t ]; do
     i=$((i + 1)); [ $i -lt 60 ] || fail "postgres standby did not start"; sleep 0.5

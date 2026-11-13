@@ -1,12 +1,19 @@
 //! The `mysql` plugin: log in, `SELECT 1`, and with `role = "primary"`
-//! check that the server is not read-only.
+//! check that the server is not read-only; with `role = "replica"` check
+//! that both replication threads run and, with `max_lag`, how far behind
+//! the replica is.
 
 use emfor_plugin::{CheckOutcome, CheckRequest};
 use mysql_async::prelude::Queryable;
-use mysql_async::{Conn, DriverError, Error, IoError, OptsBuilder, SslOpts};
+use mysql_async::{Conn, DriverError, Error, IoError, OptsBuilder, Row, SslOpts};
 
 use crate::net::{self, io_failure};
 use crate::options::{Role, Settings, TlsSettings, read_password};
+use crate::replica::lag_outcome;
+
+/// The server error for SQL it does not understand; older servers answer
+/// `SHOW REPLICA STATUS` with it.
+const ER_PARSE_ERROR: u16 = 1064;
 
 /// Which step failed, for the reason prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,8 +60,10 @@ async fn session(conn: &mut Conn, settings: &Settings) -> CheckOutcome {
         Ok(other) => return CheckOutcome::Down(format!("query: SELECT 1 answered {other:?}")),
         Err(e) => return failure(Step::Query, &e),
     }
-    if settings.role != Some(Role::Primary) {
-        return CheckOutcome::Up;
+    match settings.role {
+        Some(Role::Primary) => {}
+        Some(Role::Replica) => return replica(conn, settings.max_lag).await,
+        Some(Role::Master) | None => return CheckOutcome::Up,
     }
     match conn
         .query_first::<i64, _>("SELECT @@global.read_only")
@@ -64,6 +73,108 @@ async fn session(conn: &mut Conn, settings: &Settings) -> CheckOutcome {
         Ok(Some(_)) => CheckOutcome::Down("role is read-only, want primary".into()),
         Ok(None) => CheckOutcome::Down("query: @@global.read_only answered no row".into()),
         Err(e) => failure(Step::Query, &e),
+    }
+}
+
+/// Check a replica: `SHOW REPLICA STATUS`, or `SHOW SLAVE STATUS` on servers
+/// that do not know the newer statement.
+async fn replica(conn: &mut Conn, max_lag: Option<u64>) -> CheckOutcome {
+    let row = match conn.query_first::<Row, _>("SHOW REPLICA STATUS").await {
+        Err(Error::Server(e)) if e.code == ER_PARSE_ERROR => {
+            conn.query_first::<Row, _>("SHOW SLAVE STATUS").await
+        }
+        other => other,
+    };
+    match row {
+        Ok(None) => replica_outcome(None, max_lag),
+        Ok(Some(row)) => match ReplicaStatus::from_row(&row) {
+            Ok(status) => replica_outcome(Some(&status), max_lag),
+            Err(outcome) => outcome,
+        },
+        Err(e) => failure(Step::Query, &e),
+    }
+}
+
+/// The replica status columns the check needs.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct ReplicaStatus {
+    io: String,
+    io_error: String,
+    sql: String,
+    sql_error: String,
+    /// Seconds behind the source; `None` when the server reports NULL.
+    behind: Option<u64>,
+}
+
+impl ReplicaStatus {
+    /// Read the columns under either name: MySQL 8.0.22 and later say
+    /// `Replica_*` and `Source`, MariaDB and older servers `Slave_*` and
+    /// `Master`.
+    fn from_row(row: &Row) -> Result<ReplicaStatus, CheckOutcome> {
+        fn text(row: &Row, names: &[&str]) -> Result<String, CheckOutcome> {
+            for name in names {
+                if let Some(v) = row.get_opt::<Option<String>, &str>(name) {
+                    return v.map(Option::unwrap_or_default).map_err(|_| {
+                        CheckOutcome::Down(format!(
+                            "query: replica status column {name} is not text"
+                        ))
+                    });
+                }
+            }
+            Err(CheckOutcome::Down(format!(
+                "query: replica status has no {} column",
+                names[0]
+            )))
+        }
+        let behind_names = ["Seconds_Behind_Source", "Seconds_Behind_Master"];
+        let behind = match behind_names
+            .iter()
+            .find_map(|name| row.get_opt::<Option<u64>, &str>(name))
+        {
+            Some(Ok(v)) => v,
+            Some(Err(_)) => {
+                return Err(CheckOutcome::Down(
+                    "query: replica status column Seconds_Behind_Master is not a number".into(),
+                ));
+            }
+            None => {
+                return Err(CheckOutcome::Down(
+                    "query: replica status has no Seconds_Behind_Source column".into(),
+                ));
+            }
+        };
+        Ok(ReplicaStatus {
+            io: text(row, &["Replica_IO_Running", "Slave_IO_Running"])?,
+            io_error: text(row, &["Last_IO_Error"])?,
+            sql: text(row, &["Replica_SQL_Running", "Slave_SQL_Running"])?,
+            sql_error: text(row, &["Last_SQL_Error"])?,
+            behind,
+        })
+    }
+}
+
+/// Judge a replica's status: no row means the server is not a replica.
+fn replica_outcome(status: Option<&ReplicaStatus>, max_lag: Option<u64>) -> CheckOutcome {
+    let Some(status) = status else {
+        return CheckOutcome::Down("role is not a replica, want replica".into());
+    };
+    let thread = |name: &str, value: &str, error: &str| {
+        let detail = if error.is_empty() {
+            String::new()
+        } else {
+            format!(": {error}")
+        };
+        CheckOutcome::Down(format!("replication: {name} thread is {value}{detail}"))
+    };
+    if status.io != "Yes" {
+        return thread("IO", &status.io, &status.io_error);
+    }
+    if status.sql != "Yes" {
+        return thread("SQL", &status.sql, &status.sql_error);
+    }
+    match max_lag {
+        Some(max_lag) => lag_outcome(status.behind.map(|s| s as f64), max_lag),
+        None => CheckOutcome::Up,
     }
 }
 
@@ -151,6 +262,69 @@ mod tests {
             failure(Step::Query, &closed),
             CheckOutcome::Down("query: connection closed".into())
         );
+    }
+
+    #[test]
+    fn mysql_replica_status_table() {
+        let status = |io: &str, io_error: &str, sql: &str, sql_error: &str, behind| ReplicaStatus {
+            io: io.into(),
+            io_error: io_error.into(),
+            sql: sql.into(),
+            sql_error: sql_error.into(),
+            behind,
+        };
+        let down = |r: &str| CheckOutcome::Down(r.into());
+        let rows = [
+            (None, None, down("role is not a replica, want replica")),
+            (
+                None,
+                Some(status("Yes", "", "Yes", "", None)),
+                CheckOutcome::Up,
+            ),
+            (
+                None,
+                Some(status(
+                    "Connecting",
+                    "error connecting to master",
+                    "Yes",
+                    "",
+                    None,
+                )),
+                down("replication: IO thread is Connecting: error connecting to master"),
+            ),
+            (
+                None,
+                Some(status("No", "", "No", "", None)),
+                down("replication: IO thread is No"),
+            ),
+            (
+                None,
+                Some(status("Yes", "", "No", "Duplicate entry", None)),
+                down("replication: SQL thread is No: Duplicate entry"),
+            ),
+            (
+                Some(30),
+                Some(status("Yes", "", "Yes", "", Some(30))),
+                CheckOutcome::Up,
+            ),
+            (
+                Some(30),
+                Some(status("Yes", "", "Yes", "", Some(31))),
+                down("replication: 31s behind, max 30s"),
+            ),
+            (
+                Some(30),
+                Some(status("Yes", "", "Yes", "", None)),
+                down("replication: lag unknown"),
+            ),
+        ];
+        for (max_lag, status, want) in rows {
+            assert_eq!(
+                replica_outcome(status.as_ref(), max_lag),
+                want,
+                "{max_lag:?} {status:?}"
+            );
+        }
     }
 
     #[test]
