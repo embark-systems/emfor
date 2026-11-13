@@ -1,5 +1,6 @@
 //! The plugins behind the `emfor-check` executable: the database plugins
-//! redis, mysql, pgsql and ldap, and the network plugins dns and radius.
+//! redis, mysql, pgsql and ldap, and the network plugins dns, radius and
+//! sip.
 
 mod ber;
 mod dns;
@@ -11,6 +12,7 @@ mod pgsql;
 mod radius;
 mod redis;
 mod resp;
+mod sip;
 
 use emfor_plugin::{CheckOutcome, CheckRequest, OptionError, Options, Plugin};
 
@@ -23,6 +25,7 @@ pub enum Kind {
     Ldap,
     Dns,
     Radius,
+    Sip,
 }
 
 impl Kind {
@@ -35,6 +38,7 @@ impl Kind {
             "ldap" => Some(Kind::Ldap),
             "dns" => Some(Kind::Dns),
             "radius" => Some(Kind::Radius),
+            "sip" => Some(Kind::Sip),
             _ => None,
         }
     }
@@ -48,6 +52,7 @@ impl Kind {
             Kind::Ldap => "ldap",
             Kind::Dns => "dns",
             Kind::Radius => "radius",
+            Kind::Sip => "sip",
         }
     }
 }
@@ -78,6 +83,7 @@ impl Plugin for Service {
         let result = match self.kind {
             Kind::Dns => dns::parse(options).map(|_| ()),
             Kind::Radius => radius::parse(options, true).map(|_| ()),
+            Kind::Sip => sip::parse(options, true).map(|_| ()),
             kind => options::parse(kind, options).map(|_| ()),
         };
         result.err().unwrap_or_default()
@@ -94,6 +100,10 @@ impl Plugin for Service {
             },
             Kind::Radius => match radius::parse(&req.options, false) {
                 Ok(settings) => radius::check(&req, &settings).await,
+                Err(errors) => options_error(errors),
+            },
+            Kind::Sip => match sip::parse(&req.options, false) {
+                Ok(settings) => sip::check(&req, &settings).await,
                 Err(errors) => options_error(errors),
             },
             kind => check_database(kind, &req).await,
@@ -114,7 +124,7 @@ async fn check_database(kind: Kind, req: &CheckRequest) -> CheckOutcome {
         Kind::Ldap => ldap::check(req, &settings).await,
         // `Service::check` sends the network plugins elsewhere; answering
         // `error` keeps a mistake there visible without a panic.
-        Kind::Dns | Kind::Radius => CheckOutcome::Error(format!(
+        Kind::Dns | Kind::Radius | Kind::Sip => CheckOutcome::Error(format!(
             "internal: {} check sent to the database plugins",
             kind.name()
         )),

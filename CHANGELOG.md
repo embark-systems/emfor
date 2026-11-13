@@ -18,6 +18,12 @@
   `timeout`; servers that check Message-Authenticator, such as
   FreeRADIUS, do not answer a request made with the wrong secret, which
   then shows as `timeout`. See docs/deploy/plugins.md.
+- `emfor-check sip` checks SIP servers with an OPTIONS request over UDP,
+  TCP or TLS, and is up when the final status code is in
+  `expect_status`, by default 200 to 499: a proxy that answers 404 or
+  407 is working, while 503 (overload, maintenance) and other 5xx and
+  6xx codes are down with `status: <code> <reason>`. See
+  docs/deploy/plugins.md.
 
 ### Deployment
 

@@ -95,8 +95,8 @@ fn parse_with(
         None
     };
     let required: &[(&str, &Option<String>)] = match kind {
-        // dns and radius have their own options and never get here.
-        Kind::Redis | Kind::Ldap | Kind::Dns | Kind::Radius => &[],
+        // The network plugins have their own options and never get here.
+        Kind::Redis | Kind::Ldap | Kind::Dns | Kind::Radius | Kind::Sip => &[],
         Kind::Mysql => &[("user", &user)],
         Kind::Pgsql => &[("user", &user), ("database", &database)],
     };
@@ -149,8 +149,8 @@ fn parse_with(
                 let message = match kind {
                     Kind::Redis => "must be one of master, replica",
                     Kind::Mysql | Kind::Pgsql => "must be primary",
-                    // ldap is skipped above; dns and radius never get here.
-                    Kind::Ldap | Kind::Dns | Kind::Radius => "unknown key",
+                    // ldap is skipped above; the network plugins never get here.
+                    Kind::Ldap | Kind::Dns | Kind::Radius | Kind::Sip => "unknown key",
                 };
                 errors.push(OptionError::new("role", message));
             }
@@ -163,41 +163,18 @@ fn parse_with(
     if tls_on && starttls {
         errors.push(OptionError::new("starttls", "conflicts with tls"));
     }
-    let verify = boolean(options, "tls_verify", true, &mut errors);
-    let server_name = non_empty_string(options, "server_name", &mut errors);
-    let server_name = match server_name {
-        Some(name) if let Err(message) = emfor_tls::check_server_name(&name) => {
-            errors.push(OptionError::new("server_name", message));
-            None
-        }
-        other => other,
+    let requires = if kind == Kind::Ldap {
+        "requires tls = true or starttls = true"
+    } else {
+        "requires tls = true"
     };
-    let ca_file = match options.get("ca_file") {
-        None => None,
-        Some(Value::String(p)) => match check_file(Path::new(p), read_files, check_ca_file) {
-            Ok(()) => Some(PathBuf::from(p)),
-            Err(message) => {
-                errors.push(OptionError::new("ca_file", message));
-                None
-            }
-        },
-        Some(_) => {
-            errors.push(OptionError::new("ca_file", "must be a string"));
-            None
-        }
-    };
-    if !tls_on && !starttls {
-        let message = if kind == Kind::Ldap {
-            "requires tls = true or starttls = true"
-        } else {
-            "requires tls = true"
-        };
-        for key in ["tls_verify", "server_name", "ca_file"] {
-            if options.contains_key(key) {
-                errors.push(OptionError::new(key, message));
-            }
-        }
-    }
+    let tls = tls_settings(
+        options,
+        tls_on || starttls,
+        requires,
+        read_files,
+        &mut errors,
+    );
 
     if errors.is_empty() {
         Ok(Settings {
@@ -205,11 +182,7 @@ fn parse_with(
             password_file,
             role,
             starttls,
-            tls: (tls_on || starttls).then_some(TlsSettings {
-                verify,
-                server_name,
-                ca_file,
-            }),
+            tls,
             database,
         })
     } else {
@@ -232,6 +205,23 @@ pub(crate) fn non_empty_string(
     }
 }
 
+/// A string option: `None` when absent, or with the error `must be a
+/// string` when it has another type.
+pub(crate) fn string<'a>(
+    options: &'a Options,
+    key: &str,
+    errors: &mut Vec<OptionError>,
+) -> Option<&'a str> {
+    match options.get(key) {
+        None => None,
+        Some(Value::String(s)) => Some(s),
+        Some(_) => {
+            errors.push(OptionError::new(key, "must be a string"));
+            None
+        }
+    }
+}
+
 pub(crate) fn boolean(
     options: &Options,
     key: &str,
@@ -246,6 +236,53 @@ pub(crate) fn boolean(
             default
         }
     }
+}
+
+/// The `tls_verify`, `server_name` and `ca_file` options: settings when
+/// `enabled` (TLS is on), and otherwise `None`, with the error `requires`
+/// on each of these keys that is set.
+pub(crate) fn tls_settings(
+    options: &Options,
+    enabled: bool,
+    requires: &str,
+    read_files: bool,
+    errors: &mut Vec<OptionError>,
+) -> Option<TlsSettings> {
+    let verify = boolean(options, "tls_verify", true, errors);
+    let server_name = non_empty_string(options, "server_name", errors);
+    let server_name = match server_name {
+        Some(name) if let Err(message) = emfor_tls::check_server_name(&name) => {
+            errors.push(OptionError::new("server_name", message));
+            None
+        }
+        other => other,
+    };
+    let ca_file = match options.get("ca_file") {
+        None => None,
+        Some(Value::String(p)) => match check_file(Path::new(p), read_files, check_ca_file) {
+            Ok(()) => Some(PathBuf::from(p)),
+            Err(message) => {
+                errors.push(OptionError::new("ca_file", message));
+                None
+            }
+        },
+        Some(_) => {
+            errors.push(OptionError::new("ca_file", "must be a string"));
+            None
+        }
+    };
+    if !enabled {
+        for key in ["tls_verify", "server_name", "ca_file"] {
+            if options.contains_key(key) {
+                errors.push(OptionError::new(key, requires));
+            }
+        }
+    }
+    enabled.then_some(TlsSettings {
+        verify,
+        server_name,
+        ca_file,
+    })
 }
 
 /// Check a file option: always that the path is absolute, and with

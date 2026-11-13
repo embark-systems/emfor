@@ -8,7 +8,7 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::net;
-use crate::options::boolean;
+use crate::options::{boolean, string};
 
 const KEYS: &[&str] = &[
     "name",
@@ -158,18 +158,6 @@ pub fn parse(options: &Options) -> Result<Settings, Vec<OptionError>> {
             expect_answer,
         }),
         _ => Err(errors),
-    }
-}
-
-/// A string option: `None` when absent or not a string (then an error).
-fn string<'a>(options: &'a Options, key: &str, errors: &mut Vec<OptionError>) -> Option<&'a str> {
-    match options.get(key) {
-        None => None,
-        Some(Value::String(s)) => Some(s),
-        Some(_) => {
-            errors.push(OptionError::new(key, "must be a string"));
-            None
-        }
     }
 }
 

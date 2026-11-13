@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs inside the emfor-plugins-test container: start redis, MariaDB,
-# PostgreSQL, OpenLDAP, unbound and FreeRADIUS as crates/emfor-check/tests/live.rs describes, run those tests,
+# PostgreSQL, OpenLDAP, unbound, FreeRADIUS and Kamailio as crates/emfor-check/tests/live.rs describes, run those tests,
 # then run the emfor daemon with the pgsql plugin.
 set -eu
 
@@ -207,6 +207,52 @@ until grep -q 'Ready to process requests' "$D/freeradius.log"; do
     i=$((i + 1)); [ $i -lt 60 ] || { cat "$D/freeradius.log"; fail "freeradius did not start"; }; sleep 0.5
 done
 freeradius -v | head -1
+
+step "kamailio"
+KMOD=$(dirname "$(find /usr/lib -path '*kamailio/modules/sl.so' | head -1)")
+[ -d "$KMOD" ] || fail "kamailio modules not found"
+cat > "$D/kamailio-tls.cfg" <<CONF
+[server:default]
+method = TLSv1.2+
+verify_certificate = no
+require_certificate = no
+private_key = $D/server.key
+certificate = $D/server.crt
+CONF
+cat > "$D/kamailio.cfg" <<CONF
+#!KAMAILIO
+debug=2
+log_stderror=yes
+children=2
+enable_tls=yes
+listen=udp:127.0.0.1:5060
+listen=tcp:127.0.0.1:5060
+listen=tls:127.0.0.1:5061
+mpath="$KMOD/"
+loadmodule "sl.so"
+loadmodule "pv.so"
+loadmodule "tls.so"
+modparam("tls", "config", "$D/kamailio-tls.cfg")
+request_route {
+    if (\$rm == "OPTIONS") {
+        if (\$rU == "nobody") {
+            sl_send_reply("404", "Not Found");
+            exit;
+        }
+        sl_send_reply("200", "OK");
+        exit;
+    }
+    sl_send_reply("405", "Method Not Allowed");
+}
+CONF
+kamailio -c -f "$D/kamailio.cfg" >"$D/kamailio-check.log" 2>&1 || { cat "$D/kamailio-check.log"; fail "kamailio.cfg is invalid"; }
+kamailio -f "$D/kamailio.cfg" -DD -E >"$D/kamailio.log" 2>&1 &
+i=0
+# 5060 is 13C4 and 5061 is 13C5 in /proc/net; 0A is LISTEN.
+until grep -qi ':13C4 ' /proc/net/udp && grep -qi ':13C5 [0-9A-F:]* 0A ' /proc/net/tcp; do
+    i=$((i + 1)); [ $i -lt 60 ] || { cat "$D/kamailio.log"; fail "kamailio did not start"; }; sleep 0.5
+done
+kamailio -v | head -1
 
 step "emfor-check against the servers"
 EMFOR_LIVE_DIR="$D" emfor-check-live-test --ignored --test-threads=1

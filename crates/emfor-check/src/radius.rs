@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::net;
 use crate::options::{
-    boolean, check_file, check_password_file, read_option_file, read_password, trim_newline,
+    boolean, check_file, check_password_file, read_option_file, read_password, string, trim_newline,
 };
 
 const KEYS: &[&str] = &[
@@ -188,18 +188,6 @@ pub fn parse(options: &Options, read_files: bool) -> Result<Settings, Vec<Option
             require_message_authenticator,
         }),
         _ => Err(errors),
-    }
-}
-
-/// A string option: `None` when absent or not a string (then an error).
-fn string<'a>(options: &'a Options, key: &str, errors: &mut Vec<OptionError>) -> Option<&'a str> {
-    match options.get(key) {
-        None => None,
-        Some(Value::String(s)) => Some(s),
-        Some(_) => {
-            errors.push(OptionError::new(key, "must be a string"));
-            None
-        }
     }
 }
 

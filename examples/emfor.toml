@@ -156,7 +156,7 @@ backends = [
 # speaking line-delimited JSON on stdin/stdout. See
 # docs/plugins/protocol-v1.md. The plugin validates check_options itself.
 # emfor-check is the plugin that ships with emfor; its argument picks
-# redis, mysql, pgsql, ldap, dns or radius. See docs/deploy/plugins.md for
+# redis, mysql, pgsql, ldap, dns, radius or sip. See docs/deploy/plugins.md for
 # every option.
 # Commented out because emfor-check is not installed on a fresh host.
 #
@@ -207,3 +207,14 @@ backends = [
 # [services."aaa.svc.emfor".check_options]
 # secret_file = "/etc/emfor/radius.secret"  # never the secret itself
 # request = "status-server"                 # needs status_server = yes on FreeRADIUS
+#
+# [plugins."sip"]
+# command = ["/usr/local/libexec/emfor-check", "sip"]
+#
+# [services."sbc.svc.emfor"]
+# check = "sip"
+# backends = ["10.0.9.11:5060", "10.0.9.12:5060"]
+#
+# [services."sbc.svc.emfor".check_options]
+# transport = "udp"
+# expect_status = ["200-499"]               # 5xx and 6xx (overload, maintenance) are down

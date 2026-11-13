@@ -81,7 +81,7 @@ context: |
     當掉時重啟，退避 1 秒起倍增、上限 30 秒，期間檢查回 error。
     載入、重載、--check-config 都實際啟動外掛並請它驗證 check_options；無法啟動、握手失敗、驗證逾時（5 秒）
     皆為設定錯誤。外掛超過 timeout_ms 未回覆算 error（外掛應自行在期限內回 down），不算後端失敗。
-  - 內附外掛（emfor-check-plugins）：emfor-check 一個執行檔，第一個參數選 redis / mysql / pgsql / ldap / dns / radius；
+  - 內附外掛（emfor-check-plugins）：emfor-check 一個執行檔，第一個參數選 redis / mysql / pgsql / ldap / dns / radius / sip；
     crates/emfor-plugin 處理 protocol 1（emfor-check 與其他 Rust 外掛共用）。每次檢查開新連線；
     redis PING（有密碼先 AUTH）、mysql 與 pgsql 登入後 SELECT 1；role：redis master/replica（ROLE）、
     mysql primary（@@global.read_only = 0）、pgsql primary（pg_is_in_recovery() 為 false），可搭配 failover。
@@ -111,6 +111,11 @@ context: |
     query: malformed response、query: unexpected response code <N>。不做 RadSec、CHAP/EAP、計費記錄、CoA。
     實機測試用 FreeRADIUS 3.2.1：它驗證請求的 Message-Authenticator，密鑰錯誤時不回應（結果為 timeout），
     回應也不帶 Message-Authenticator。
+  - sip 外掛（emfor-check-sip）：emfor-check sip 送 OPTIONS（RFC 3261），UDP / TCP / TLS（tls 需 transport = "tcp"）；
+    訊息自己組與解析（不新增套件），Via 帶本機位址（net::udp_exchange_from 在連線後才組請求）、branch、rport；
+    回應以第一個 Via 的 branch、Call-ID、CSeq 比對，1xx 略過；UDP 不相符丟掉，TCP 不相符為 down。
+    expect_status 預設 ["200-499"]（4xx 代表伺服器有在處理，5xx/6xx 為 down）；原因 status: <碼> <片語>、query:。
+    TLS 鍵的檢查在 options::tls_settings 共用。實機測試用 Kamailio 5.6.3（5060 UDP/TCP、5061 TLS）。
   - client（emfor-clients）：emfor_lookup(名稱, affinity_key?) 回傳 "ip:port"（LMDB 後端 id，IPv6 為 [ip]:port）；
     錯誤碼 UNAVAILABLE（LMDB 打不開／lock 格式不符）、INCOMPATIBLE（版本或 JSON 無法解析）、NOT_FOUND、ALL_DOWN，
     各語言依慣例回報。心跳過期（預設 max_staleness 3 秒）或歸零時所有後端視為未知，依 on_all_down 處理，

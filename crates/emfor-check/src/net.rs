@@ -93,6 +93,19 @@ pub async fn udp_exchange<T>(
     port: u16,
     request: &[u8],
     timeout: Duration,
+    matches: impl FnMut(&[u8]) -> Option<T>,
+) -> Result<T, CheckOutcome> {
+    udp_exchange_from(ip, port, |_| request.to_vec(), timeout, matches).await
+}
+
+/// [`udp_exchange`] for a request that names the local address it is sent
+/// from (as SIP's Via does): `build` gets the socket's local address once
+/// it is connected to the backend.
+pub async fn udp_exchange_from<T>(
+    ip: IpAddr,
+    port: u16,
+    build: impl FnOnce(SocketAddr) -> Vec<u8>,
+    timeout: Duration,
     mut matches: impl FnMut(&[u8]) -> Option<T>,
 ) -> Result<T, CheckOutcome> {
     let start = tokio::time::Instant::now();
@@ -105,6 +118,9 @@ pub async fn udp_exchange<T>(
         .connect((ip, port))
         .await
         .map_err(|e| io_failure("connect: ", &e))?;
+    let local = socket.local_addr().map_err(|e| bind_failure(&e))?;
+    let request = build(local);
+    let request = request.as_slice();
     send_datagram(&socket, request).await?;
 
     let resend_at = start + timeout / 2;

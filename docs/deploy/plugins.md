@@ -1,6 +1,6 @@
-# Checking redis, MySQL, PostgreSQL, LDAP, DNS and RADIUS with emfor-check
+# Checking redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS and SIP with emfor-check
 
-`emfor-check` is the plugin program that ships with emfor. One executable holds six plugins; its only argument picks which one runs:
+`emfor-check` is the plugin program that ships with emfor. One executable holds seven plugins; its only argument picks which one runs:
 
 | Argument | Checks | Up when |
 | --- | --- | --- |
@@ -10,6 +10,7 @@
 | `ldap` | OpenLDAP and other LDAPv3 servers | a simple bind succeeds (resultCode 0) |
 | `dns` | DNS servers (unbound, BIND, PowerDNS, …) | the answer to one query has an expected response code, and records when asked for |
 | `radius` | RADIUS servers (FreeRADIUS, …) | a Status-Server (or Access-Request) gets a correctly signed accept |
+| `sip` | SIP proxies, registrars and SBCs (Kamailio, OpenSIPS, Asterisk, …) | an OPTIONS request gets a final response with an expected status code |
 
 Each plugin runs as one long-lived child process of the emfor daemon, shared by every service that uses it (see [the plugin protocol](../plugins/protocol-v1.md)). Each check opens a new connection to the backend (for `dns` over UDP, a new socket) and closes it before answering, so a server that refuses new connections (for example because `max_connections` is reached) is reported as down.
 
@@ -53,7 +54,7 @@ The plugin name in `[plugins."<name>"]` is your choice; the argument after the p
 
 ### Options
 
-These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns` and `radius` plugins have their own, see [DNS](#dns) and [RADIUS](#radius).
+These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns`, `radius` and `sip` plugins have their own, see [DNS](#dns), [RADIUS](#radius) and [SIP](#sip).
 
 | Key | Plugins | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
@@ -181,6 +182,37 @@ Any other key is an error, including `secret` and `password`. RadSec (RADIUS ove
 - An `auth: ` reason for Access-Reject or Access-Challenge ends with the server's Reply-Message, when it sends one: `auth: Access-Reject: Unknown user`.
 - The secret and the password never appear in check reasons, in emfor's log, or in the plugin's stderr. A `secret_file` or `password_file` that cannot be read during a check is `error`, and no request is sent.
 
+### SIP
+
+The `sip` plugin sends one SIP OPTIONS request (RFC 3261) and judges the status code of the final response; provisional responses (1xx) are skipped.
+
+```toml
+[plugins."sip"]
+command = ["/usr/local/libexec/emfor-check", "sip"]
+
+[services."sbc.svc.emfor"]
+check = "sip"
+backends = ["10.0.9.11:5060", "10.0.9.12:5060"]
+```
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `transport` | string | `udp` | `udp` or `tcp` |
+| `tls` | boolean | `false` | SIP over TLS (usually port 5061); needs `transport = "tcp"` |
+| `tls_verify`, `server_name`, `ca_file` | | | As for the other plugins, see [TLS](#tls); need `tls = true` |
+| `uri` | string | `sip:<backend IP>:<port>` (`sips:` with TLS) | Request-URI and To; a `sip:` or `sips:` URI of at most 256 bytes |
+| `from` | string | `sip:emfor@emfor.invalid` | From |
+| `expect_status` | array of strings | `["200-499"]` | Final status codes that count as up: codes from 200 to 699 or ranges `lo-hi` |
+
+Any other key is an error. SCTP, WebSocket, REGISTER and authentication are not supported.
+
+- **Why 4xx is up by default:** many proxies answer an OPTIONS addressed to themselves with 404, 405 or 483, or ask for authentication with 401 or 407, while working normally. A server that is overloaded or in maintenance says so with 503, and 5xx and 6xx are down. This is also what Kamailio's dispatcher and similar tools do.
+- **To accept only 200**, set `expect_status = ["200"]`, and allow the emfor hosts on the server (an IP allow list) so that it answers 200 instead of 403 or 401.
+- A final response outside `expect_status` is down with `status: <code> <reason phrase>`, for example `status: 503 Service Unavailable`.
+- A response that is not SIP, lacks Via, Call-ID or CSeq, or is longer than 65536 bytes is down with `query: `. Over UDP an answer to another request (another Via branch, Call-ID or CSeq) is ignored; over TCP it is down with `query: response does not match the request`.
+- The request has a Via with `rport`, so the server answers where the request came from even behind NAT.
+- SIP servers often log every OPTIONS request; use a longer `interval`, or lower the log level for OPTIONS on the server.
+
 ## Reading results
 
 | Reason starts with | Result | Meaning |
@@ -192,8 +224,9 @@ Any other key is an error, including `secret` and `password`. RadSec (RADIUS ove
 | `query: ` | down | A query failed or answered something unexpected (for `dns`, a response that cannot be parsed or, over TCP, answers another query; for `radius`, a malformed response or an unexpected response code) |
 | `role is ` | down | The backend has another role |
 | `rcode: `, `answer: ` | down | `dns`: an unexpected response code, or no records of the asked type, see [DNS](#dns) |
+| `status: ` | down | `sip`: a final status code outside `expect_status`, see [SIP](#sip) |
 | `password_file: `, `secret_file: `, `ca_file: ` | error | The file could not be read during the check |
 
 ## What is tested
 
-`tests/plugins/run.sh` checks all six plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary and a replica, read-only server or standby, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; and FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, and the `radius` plugin against FreeRADIUS only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it. Like the rest of emfor, the plugins have not been tested on FreeBSD yet.
+`tests/plugins/run.sh` checks all seven plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary and a replica, read-only server or standby, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; and Kamailio 5.6.3 over UDP, TCP and TLS. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, and the `sip` plugin against Kamailio only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it. Like the rest of emfor, the plugins have not been tested on FreeBSD yet.
