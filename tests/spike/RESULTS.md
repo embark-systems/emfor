@@ -93,8 +93,8 @@ process on the host), so many worker processes would run out of slots.
 
 # Spike 2: cargo-c library with the daemon's LMDB (passed)
 
-`tests/spike/run.sh 2` (the default) builds tests/spike/probe/, a workspace
-member that reads the store with heed and so with the daemon's own LMDB. It is
+`tests/spike/run.sh 2` (the default) builds tests/spike/probe/, a crate with
+its own workspace (left out of the main one) that reads the store with heed and so with the daemon's own LMDB. It is
 installed with `cargo cinstall --features capi` into a temporary prefix. Its
 one export, `probe_heartbeat(path)`, opens the store with
 `MDB_RDONLY | MDB_NOSUBDIR | MDB_NOTLS` and returns `meta/heartbeat`. Every
