@@ -820,15 +820,25 @@ pub async fn start(
     site: &str,
     targets: Targets,
     writer: Option<mpsc::UnboundedSender<WriterMsg>>,
+    services_off: Vec<String>,
 ) -> Result<PeersHandle, String> {
     let socket = UdpSocket::bind(config.listen)
         .await
         .map_err(|e| format!("cannot bind peer address {}: {e}", config.listen))?;
     let key = read_secret(&config.secret_file).map_err(|e| format!("peers.secret_file: {e}"))?;
-    Ok(start_on(socket, config, site, key, targets, writer))
+    Ok(start_on(
+        socket,
+        config,
+        site,
+        key,
+        targets,
+        writer,
+        services_off,
+    ))
 }
 
-/// Start the peer task on a bound socket.
+/// Start the peer task on a bound socket. `services_off` are the services
+/// with `peers = false`, shown in the first `meta/peers`.
 pub fn start_on(
     socket: UdpSocket,
     config: &PeersConfig,
@@ -836,9 +846,11 @@ pub fn start_on(
     key: Vec<u8>,
     targets: Targets,
     writer: Option<mpsc::UnboundedSender<WriterMsg>>,
+    services_off: Vec<String>,
 ) -> PeersHandle {
     let stats = Arc::new(PeerStats::default());
     let quorum = Arc::new(Quorum::new(config.listen));
+    quorum.set_off(services_off);
     let boot = rand::rng().random::<u64>();
     let group = Group::new(
         config.listen,
@@ -1567,8 +1579,24 @@ mod tests {
             members: vec![a, b],
             secret_file: path.clone(),
         };
-        let ha = start_on(sa, &conf(a), "dc1", vec![3u8; 32], targets_a, None);
-        let hb = start_on(sb, &conf(b), "dc1", vec![3u8; 32], targets_b, None);
+        let ha = start_on(
+            sa,
+            &conf(a),
+            "dc1",
+            vec![3u8; 32],
+            targets_a,
+            None,
+            Vec::new(),
+        );
+        let hb = start_on(
+            sb,
+            &conf(b),
+            "dc1",
+            vec![3u8; 32],
+            targets_b,
+            None,
+            Vec::new(),
+        );
         (ha, hb, dir, path)
     }
 
@@ -1655,6 +1683,7 @@ mod tests {
             vec![3u8; 32],
             ta,
             None,
+            Vec::new(),
         );
         ha.out
             .send(PeerOut::Down(BackendDown {
@@ -1714,6 +1743,34 @@ mod tests {
             0,
             "results are not counted as down messages"
         );
+    }
+
+    /// Spec peer-group "Down message for a service left out": the
+    /// supervisor leaves a `peers = false` service out of `Targets`, so a
+    /// `down` for it reaches no backend task and records no mismatch, even
+    /// with another digest.
+    #[tokio::test]
+    async fn down_for_a_service_left_out_is_ignored() {
+        let (ta, _) = targets(&"f".repeat(32));
+        // B had the service in the group; a reload to `peers = false`
+        // publishes targets without it.
+        let (tb, left_out) = targets(DIGEST);
+        tb.replace(HashMap::new());
+        let (ha, hb, _dir, _path) = pair(ta, tb).await;
+        ha.out
+            .send(PeerOut::Down(BackendDown {
+                service: "api.svc.emfor".into(),
+                backend: "10.0.0.11:8080".into(),
+                reason: "refused".into(),
+            }))
+            .expect("the peer task is running");
+        wait_until("B accepts the down", Duration::from_secs(2), || {
+            hb.stats.received() == 1
+        })
+        .await;
+        assert_eq!(left_out.take(), None, "no fast recheck run");
+        let summary = hb.quorum.summary(&[], Instant::now());
+        assert!(summary.contains(r#""digest_mismatch":[]"#), "{summary}");
     }
 
     /// A message with another digest is a mismatch in `meta/peers`.

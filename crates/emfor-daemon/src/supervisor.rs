@@ -91,23 +91,34 @@ impl Supervisor {
         s
     }
 
-    /// Publish every service's digest and recheck channels to the peer task,
-    /// and drop the votes and disagreements of removed services and backends.
+    /// Publish the digest and recheck channels of every service in the
+    /// peer group to the peer task, and drop the votes, disagreements and
+    /// mismatches of removed services and backends and of services with
+    /// `peers = false`, which are left out (spec peer-group, "Services left
+    /// out of the peer group").
     fn publish_targets(&self) {
-        if let Some(p) = &self.peers {
-            let keep = self
-                .services
+        let joined = || {
+            self.services
                 .iter()
+                .filter(|(_, r)| r.config.settings.peers)
+        };
+        if let Some(p) = &self.peers {
+            let keep = joined()
                 .map(|(name, r)| {
                     let ids = r.config.backends.iter().map(|b| b.id.clone()).collect();
                     (name.to_string(), ids)
                 })
                 .collect();
             p.quorum.retain(&keep);
+            p.quorum.set_off(
+                self.services
+                    .iter()
+                    .filter(|(_, r)| !r.config.settings.peers)
+                    .map(|(name, _)| name.to_string())
+                    .collect(),
+            );
         }
-        let services = self
-            .services
-            .iter()
+        let services = joined()
             .map(|(name, r)| {
                 (
                     name.to_string(),
@@ -775,6 +786,81 @@ mod tests {
             quorum.kept("a", "10.0.0.1:80", six).is_none(),
             "removed service"
         );
+        sup.stop();
+    }
+
+    /// Spec peer-group "Services left out of the peer group" and
+    /// service-config "Leaving the peer group on reload keeps backend
+    /// state": a reload to `peers = false` takes the service out of the
+    /// targets and drops its kept state; back to `true` puts it in again,
+    /// with the same running tasks.
+    #[tokio::test]
+    async fn peers_off_leaves_the_targets() {
+        let h = harness();
+        let targets = Targets::default();
+        let svc = |peers: bool| {
+            conf(&format!(
+                "[services.a]\ncheck = \"tcp\"\npeers = {peers}\nbackends = [\"10.0.0.1:80\"]\n[services.b]\ncheck = \"tcp\"\nbackends = [\"10.0.0.2:80\"]\n"
+            ))
+        };
+        let on = svc(true);
+        let (out, _out_rx) = mpsc::unbounded_channel();
+        let quorum = Arc::new(crate::quorum::Quorum::new("10.0.0.5:5302".parse().unwrap()));
+        let hooks = crate::peers::PeerHooks {
+            out,
+            quorum: quorum.clone(),
+            targets: targets.clone(),
+        };
+        let mut sup = Supervisor::start_with_peers(&on, h.tx.clone(), targets.clone(), Some(hooks));
+        let digest = on.services[0].digest.clone();
+        let (six, seven) = (
+            "10.0.0.6:5302".parse().unwrap(),
+            "10.0.0.7:5302".parse().unwrap(),
+        );
+        // Make 10.0.0.1:80 a disagreement (assigned .5, .6, .7).
+        quorum.set_live([six, seven]);
+        let gone = crate::peers::ResultMsg {
+            service: "a".into(),
+            digest: digest.clone(),
+            backend: "10.0.0.1:80".into(),
+            outcome: crate::peers::Outcome::Down("refused".into()),
+            interval_ms: 1000,
+        };
+        let now = tokio::time::Instant::now();
+        quorum.record(six, &gone, now);
+        quorum.record(seven, &gone, now);
+        quorum.combine(
+            "a",
+            "10.0.0.1:80",
+            &digest,
+            &crate::checker::CheckResult::Up,
+            now,
+        );
+        quorum.note_mismatch("a", seven, now);
+        assert_eq!(quorum.disagreements(), 1);
+        let task_ids = |sup: &Supervisor| {
+            sup.services["a"]
+                .tasks
+                .values()
+                .map(|t| t.id())
+                .collect::<Vec<_>>()
+        };
+        let before = task_ids(&sup);
+
+        sup.reload(&svc(false));
+        assert_eq!(targets.digest("a"), None, "left out");
+        assert_eq!(targets.digest("b"), Some(on.services[1].digest.clone()));
+        assert_eq!(quorum.disagreements(), 0);
+        assert!(quorum.kept("a", "10.0.0.1:80", six).is_none());
+        let summary = quorum.summary(&[], now);
+        assert!(summary.contains(r#""digest_mismatch":[]"#), "{summary}");
+        assert!(summary.ends_with(r#""services_off":["a"]}"#), "{summary}");
+        assert_eq!(task_ids(&sup), before, "tasks keep running");
+
+        sup.reload(&svc(true));
+        assert_eq!(targets.digest("a"), Some(digest));
+        assert!(quorum.summary(&[], now).ends_with(r#""services_off":[]}"#));
+        assert_eq!(task_ids(&sup), before);
         sup.stop();
     }
 }

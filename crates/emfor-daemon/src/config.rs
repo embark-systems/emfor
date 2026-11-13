@@ -271,6 +271,8 @@ pub struct Settings {
     pub jitter: f64,
     pub on_all_down: OnAllDown,
     pub balance: Balance,
+    /// Take part in the peer group (no effect without `[peers]`).
+    pub peers: bool,
 }
 
 impl Default for Settings {
@@ -283,6 +285,7 @@ impl Default for Settings {
             jitter: 0.10,
             on_all_down: OnAllDown::Open,
             balance: Balance::RoundRobin,
+            peers: true,
         }
     }
 }
@@ -353,6 +356,15 @@ pub struct Config {
 impl Config {
     pub fn backend_count(&self) -> usize {
         self.services.iter().map(|s| s.backends.len()).sum()
+    }
+
+    /// Names of the services with `peers = false`.
+    pub fn services_off(&self) -> Vec<String> {
+        self.services
+            .iter()
+            .filter(|s| !s.settings.peers)
+            .map(|s| s.name.to_string())
+            .collect()
     }
 }
 
@@ -548,6 +560,7 @@ struct PartialSettings {
     jitter: Option<f64>,
     on_all_down: Option<OnAllDown>,
     balance: Option<Balance>,
+    peers: Option<bool>,
 }
 
 impl PartialSettings {
@@ -560,6 +573,7 @@ impl PartialSettings {
             jitter: self.jitter.unwrap_or(base.jitter),
             on_all_down: self.on_all_down.unwrap_or(base.on_all_down),
             balance: self.balance.unwrap_or(base.balance),
+            peers: self.peers.unwrap_or(base.peers),
         }
     }
 }
@@ -572,6 +586,7 @@ const SETTING_KEYS: &[&str] = &[
     "jitter",
     "on_all_down",
     "balance",
+    "peers",
 ];
 
 #[derive(Default)]
@@ -1061,6 +1076,11 @@ impl Validator {
                 ),
             }
         }
+        match t.get("peers") {
+            None => {}
+            Some(toml::Value::Boolean(b)) => p.peers = Some(*b),
+            Some(_) => self.err(key_path(parent, "peers"), "peers must be true or false"),
+        }
         p
     }
 
@@ -1528,15 +1548,16 @@ backends = ["10.0.0.1:80"]
     fn effective_settings_resolution() {
         // Rows of the "effective settings resolution" example.
         let rr = Balance::RoundRobin;
-        let rows: &[(&str, &str, u64, u32, Balance)] = &[
-            ("", "", 2, 3, rr),
-            ("[defaults]\ninterval = \"5s\"\n", "", 5, 3, rr),
+        let rows: &[(&str, &str, u64, u32, Balance, bool)] = &[
+            ("", "", 2, 3, rr, true),
+            ("[defaults]\ninterval = \"5s\"\n", "", 5, 3, rr, true),
             (
                 "[defaults]\ninterval = \"5s\"\nfall = 5\n",
                 "interval = \"1s\"\n",
                 1,
                 5,
                 rr,
+                true,
             ),
             (
                 "[defaults]\nbalance = \"failover\"\n",
@@ -1544,6 +1565,7 @@ backends = ["10.0.0.1:80"]
                 2,
                 3,
                 Balance::Failover,
+                true,
             ),
             (
                 "[defaults]\nbalance = \"failover\"\n",
@@ -1551,9 +1573,19 @@ backends = ["10.0.0.1:80"]
                 2,
                 3,
                 Balance::Sticky,
+                true,
+            ),
+            ("[defaults]\npeers = false\n", "", 2, 3, rr, false),
+            (
+                "[defaults]\npeers = false\n",
+                "peers = true\n",
+                2,
+                3,
+                rr,
+                true,
             ),
         ];
-        for (defaults, svc_extra, interval, fall, balance) in rows {
+        for (defaults, svc_extra, interval, fall, balance, peers) in rows {
             let c = parse_ok(&format!("{defaults}{SVC}{svc_extra}"));
             let s = &c.services[0].settings;
             assert_eq!(
@@ -1563,7 +1595,25 @@ backends = ["10.0.0.1:80"]
             );
             assert_eq!(s.fall, *fall);
             assert_eq!(s.balance, *balance, "{defaults:?} {svc_extra:?}");
+            assert_eq!(s.peers, *peers, "{defaults:?} {svc_extra:?}");
         }
+    }
+
+    #[test]
+    fn peers_setting_validation() {
+        // The `peers` rows of the "validation outcomes" example.
+        assert!(
+            !parse_ok(&format!("{SVC}peers = false\n")).services[0]
+                .settings
+                .peers
+        );
+        let e = parse_err(&format!("{SVC}peers = \"no\"\n"));
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(e[0].path, "services.\"api.svc.emfor\".peers");
+        assert_eq!(e[0].message, "peers must be true or false");
+        let e = parse_err(&format!("[defaults]\npeers = 1\n{SVC}"));
+        assert_eq!(e[0].path, "defaults.peers");
+        assert_eq!(e[0].message, "peers must be true or false");
     }
 
     #[test]
@@ -1578,6 +1628,7 @@ backends = ["10.0.0.1:80"]
         assert!((s.jitter - 0.10).abs() < 1e-9);
         assert_eq!(s.on_all_down, OnAllDown::Open);
         assert_eq!(s.balance, Balance::RoundRobin);
+        assert!(s.peers);
     }
 
     #[test]

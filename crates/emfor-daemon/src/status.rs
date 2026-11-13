@@ -356,6 +356,10 @@ struct PeerState {
     members: Vec<PeerMember>,
     digest_mismatch: Vec<PeerMismatch>,
     disagreements: Vec<PeerDisagreement>,
+    /// Services with `peers = false`; absent from a store written before
+    /// the field existed.
+    #[serde(default)]
+    services_off: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -403,12 +407,19 @@ fn assigned_checkers(
             live.insert(addr);
         }
     }
+    let live = &live;
     let map = snap
         .services
         .iter()
         .flat_map(|svc| {
-            svc.backends.iter().map(|b| {
-                let checkers = crate::quorum::assigned(&svc.name, &b.id, me, &live);
+            let off = state.services_off.contains(&svc.name);
+            svc.backends.iter().map(move |b| {
+                // A service left out of the peer group has no checkers here.
+                let checkers = if off {
+                    Vec::new()
+                } else {
+                    crate::quorum::assigned(&svc.name, &b.id, me, live)
+                };
                 ((svc.name.clone(), b.id.clone()), checkers)
             })
         })
@@ -1667,6 +1678,41 @@ mod tests {
                 "{value}"
             );
         }
+    }
+
+    /// `peers_at` with `services_off` listing `api.svc.emfor`.
+    fn api_off(listen: &str) -> String {
+        peers_at(listen, [true; 4]).replace(
+            r#""disagreements":[]}"#,
+            r#""disagreements":[],"services_off":["api.svc.emfor"]}"#,
+        )
+    }
+
+    /// Spec "Status text output", scenario "Service left out of the peer
+    /// group is not voted".
+    #[test]
+    fn service_left_out_is_not_voted() {
+        let mut s = snap(Some(400), vec![api()]);
+        s.peers = peers_value(Some(&api_off("10.0.0.5:5302")));
+        let lines = render(&s);
+        assert_eq!(lines[2], "peers: 4/4 live");
+        assert!(lines.iter().all(|l| !l.contains("voted")), "{lines:?}");
+    }
+
+    /// Spec "Status filtering and JSON output", scenario "JSON assigned
+    /// checkers of a service left out".
+    #[test]
+    fn json_assigned_checkers_of_a_service_left_out() {
+        let mut s = snap(Some(400), vec![api()]);
+        s.peers = peers_value(Some(&api_off("10.0.0.5:5302")));
+        let s = filter(s, Some("api.svc.emfor")).unwrap();
+        assert_eq!(
+            json(&s, Path::new("/s.mdb"), NOW)["assigned_checkers"],
+            serde_json::json!([
+                {"service":"api.svc.emfor","backend":"10.0.0.11:8080","checkers":[]},
+                {"service":"api.svc.emfor","backend":"10.0.0.12:8080","checkers":[]}
+            ])
+        );
     }
 
     /// Spec "Status filtering and JSON output", scenario "JSON metrics

@@ -146,7 +146,8 @@ that the group sees down while this host's own check passes is shown by
 `emfor status` with the marker `local-up`. Lookups still read only the
 local store. Members that are not reachable change nothing: the vote falls
 back to each daemon's own checks. There is no master, and a group never
-spans two sites.
+spans two sites. A service can be left out of the group with
+`peers = false` ([chapter 3](03-configuration.md#peers)).
 
 The checks are split, too. A member that is not an assigned checker of a
 backend does not check it while two of its assigned checkers agree: two

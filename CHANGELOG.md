@@ -38,6 +38,13 @@
   with `voted`, adds `checks N/M backends here` to the `peers:` line when
   there are any, and `--json` has `assigned_checkers` (each backend's
   assigned checkers, worked out from `meta/peers`).
+- New setting `peers` (default `true`), per service or in `[defaults]`:
+  `peers = false` leaves a service out of the peer group on this host. It
+  sends no reports or results for it, ignores those it receives, and
+  decides from its own checks only; a reload applies it and keeps the
+  backends' state. `meta/peers` lists such services in `services_off`.
+  Other members still count the host as a candidate checker, so set it the
+  same on every member.
 
 ### Status
 

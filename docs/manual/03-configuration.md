@@ -93,6 +93,14 @@ match count. Clients still read only
 the local store. Without `[peers]` nothing of this runs. See
 [chapter 1](01-concepts.md#peer-groups).
 
+A service with `peers = false` (in its table or in `[defaults]`) is left
+out of the group on this host: it sends no reports or results, ignores
+those it receives, and always decides from its own checks. The other
+services stay in the group. The other members do not know which services
+a host leaves out and may still count it as one of a backend's three
+assigned checkers, leaving that backend with two; so set `peers` the same
+on every member.
+
 ```toml
 site = "dc1"                               # required with [peers]
 
@@ -131,6 +139,7 @@ fall = 3
 jitter = "10%"
 on_all_down = "open"
 balance = "round-robin"
+peers = true
 ```
 
 | Key | Rule | Meaning |
@@ -142,6 +151,7 @@ balance = "round-robin"
 | `jitter` | `0%` to `50%` | Random spread of `interval`, so checks do not line up. |
 | `on_all_down` | `open` or `closed` | What lookups do when no backend is healthy ([chapter 5](05-backend-selection.md#when-no-backend-is-healthy)). |
 | `balance` | see [chapter 5](05-backend-selection.md) | How a backend is chosen. |
+| `peers` | `true` or `false` | Whether the service takes part in the [peer group](#peers). No effect without `[peers]`. |
 
 ## [services."name"]
 
@@ -161,7 +171,7 @@ path = "/healthz"
 | `check` | yes | `tcp`, `http`, `exec`, or the name of a declared plugin. |
 | `backends` | yes | A non-empty list of backends (below). |
 | `check_options` | no | Options of the checker ([chapter 4](04-health-checks.md)). |
-| `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, `balance` | no | Override `[defaults]` for this service. |
+| `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, `balance`, `peers` | no | Override `[defaults]` for this service. |
 | `dns_ttl` | no | Overrides `[dns] ttl` for this service; whole seconds, `0s` to `3600s`. |
 
 **Service names** are host-name-like: lowercased, one trailing dot
@@ -234,7 +244,7 @@ error and keeps running the old config.
 | --- | --- |
 | Services and backends added or removed | Applied; new backends start `unknown`. |
 | `check` or `check_options` of a service | Applied; its backends start over from `unknown`. |
-| `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down` | Applied; backends keep their state. |
+| `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, `peers` | Applied; backends keep their state. |
 | `balance`, `weight`, `site` (top level and backends), `dns_ttl` | Applied. |
 | `[dns] zone`, `[dns] ttl` | Applied. |
 | `[log] level` | Applied (unless `RUST_LOG` is set). |

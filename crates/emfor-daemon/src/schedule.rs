@@ -233,7 +233,9 @@ pub fn spawn_backend(
         tokio::time::sleep(first).await;
         loop {
             let s = *settings.borrow();
-            let step = match &peers.peers {
+            // A service with `peers = false` behaves as without `[peers]`.
+            let hooks = peers.peers.as_ref().filter(|_| s.peers);
+            let step = match hooks {
                 Some(p) => {
                     let digest = p.targets.digest(&service).unwrap_or_default();
                     let votes = p
@@ -252,7 +254,7 @@ pub fn spawn_backend(
             let (result, sample_us, own_check) = match step {
                 Step::Decided(result) => {
                     decided_in_row += 1;
-                    if let Some(p) = &peers.peers {
+                    if let Some(p) = hooks {
                         p.quorum.skip();
                     }
                     (result, None, false)
@@ -269,7 +271,7 @@ pub fn spawn_backend(
                         u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
                     last_own_up = Some(matches!(own, CheckResult::Up));
                     decided_in_row = 0;
-                    let result = match &peers.peers {
+                    let result = match hooks {
                         Some(p) => combine(p, &service, &backend.id, own, s.interval),
                         None => own,
                     };
@@ -333,7 +335,7 @@ pub fn spawn_backend(
                 && transition.is_some_and(|t| {
                     t.from == HealthState::Healthy && t.to == HealthState::Unhealthy
                 });
-            if announce && let Some(p) = &peers.peers {
+            if announce && let Some(p) = hooks {
                 // The peer task is gone only while the daemon stops.
                 let _ = p.out.send(PeerOut::Down(BackendDown {
                     service: service.clone(),
@@ -926,6 +928,52 @@ mod tests {
         let chk = Arc::new(Switch::default());
         let task = spawn_backend("a".into(), backend(), chk.clone(), 0, srx, tx, link);
         (chk, h, rx, orx, task)
+    }
+
+    /// Spec peer-group "Services left out of the peer group": with
+    /// `peers = false` the votes are not counted, every check time is an
+    /// own check, and nothing is sent to the peer task.
+    #[tokio::test(start_paused = true)]
+    async fn service_left_out_ignores_votes() {
+        let (otx, mut orx) = mpsc::unbounded_channel();
+        let h = hooks(otx, "10.0.0.5:5302");
+        h.quorum.set_live((5..=9).map(member));
+        record_all(
+            &h,
+            [
+                Outcome::Down("refused".into()),
+                Outcome::Down("refused".into()),
+                Outcome::Up,
+            ],
+        );
+        let settings = Settings {
+            interval: Duration::from_secs(1),
+            jitter: 0.0,
+            peers: false,
+            ..Settings::default()
+        };
+        let (_stx, srx) = watch::channel(settings);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let link = PeerLink {
+            recheck: Arc::new(Recheck::default()),
+            peers: Some(h.clone()),
+        };
+        let chk = Arc::new(Switch::default());
+        let task = spawn_backend("a".into(), backend(), chk.clone(), 0, srx, tx, link);
+        let mut own = Vec::new();
+        let mut last = None;
+        for _ in 0..6 {
+            let (u, n, _) = next(&mut rx, &chk).await;
+            own.push(n);
+            last = Some(u);
+        }
+        task.abort();
+        assert_eq!(own, [1, 2, 3, 4, 5, 6], "an own check at every check time");
+        let last = last.expect("six updates were received");
+        assert_eq!(last.state, HealthState::Healthy);
+        assert_eq!(last.reason, None, "own up result, votes not counted");
+        assert_eq!(h.quorum.skipped(), 0);
+        assert!(orx.try_recv().is_err(), "nothing sent to the peer task");
     }
 
     /// Keep results from .7, .6 and .9, in that (rank) order.

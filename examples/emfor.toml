@@ -52,6 +52,8 @@ ttl = "1s"                   # whole seconds, 0s to 3600s
 # lists the same members, including itself; listen is this host's entry.
 # The secret file needs at least 32 bytes and mode 0600 or 0640.
 # Changing listen requires a restart; members and secret_file reload.
+# A service with peers = false (below) stays out of the group; set it the
+# same on every member.
 # [peers]
 # listen = "10.0.0.5:5302"
 # members = ["10.0.0.5:5302", "10.0.0.6:5302", "10.0.0.7:5302"]
@@ -68,6 +70,7 @@ on_all_down = "open"   # "open": readers still pick a backend; "closed": readers
 balance = "round-robin" # "round-robin", "sticky" (by affinity key), "failover",
                         # "weighted" (by backend weight), "locality" (same site first)
                         # or "fastest" (backends whose checks answer fastest, in turn)
+peers = true           # take part in the peer group, when [peers] is set
 
 # A plain TCP service: a backend is up when it accepts a connection.
 [services."db.svc.emfor"]

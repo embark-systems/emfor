@@ -142,6 +142,8 @@ struct State {
     votes: HashMap<BackendKey, HashMap<SocketAddr, Kept>>,
     disagreements: BTreeMap<BackendKey, (u32, u32)>,
     mismatches: BTreeMap<(String, SocketAddr), Instant>,
+    /// Services with `peers = false`, sorted.
+    off: Vec<String>,
 }
 
 /// Votes, liveness and the lists `meta/peers` shows; shared by the peer
@@ -162,6 +164,7 @@ struct Summary<'a> {
     members: Vec<SummaryMember>,
     digest_mismatch: Vec<SummaryMismatch<'a>>,
     disagreements: Vec<SummaryDisagreement<'a>>,
+    services_off: &'a [String],
 }
 
 #[derive(Debug, Serialize)]
@@ -217,6 +220,14 @@ impl Quorum {
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The services left out of the peer group (`peers = false`), shown
+    /// in `meta/peers` as `services_off`.
+    pub fn set_off(&self, mut names: Vec<String>) {
+        names.sort();
+        names.dedup();
+        self.state().off = names;
     }
 
     /// The members other than this daemon that are live now.
@@ -418,6 +429,7 @@ impl Quorum {
                     fresh: *fresh,
                 })
                 .collect(),
+            services_off: &st.off,
         };
         serde_json::to_string(&summary)
             .expect("a struct of strings, integers and booleans always serializes to JSON")
@@ -834,7 +846,7 @@ mod tests {
         let q = Quorum::new(addr("127.0.0.1:5302"));
         assert_eq!(
             q.summary(&[(addr("127.0.0.1:5303"), false)], now),
-            r#"{"listen":"127.0.0.1:5302","members":[{"addr":"127.0.0.1:5303","live":false}],"digest_mismatch":[],"disagreements":[]}"#
+            r#"{"listen":"127.0.0.1:5302","members":[{"addr":"127.0.0.1:5303","live":false}],"digest_mismatch":[],"disagreements":[],"services_off":[]}"#
         );
         let q = quorum();
         q.record(addr("10.0.0.8:5302"), &result(down("refused")), now);
@@ -851,8 +863,23 @@ mod tests {
             concat!(
                 r#"{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true},{"addr":"[2001:db8::7]:5302","live":false}],"#,
                 r#""digest_mismatch":[{"service":"api.svc.emfor","member":"10.0.0.7:5302"},{"service":"db.svc.emfor","member":"10.0.0.9:5302"}],"#,
-                r#""disagreements":[{"service":"api.svc.emfor","backend":"10.0.0.11:8080","down":2,"fresh":3}]}"#
+                r#""disagreements":[{"service":"api.svc.emfor","backend":"10.0.0.11:8080","down":2,"fresh":3}],"services_off":[]}"#
             )
+        );
+        // Spec state-store "Services left out are listed": sorted, no repeats.
+        q.set_off(vec![
+            "web.svc.emfor".into(),
+            "db.svc.emfor".into(),
+            "web.svc.emfor".into(),
+        ]);
+        assert!(
+            q.summary(&peers, now)
+                .ends_with(r#","services_off":["db.svc.emfor","web.svc.emfor"]}"#)
+        );
+        q.set_off(vec!["db.svc.emfor".into()]);
+        assert!(
+            q.summary(&peers, now)
+                .ends_with(r#","services_off":["db.svc.emfor"]}"#)
         );
     }
 }

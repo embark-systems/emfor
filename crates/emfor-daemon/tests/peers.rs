@@ -650,3 +650,122 @@ fn split_checks() {
     let made = own_checks(&count(spare)) - before;
     assert!(made >= 4, "the spare one checks every time now: {made}");
 }
+
+/// Spec peer-group "A service left out on one member" and state-store
+/// "Services left out are listed": C has `peers = false` for the service,
+/// so it neither sends nor counts votes, while A and B still decide by
+/// theirs.
+#[test]
+fn service_left_out_on_one_member() {
+    let flags = tempfile::tempdir().expect("a temporary directory can be created");
+    let flag = |i: usize| flags.path().join(format!("down-{i}"));
+    let members = [free_udp(), free_udp(), free_udp()];
+    let daemons: Vec<Daemon> = (0..3)
+        .map(|i| {
+            let f = flag(i);
+            spawn_env(
+                |dir, m| {
+                    let c = exec_config(dir, m, members[i], &members);
+                    if i == 2 {
+                        c.replace("jitter = \"0%\"\n", "jitter = \"0%\"\npeers = false\n")
+                    } else {
+                        c
+                    }
+                },
+                &[("EMFOR_TEST_FLAG", &f)],
+            )
+        })
+        .collect();
+    for d in &daemons {
+        d.wait_log(HEALTHY);
+    }
+    wait_for(
+        "every member live everywhere",
+        Duration::from_secs(10),
+        || {
+            daemons
+                .iter()
+                .all(|d| counter(&d.scrape(), "emfor_peer_up", "") == 2)
+        },
+    );
+    let [a, b, c] = [&daemons[0], &daemons[1], &daemons[2]];
+    assert_eq!(
+        status(c).1["peers"]["services_off"],
+        serde_json::json!(["api.svc.emfor"])
+    );
+    assert_eq!(status(a).1["peers"]["services_off"], serde_json::json!([]));
+
+    // A and B see the backend down, C's own checks pass.
+    for i in [0, 1] {
+        std::fs::write(flag(i), "").expect("the flag can be written");
+    }
+    a.wait_log(UNHEALTHY);
+    b.wait_log(UNHEALTHY);
+    // Well past the 3 checks of 1s that would make C follow the votes.
+    std::thread::sleep(Duration::from_secs(5));
+    assert!(!c.log().contains(UNHEALTHY), "{}", c.log());
+    let body = c.scrape();
+    assert_eq!(
+        counter(&body, "emfor_peer_results_total", "direction=\"sent\""),
+        0
+    );
+    assert_eq!(
+        counter(
+            &body,
+            "emfor_peer_notifications_total",
+            "direction=\"sent\""
+        ),
+        0
+    );
+    assert!(c.has_line("emfor_peer_disagreements 0"));
+    assert!(c.has_line("emfor_peer_checks_skipped_total 0"));
+    let (text, json) = status(c);
+    assert_eq!(json["peers"]["disagreements"], serde_json::json!([]));
+    assert!(text.lines().all(|l| !l.contains("voted")), "{text}");
+    assert!(
+        json["assigned_checkers"]
+            .as_array()
+            .expect("assigned_checkers is an array")
+            .iter()
+            .all(|e| e["checkers"] == serde_json::json!([])),
+        "{json}"
+    );
+}
+
+/// Spec state-store "Services left out are listed": `services_off` at
+/// start, and after a reload turns one service back on.
+#[test]
+fn services_off_follow_reloads() {
+    let held = TcpListener::bind("127.0.0.1:0").expect("the backend can listen");
+    let backend = held.local_addr().expect("the backend has an address");
+    let (a, other) = (free_udp(), free_udp());
+    let cfg = move |dir: &Path, metrics: SocketAddr, web: bool| {
+        config(
+            dir,
+            metrics,
+            a,
+            &[a, other],
+            backend,
+            &format!(
+                "peers = false\n\n[services.\"web.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"{backend}\"]\npeers = {web}\n\n[services.\"db.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"{backend}\"]\npeers = false\n"
+            ),
+        )
+    };
+    let d = spawn(|dir, m| cfg(dir, m, false));
+    d.wait_log(HEALTHY);
+    let off = |d: &Daemon| status(d).1["peers"]["services_off"].clone();
+    assert_eq!(
+        off(&d),
+        serde_json::json!(["api.svc.emfor", "db.svc.emfor", "web.svc.emfor"])
+    );
+    d.write_config(&cfg(d.dir.path(), d.metrics, true));
+    d.signal(Signal::SIGHUP);
+    d.wait_log("config reloaded");
+    let reloaded = Instant::now();
+    wait_for(
+        "web.svc.emfor back in the group",
+        Duration::from_secs(2),
+        || off(&d) == serde_json::json!(["api.svc.emfor", "db.svc.emfor"]),
+    );
+    assert!(reloaded.elapsed() <= Duration::from_secs(2));
+}

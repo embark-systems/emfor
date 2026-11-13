@@ -8,37 +8,45 @@ Defines how operators configure emfor: the TOML file format, built-in defaults w
 
 ### Requirement: TOML config with defaults and per-service overrides
 
-The daemon SHALL read its configuration from a TOML file, the default config path fixed at build time (`/etc/emfor/emfor.toml` unless built with `EMFOR_PREFIX`) or the path given with `--config`. Each service under `[services."<name>"]` SHALL use the value of `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, and `balance` from its own table when present, otherwise from `[defaults]`, otherwise from the built-in defaults: `interval = "2s"`, `timeout = "1s"`, `rise = 2`, `fall = 3`, `jitter = "10%"`, `on_all_down = "open"`, `balance = "round-robin"`. A service MAY also set `dns_ttl`, which overrides `[dns] ttl` for that service and has no `[defaults]` entry. Durations SHALL be strings with units (for example `"500ms"`, `"2s"`).
+The daemon SHALL read its configuration from a TOML file, the default config path fixed at build time (`/etc/emfor/emfor.toml` unless built with `EMFOR_PREFIX`) or the path given with `--config`. Each service under `[services."<name>"]` SHALL use the value of `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, `balance`, and `peers` from its own table when present, otherwise from `[defaults]`, otherwise from the built-in defaults: `interval = "2s"`, `timeout = "1s"`, `rise = 2`, `fall = 3`, `jitter = "10%"`, `on_all_down = "open"`, `balance = "round-robin"`, `peers = true`. A service MAY also set `dns_ttl`, which overrides `[dns] ttl` for that service and has no `[defaults]` entry. Durations SHALL be strings with units (for example `"500ms"`, `"2s"`).
 
 #### Scenario: Service inherits and overrides settings
 
 - **WHEN** `[defaults]` sets `interval = "5s"` and a service sets only `interval = "1s"`
-- **THEN** that service uses `interval` 1s and `timeout` 1s, `rise` 2, `fall` 3, `jitter` 10%, `on_all_down` open, `balance` round-robin
+- **THEN** that service uses `interval` 1s and `timeout` 1s, `rise` 2, `fall` 3, `jitter` 10%, `on_all_down` open, `balance` round-robin, `peers` true
 
 ##### Example: effective settings resolution
 
-| `[defaults]` | Service table | Effective `interval` | Effective `fall` | Effective `balance` |
-| --- | --- | --- | --- | --- |
-| absent | absent | 2s | 3 | round-robin |
-| `interval = "5s"` | absent | 5s | 3 | round-robin |
-| `interval = "5s"`, `fall = 5` | `interval = "1s"` | 1s | 5 | round-robin |
-| `balance = "failover"` | absent | 2s | 3 | failover |
-| `balance = "failover"` | `balance = "sticky"` | 2s | 3 | sticky |
+| `[defaults]` | Service table | Effective `interval` | Effective `fall` | Effective `balance` | Effective `peers` |
+| --- | --- | --- | --- | --- | --- |
+| absent | absent | 2s | 3 | round-robin | true |
+| `interval = "5s"` | absent | 5s | 3 | round-robin | true |
+| `interval = "5s"`, `fall = 5` | `interval = "1s"` | 1s | 5 | round-robin | true |
+| `balance = "failover"` | absent | 2s | 3 | failover | true |
+| `balance = "failover"` | `balance = "sticky"` | 2s | 3 | sticky | true |
+| `peers = false` | absent | 2s | 3 | round-robin | false |
+| `peers = false` | `peers = true` | 2s | 3 | round-robin | true |
 
 
 <!-- @trace
-source: emfor-status
+source: emfor-peers-service-off
 updated: 2026-11-13
 code:
-  - crates/emfor-daemon/src/lib.rs
-  - crates/emfor-daemon/Cargo.toml
-  - docs/deploy/daemon.md
-  - crates/emfor-daemon/src/cli.rs
+  - crates/emfor-daemon/src/writer.rs
+  - docs/manual/03-configuration.md
+  - crates/emfor-daemon/src/quorum.rs
+  - crates/emfor-daemon/src/peers.rs
+  - docs/manual/08-operations.md
   - crates/emfor-daemon/src/status.rs
+  - crates/emfor-daemon/src/supervisor.rs
+  - crates/emfor-daemon/src/cli.rs
   - crates/emfor-daemon/src/config.rs
-  - examples/rc.d/emfor
+  - examples/emfor.toml
+  - CHANGELOG.md
+  - docs/manual/01-concepts.md
+  - crates/emfor-daemon/src/schedule.rs
 tests:
-  - crates/emfor-daemon/tests/daemon.rs
+  - crates/emfor-daemon/tests/peers.rs
 -->
 
 ---
@@ -89,7 +97,7 @@ tests:
 
 The daemon SHALL reject a config that violates any of these rules and SHALL report every violation, each prefixed with its TOML path:
 
-- `interval` at least 100ms; `timeout` greater than zero and not greater than `interval` (equal is allowed, because checks of one backend run one after another and cannot overlap); `rise` at least 1; `fall` at least 1; `jitter` from 0% to 50%; `on_all_down` is `open` or `closed`; `balance` is `round-robin`, `sticky`, `failover`, `weighted`, `locality`, or `fastest`; `dns_ttl` is a whole number of seconds from 0s to 3600s.
+- `interval` at least 100ms; `timeout` greater than zero and not greater than `interval` (equal is allowed, because checks of one backend run one after another and cannot overlap); `rise` at least 1; `fall` at least 1; `jitter` from 0% to 50%; `on_all_down` is `open` or `closed`; `balance` is `round-robin`, `sticky`, `failover`, `weighted`, `locality`, or `fastest`; `dns_ttl` is a whole number of seconds from 0s to 3600s; `peers` is a boolean.
 - `backends` is non-empty; every entry is a string or a table; a string, and a table's `addr`, is `IPv4:port` or `[IPv6]:port` with port 1–65535; a table has `addr` and no keys other than `addr`, `weight`, `site`; `weight` is an integer from 1 to 100; no `addr` repeats within a service.
 - The top-level `site` and every backend `site` are, after ASCII lowercasing, 1 to 63 characters of `[a-z0-9-]` that do not start or end with `-`.
 - `check` names a registered checker and `check_options` passes that checker's validation.
@@ -140,27 +148,28 @@ The daemon SHALL reject a config that violates any of these rules and SHALL repo
 | `[metrics] path` | `"/m"` | error: unknown key |
 | `[peers]` | present, no top-level `site` | error: site is required when [peers] is set |
 | `[peers] members` | `["10.0.0.5:5302"]` | error: members must list 2 to 64 addresses |
+| `peers` | `false` | ok |
+| `peers` | `"no"` | error: peers must be true or false |
+| `peers` (no `[peers]` table) | `false` | ok |
 
 
 <!-- @trace
-source: emfor-peers
+source: emfor-peers-service-off
 updated: 2026-11-13
 code:
-  - docs/manual/01-concepts.md
-  - crates/emfor-daemon/Cargo.toml
-  - crates/emfor-daemon/src/lib.rs
-  - docs/deploy/daemon.md
-  - crates/emfor-daemon/src/peers.rs
-  - crates/emfor-daemon/src/supervisor.rs
-  - crates/emfor-daemon/src/schedule.rs
+  - crates/emfor-daemon/src/writer.rs
   - docs/manual/03-configuration.md
-  - crates/emfor-daemon/src/live.rs
+  - crates/emfor-daemon/src/quorum.rs
+  - crates/emfor-daemon/src/peers.rs
   - docs/manual/08-operations.md
+  - crates/emfor-daemon/src/status.rs
+  - crates/emfor-daemon/src/supervisor.rs
   - crates/emfor-daemon/src/cli.rs
-  - crates/emfor-daemon/src/metrics.rs
-  - examples/emfor.toml
   - crates/emfor-daemon/src/config.rs
+  - examples/emfor.toml
   - CHANGELOG.md
+  - docs/manual/01-concepts.md
+  - crates/emfor-daemon/src/schedule.rs
 tests:
   - crates/emfor-daemon/tests/peers.rs
 -->
@@ -249,7 +258,7 @@ tests:
 ---
 ### Requirement: Reload on SIGHUP applies only a fully valid config
 
-On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes validation, the daemon SHALL apply it. If any validation error exists, the daemon SHALL log every error at `error` level and continue running the previous config unchanged. A change to any key in the `[store]` table SHALL be a validation error on reload. A change to `[dns] listen`, including adding or removing the `[dns]` table, SHALL be a validation error on reload with the message "dns listen settings require restart". A change to `[metrics] listen`, including adding or removing the `[metrics]` table, SHALL be a validation error on reload with the message "metrics listen settings require restart". A change to `[peers] listen`, including adding or removing the `[peers]` table, SHALL be a validation error on reload with the message "peers listen settings require restart". Changes to `[dns] zone`, `[dns] ttl`, `dns_ttl`, `balance`, `[peers] members` and `[peers] secret_file` SHALL take effect on reload.
+On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes validation, the daemon SHALL apply it. If any validation error exists, the daemon SHALL log every error at `error` level and continue running the previous config unchanged. A change to any key in the `[store]` table SHALL be a validation error on reload. A change to `[dns] listen`, including adding or removing the `[dns]` table, SHALL be a validation error on reload with the message "dns listen settings require restart". A change to `[metrics] listen`, including adding or removing the `[metrics]` table, SHALL be a validation error on reload with the message "metrics listen settings require restart". A change to `[peers] listen`, including adding or removing the `[peers]` table, SHALL be a validation error on reload with the message "peers listen settings require restart". Changes to `[dns] zone`, `[dns] ttl`, `dns_ttl`, `balance`, `[peers] members`, `[peers] secret_file` and `peers` SHALL take effect on reload. A change to `peers` alone SHALL keep the state of the service's backends.
 
 #### Scenario: Valid reload adds a service
 
@@ -286,26 +295,29 @@ On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes v
 - **WHEN** the daemon runs with `[peers] listen = "127.0.0.1:5302"`, the config file is changed to `"127.0.0.1:5305"`, and the daemon receives `SIGHUP`
 - **THEN** the reload is rejected with the error "peers listen settings require restart"
 
+#### Scenario: Leaving the peer group on reload keeps backend state
+
+- **WHEN** a service with a `healthy` backend is changed from `peers = true` to `peers = false` and the daemon receives `SIGHUP`
+- **THEN** the backend stays `healthy` and the daemon no longer sends `down` or `result` messages for that service
+
 
 <!-- @trace
-source: emfor-peers
+source: emfor-peers-service-off
 updated: 2026-11-13
 code:
-  - docs/manual/01-concepts.md
-  - crates/emfor-daemon/Cargo.toml
-  - crates/emfor-daemon/src/lib.rs
-  - docs/deploy/daemon.md
-  - crates/emfor-daemon/src/peers.rs
-  - crates/emfor-daemon/src/supervisor.rs
-  - crates/emfor-daemon/src/schedule.rs
+  - crates/emfor-daemon/src/writer.rs
   - docs/manual/03-configuration.md
-  - crates/emfor-daemon/src/live.rs
+  - crates/emfor-daemon/src/quorum.rs
+  - crates/emfor-daemon/src/peers.rs
   - docs/manual/08-operations.md
+  - crates/emfor-daemon/src/status.rs
+  - crates/emfor-daemon/src/supervisor.rs
   - crates/emfor-daemon/src/cli.rs
-  - crates/emfor-daemon/src/metrics.rs
-  - examples/emfor.toml
   - crates/emfor-daemon/src/config.rs
+  - examples/emfor.toml
   - CHANGELOG.md
+  - docs/manual/01-concepts.md
+  - crates/emfor-daemon/src/schedule.rs
 tests:
   - crates/emfor-daemon/tests/peers.rs
 -->

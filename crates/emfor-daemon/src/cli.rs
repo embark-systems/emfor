@@ -325,7 +325,16 @@ async fn run(
     let (tx, rx) = mpsc::unbounded_channel();
     let peers = match &config.peers {
         Some(p) => {
-            match peers::start(p, &peer_site(&config), targets.clone(), Some(tx.clone())).await {
+            let off = config.services_off();
+            match peers::start(
+                p,
+                &peer_site(&config),
+                targets.clone(),
+                Some(tx.clone()),
+                off,
+            )
+            .await
+            {
                 Ok(handle) => {
                     tracing::info!(
                         "peer group on {} with {} other members",

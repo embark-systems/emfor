@@ -131,7 +131,9 @@ the other hosts), and `emfor_peer_disagreements` counts them. A "check
 definition differs" line means that member's `check`, `check_options` or
 `timeout` for the service differ from this host's, so its results are not
 counted; make the configs match. The same data is in the store key
-`meta/peers` and in `emfor status --json` as `peers`.
+`meta/peers` and in `emfor status --json` as `peers`. Its `services_off`
+lists the services this host leaves out of the group (`peers = false`);
+their backends are never `voted` and have no `assigned_checkers`.
 
 In a group of four or more, `emfor_peer_checks_skipped_total` grows on
 hosts that are not an assigned checker of some backends: they let the
