@@ -9,7 +9,7 @@
 | `tcp` | 一條 TCP 連線，可選擇加上 TLS 與 send/expect 交換 | 任何 TCP 服務；以歡迎訊息開場的協定，例如 SMTP |
 | `http` | 一個 `GET` 請求與它的狀態碼 | Web 服務與 health endpoint |
 | `exec` | 每次檢查執行一次的程式 | 既有的 Nagios 式 script、不頻繁的檢查 |
-| plugin 名稱 | 長時間執行的 plugin 程式 | redis、MySQL、PostgreSQL、LDAP、DNS、RADIUS、SIP、Diameter、SMTP、AMQP（`emfor-check`），或你自己寫的 |
+| plugin 名稱 | 長時間執行的 plugin 程式 | redis、MySQL、PostgreSQL、LDAP、DNS、RADIUS、SIP、Diameter、SMTP、AMQP、MongoDB（`emfor-check`），或你自己寫的 |
 
 在服務的 `timeout` 內沒有完成的檢查，結果是 `down`，reason 為 `timeout`。唯一的例外是 plugin：plugin 沒有及時回答時結果是 `error`，因為遲到的是 plugin，不是 backend。
 
@@ -119,8 +119,9 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 | `diameter` | 能力交換（CER / CEA）與 Device-Watchdog（DWR / DWA）成功 |
 | `smtp` | 歡迎訊息為 220 且 `EHLO` 回答 250；要求時經 STARTTLS 或 TLS |
 | `amqp` | AMQP 0-9-1 登入成功且 vhost 開啟 |
+| `mongodb` | `hello` 有回應、設了 `user` 時 SCRAM-SHA-256 登入成功，且角色符合 |
 
-主要選項：`user`、`password_file`（絕不寫密碼本身；每次檢查都會讀取）、`database`（`pgsql`）、`role`（redis 為 `master`/`replica`，MySQL 與 PostgreSQL 為 `primary`/`replica`；`primary` 讓 `failover` 跟著 primary 走，`replica` 另外要求複寫正在進行）、`max_lag`（搭配 `role = "replica"`，replica 最多可以落後幾秒），以及 `tls`、`starttls`（`ldap`）、`tls_verify`、`server_name`、`ca_file`。`dns` plugin 則用 `name`、`type`、`transport`、`recursion_desired`、`expect_rcode`、`expect_answer`；`radius` plugin 用 `secret_file`、`request`、`application`、`user`、`password_file`、`reject_is_up`、`nas_identifier`、`require_message_authenticator`；`sip` plugin 用 `transport`、`tls`（及 TLS 相關鍵）、`uri`、`from`、`expect_status`；`diameter` plugin 用 `origin_host`、`origin_realm`、各 application id、`supported_vendor_ids`、`host_ip_address`、`tls`（及 TLS 相關鍵與客戶端憑證 `tls_cert_file`、`tls_key_file`）；`smtp` plugin 用 `helo`、`starttls`、`tls`（及 TLS 相關鍵）；`amqp` plugin 用 `user`、`password_file`、`vhost`、`tls`（及 TLS 相關鍵）。[docs/deploy/plugins.md](../deploy/plugins.md) 列出所有選項與 reason。
+主要選項：`user`、`password_file`（絕不寫密碼本身；每次檢查都會讀取）、`database`（`pgsql`）、`role`（redis 為 `master`/`replica`，MySQL 與 PostgreSQL 為 `primary`/`replica`；`primary` 讓 `failover` 跟著 primary 走，`replica` 另外要求複寫正在進行；MongoDB 為 `primary`/`secondary`）、`max_lag`（搭配 `role = "replica"`，replica 最多可以落後幾秒），以及 `tls`、`starttls`（`ldap`）、`tls_verify`、`server_name`、`ca_file`。`dns` plugin 則用 `name`、`type`、`transport`、`recursion_desired`、`expect_rcode`、`expect_answer`；`radius` plugin 用 `secret_file`、`request`、`application`、`user`、`password_file`、`reject_is_up`、`nas_identifier`、`require_message_authenticator`；`sip` plugin 用 `transport`、`tls`（及 TLS 相關鍵）、`uri`、`from`、`expect_status`；`diameter` plugin 用 `origin_host`、`origin_realm`、各 application id、`supported_vendor_ids`、`host_ip_address`、`tls`（及 TLS 相關鍵與客戶端憑證 `tls_cert_file`、`tls_key_file`）；`smtp` plugin 用 `helo`、`starttls`、`tls`（及 TLS 相關鍵）；`amqp` plugin 用 `user`、`password_file`、`vhost`、`tls`（及 TLS 相關鍵）；`mongodb` plugin 用 `user`、`password_file`、`auth_source`、`role`、`tls`（及 TLS 相關鍵）。[docs/deploy/plugins.md](../deploy/plugins.md) 列出所有選項與 reason。
 
 `emfor check-config` 與每次 reload 都會啟動 plugin，讓它們驗證每個服務的 `check_options`，所以錯誤會在設定套用前就被發現。
 

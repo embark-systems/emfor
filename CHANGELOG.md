@@ -32,6 +32,12 @@
   `auth: 403 ACCESS_REFUSED - …` for a rejected login and
   `vhost: 530 NOT_ALLOWED - …` for a vhost the user cannot open. See
   [docs/deploy/plugins.md](docs/deploy/plugins.md#amqp).
+- `emfor-check mongodb` checks MongoDB 4.4 and later: `hello` on a new
+  connection, plaintext or TLS, an optional SCRAM-SHA-256 login (`user`,
+  `password_file`, `auth_source`), and `role = "primary"` (a replica set
+  primary, a standalone server or mongos) or `role = "secondary"`, so
+  `balance = "failover"` follows the replica set's primary. See
+  [docs/deploy/plugins.md](docs/deploy/plugins.md#mongodb).
 
 ## 0.3.0 — 2026-11-14
 

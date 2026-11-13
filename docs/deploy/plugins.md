@@ -1,6 +1,6 @@
-# Checking redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP and AMQP with emfor-check
+# Checking redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP and MongoDB with emfor-check
 
-`emfor-check` is the plugin program that ships with emfor. One executable holds ten plugins; its only argument picks which one runs:
+`emfor-check` is the plugin program that ships with emfor. One executable holds eleven plugins; its only argument picks which one runs:
 
 | Argument | Checks | Up when |
 | --- | --- | --- |
@@ -14,6 +14,7 @@
 | `diameter` | Diameter nodes: HSS, PCRF, OCS, DRA (freeDiameter, …) | the capabilities exchange (CER / CEA) and a device watchdog (DWR / DWA) succeed |
 | `smtp` | SMTP servers (Postfix, Exim, …) | the greeting is 220 and EHLO answers 250, over STARTTLS or TLS when asked for |
 | `amqp` | AMQP 0-9-1 brokers (RabbitMQ, …) | the login succeeds and the vhost opens (Connection.Open-Ok) |
+| `mongodb` | MongoDB 4.4 and later: replica set members, standalone servers, mongos | `hello` answers, the login succeeds when a user is set, and the role matches |
 
 Each plugin runs as one long-lived child process of the emfor daemon, shared by every service that uses it (see [the plugin protocol](../plugins/protocol-v1.md)). Each check opens a new connection to the backend (for `dns` over UDP, a new socket) and closes it before answering, so a server that refuses new connections (for example because `max_connections` is reached) is reported as down.
 
@@ -57,7 +58,7 @@ The plugin name in `[plugins."<name>"]` is your choice; the argument after the p
 
 ### Options
 
-These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns`, `radius`, `sip`, `diameter`, `smtp` and `amqp` plugins have their own, see [DNS](#dns), [RADIUS](#radius), [SIP](#sip), [Diameter](#diameter), [SMTP](#smtp) and [AMQP](#amqp).
+These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns`, `radius`, `sip`, `diameter`, `smtp`, `amqp` and `mongodb` plugins have their own, see [DNS](#dns), [RADIUS](#radius), [SIP](#sip), [Diameter](#diameter), [SMTP](#smtp), [AMQP](#amqp) and [MongoDB](#mongodb).
 
 | Key | Plugins | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
@@ -85,6 +86,7 @@ With `role` set, a backend in another role is down, with a reason such as `role 
 | `mysql` | `primary` | `SELECT @@global.read_only` is 0 |
 | `pgsql` | `primary` | `SELECT pg_is_in_recovery()` is false |
 | `redis`, `mysql`, `pgsql` | `replica` | see [Replicas](#replicas) |
+| `mongodb` | `primary`, `secondary` | the `hello` reply, see [MongoDB](#mongodb) |
 
 ### Replicas
 
@@ -362,6 +364,50 @@ Any other key is an error. Only the `PLAIN` mechanism is supported (not `EXTERNA
 - A RabbitMQ memory or disk alarm blocks publishers, but the broker still accepts connections, so the check stays up during an alarm.
 - RabbitMQ logs every connection and its close. Use a longer `interval` if that is too much.
 
+### MongoDB
+
+The `mongodb` plugin opens a new TCP connection (or TLS) on every check and sends `hello` (an OP_MSG command, which needs no login). With `user` set it then logs in with SCRAM-SHA-256 against `auth_source` and checks the server's signature. With `role` set it compares the role in the `hello` reply. It is up when every step succeeds. It reads no data and runs no other command.
+
+```toml
+[plugins."mongodb"]
+command = ["/usr/local/libexec/emfor-check", "mongodb"]
+
+[services."orders-db.svc.emfor"]
+check = "mongodb"
+balance = "failover"
+backends = ["10.0.14.1:27017", "10.0.14.2:27017", "10.0.14.3:27017"]
+check_options = { role = "primary", user = "emfor", password_file = "/etc/emfor/mongo.pass" }
+```
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `user` | string | none: no login | The user, 1 to 255 bytes; needs `password_file` |
+| `password_file` | absolute path | | As for the database plugins, see [Passwords](#passwords); needs `user`. Only printable ASCII passwords are supported |
+| `auth_source` | string | `admin` | The database the user is defined in: 1 to 64 ASCII letters, digits, `_` and `-`; needs `user` |
+| `role` | `primary` or `secondary` | any | The role the backend must have |
+| `tls` | boolean | `false` | TLS from the start of the connection |
+| `tls_verify`, `server_name`, `ca_file` | | | As for the other plugins, see [TLS](#tls); need `tls = true` |
+
+Any other key is an error. The role comes from the `hello` reply, in this order:
+
+| `hello` says | Role | Accepted by |
+| --- | --- | --- |
+| `arbiterOnly: true` | `arbiter` | none |
+| `msg: "isdbgrid"` | `mongos` | `role = "primary"` |
+| `isWritablePrimary: true` with `setName` | `primary` | `role = "primary"` |
+| `isWritablePrimary: true` without `setName` | `standalone` | `role = "primary"` |
+| `secondary: true` | `secondary` | `role = "secondary"` |
+| anything else (`RECOVERING`, `STARTUP2`, …) | `unknown` | none |
+
+Another role is down with `role is <role>, want <role>`, for example `role is secondary, want primary`. `role = "primary"` with `balance = "failover"` follows the replica set's primary.
+
+- Without `user`, the check needs no account: `hello` works before a login, so it suits servers without access control and checks that only want the role. A login says more, because it needs the server to read its user data. Give the check a user with no roles: `db.getSiblingDB("admin").createUser({user: "emfor", pwd: "…", roles: []})`.
+- A rejected login is down with `auth: <codeName>: <errmsg>`, for example `auth: AuthenticationFailed: Authentication failed.`; any other failed command is down with `query: <codeName>: <errmsg>`. A server whose signature does not match the password is down with `auth: server signature does not match`; a SCRAM message with fewer than 4096 iterations, a foreign nonce or a missing field is down with `auth: malformed SCRAM message`.
+- A reply longer than 65536 bytes is down with `query: reply too large`; one that is not an OP_MSG reply to the command, or whose BSON cannot be read, with `query: malformed reply`.
+- A password with anything but printable ASCII is `error` with `password_file: only printable ASCII passwords are supported`, and nothing is sent: other passwords would need SASLprep.
+- Only SCRAM-SHA-256 is supported: not SCRAM-SHA-1, x.509, LDAP or Kerberos. MongoDB before 4.4 (4.2.10) has no `hello` and is down with `query: CommandNotFound: …`. Replication lag (`max_lag`), connection strings (`mongodb://`) and SRV records are not supported.
+- MongoDB logs every connection and authentication. Use a longer `interval` if that is too much.
+
 ## Reading results
 
 | Reason starts with | Result | Meaning |
@@ -382,4 +428,4 @@ Any other key is an error. Only the `PLAIN` mechanism is supported (not `EXTERNA
 
 ## What is tested
 
-`tests/plugins/run.sh` checks all ten plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary, a replica that replicates from it, a replica whose primary is unreachable, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; Kamailio 5.6.3 over UDP, TCP and TLS; freeDiameter 1.2.1 over TCP and over TLS with a client certificate, with an ACL that knows one peer; Postfix 3.7 with STARTTLS, with TLS on port 465 and without TLS; and RabbitMQ 3.10 over plaintext and TLS, with a vhost the user may open and one it may not. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, the `sip` plugin against Kamailio only, the `diameter` plugin against freeDiameter only, the `smtp` plugin against Postfix only, and the `amqp` plugin against RabbitMQ only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it (the replica check reads MySQL's `Replica_*` and `Seconds_Behind_Source` column names too, but only MariaDB's `Slave_*` names are tested). Like the rest of emfor, the plugins have not been tested on FreeBSD yet.
+`tests/plugins/run.sh` checks all eleven plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary, a replica that replicates from it, a replica whose primary is unreachable, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; Kamailio 5.6.3 over UDP, TCP and TLS; freeDiameter 1.2.1 over TCP and over TLS with a client certificate, with an ACL that knows one peer; Postfix 3.7 with STARTTLS, with TLS on port 465 and without TLS; RabbitMQ 3.10 over plaintext and TLS, with a vhost the user may open and one it may not; and MongoDB 8.0 with a two-member replica set and a server with access control over plaintext and TLS. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, the `sip` plugin against Kamailio only, the `diameter` plugin against freeDiameter only, the `smtp` plugin against Postfix only, the `amqp` plugin against RabbitMQ only, and the `mongodb` plugin against MongoDB 8.0 only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it (the replica check reads MySQL's `Replica_*` and `Seconds_Behind_Source` column names too, but only MariaDB's `Slave_*` names are tested). Like the rest of emfor, the plugins have not been tested on FreeBSD yet.

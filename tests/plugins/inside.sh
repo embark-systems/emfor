@@ -385,6 +385,28 @@ rmq add_vhost app
 rmq add_vhost locked
 rmq set_permissions -p app emfor '.*' '.*' '.*'
 
+step "mongodb"
+# 27017 (primary) and 27018 (secondary): replica set rs0, no login.
+# 27020: a standalone server with --auth and TLS allowed; user emfor.
+cat "$D/server.crt" "$D/server.key" > "$D/mongo.pem"
+mkdir -p /tmp/mongo/a /tmp/mongo/b /tmp/mongo/c
+for n in a:27017 b:27018; do
+    mongod --replSet rs0 --port "${n#*:}" --bind_ip 127.0.0.1 --dbpath "/tmp/mongo/${n%%:*}" \
+        --fork --logpath "$D/mongod-${n%%:*}.log" >/dev/null || fail "mongod ${n#*:} did not start"
+done
+mongod --auth --port 27020 --bind_ip 127.0.0.1 --dbpath /tmp/mongo/c --fork --logpath "$D/mongod-c.log" \
+    --tlsMode allowTLS --tlsCertificateKeyFile "$D/mongo.pem" --tlsCAFile "$D/ca.pem" \
+    --tlsAllowConnectionsWithoutCertificates >/dev/null || fail "mongod 27020 did not start"
+mongosh --quiet --port 27017 --eval 'rs.initiate({_id: "rs0", members: [
+    {_id: 0, host: "127.0.0.1:27017", priority: 2}, {_id: 1, host: "127.0.0.1:27018", priority: 1}]}).ok' >/dev/null
+i=0
+until [ "$(mongosh --quiet --port 27017 --eval 'db.hello().isWritablePrimary')" = true ] \
+    && [ "$(mongosh --quiet --port 27018 --eval 'db.hello().secondary')" = true ]; do
+    i=$((i + 1)); [ $i -lt 90 ] || fail "replica set rs0 did not elect 27017"; sleep 1
+done
+# The localhost exception allows creating the first user.
+mongosh --quiet --port 27020 --eval 'db.getSiblingDB("admin").createUser({user: "emfor", pwd: "s3cret", roles: []}).ok' >/dev/null
+
 step "emfor-check against the servers"
 EMFOR_LIVE_DIR="$D" emfor-check-live-test --ignored --test-threads=1
 

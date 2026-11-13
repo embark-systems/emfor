@@ -1,6 +1,6 @@
 //! `emfor-check` against real redis, MariaDB, PostgreSQL, OpenLDAP,
-//! unbound, FreeRADIUS, Kamailio, freeDiameter, Postfix and RabbitMQ
-//! servers.
+//! unbound, FreeRADIUS, Kamailio, freeDiameter, Postfix, RabbitMQ and
+//! MongoDB servers.
 //!
 //! Ignored by default: these tests need the servers that
 //! tests/plugins/inside.sh starts in the `emfor-plugins-test` container
@@ -29,10 +29,13 @@
 //! | 2526 | the same Postfix without STARTTLS |
 //! | 5672 | RabbitMQ, plaintext, user `emfor` with vhost `app` (no rights on vhost `locked`) |
 //! | 5671 | the same RabbitMQ, TLS |
+//! | 27017 | MongoDB primary of replica set `rs0`, no login |
+//! | 27018 | MongoDB secondary of `rs0` |
+//! | 27020 | MongoDB standalone with `--auth`, user `emfor` in `admin`, plaintext or TLS |
 //!
 //! Server certificates are for `db.test`, signed by `$EMFOR_LIVE_DIR/ca.pem`;
 //! `$EMFOR_LIVE_DIR/good.pass` holds the password, `bad.pass` a wrong one.
-//! Nothing listens on 6399, 3399, 5499, 3899, 5399, 1899, 5099, 2599 and 5699 (TCP and
+//! Nothing listens on 6399, 3399, 5499, 3899, 5399, 1899, 5099, 2599, 5699 and 27099 (TCP and
 //! UDP).
 //! `radius.secret`, `wrong.secret` and `probe.pass` hold the RADIUS secret,
 //! another secret and the password of `probe`. The LDAP administrator is
@@ -588,4 +591,35 @@ fn amqp_live() {
         "tls: ",
     );
     down(p.check(5699, login("good.pass", json!({}))), "connect: ");
+}
+
+#[test]
+#[ignore = "needs the emfor-plugins-test container"]
+fn mongodb_live() {
+    let mut p = Plugin::start("mongodb");
+    up(p.check(27017, json!({})));
+    up(p.check(27017, json!({"role": "primary"})));
+    down(
+        p.check(27017, json!({"role": "secondary"})),
+        "role is primary, want secondary",
+    );
+    down(
+        p.check(27018, json!({"role": "primary"})),
+        "role is secondary, want primary",
+    );
+    up(p.check(27018, json!({"role": "secondary"})));
+    up(p.check(
+        27020,
+        opts("emfor", "good.pass", json!({"role": "primary"})),
+    ));
+    down(
+        p.check(27020, opts("emfor", "bad.pass", json!({}))),
+        "auth: AuthenticationFailed: ",
+    );
+    up(p.check(27020, opts("emfor", "good.pass", tls("db.test", true))));
+    down(
+        p.check(27020, opts("emfor", "good.pass", tls("nope.test", true))),
+        "tls: ",
+    );
+    down(p.check(27099, json!({})), "connect: ");
 }

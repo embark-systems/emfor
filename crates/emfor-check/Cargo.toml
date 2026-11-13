@@ -1,6 +1,6 @@
 [package]
 name = "emfor-check"
-description = "emfor checker plugins for redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP and AMQP"
+description = "emfor checker plugins for redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP and MongoDB"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,6 +13,7 @@ path = "src/main.rs"
 emfor-plugin = { path = "../emfor-plugin" }
 emfor-tls = { path = "../emfor-tls" }
 hickory-proto = "0.26.3"
+base64 = "0.22"
 hmac = "0.13"
 libc = "0.2.191"
 md-5 = "0.11"
@@ -20,6 +21,7 @@ mysql_async = { version = "0.37.1", default-features = false, features = ["minim
 rand = "0.10.3"
 rustls = "0.23.46"
 serde_json.workspace = true
+sha2 = "0.11"
 tokio = { version = "1.54.1", features = ["net", "io-util", "time", "fs"] }
 tokio-postgres = "0.7.18"
 tokio-postgres-rustls = "0.14.0"
@@ -28,5 +30,6 @@ tokio-rustls = "0.26.6"
 [dev-dependencies]
 emfor-tls = { path = "../emfor-tls", features = ["testing"] }
 serde_json.workspace = true
+sha2 = "0.11"
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["full"] }

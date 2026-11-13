@@ -111,7 +111,8 @@ fn parse_with(
         | Kind::Sip
         | Kind::Diameter
         | Kind::Smtp
-        | Kind::Amqp => &[],
+        | Kind::Amqp
+        | Kind::Mongodb => &[],
         Kind::Mysql => &[("user", &user)],
         Kind::Pgsql => &[("user", &user), ("database", &database)],
     };
@@ -172,7 +173,8 @@ fn parse_with(
                     | Kind::Sip
                     | Kind::Diameter
                     | Kind::Smtp
-                    | Kind::Amqp => "unknown key",
+                    | Kind::Amqp
+                    | Kind::Mongodb => "unknown key",
                 };
                 errors.push(OptionError::new("role", message));
             }

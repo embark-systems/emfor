@@ -1,12 +1,13 @@
 //! The plugins behind the `emfor-check` executable: the database plugins
 //! redis, mysql, pgsql and ldap, and the network plugins dns, radius, sip,
-//! diameter, smtp and amqp.
+//! diameter, smtp, amqp and mongodb.
 
 mod amqp;
 mod ber;
 mod diameter;
 mod dns;
 mod ldap;
+mod mongodb;
 mod mysql;
 pub mod net;
 pub mod options;
@@ -33,6 +34,7 @@ pub enum Kind {
     Diameter,
     Smtp,
     Amqp,
+    Mongodb,
 }
 
 impl Kind {
@@ -49,6 +51,7 @@ impl Kind {
             "diameter" => Some(Kind::Diameter),
             "smtp" => Some(Kind::Smtp),
             "amqp" => Some(Kind::Amqp),
+            "mongodb" => Some(Kind::Mongodb),
             _ => None,
         }
     }
@@ -66,6 +69,7 @@ impl Kind {
             Kind::Diameter => "diameter",
             Kind::Smtp => "smtp",
             Kind::Amqp => "amqp",
+            Kind::Mongodb => "mongodb",
         }
     }
 }
@@ -100,6 +104,7 @@ impl Plugin for Service {
             Kind::Diameter => diameter::parse(options, true).map(|_| ()),
             Kind::Smtp => smtp::parse(options, true).map(|_| ()),
             Kind::Amqp => amqp::parse(options, true).map(|_| ()),
+            Kind::Mongodb => mongodb::parse(options, true).map(|_| ()),
             kind => options::parse(kind, options).map(|_| ()),
         };
         result.err().unwrap_or_default()
@@ -134,6 +139,10 @@ impl Plugin for Service {
                 Ok(settings) => amqp::check(&req, &settings).await,
                 Err(errors) => options_error(errors),
             },
+            Kind::Mongodb => match mongodb::parse(&req.options, false) {
+                Ok(settings) => mongodb::check(&req, &settings).await,
+                Err(errors) => options_error(errors),
+            },
             kind => check_database(kind, &req).await,
         }
     }
@@ -152,12 +161,16 @@ async fn check_database(kind: Kind, req: &CheckRequest) -> CheckOutcome {
         Kind::Ldap => ldap::check(req, &settings).await,
         // `Service::check` sends the network plugins elsewhere; answering
         // `error` keeps a mistake there visible without a panic.
-        Kind::Dns | Kind::Radius | Kind::Sip | Kind::Diameter | Kind::Smtp | Kind::Amqp => {
-            CheckOutcome::Error(format!(
-                "internal: {} check sent to the database plugins",
-                kind.name()
-            ))
-        }
+        Kind::Dns
+        | Kind::Radius
+        | Kind::Sip
+        | Kind::Diameter
+        | Kind::Smtp
+        | Kind::Amqp
+        | Kind::Mongodb => CheckOutcome::Error(format!(
+            "internal: {} check sent to the database plugins",
+            kind.name()
+        )),
     }
 }
 
