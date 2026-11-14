@@ -95,6 +95,8 @@ pub struct LiveView {
     /// Counters and member liveness of the peer group; `None` without
     /// `[peers]`.
     pub peers: Option<Arc<PeerStats>>,
+    /// The DNS server's UDP rate limiter; `None` without `[dns]`.
+    pub dns: Option<Arc<crate::dns::RateLimiter>>,
 }
 
 /// Kept up to date by a plugin's host, read by `/metrics`.
@@ -247,6 +249,11 @@ impl LiveState {
     pub fn set_plugins(&self, plugins: Vec<(String, Arc<PluginStatus>)>) {
         let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
         v.plugins = plugins;
+    }
+
+    pub fn set_dns(&self, dns: Option<Arc<crate::dns::RateLimiter>>) {
+        let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
+        v.dns = dns;
     }
 
     pub fn set_peers(&self, peers: Option<Arc<PeerStats>>) {

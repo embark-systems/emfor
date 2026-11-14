@@ -132,7 +132,14 @@ pub struct DnsConfig {
     pub zone: String,
     /// Seconds.
     pub ttl: u32,
+    /// UDP responses a second per client network; 0 is no limit.
+    pub rate_limit: u32,
 }
+
+/// Default `[dns] rate_limit`.
+pub const DEFAULT_DNS_RATE_LIMIT: u32 = 100;
+/// Largest `[dns] rate_limit`.
+const MAX_DNS_RATE_LIMIT: i64 = 1_000_000;
 
 impl Default for DnsConfig {
     fn default() -> Self {
@@ -140,6 +147,7 @@ impl Default for DnsConfig {
             listen: vec![SocketAddr::from(([127, 0, 0, 1], 5300))],
             zone: "svc.emfor".into(),
             ttl: 1,
+            rate_limit: DEFAULT_DNS_RATE_LIMIT,
         }
     }
 }
@@ -969,7 +977,7 @@ impl Validator {
     fn dns(&mut self, root: &toml::Table) -> Option<DnsConfig> {
         let t = self.table(root, "dns")?;
         let mut dns = DnsConfig::default();
-        self.unknown_keys(t, "dns", &["listen", "zone", "ttl"]);
+        self.unknown_keys(t, "dns", &["listen", "zone", "ttl", "rate_limit"]);
         dns.listen = self.listen(t, "dns", DnsConfig::default().listen);
         if let Some(z) = self.string(t, "dns", "zone") {
             let zone = normalize_service_name(z);
@@ -990,6 +998,17 @@ impl Validator {
         }
         if let Some(ttl) = self.dns_seconds(t, "dns", "ttl") {
             dns.ttl = ttl;
+        }
+        match t.get("rate_limit") {
+            None => {}
+            Some(toml::Value::Integer(n)) if (0..=MAX_DNS_RATE_LIMIT).contains(n) => {
+                dns.rate_limit = *n as u32;
+            }
+            Some(toml::Value::Integer(_)) => self.err(
+                "dns.rate_limit",
+                format!("rate_limit must be 0 to {MAX_DNS_RATE_LIMIT}"),
+            ),
+            Some(_) => self.err("dns.rate_limit", "must be an integer"),
         }
         Some(dns)
     }
@@ -2216,8 +2235,29 @@ slow_start = "0s"
         );
         assert_eq!(d.zone, "svc.emfor");
         assert_eq!(d.ttl, 30);
+        assert_eq!(d.rate_limit, DEFAULT_DNS_RATE_LIMIT, "rate_limit default");
+        assert_eq!(DEFAULT_DNS_RATE_LIMIT, 100);
+        for (text, want) in [("rate_limit = 0", 0), ("rate_limit = 5000", 5000)] {
+            let c = parse_ok(&format!("[dns]\n{text}\n{SVC}"));
+            assert_eq!(c.dns.unwrap().rate_limit, want, "{text}");
+        }
         let rows: &[(&str, &str, &str)] = &[
             ("ttl = \"2h\"", "dns.ttl", "ttl above 3600s"),
+            (
+                "rate_limit = -1",
+                "dns.rate_limit",
+                "rate_limit must be 0 to 1000000",
+            ),
+            (
+                "rate_limit = 1000001",
+                "dns.rate_limit",
+                "rate_limit must be 0 to 1000000",
+            ),
+            (
+                "rate_limit = \"100\"",
+                "dns.rate_limit",
+                "must be an integer",
+            ),
             ("ttl = \"1500ms\"", "dns.ttl", "ttl must be whole seconds"),
             ("listen = []", "dns.listen", "listen must not be empty"),
             (

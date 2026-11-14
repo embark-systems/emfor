@@ -30,6 +30,30 @@ The daemon SHALL run the DNS server only when the config has a `[dns]` table. It
 - **WHEN** 128 TCP connections to the DNS server are open and a client opens one more
 - **THEN** the server closes the new connection without an answer, and queries on the 128 open connections are still answered
 
+---
+### Requirement: UDP rate limit
+
+The server SHALL count its UDP responses per client network, the client's IPv4 /24 (also for an IPv4-mapped IPv6 address) or IPv6 /56, in windows of one second. `[dns] rate_limit` (default 100) SHALL be the responses a client network gets in one window; `0` SHALL mean no limit, and a client with a loopback address SHALL never be limited. Of the responses of one window past the limit, the 1st, 3rd, 5th and so on SHALL be sent with no records in any section and the TC flag set, and the others SHALL not be sent. TCP SHALL NOT be limited. The server SHALL track at most 16384 client networks; a network not tracked while that many were seen in the current window SHALL be over its limit. A changed `rate_limit` SHALL apply on reload. At start the daemon SHALL log at `warn` level, for every address of `[dns] listen` that is not a loopback address, a line naming the address and saying that it is not a loopback address.
+
+| `rate_limit` | client | responses in one second | sent |
+| --- | --- | --- | --- |
+| 3 | 10.0.0.1, then 10.0.0.200 | 3, then 4 | 3 full, then truncated, none, truncated, none |
+| 3 | 10.0.1.1 after the row above | 1 | full (another /24) |
+| 1 | 2001:db8:0:1::1, then 2001:db8:0:ff::2 | 1, then 1 | full, then truncated (same /56) |
+| 1 | 127.0.0.1 | 5 | 5 full |
+| 0 | 10.0.0.1 | 10 | 10 full |
+
+#### Scenario: Flood over UDP
+
+- **GIVEN** `[dns] rate_limit = 2` and a client that is not on a loopback address
+- **WHEN** it sends 6 SRV queries over UDP within one second
+- **THEN** it gets 2 full answers and 2 empty answers with TC set, none larger than its query, `emfor_dns_rate_limited_total{action="truncated"}` and `{action="dropped"}` are each 2, and the same query over TCP is answered in full
+
+#### Scenario: Listen beyond loopback
+
+- **WHEN** the daemon starts with `[dns] listen = ["10.0.0.5:53"]`
+- **THEN** it logs a `warn` line naming `10.0.0.5:53` as not a loopback address
+
 
 <!-- @trace
 source: emfor-dns

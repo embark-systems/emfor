@@ -19,11 +19,18 @@ emfor 絕不是主機的一般 DNS server，所以 daemon 停止時，只有它 
 listen = ["127.0.0.1:5300"]   # default; not 5353, which is mDNS
 zone = "svc.emfor"            # default
 ttl = "1s"                    # default
+rate_limit = 100              # default; UDP responses a second per client network
 ```
 
 空的 `[dns]` table 使用預設值。server 同時聽 UDP 與 TCP。有位址無法 bind 時，daemon 以結束代碼 1 結束。TCP 同時最多服務 128 條連線（超過的會立即關閉），5 秒內沒有送出查詢的 TCP 連線會被關閉。daemon 執行中若有 listener 停止，daemon 會以結束代碼 70 結束，由 service manager 重新啟動。
 
 只有名稱在 zone 之下的服務會被回答。啟動與 reload 時，daemon 會為每個在 zone 之外的服務記錄一則警告，也會為每個 backend 使用不同 port 的服務記錄一則警告（A 與 AAAA 回答不帶 port；這類服務請用 SRV 或 client 函式庫）。
+
+### 速率限制
+
+SRV 回答可以比查詢大上許多倍，所以其他主機連得到的 DNS server 可能被拿來用偽造來源的 UDP 查詢灌爆第三方。因此 server 會依 client 網段（IPv4 /24 或 IPv6 /56）計算 UDP 回應，每秒最多送出 `[dns] rate_limit` 個（預設 100）。超過之後，每兩個回應中有一個改成空的、設了 TC 旗標的回應：它比查詢還小，正常的 client 會改用 TCP 重試；其餘不回應。loopback 位址上的 client 與 TCP 一律不受限，所以預設的設定（`listen` 在 127.0.0.1，由本機 resolver 查詢）不受影響。`emfor_dns_rate_limited_total` 計算被限制的回應；如果站內轉送到 emfor 的 resolver 出現在這裡，就調高 `rate_limit`，或設為 `0` 關閉限制。
+
+啟動時，daemon 會為每個不是 loopback 的 `listen` 位址記錄一則警告：任何連得到它的主機都能查詢每個服務。請用防火牆限制誰能連到這個 port。
 
 設定 resolver 之前，先直接查詢確認：
 

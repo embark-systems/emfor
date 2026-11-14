@@ -26,6 +26,15 @@
 - State changes already queued when one is written are committed in the
   same transaction, so a burst of changes (a network split) costs one
   commit, not one per backend.
+- The DNS server limits UDP responses to each client network (IPv4 /24,
+  IPv6 /56) to `[dns] rate_limit` a second, 100 by default (`0` turns it
+  off). An SRV answer can be many times the size of its query, so a server
+  reachable from other hosts could be used to flood a third party with
+  forged-source queries. Past the limit every other response is an empty
+  truncated one, which makes a real client retry over TCP, and the rest
+  are dropped; `emfor_dns_rate_limited_total` counts them. Loopback
+  clients and TCP are never limited. At start the daemon now warns about
+  each `[dns] listen` address that is not a loopback address.
 - A slow commit no longer freezes DNS answers and `/metrics`. While the
   state store waited for the disk (`[store] sync = true`, or the kernel
   writing back), the daemon stopped applying check results, so DNS kept

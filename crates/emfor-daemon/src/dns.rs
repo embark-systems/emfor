@@ -45,6 +45,130 @@ pub struct DnsSettings {
     pub ttl: u32,
     /// SOA serial: daemon start time in Unix seconds, truncated to 32 bits.
     pub serial: u32,
+    /// `[dns] rate_limit`: UDP responses a second for each client network;
+    /// 0 is no limit.
+    pub rate_limit: u32,
+}
+
+/// Client networks tracked at once by [`RateLimiter`]. A new network seen
+/// while this many were active in the current second is over its limit:
+/// a flood from many spoofed sources cannot grow the table without bound.
+pub const MAX_RATE_LIMITED_NETWORKS: usize = 16_384;
+
+/// What to do with one UDP response under `[dns] rate_limit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Within the limit: the full response.
+    Answer,
+    /// Over the limit, every second time: an empty response with TC set,
+    /// smaller than the query, so a real client retries over TCP.
+    Truncate,
+    /// Over the limit, the other times: no response.
+    Drop,
+}
+
+/// Counts UDP responses per client network (an IPv4 /24 or an IPv6 /56)
+/// in one-second windows. Loopback clients are not limited.
+#[derive(Debug)]
+pub struct RateLimiter {
+    exempt_loopback: bool,
+    started: std::time::Instant,
+    #[cfg(test)]
+    frozen: Option<u64>,
+    nets: std::sync::Mutex<HashMap<IpAddr, (u64, u32)>>,
+    /// Over-limit responses of unknown networks while the table was full.
+    overflow: std::sync::atomic::AtomicU64,
+    truncated: std::sync::atomic::AtomicU64,
+    dropped: std::sync::atomic::AtomicU64,
+}
+
+impl Default for RateLimiter {
+    fn default() -> Self {
+        RateLimiter {
+            exempt_loopback: true,
+            started: std::time::Instant::now(),
+            #[cfg(test)]
+            frozen: None,
+            nets: std::sync::Mutex::new(HashMap::new()),
+            overflow: Default::default(),
+            truncated: Default::default(),
+            dropped: Default::default(),
+        }
+    }
+}
+
+impl RateLimiter {
+    /// Responses sent truncated because of the limit.
+    pub fn truncated(&self) -> u64 {
+        self.truncated.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Responses not sent because of the limit.
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn now(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(s) = self.frozen {
+            return s;
+        }
+        self.started.elapsed().as_secs()
+    }
+
+    /// The verdict for one more UDP response to `client` at most `limit`
+    /// a second for its network (0: no limit).
+    pub fn check(&self, client: IpAddr, limit: u32) -> Verdict {
+        if limit == 0 || (self.exempt_loopback && client.to_canonical().is_loopback()) {
+            return Verdict::Answer;
+        }
+        let now = self.now();
+        let net = client_network(client);
+        let over = {
+            let mut nets = self.nets.lock().unwrap_or_else(|e| e.into_inner());
+            if !nets.contains_key(&net) && nets.len() >= MAX_RATE_LIMITED_NETWORKS {
+                nets.retain(|_, (second, _)| *second == now);
+            }
+            if !nets.contains_key(&net) && nets.len() >= MAX_RATE_LIMITED_NETWORKS {
+                Some(
+                    self.overflow
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1,
+                )
+            } else {
+                let (second, count) = nets.entry(net).or_insert((now, 0));
+                if *second != now {
+                    (*second, *count) = (now, 0);
+                }
+                *count = count.saturating_add(1);
+                (*count > limit).then(|| u64::from(*count - limit))
+            }
+        };
+        match over {
+            None => Verdict::Answer,
+            // The first response over the limit is truncated, the next
+            // dropped, and so on.
+            Some(n) if n % 2 == 1 => {
+                self.truncated
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Verdict::Truncate
+            }
+            Some(_) => {
+                self.dropped
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Verdict::Drop
+            }
+        }
+    }
+}
+
+/// The network `client` is counted in: its IPv4 /24 (also for an
+/// IPv4-mapped IPv6 address) or its IPv6 /56.
+fn client_network(client: IpAddr) -> IpAddr {
+    match client.to_canonical() {
+        IpAddr::V4(v4) => IpAddr::V4((u32::from(v4) & 0xffff_ff00).into()),
+        IpAddr::V6(v6) => IpAddr::V6((u128::from(v6) & !((1u128 << 72) - 1)).into()),
+    }
 }
 
 /// What to send back. Records carry the query name as received.
@@ -373,11 +497,29 @@ fn encoded_len(reply: &Reply, queries: &Queries, edns: Option<&Edns>) -> usize {
 pub struct Handler {
     live: LiveState,
     settings: watch::Receiver<DnsSettings>,
+    limiter: Arc<RateLimiter>,
 }
 
 impl Handler {
     pub fn new(live: LiveState, settings: watch::Receiver<DnsSettings>) -> Handler {
-        Handler { live, settings }
+        Handler::with_limiter(live, settings, Arc::new(RateLimiter::default()))
+    }
+
+    fn with_limiter(
+        live: LiveState,
+        settings: watch::Receiver<DnsSettings>,
+        limiter: Arc<RateLimiter>,
+    ) -> Handler {
+        Handler {
+            live,
+            settings,
+            limiter,
+        }
+    }
+
+    /// The UDP rate limiter, whose counters `/metrics` shows.
+    pub fn limiter(&self) -> Arc<RateLimiter> {
+        self.limiter.clone()
     }
 }
 
@@ -388,6 +530,24 @@ impl RequestHandler for Handler {
         request: &Request,
         mut response_handle: R,
     ) -> ResponseInfo {
+        if request.protocol() == Protocol::Udp {
+            let limit = self.settings.borrow().rate_limit;
+            match self.limiter.check(request.src().ip(), limit) {
+                Verdict::Answer => {}
+                Verdict::Truncate => {
+                    return send_truncated(request, response_handle).await;
+                }
+                Verdict::Drop => {
+                    let mut metadata = Metadata::response_from_request(&request.metadata);
+                    metadata.response_code = ResponseCode::Refused;
+                    return Header {
+                        metadata,
+                        counts: Default::default(),
+                    }
+                    .into();
+                }
+            }
+        }
         let questions: Vec<(Name, RecordType, DNSClass)> = request
             .queries
             .queries()
@@ -448,6 +608,35 @@ impl RequestHandler for Handler {
                 }
                 .into()
             }
+        }
+    }
+}
+
+/// The response to a UDP request over the rate limit: no records and TC
+/// set, smaller than the request, so it amplifies nothing while a real
+/// client retries over TCP.
+async fn send_truncated<R: ResponseHandler>(
+    request: &Request,
+    mut response_handle: R,
+) -> ResponseInfo {
+    let mut metadata = Metadata::response_from_request(&request.metadata);
+    metadata.truncation = true;
+    let response = MessageResponseBuilder::from_message_request(request).build(
+        metadata,
+        std::iter::empty(),
+        std::iter::empty(),
+        std::iter::empty(),
+        std::iter::empty(),
+    );
+    match response_handle.send_response(response).await {
+        Ok(info) => info,
+        Err(e) => {
+            tracing::debug!("cannot send DNS response: {e}");
+            Header {
+                metadata,
+                counts: Default::default(),
+            }
+            .into()
         }
     }
 }
@@ -663,6 +852,7 @@ mod tests {
             zone: "svc.emfor".into(),
             ttl: 1,
             serial: 1762905600,
+            rate_limit: 0,
         }
     }
 
@@ -1434,6 +1624,121 @@ mod tests {
         let mut r = ask(&many(without + 1), "api.svc.emfor", RecordType::SRV);
         assert!(!fit_response(&mut r, &q, None, u16::MAX));
         assert_eq!(r.additionals.len(), without + 1);
+    }
+
+    fn limiter(exempt_loopback: bool, now: u64) -> RateLimiter {
+        RateLimiter {
+            exempt_loopback,
+            frozen: Some(now),
+            ..RateLimiter::default()
+        }
+    }
+
+    fn verdicts(l: &RateLimiter, ip: &str, n: usize, limit: u32) -> Vec<Verdict> {
+        let ip: IpAddr = ip.parse().unwrap();
+        (0..n).map(|_| l.check(ip, limit)).collect()
+    }
+
+    /// Spec dns-server "Rate limit" example table.
+    #[test]
+    fn rate_limit_by_client_network() {
+        use Verdict::*;
+        let mut l = limiter(false, 7);
+        assert_eq!(verdicts(&l, "10.0.0.1", 3, 3), [Answer, Answer, Answer]);
+        // Same /24: over the limit, truncated and dropped in turn.
+        assert_eq!(
+            verdicts(&l, "10.0.0.200", 4, 3),
+            [Truncate, Drop, Truncate, Drop]
+        );
+        assert_eq!(verdicts(&l, "10.0.1.1", 1, 3), [Answer], "another /24");
+        // IPv6: one /56.
+        assert_eq!(verdicts(&l, "2001:db8:0:1::1", 1, 1), [Answer]);
+        assert_eq!(verdicts(&l, "2001:db8:0:ff::2", 1, 1), [Truncate]);
+        assert_eq!(
+            verdicts(&l, "2001:db8:0:100::1", 1, 1),
+            [Answer],
+            "another /56"
+        );
+        // An IPv4-mapped address counts with its IPv4 network.
+        assert_eq!(verdicts(&l, "::ffff:10.0.1.9", 1, 1), [Truncate]);
+        assert_eq!(l.truncated(), 4);
+        assert_eq!(l.dropped(), 2);
+        // A new second starts a new window.
+        l.frozen = Some(8);
+        assert_eq!(verdicts(&l, "10.0.0.1", 1, 3), [Answer]);
+        // 0 is no limit; loopback is exempt unless told otherwise.
+        assert_eq!(verdicts(&l, "10.0.0.1", 10, 0), [Answer; 10]);
+        let exempt = limiter(true, 1);
+        assert_eq!(verdicts(&exempt, "127.0.0.1", 5, 1), [Answer; 5]);
+        assert_eq!(verdicts(&exempt, "::1", 5, 1), [Answer; 5]);
+        assert_eq!(verdicts(&exempt, "10.0.0.1", 2, 1), [Answer, Truncate]);
+    }
+
+    /// Spec dns-server "Rate limit": the table of client networks stays
+    /// bounded; a new network while it is full is over its limit.
+    #[test]
+    fn rate_limit_table_is_bounded() {
+        let l = limiter(false, 1);
+        for i in 0..MAX_RATE_LIMITED_NETWORKS {
+            let ip = IpAddr::from([10, (i >> 8) as u8, i as u8, 1]);
+            assert_eq!(l.check(ip, 5), Verdict::Answer);
+        }
+        let new = IpAddr::from([11, 0, 0, 1]);
+        assert_ne!(l.check(new, 5), Verdict::Answer);
+        assert_eq!(l.nets.lock().unwrap().len(), MAX_RATE_LIMITED_NETWORKS);
+        // Next second: the old windows make room.
+        let l = RateLimiter {
+            frozen: Some(2),
+            ..l
+        };
+        assert_eq!(l.check(new, 5), Verdict::Answer);
+    }
+
+    /// Spec dns-server "Rate limit" over the wire: past the limit a UDP
+    /// client gets an empty truncated answer or none; TCP is not limited.
+    #[tokio::test]
+    async fn rate_limited_over_udp() {
+        let live = LiveState::default();
+        live.replace(many(1).services, None);
+        let (tx, rx) = watch::channel(DnsSettings {
+            rate_limit: 2,
+            ..settings()
+        });
+        let l = Arc::new(limiter(false, 1));
+        let listen = ["127.0.0.1:0".parse().unwrap()];
+        let server = serve_with(
+            &listen,
+            Handler::with_limiter(live, rx, l.clone()),
+            TCP_IDLE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let (udp, tcp) = (server.udp[0].0, *server.tcp_addrs.values().next().unwrap());
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let q = srv_query(None);
+        for _ in 0..6 {
+            sock.send_to(&q, udp).await.unwrap();
+        }
+        let mut full = 0;
+        let mut truncated = 0;
+        let mut buf = vec![0u8; 65535];
+        while let Ok(Ok(n)) =
+            tokio::time::timeout(Duration::from_millis(500), sock.recv(&mut buf)).await
+        {
+            let m = Message::from_vec(&buf[..n]).unwrap();
+            if m.metadata.truncation {
+                assert!(m.answers.is_empty());
+                assert!(n <= q.len(), "no larger than the query");
+                truncated += 1;
+            } else {
+                assert!(!m.answers.is_empty());
+                full += 1;
+            }
+        }
+        assert_eq!((full, truncated), (2, 2));
+        assert_eq!((l.truncated(), l.dropped()), (2, 2));
+        assert!(!over_tcp(tcp, &q).await.answers.is_empty());
+        drop(tx);
     }
 
     /// Serve `v` on ephemeral UDP and TCP ports of 127.0.0.1.

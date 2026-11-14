@@ -66,6 +66,7 @@ turns it on with the defaults. See [chapter 7](07-dns.md).
 | `listen` | `["127.0.0.1:5300"]` | Addresses to answer on, UDP and TCP. |
 | `zone` | `"svc.emfor"` | Only names under the zone are answered. At most 242 characters. A service in the zone must leave room for the SRV target name of each backend, `<ip label>.<service>` in at most 253 characters (an IPv6 label is 39). |
 | `ttl` | `"1s"` | TTL of answers and of the zone SOA; whole seconds from `0s` to `3600s`. |
+| `rate_limit` | `100` | UDP responses a second for each client network (IPv4 /24, IPv6 /56); `0` is no limit. Loopback clients and TCP are never limited. See [Rate limit](07-dns.md#rate-limit). |
 
 ## [metrics]
 
@@ -292,7 +293,7 @@ error and keeps running the old config.
 | `check` or `check_options` of a service | Applied; its backends start over from `unknown`. |
 | `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, `peers` | Applied; backends keep their state. A new `interval` or `jitter` also applies to the wait already under way: the next check is due the new wait after the last one ended, at once when that is past. |
 | `balance`, `weight`, `site` (top level and backends), `backup`, `dns_ttl`, `slow_start` | Applied; backends keep their state, and a backend in slow start keeps its recovery time. |
-| `[dns] zone`, `[dns] ttl` | Applied. |
+| `[dns] zone`, `[dns] ttl`, `[dns] rate_limit` | Applied. |
 | `[log] level` | Applied (unless `RUST_LOG` is set). |
 | A plugin's `command` | The plugin is restarted, and the services that use it start over from `unknown`. Unchanged plugins keep running. |
 | Anything in `[store]` | Rejected; needs a restart. |

@@ -60,6 +60,7 @@ sync = false
 | `listen` | `["127.0.0.1:5300"]` | 回答查詢的位址，UDP 與 TCP。 |
 | `zone` | `"svc.emfor"` | 只回答 zone 之下的名稱。最多 242 個字元。zone 之內的服務名稱要留出每個 backend 的 SRV 目標名稱空間：`<ip label>.<service>` 最多 253 個字元（IPv6 的 label 是 39 個字元）。 |
 | `ttl` | `"1s"` | 回答與 zone SOA 的 TTL；`0s` 到 `3600s` 的整數秒。 |
+| `rate_limit` | `100` | 每個 client 網段（IPv4 /24、IPv6 /56）每秒的 UDP 回應數；`0` 表示不限制。loopback 的 client 與 TCP 一律不受限。見[速率限制](07-dns.md#速率限制)。 |
 
 ## [metrics]
 
@@ -220,7 +221,7 @@ services."api.svc.emfor".timeout: timeout must not exceed interval
 | 服務的 `check` 或 `check_options` | 套用；它的 backend 從 `unknown` 重新開始。 |
 | `interval`、`timeout`、`rise`、`fall`、`jitter`、`on_all_down`、`peers` | 套用；backend 保留原狀態。新的 `interval` 或 `jitter` 也套用到正在進行的等待：下一次檢查改在上一次結束後經過新的等待時間時開始，若那個時間已經過了就立刻開始。 |
 | `balance`、`weight`、`site`（最上層與 backend）、`backup`、`dns_ttl`、`slow_start` | 套用；backend 保留狀態，正在慢啟動的 backend 保留它的恢復時間。 |
-| `[dns] zone`、`[dns] ttl` | 套用。 |
+| `[dns] zone`、`[dns] ttl`、`[dns] rate_limit` | 套用。 |
 | `[log] level` | 套用（除非設定了 `RUST_LOG`）。 |
 | plugin 的 `command` | 該 plugin 重新啟動，使用它的服務從 `unknown` 重新開始。未變更的 plugin 繼續執行。 |
 | `[store]` 中的任何設定 | 拒絕；需要重新啟動。 |

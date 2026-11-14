@@ -329,6 +329,24 @@ pub fn render(view: &LiveView, version: &str) -> String {
         }
     }
 
+    if let Some(dns) = &view.dns {
+        family(
+            &mut out,
+            "emfor_dns_rate_limited_total",
+            "counter",
+            "UDP DNS responses over [dns] rate_limit, by what was sent instead.",
+        );
+        put!(
+            out,
+            "emfor_dns_rate_limited_total{{action=\"truncated\"}} {}",
+            dns.truncated()
+        );
+        put!(
+            out,
+            "emfor_dns_rate_limited_total{{action=\"dropped\"}} {}",
+            dns.dropped()
+        );
+    }
     if let Some(peers) = &view.peers {
         family(
             &mut out,
@@ -630,6 +648,22 @@ mod tests {
     }
 
     /// Spec metrics-endpoint "Peer metrics", and no peer series without
+    /// Spec metrics-endpoint: DNS rate limit counters with `[dns]`, none
+    /// without it.
+    #[test]
+    fn dns_rate_limit_counters() {
+        let mut v = view(vec![]);
+        assert!(!render(&v, "0.1.0").contains("emfor_dns_"));
+        v.dns = Some(Arc::new(crate::dns::RateLimiter::default()));
+        let body = render(&v, "0.1.0");
+        for line in [
+            "emfor_dns_rate_limited_total{action=\"truncated\"} 0",
+            "emfor_dns_rate_limited_total{action=\"dropped\"} 0",
+        ] {
+            assert!(body.lines().any(|l| l == line), "{line}: {body}");
+        }
+    }
+
     /// `[peers]`.
     #[test]
     fn peer_metrics() {

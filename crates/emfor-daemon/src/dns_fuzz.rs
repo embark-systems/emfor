@@ -141,6 +141,7 @@ fn build(zone: String, ready: bool) -> Handler {
         zone,
         ttl: 30,
         serial: 1762905600,
+        rate_limit: 0,
     });
     // The receiver keeps the last value after the sender is gone.
     Handler::new(live, rx)

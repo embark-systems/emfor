@@ -305,12 +305,18 @@ async fn run(
         zone: d.zone.clone(),
         ttl: d.ttl,
         serial: started as u32,
+        rate_limit: d.rate_limit,
     };
     let mut dns_server = None;
     let mut dns_tx = None;
     if let Some(d) = &config.dns {
         let (stx, srx) = watch::channel(dns_settings(d));
-        match dns::serve(&d.listen, dns::Handler::new(live.clone(), srx)).await {
+        let handler = dns::Handler::new(live.clone(), srx);
+        live.set_dns(Some(handler.limiter()));
+        for m in listen_warnings(d) {
+            tracing::warn!("{m}");
+        }
+        match dns::serve(&d.listen, handler).await {
             Ok(server) => dns_server = Some(server),
             Err(e) => {
                 tracing::error!("cannot start DNS server: {e}");
@@ -512,6 +518,19 @@ fn warn_dns(config: &Config) {
     }
 }
 
+/// One message per `[dns] listen` address that is not a loopback address.
+fn listen_warnings(d: &DnsConfig) -> Vec<String> {
+    d.listen
+        .iter()
+        .filter(|a| !a.ip().to_canonical().is_loopback())
+        .map(|a| {
+            format!(
+                "DNS listens on {a}, which is not a loopback address: every host that can reach it can look up every service, and it answers UDP queries from other hosts at up to [dns] rate_limit responses a second per client network; limit who can reach it with a firewall"
+            )
+        })
+        .collect()
+}
+
 /// One message per service under the DNS zone whose backends (both address
 /// families together) do not share one port: A/AAAA answers carry no port.
 fn port_warnings(config: &Config) -> Vec<String> {
@@ -644,6 +663,29 @@ mod tests {
         let config =
             config::parse(&text, &Registry::builtin()).unwrap_or_else(|e| panic!("errors: {e:?}"));
         port_warnings(&config)
+    }
+
+    /// Spec dns-server "Rate limit": a warning for each listen address
+    /// that is not loopback, none for loopback ones.
+    #[test]
+    fn non_loopback_listen_is_warned_about() {
+        let d = DnsConfig {
+            listen: vec![
+                "127.0.0.1:5300".parse().unwrap(),
+                "[::1]:5300".parse().unwrap(),
+                "10.0.0.5:53".parse().unwrap(),
+                "0.0.0.0:5300".parse().unwrap(),
+            ],
+            ..DnsConfig::default()
+        };
+        let w = listen_warnings(&d);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(
+            w[0].contains("10.0.0.5:53") && w[0].contains("not a loopback address"),
+            "{w:?}"
+        );
+        assert!(w[1].contains("0.0.0.0:5300"), "{w:?}");
+        assert!(listen_warnings(&DnsConfig::default()).is_empty());
     }
 
     /// State-store "Backend state history": one value or key that is not

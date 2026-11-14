@@ -41,6 +41,7 @@ level = "info"
 listen = ["127.0.0.1:5300"]  # not 5353: that is mDNS
 zone = "svc.emfor"           # only services named under the zone resolve
 ttl = "1s"                   # whole seconds, 0s to 3600s
+rate_limit = 100             # UDP responses a second per client network; 0: none
 
 # Prometheus metrics at http://<listen>/metrics. Uncomment to turn it on;
 # see docs/deploy/daemon.md. Changing listen requires a restart.

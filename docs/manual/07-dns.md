@@ -23,6 +23,7 @@ names in its zone stop resolving.
 listen = ["127.0.0.1:5300"]   # default; not 5353, which is mDNS
 zone = "svc.emfor"            # default
 ttl = "1s"                    # default
+rate_limit = 100              # default; UDP responses a second per client network
 ```
 
 An empty `[dns]` table uses the defaults. The server listens on UDP and
@@ -36,6 +37,26 @@ Only services named under the zone are answered. At start and on reload
 the daemon logs a warning for each service outside the zone, and for each
 service whose backends listen on different ports (A and AAAA answers carry
 no port; use SRV or a client library for such services).
+
+### Rate limit
+
+An SRV answer can be many times the size of its query, so a DNS
+server reachable from other hosts can be used to flood a third party
+with forged-source UDP queries. The server therefore counts UDP
+responses per client network (an IPv4 /24 or an IPv6 /56) and sends at
+most `[dns] rate_limit` (100 by default) of them a second to each. Past
+the limit, every other response is an empty one with the TC flag, which
+is smaller than the query and makes a real client retry over TCP; the
+rest are not sent. Clients on a loopback address and TCP are never
+limited, so the default setup (`listen` on 127.0.0.1, queried by the
+host's own resolver) is not affected. `emfor_dns_rate_limited_total`
+counts the limited responses; if a resolver of your site that forwards
+to emfor shows up there, raise `rate_limit`, or set `0` to turn the
+limit off.
+
+At start the daemon logs a warning for each `listen` address that is
+not a loopback address: any host that can reach it can look up every
+service. Limit who can reach that port with a firewall.
 
 Check it directly before you configure a resolver:
 
