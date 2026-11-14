@@ -90,7 +90,7 @@ no TLS; keep it on loopback or firewall it.
 | `emfor_store_used_bytes`, `emfor_store_map_size_bytes` | Store use against `[store] map_size` |
 | `emfor_plugin_up`, `emfor_plugin_restarts_total` | Plugin health |
 | `emfor_peer_up{peer}` | With `[peers]`: 1 while that member is live |
-| `emfor_peer_messages_rejected_total{reason}` | With `[peers]`: dropped messages by reason: `malformed`, `auth` (wrong secret), `sender` (not a member, or a spoofed address), `site`, `stale` (clocks more than 5 seconds apart), `replay` |
+| `emfor_peer_messages_rejected_total{reason}` | With `[peers]`: dropped messages by reason: `malformed`, `auth` (wrong secret, or a message that does not decrypt), `sender` (not a member, or a spoofed address), `site`, `stale` (clocks more than 5 seconds apart), `replay` |
 | `emfor_peer_notifications_total{direction}` | With `[peers]`: failure reports `sent` (one per member) and `received` |
 | `emfor_peer_results_total{direction}` | With `[peers]`: check results of assigned checkers `sent` (one per member) and `received` |
 | `emfor_peer_disagreements` | With `[peers]`: backends the group votes down while this host's own check passes |
@@ -111,6 +111,12 @@ other (NTP). If `emfor_peer_up` stays 0 for a member, look at
 `emfor_peer_messages_rejected_total` on both sides: `auth` means the
 secrets differ, `stale` that the clocks drift, `sender` that `members` or
 `listen` do not match, `site` that the hosts have different `site` values.
+`malformed` on a member that runs 0.3.0 means it cannot read the
+encrypted messages of upgraded members: set `encrypt = false` on those
+until it is upgraded (see
+[`[peers]`](03-configuration.md#peers)). A warning `peer <address> sends
+plaintext messages (EMP1); set encrypt = true there` means that member
+still sends readable messages; they are accepted.
 
 Reasons tell where a `down` came from: `peers 2/3: <reason>` means two of
 the three assigned checkers saw the backend down (the reason is theirs),
@@ -186,7 +192,7 @@ only when stderr is a terminal and `NO_COLOR` is not set.
 | Level | What you see |
 | --- | --- |
 | `error` | Store commit failures, rejected reloads |
-| `warn` | Plugin exits, damaged store replaced, services outside the DNS zone or with mixed ports, unparsable plugin output, dropped peer messages (one line per source and reason a minute), an unreadable `[peers] secret_file` |
+| `warn` | Plugin exits, damaged store replaced, services outside the DNS zone or with mixed ports, unparsable plugin output, dropped peer messages (one line per source and reason a minute), a member sending plaintext (`EMP1`) messages while `encrypt = true` (one line per member a minute), an unreadable `[peers] secret_file` |
 | `info` | Start and stop, every backend state change with its reason, plugin stderr lines, peer members becoming live or not live, `peer … reports backend … down (…); checking now`, `backend … of … is down at 2/3 peers but up here` |
 | `debug` | The duration of every passed check, peer reports that were ignored and why, results from a member with another check definition |
 

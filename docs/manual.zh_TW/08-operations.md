@@ -73,7 +73,7 @@ api.svc.emfor  round-robin  on_all_down=open
 | `emfor_store_used_bytes`、`emfor_store_map_size_bytes` | store 使用量與 `[store] map_size` |
 | `emfor_plugin_up`、`emfor_plugin_restarts_total` | plugin 健康狀況 |
 | `emfor_peer_up{peer}` | 有 `[peers]` 時：該成員存活時為 1 |
-| `emfor_peer_messages_rejected_total{reason}` | 有 `[peers]` 時：依原因分類的丟棄訊息數：`malformed`、`auth`（密鑰錯誤）、`sender`（不是成員，或偽造的位址）、`site`、`stale`（時鐘相差超過 5 秒）、`replay` |
+| `emfor_peer_messages_rejected_total{reason}` | 有 `[peers]` 時：依原因分類的丟棄訊息數：`malformed`、`auth`（密鑰錯誤，或無法解密的訊息）、`sender`（不是成員，或偽造的位址）、`site`、`stale`（時鐘相差超過 5 秒）、`replay` |
 | `emfor_peer_notifications_total{direction}` | 有 `[peers]` 時：故障通知 `sent`（每個成員算一次）與 `received` |
 | `emfor_peer_results_total{direction}` | 有 `[peers]` 時：負責主機的檢查結果 `sent`（每個成員算一次）與 `received` |
 | `emfor_peer_disagreements` | 有 `[peers]` 時：群組投票判為 down、而本機檢查通過的 backend 數 |
@@ -84,7 +84,7 @@ api.svc.emfor  round-robin  on_all_down=open
 
 ### 聯防群組
 
-聯防群組的成員之間需要能以 UDP 連到彼此的 `[peers] listen` port（範例中為 5302），時鐘相差不能超過 5 秒（NTP）。某個成員的 `emfor_peer_up` 一直是 0 時，看兩邊的 `emfor_peer_messages_rejected_total`：`auth` 表示密鑰不同，`stale` 表示時鐘偏移，`sender` 表示 `members` 或 `listen` 不符，`site` 表示兩台主機的 `site` 不同。
+聯防群組的成員之間需要能以 UDP 連到彼此的 `[peers] listen` port（範例中為 5302），時鐘相差不能超過 5 秒（NTP）。某個成員的 `emfor_peer_up` 一直是 0 時，看兩邊的 `emfor_peer_messages_rejected_total`：`auth` 表示密鑰不同，`stale` 表示時鐘偏移，`sender` 表示 `members` 或 `listen` 不符，`site` 表示兩台主機的 `site` 不同。0.3.0 成員那邊的 `malformed` 表示它讀不了已升級成員的加密訊息：在它升級前，已升級的成員先設 `encrypt = false`（見 [`[peers]`](03-configuration.md#peers)）。警告 `peer <address> sends plaintext messages (EMP1); set encrypt = true there` 表示該成員仍送未加密的訊息；這些訊息照常接受。
 
 原因會說明 `down` 從哪裡來：`peers 2/3: <原因>` 表示三台負責主機中有兩台看到 backend down（原因是它們的）；`local: <原因>` 表示只有這台主機看到 down，投票沒有判 down；沒有前綴的原因表示沒有投票（存活成員少於三台，或沒有夠新的結果）。`emfor status` 在 daemon 那一行下面顯示群組狀態：
 
@@ -123,7 +123,7 @@ daemon 把 log 寫到 stderr：systemd 下進 journal，FreeBSD rc.d script 下�
 | 等級 | 看到什麼 |
 | --- | --- |
 | `error` | store commit 失敗、被拒絕的 reload |
-| `warn` | plugin 結束、損毀的 store 被替換、在 DNS zone 之外或 port 不一致的服務、無法解析的 plugin 輸出、被丟棄的聯防訊息（每個來源與原因每分鐘一行）、無法讀取的 `[peers] secret_file` |
+| `warn` | plugin 結束、損毀的 store 被替換、在 DNS zone 之外或 port 不一致的服務、無法解析的 plugin 輸出、被丟棄的聯防訊息（每個來源與原因每分鐘一行）、`encrypt = true` 時送明文（`EMP1`）訊息的成員（每個成員每分鐘一行）、無法讀取的 `[peers] secret_file` |
 | `info` | 啟動與停止、每次 backend 狀態變化與其 reason、plugin 的 stderr 內容、聯防成員變成存活或不存活、`peer … reports backend … down (…); checking now`、`backend … of … is down at 2/3 peers but up here` |
 | `debug` | 每次通過的檢查所花的時間、被忽略的聯防通知與原因、檢查定義不同的成員送來的結果 |
 

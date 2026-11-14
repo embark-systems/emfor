@@ -4,16 +4,25 @@
 //! tell the others, which then recheck it at once. A message never changes a
 //! backend's state by itself; every daemon decides from its own checks.
 //!
-//! One message is one datagram: `EMP1`, a 32-byte HMAC-SHA256 tag over
-//! `EMP1` and the payload, then the payload, a JSON object.
+//! One message is one datagram whose payload is a JSON object, in one of two
+//! formats. `EMP1`: the magic, a 32-byte HMAC-SHA256 tag over the magic and
+//! the payload, then the payload in plaintext. `EMP2`: the magic, a 12-byte
+//! random nonce, then the payload encrypted with ChaCha20-Poly1305 and its
+//! 16-byte tag, with the magic as additional data and a key derived from
+//! the secret with HKDF-SHA256. `[peers] encrypt` picks the format sent;
+//! both are accepted.
 
 use std::collections::{BTreeMap, HashMap};
+use std::hash::Hash;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use chacha20poly1305::aead::{Aead, Generate, Payload};
+use chacha20poly1305::{ChaCha20Poly1305, Nonce};
+use hkdf::Hkdf;
 use hmac::{Hmac, KeyInit, Mac};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
@@ -32,6 +41,16 @@ use crate::writer::WriterMsg;
 pub const MAGIC: &[u8; 4] = b"EMP1";
 const TAG_LEN: usize = 32;
 const HEADER_LEN: usize = MAGIC.len() + TAG_LEN;
+/// First four bytes of an encrypted message: magic and format version 2.
+pub const MAGIC_V2: &[u8; 4] = b"EMP2";
+const NONCE_LEN: usize = 12;
+const AEAD_TAG_LEN: usize = 16;
+/// Bytes of an `EMP2` datagram besides the payload: magic, nonce, tag.
+const OVERHEAD_V2: usize = MAGIC_V2.len() + NONCE_LEN + AEAD_TAG_LEN;
+/// Shortest `EMP2` datagram: the overhead and a payload of `{}`.
+const MIN_DATAGRAM_V2: usize = OVERHEAD_V2 + 2;
+const HKDF_SALT: &[u8] = b"emfor peers";
+const HKDF_INFO: &[u8] = b"EMP2 chacha20-poly1305";
 /// Largest datagram sent or accepted; small enough not to be fragmented.
 pub const MAX_DATAGRAM: usize = 1200;
 /// Longest `reason` of a `down` message, in bytes of UTF-8.
@@ -105,6 +124,47 @@ pub enum Outcome {
     Down(String),
 }
 
+/// The datagram format of a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// `EMP1`: authenticated, payload in plaintext.
+    Plain,
+    /// `EMP2`: payload encrypted.
+    Encrypted,
+}
+
+/// A peer secret and the `EMP2` key derived from it.
+#[derive(Clone)]
+pub struct Secret {
+    raw: Vec<u8>,
+    aead: [u8; 32],
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(..)")
+    }
+}
+
+impl Secret {
+    pub fn new(raw: Vec<u8>) -> Secret {
+        let mut aead = [0u8; 32];
+        Hkdf::<Sha256>::new(Some(HKDF_SALT), &raw)
+            .expand(HKDF_INFO, &mut aead)
+            .expect("32 bytes is far below HKDF-SHA256's limit of 255 * 32 bytes of output");
+        Secret { raw, aead }
+    }
+
+    /// The secret as read from the file.
+    pub fn raw(&self) -> &[u8] {
+        &self.raw
+    }
+
+    fn cipher(&self) -> ChaCha20Poly1305 {
+        ChaCha20Poly1305::new(&self.aead.into())
+    }
+}
+
 /// The JSON payload as sent.
 #[derive(Serialize, Deserialize)]
 struct Wire {
@@ -149,10 +209,53 @@ fn mac(key: &[u8]) -> Hmac<Sha256> {
         .expect("HMAC accepts keys of any length (RFC 2104), so new_from_slice never fails")
 }
 
-/// The datagram for `msg`, signed with `key`. A reason (of a `down` or
-/// `result` message) is cut to [`MAX_REASON_BYTES`], and further when the
-/// datagram would otherwise exceed [`MAX_DATAGRAM`].
+/// The `EMP1` datagram for `msg`, signed with `key`. A reason (of a `down`
+/// or `result` message) is cut to [`MAX_REASON_BYTES`], and further when
+/// the datagram would otherwise exceed [`MAX_DATAGRAM`].
 pub fn encode(msg: &Message, key: &[u8]) -> Vec<u8> {
+    let payload = payload_for(msg, HEADER_LEN);
+    let mut m = mac(key);
+    m.update(MAGIC);
+    m.update(&payload);
+    let tag = m.finalize().into_bytes();
+    let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
+    out.extend_from_slice(MAGIC);
+    out.extend_from_slice(&tag);
+    out.extend_from_slice(&payload);
+    out
+}
+
+/// The `EMP2` datagram for `msg`, encrypted with the key of `secret` and a
+/// nonce from the operating system's random generator. Reasons are cut as
+/// for [`encode`].
+pub fn encode_encrypted(msg: &Message, secret: &Secret) -> Vec<u8> {
+    seal(&payload_for(msg, OVERHEAD_V2), secret, &Nonce::generate())
+}
+
+/// `EMP2`, the nonce, then `payload` encrypted under `nonce`.
+fn seal(payload: &[u8], secret: &Secret, nonce: &Nonce) -> Vec<u8> {
+    let sealed = secret
+        .cipher()
+        .encrypt(
+            nonce,
+            Payload {
+                msg: payload,
+                aad: MAGIC_V2,
+            },
+        )
+        .expect(
+            "ChaCha20-Poly1305 encrypts any payload below 256 GiB, and ours is at most 1200 bytes",
+        );
+    let mut out = Vec::with_capacity(MAGIC_V2.len() + NONCE_LEN + sealed.len());
+    out.extend_from_slice(MAGIC_V2);
+    out.extend_from_slice(nonce.as_slice());
+    out.extend_from_slice(&sealed);
+    out
+}
+
+/// The JSON payload for `msg`, short enough that `overhead` more bytes fit
+/// in [`MAX_DATAGRAM`] (by cutting the reason when there is one).
+fn payload_for(msg: &Message, overhead: usize) -> Vec<u8> {
     let mut wire = Wire {
         from: msg.from.to_string(),
         site: msg.site.clone(),
@@ -203,25 +306,17 @@ pub fn encode(msg: &Message, key: &[u8]) -> Vec<u8> {
     // Names at their longest and a reason of escaped characters can still
     // overflow one datagram: shorten the reason until it fits. Each round
     // removes at least as many bytes as the payload is over.
-    while HEADER_LEN + payload.len() > MAX_DATAGRAM
+    while overhead + payload.len() > MAX_DATAGRAM
         && let Some(reason) = wire.reason.as_mut()
         && !reason.is_empty()
     {
-        let over = HEADER_LEN + payload.len() - MAX_DATAGRAM;
+        let over = overhead + payload.len() - MAX_DATAGRAM;
         let keep = truncate_utf8(reason, reason.len().saturating_sub(over)).len();
         reason.truncate(keep);
         payload = serde_json::to_vec(&wire)
             .expect("a struct of strings and integers always serializes to JSON");
     }
-    let mut m = mac(key);
-    m.update(MAGIC);
-    m.update(&payload);
-    let tag = m.finalize().into_bytes();
-    let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
-    out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&tag);
-    out.extend_from_slice(&payload);
-    out
+    payload
 }
 
 /// A service tag written as exactly 8 lowercase hex digits.
@@ -230,12 +325,18 @@ fn parse_tag(s: &str) -> Option<u32> {
     ok.then(|| u32::from_str_radix(s, 16).ok()).flatten()
 }
 
-/// Parse a datagram without checking its tag; `None` when it is malformed.
+/// Parse an `EMP1` datagram without checking its tag; `None` when it is
+/// malformed.
 fn decode(data: &[u8]) -> Option<Message> {
     if data.len() < HEADER_LEN || data.len() > MAX_DATAGRAM || &data[..4] != MAGIC {
         return None;
     }
-    let wire: Wire = serde_json::from_slice(&data[HEADER_LEN..]).ok()?;
+    parse_payload(&data[HEADER_LEN..])
+}
+
+/// Parse a JSON payload; `None` when it is malformed.
+fn parse_payload(payload: &[u8]) -> Option<Message> {
+    let wire: Wire = serde_json::from_slice(payload).ok()?;
     if wire.boot.len() != 16 || !wire.boot.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
@@ -276,11 +377,54 @@ fn decode(data: &[u8]) -> Option<Message> {
     })
 }
 
-/// Fuzzing entry point (`fuzz/fuzz_targets/peers.rs`): decode a datagram
-/// as received from the network.
+/// The JSON payload of a datagram of either format that `secret` signed
+/// (`EMP1`) or encrypted (`EMP2`); `None` otherwise. For tests and tools
+/// that read what members send.
+pub fn open_with(data: &[u8], secret: &[u8]) -> Option<Vec<u8>> {
+    let keys = Keys::new(secret.to_vec());
+    let now = Instant::now();
+    match data.get(..4) {
+        Some(m) if m == MAGIC && (HEADER_LEN..=MAX_DATAGRAM).contains(&data.len()) => keys
+            .verifies(&data[HEADER_LEN..], &data[MAGIC.len()..HEADER_LEN], now)
+            .then(|| data[HEADER_LEN..].to_vec()),
+        Some(m) if m == MAGIC_V2 && (MIN_DATAGRAM_V2..=MAX_DATAGRAM).contains(&data.len()) => {
+            keys.open(data, now)
+        }
+        _ => None,
+    }
+}
+
+/// The secret of the `peers` fuzz target and its seeds
+/// (`fuzz/seeds/peers.py`).
+#[cfg(fuzzing)]
+pub const FUZZ_SECRET: &[u8] = &[0x5a; 32];
+
+/// Fuzzing entry point (`fuzz/fuzz_targets/peers.rs`). The first byte picks
+/// what the rest is: 0, an `EMP1` datagram; 1, an `EMP2` datagram, opened
+/// with [`FUZZ_SECRET`]; 2, a payload, encrypted with [`FUZZ_SECRET`] and
+/// then received as an `EMP2` datagram, so that mutations reach the JSON
+/// parsing behind the decryption, which a mutated datagram almost never
+/// passes.
 #[cfg(fuzzing)]
 pub fn fuzz_decode(data: &[u8]) {
-    let _ = decode(data);
+    let Some((&mode, rest)) = data.split_first() else {
+        return;
+    };
+    let datagram = match mode % 3 {
+        0 => {
+            let _ = decode(rest);
+            return;
+        }
+        1 => rest.to_vec(),
+        _ => seal(
+            rest,
+            &Secret::new(FUZZ_SECRET.to_vec()),
+            &Nonce::from([0; NONCE_LEN]),
+        ),
+    };
+    if let Some(payload) = open_with(&datagram, FUZZ_SECRET) {
+        let _ = parse_payload(&payload);
+    }
 }
 
 /// Why a datagram was dropped, in the order the checks run.
@@ -325,25 +469,25 @@ impl Reject {
 /// [`ACCEPT_PREVIOUS_FOR`] after the change.
 #[derive(Debug, Clone)]
 pub struct Keys {
-    current: Vec<u8>,
-    previous: Option<(Vec<u8>, Instant)>,
+    current: Secret,
+    previous: Option<(Secret, Instant)>,
 }
 
 impl Keys {
     pub fn new(current: Vec<u8>) -> Keys {
         Keys {
-            current,
+            current: Secret::new(current),
             previous: None,
         }
     }
 
     /// The newest secret read from the file.
     pub fn current(&self) -> &[u8] {
-        &self.current
+        self.current.raw()
     }
 
-    /// The secret to sign with at `now`.
-    pub fn signing(&self, now: Instant) -> &[u8] {
+    /// The secret to sign or encrypt with at `now`.
+    pub fn signing(&self, now: Instant) -> &Secret {
         match &self.previous {
             Some((k, at)) if now.duration_since(*at) < SIGN_PREVIOUS_FOR => k,
             _ => &self.current,
@@ -353,27 +497,51 @@ impl Keys {
     /// Make `new` the current secret. Returns false when it is the current
     /// one already.
     pub fn rotate(&mut self, new: Vec<u8>, now: Instant) -> bool {
-        if new == self.current {
+        if new == self.current.raw {
             return false;
         }
-        let old = std::mem::replace(&mut self.current, new);
+        let old = std::mem::replace(&mut self.current, Secret::new(new));
         self.previous = Some((old, now));
         true
     }
 
+    /// The secrets a received message may use at `now`: the current one,
+    /// and the replaced one for [`ACCEPT_PREVIOUS_FOR`].
+    fn accepted(&self, now: Instant) -> impl Iterator<Item = &Secret> {
+        std::iter::once(&self.current).chain(
+            self.previous
+                .as_ref()
+                .filter(|(_, at)| now.duration_since(*at) < ACCEPT_PREVIOUS_FOR)
+                .map(|(k, _)| k),
+        )
+    }
+
     /// Constant-time check of `tag` over `MAGIC` and `payload`.
     fn verifies(&self, payload: &[u8], tag: &[u8], now: Instant) -> bool {
-        let check = |key: &[u8]| {
-            let mut m = mac(key);
+        self.accepted(now).any(|k| {
+            let mut m = mac(k.raw());
             m.update(MAGIC);
             m.update(payload);
             m.verify_slice(tag).is_ok()
-        };
-        check(&self.current)
-            || self
-                .previous
-                .as_ref()
-                .is_some_and(|(k, at)| now.duration_since(*at) < ACCEPT_PREVIOUS_FOR && check(k))
+        })
+    }
+
+    /// The payload of an `EMP2` datagram of a valid length, or `None` when
+    /// no accepted secret decrypts it.
+    fn open(&self, data: &[u8], now: Instant) -> Option<Vec<u8>> {
+        let nonce = Nonce::try_from(&data[MAGIC_V2.len()..MAGIC_V2.len() + NONCE_LEN]).ok()?;
+        let sealed = &data[MAGIC_V2.len() + NONCE_LEN..];
+        self.accepted(now).find_map(|k| {
+            k.cipher()
+                .decrypt(
+                    &nonce,
+                    Payload {
+                        msg: sealed,
+                        aad: MAGIC_V2,
+                    },
+                )
+                .ok()
+        })
     }
 }
 
@@ -472,7 +640,29 @@ pub struct Group {
     seq: u64,
     peers: HashMap<SocketAddr, PeerState>,
     warned: HashMap<(SocketAddr, Reject), Instant>,
+    /// Sources last warned about for sending `EMP1` while `encrypt` is on.
+    plain_warned: HashMap<SocketAddr, Instant>,
+    /// `[peers] encrypt`: send `EMP2` rather than `EMP1`.
+    encrypt: bool,
     stats: Arc<PeerStats>,
+}
+
+/// Whether a warning keyed by `key` is due: not logged in the last
+/// [`WARN_EVERY`], and `warned` has room. Records `now` for `key` when it is.
+/// Entries older than [`WARN_EVERY`] are dropped once `warned` holds
+/// [`MAX_WARN_ENTRIES`], so a flood of sources cannot grow it further.
+fn should_warn<K: Hash + Eq>(warned: &mut HashMap<K, Instant>, key: K, now: Instant) -> bool {
+    if warned.len() >= MAX_WARN_ENTRIES {
+        warned.retain(|_, at| now.duration_since(*at) < WARN_EVERY);
+    }
+    let recent = warned
+        .get(&key)
+        .is_some_and(|at| now.duration_since(*at) < WARN_EVERY);
+    if recent || warned.len() >= MAX_WARN_ENTRIES {
+        return false;
+    }
+    warned.insert(key, now);
+    true
 }
 
 impl Group {
@@ -493,6 +683,8 @@ impl Group {
             seq: 0,
             peers: HashMap::new(),
             warned: HashMap::new(),
+            plain_warned: HashMap::new(),
+            encrypt: true,
             stats,
         };
         g.set_members(members);
@@ -513,6 +705,11 @@ impl Group {
 
     pub fn set_site(&mut self, site: String) {
         self.site = site;
+    }
+
+    /// `[peers] encrypt`: the format of the next messages sent.
+    pub fn set_encrypt(&mut self, encrypt: bool) {
+        self.encrypt = encrypt;
     }
 
     /// Members other than this daemon, in config order.
@@ -540,7 +737,12 @@ impl Group {
             ts: now_ms,
             kind,
         };
-        encode(&msg, self.keys.signing(now))
+        let secret = self.keys.signing(now);
+        if self.encrypt {
+            encode_encrypted(&msg, secret)
+        } else {
+            encode(&msg, secret.raw())
+        }
     }
 
     /// Check a received datagram. An accepted message marks its sender as
@@ -553,7 +755,10 @@ impl Group {
         now: Instant,
     ) -> Result<Message, Reject> {
         match self.check(data, src, now_ms, now) {
-            Ok(msg) => {
+            Ok((msg, format)) => {
+                if format == Format::Plain && self.encrypt {
+                    self.warn_plaintext(src, now);
+                }
                 if let Some(p) = self.peers.get_mut(&msg.from) {
                     p.last = Some((msg.boot, msg.seq, msg.ts));
                     p.seen = Some(now);
@@ -579,14 +784,28 @@ impl Group {
         src: SocketAddr,
         now_ms: u64,
         now: Instant,
-    ) -> Result<Message, Reject> {
-        let msg = decode(data).ok_or(Reject::Malformed)?;
-        if !self
-            .keys
-            .verifies(&data[HEADER_LEN..], &data[MAGIC.len()..HEADER_LEN], now)
-        {
-            return Err(Reject::Auth);
-        }
+    ) -> Result<(Message, Format), Reject> {
+        let (msg, format) = match data.get(..4) {
+            Some(m) if m == MAGIC => {
+                let msg = decode(data).ok_or(Reject::Malformed)?;
+                if !self
+                    .keys
+                    .verifies(&data[HEADER_LEN..], &data[MAGIC.len()..HEADER_LEN], now)
+                {
+                    return Err(Reject::Auth);
+                }
+                (msg, Format::Plain)
+            }
+            Some(m) if m == MAGIC_V2 => {
+                if !(MIN_DATAGRAM_V2..=MAX_DATAGRAM).contains(&data.len()) {
+                    return Err(Reject::Malformed);
+                }
+                let payload = self.keys.open(data, now).ok_or(Reject::Auth)?;
+                let msg = parse_payload(&payload).ok_or(Reject::Malformed)?;
+                (msg, Format::Encrypted)
+            }
+            _ => return Err(Reject::Malformed),
+        };
         if msg.from == self.me || msg.from != src || !self.members.contains(&msg.from) {
             return Err(Reject::Sender);
         }
@@ -606,20 +825,22 @@ impl Group {
                 return Err(Reject::Replay);
             }
         }
-        Ok(msg)
+        Ok((msg, format))
+    }
+
+    /// Warn, at most once per [`WARN_EVERY`] for each source, that a member
+    /// still sends `EMP1` while this daemon encrypts.
+    fn warn_plaintext(&mut self, src: SocketAddr, now: Instant) {
+        if should_warn(&mut self.plain_warned, src, now) {
+            tracing::warn!(
+                peer = %src,
+                "peer {src} sends plaintext messages (EMP1); set encrypt = true there"
+            );
+        }
     }
 
     fn warn_rejected(&mut self, src: SocketAddr, r: Reject, now: Instant) {
-        if self.warned.len() >= MAX_WARN_ENTRIES {
-            self.warned
-                .retain(|_, at| now.duration_since(*at) < WARN_EVERY);
-        }
-        let recent = self
-            .warned
-            .get(&(src, r))
-            .is_some_and(|at| now.duration_since(*at) < WARN_EVERY);
-        if !recent && self.warned.len() < MAX_WARN_ENTRIES {
-            self.warned.insert((src, r), now);
+        if should_warn(&mut self.warned, (src, r), now) {
             tracing::warn!(
                 source = %src,
                 reason = r.as_str(),
@@ -801,6 +1022,7 @@ pub struct PeerSettings {
     pub members: Vec<SocketAddr>,
     pub secret_file: PathBuf,
     pub site: String,
+    pub encrypt: bool,
 }
 
 /// The running peer task.
@@ -827,12 +1049,13 @@ impl PeersHandle {
         }
     }
 
-    /// Apply new members, secret file and site.
+    /// Apply new members, secret file, site and `encrypt`.
     pub fn reload(&self, config: &PeersConfig, site: &str) {
         self.settings.send_replace(PeerSettings {
             members: config.members.clone(),
             secret_file: config.secret_file.clone(),
             site: site.to_string(),
+            encrypt: config.encrypt,
         });
     }
 }
@@ -882,7 +1105,7 @@ pub fn start_on(
     let quorum = Arc::new(Quorum::new(config.listen));
     quorum.set_off(services_off);
     let boot = rand::rng().random::<u64>();
-    let group = Group::new(
+    let mut group = Group::new(
         config.listen,
         site.to_string(),
         config.members.clone(),
@@ -890,10 +1113,12 @@ pub fn start_on(
         boot,
         stats.clone(),
     );
+    group.set_encrypt(config.encrypt);
     let settings = PeerSettings {
         members: config.members.clone(),
         secret_file: config.secret_file.clone(),
         site: site.to_string(),
+        encrypt: config.encrypt,
     };
     let (settings_tx, settings_rx) = watch::channel(settings);
     let (out_tx, out_rx) = mpsc::unbounded_channel();
@@ -1109,6 +1334,7 @@ async fn run(
                 group.set_members(s.members);
                 quorum.set_live(group.live_members());
                 group.set_site(s.site);
+                group.set_encrypt(s.encrypt);
                 if s.secret_file != secret_file {
                     secret_file = s.secret_file;
                     refresh_secret(&mut group, &secret_file, &mut secret_warned, Instant::now());
@@ -1286,6 +1512,15 @@ mod tests {
                 decode(&data).is_some(),
                 "the shortened message still decodes"
             );
+            let secret = Secret::new(KEY.to_vec());
+            let data = encode_encrypted(&m, &secret);
+            assert!(data.len() <= MAX_DATAGRAM, "EMP2: {} bytes", data.len());
+            assert!(
+                open_with(&data, KEY)
+                    .and_then(|p| parse_payload(&p))
+                    .is_some(),
+                "the shortened EMP2 message still decrypts and parses"
+            );
         }
     }
 
@@ -1357,7 +1592,245 @@ mod tests {
         };
         let data = encode(&m, KEY);
         assert!(data.len() <= MAX_DATAGRAM, "{} bytes", data.len());
-        assert_eq!(decode(&data), Some(m));
+        assert_eq!(decode(&data), Some(m.clone()));
+        let data = encode_encrypted(&m, &Secret::new(KEY.to_vec()));
+        assert!(data.len() <= MAX_DATAGRAM, "EMP2: {} bytes", data.len());
+        assert_eq!(open_v2(&data, KEY), Some(m));
+    }
+
+    /// The message in an `EMP2` datagram encrypted with `key`.
+    fn open_v2(data: &[u8], key: &[u8]) -> Option<Message> {
+        Keys::new(key.to_vec())
+            .open(data, Instant::now())
+            .and_then(|p| parse_payload(&p))
+    }
+
+    /// Spec peer-group "Encrypted heartbeat": every kind survives the trip,
+    /// and the payload is not readable on the wire.
+    #[test]
+    fn encrypted_round_trip() {
+        let secret = Secret::new(KEY.to_vec());
+        for kind in [
+            Kind::Heartbeat(vec![1, 0xdeadbeef]),
+            down("refused"),
+            result(Outcome::Up),
+            Kind::Unknown("assign".into()),
+        ] {
+            let m = msg(B, 0xabc, 7, 1_763_000_000_000, kind);
+            let data = encode_encrypted(&m, &secret);
+            assert_eq!(&data[..4], MAGIC_V2);
+            assert!(!data.windows(3).any(|w| w == b"dc1"), "site in plaintext");
+            assert_eq!(open_v2(&data, KEY), Some(m));
+        }
+        // A new nonce for every message.
+        let m = msg(B, 1, 1, 1, Kind::Heartbeat(Vec::new()));
+        assert_ne!(encode_encrypted(&m, &secret), encode_encrypted(&m, &secret));
+    }
+
+    /// `EMP2` bytes for a fixed secret, nonce and payload, computed apart
+    /// from this code by `crates/emfor-daemon/tests/emp2_kat.py`: a
+    /// plain-Python HKDF (RFC 5869) and ChaCha20-Poly1305 (RFC 8439), itself
+    /// checked against the RFCs' test vectors:
+    /// key = HKDF-SHA256(salt "emfor peers", ikm 32 bytes of 7,
+    /// info "EMP2 chacha20-poly1305"), nonce 01..0c, AAD "EMP2".
+    #[test]
+    fn encrypted_known_answer() {
+        let secret = Secret::new(KEY.to_vec());
+        assert_eq!(
+            hex(&secret.aead),
+            "1a8cfa78ce5c9f17376137c9bca6b8c67423e5ac4e5d4f0b23dde76d2e0d6e5c"
+        );
+        let payload = br#"{"from":"10.0.0.6:5302","site":"dc1","boot":"0000000000000001","seq":1,"ts":1763000000000,"kind":"heartbeat"}"#;
+        let nonce = Nonce::from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        let data = seal(payload, &secret, &nonce);
+        assert_eq!(
+            hex(&data),
+            "454d50320102030405060708090a0b0c39106b94d7eceaad0107bea6d91c09c5e1a12774471db156617651d0910ffdb4d8a720346df809e69b5c6de9736f8985eccdfe454f6199f8fe5a600538f728575a067ca2018869b008b196b0526fd0b74119683f48abc64bfef0e2b589b740fa74add1e9a84795dc9ff89f18f5110df7d5f677fcab9f39121be20ab015"
+        );
+        let mut g = group(Instant::now());
+        assert!(
+            g.accept(&data, addr(B), 1_763_000_000_000, Instant::now())
+                .is_ok()
+        );
+    }
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// Spec peer-group "acceptance checks", the `EMP2` rows.
+    #[test]
+    fn encrypted_acceptance_checks() {
+        let now = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let secret = Secret::new(KEY.to_vec());
+        let hb = |seq| encode_encrypted(&msg(B, 1, seq, t, Kind::Heartbeat(Vec::new())), &secret);
+        let flip = |mut d: Vec<u8>, i: usize| {
+            d[i] ^= 1;
+            d
+        };
+        let sized = |n: usize| {
+            let mut d = MAGIC_V2.to_vec();
+            d.resize(n, 0x41);
+            d
+        };
+        let nonce = Nonce::from([9; 12]);
+        let not_json = seal(b"not json at all", &secret, &nonce);
+        let no_aad = {
+            let sealed = secret
+                .cipher()
+                .encrypt(&nonce, br#"{"from":"10.0.0.6:5302"}"#.as_ref())
+                .expect("encrypting a short payload works");
+            [MAGIC_V2.as_slice(), nonce.as_slice(), &sealed].concat()
+        };
+        let mut emp3 = hb(1);
+        emp3[3] = b'3';
+        let cases: Vec<(&str, Vec<u8>, Result<(), Reject>)> = vec![
+            ("valid", hb(1), Ok(())),
+            ("33 bytes", sized(33), Err(Reject::Malformed)),
+            ("34 bytes of garbage", sized(34), Err(Reject::Auth)),
+            ("1200 bytes of garbage", sized(1200), Err(Reject::Auth)),
+            ("1201 bytes", sized(1201), Err(Reject::Malformed)),
+            ("nonce changed", flip(hb(1), 4), Err(Reject::Auth)),
+            ("ciphertext changed", flip(hb(1), 20), Err(Reject::Auth)),
+            (
+                "tag changed",
+                {
+                    let d = hb(1);
+                    let last = d.len() - 1;
+                    flip(d, last)
+                },
+                Err(Reject::Auth),
+            ),
+            ("sealed without the magic as AAD", no_aad, Err(Reject::Auth)),
+            (
+                "other secret",
+                encode_encrypted(
+                    &msg(B, 1, 1, t, Kind::Heartbeat(Vec::new())),
+                    &Secret::new(vec![8u8; 32]),
+                ),
+                Err(Reject::Auth),
+            ),
+            ("decrypts to non-JSON", not_json, Err(Reject::Malformed)),
+            ("EMP3", emp3, Err(Reject::Malformed)),
+        ];
+        for (name, data, want) in cases {
+            let mut g = group(now);
+            assert_eq!(g.accept(&data, addr(B), t, now).map(|_| ()), want, "{name}");
+        }
+    }
+
+    /// The replaced secret is accepted for 120 seconds in `EMP2` too.
+    #[test]
+    fn previous_secret_decrypts_for_120_seconds() {
+        let start = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let mut g = group(start);
+        assert!(g.keys.rotate(vec![9u8; 32], start));
+        let old = Secret::new(KEY.to_vec());
+        let hb =
+            |seq, s: &Secret| encode_encrypted(&msg(B, 1, seq, t, Kind::Heartbeat(Vec::new())), s);
+        for (secs, seq) in [(30, 1), (90, 2)] {
+            let at = start + Duration::from_secs(secs);
+            assert!(g.accept(&hb(seq, &old), addr(B), t, at).is_ok(), "{secs}s");
+        }
+        let at130 = start + Duration::from_secs(130);
+        assert_eq!(
+            g.accept(&hb(3, &old), addr(B), t, at130).map(|_| ()),
+            Err(Reject::Auth)
+        );
+        assert!(
+            g.accept(&hb(4, &Secret::new(vec![9u8; 32])), addr(B), t, at130)
+                .is_ok()
+        );
+    }
+
+    /// Every seed of the `peers` fuzz target (`fuzz/seeds/peers.py`) is a
+    /// valid message in the form its first byte picks, so the fuzzer starts
+    /// past the tag and the decryption.
+    #[test]
+    fn fuzz_seeds_are_valid_messages() {
+        let secret = [0x5au8; 32];
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/seeds/peers");
+        let mut seen = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("fuzz/seeds/peers exists") {
+            let path = entry.expect("the seed directory can be listed").path();
+            let data = std::fs::read(&path).expect("a seed can be read");
+            let (mode, rest) = data.split_first().expect("a seed is not empty");
+            let payload = match mode {
+                0 => {
+                    assert!(decode(rest).is_some(), "{}", path.display());
+                    open_with(rest, &secret)
+                }
+                1 => open_with(rest, &secret),
+                _ => Some(rest.to_vec()),
+            };
+            assert!(
+                payload.and_then(|p| parse_payload(&p)).is_some(),
+                "{}",
+                path.display()
+            );
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                seen.push(name.to_string());
+            }
+        }
+        for kind in ["heartbeat", "down", "result"] {
+            for form in ["emp1", "emp2", "payload"] {
+                let name = format!("{kind}-{form}");
+                assert!(seen.contains(&name), "seed {name} is missing");
+            }
+        }
+    }
+
+    /// `encrypt` picks the format sent.
+    #[test]
+    fn encrypt_picks_the_format_sent() {
+        let now = Instant::now();
+        let mut g = group(now);
+        assert_eq!(
+            &g.encode(Kind::Heartbeat(Vec::new()), 1, now)[..4],
+            MAGIC_V2
+        );
+        g.set_encrypt(false);
+        let data = g.encode(Kind::Heartbeat(Vec::new()), 1, now);
+        assert_eq!(&data[..4], MAGIC);
+        assert!(decode(&data).is_some());
+    }
+
+    /// Spec peer-group "Mixed formats during an upgrade": `EMP1` is still
+    /// accepted while encrypting, with one warning a minute per source.
+    #[test]
+    #[tracing_test::traced_test]
+    fn plaintext_accepted_and_warned_once_a_minute() {
+        let start = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let mut g = group(start);
+        for (i, s) in [0u64, 10, 59, 61].into_iter().enumerate() {
+            let data = encode(
+                &msg(B, 1, i as u64 + 1, t, Kind::Heartbeat(Vec::new())),
+                KEY,
+            );
+            assert!(
+                g.accept(&data, addr(B), t, start + Duration::from_secs(s))
+                    .is_ok()
+            );
+        }
+        g.set_encrypt(false);
+        let data = encode(&msg(B, 1, 9, t, Kind::Heartbeat(Vec::new())), KEY);
+        assert!(
+            g.accept(&data, addr(B), t, start + Duration::from_secs(200))
+                .is_ok()
+        );
+        logs_assert(|lines: &[&str]| {
+            match lines
+                .iter()
+                .filter(|l| l.contains("sends plaintext messages (EMP1)"))
+                .count()
+            {
+                2 => Ok(()),
+                n => Err(format!("{n} warnings")),
+            }
+        });
     }
 
     /// Spec peer-group "Kept tags follow the latest heartbeat": only
@@ -1607,13 +2080,13 @@ mod tests {
             t,
             start + Duration::from_secs(59),
         );
-        assert!(Keys::new(KEY.to_vec()).verifies(&mine[HEADER_LEN..], &mine[4..HEADER_LEN], start));
+        assert!(Keys::new(KEY.to_vec()).open(&mine, start).is_some());
         let mine = a.encode(
             Kind::Heartbeat(Vec::new()),
             t,
             start + Duration::from_secs(60),
         );
-        assert!(Keys::new(new).verifies(&mine[HEADER_LEN..], &mine[4..HEADER_LEN], start));
+        assert!(Keys::new(new).open(&mine, start).is_some());
     }
 
     #[test]
@@ -1738,6 +2211,7 @@ mod tests {
             listen: me,
             members: vec![a, b],
             secret_file: path.clone(),
+            encrypt: true,
         };
         let ha = start_on(
             sa,
@@ -1792,6 +2266,7 @@ mod tests {
                 listen: ha.listen,
                 members: vec![ha.listen, b, c],
                 secret_file: path,
+                encrypt: true,
             },
             "dc1",
         );
@@ -1801,8 +2276,11 @@ mod tests {
             .expect("c receives a heartbeat within 2s")
             .expect("receive works");
         assert_eq!(from, ha.listen);
+        assert_eq!(&buf[..4], MAGIC_V2, "encrypt is on by default");
         assert!(matches!(
-            decode(&buf[..n]),
+            Keys::new(vec![3u8; 32])
+                .open(&buf[..n], Instant::now())
+                .and_then(|p| parse_payload(&p)),
             Some(Message {
                 kind: Kind::Heartbeat(_),
                 ..
@@ -1829,6 +2307,7 @@ mod tests {
                 listen: hb.listen,
                 members: vec![a, hb.listen],
                 secret_file: path.clone(),
+                encrypt: true,
             },
             "dc1",
         );
@@ -1838,6 +2317,7 @@ mod tests {
                 listen: a,
                 members: vec![a, hb.listen],
                 secret_file: path,
+                encrypt: true,
             },
             "dc1",
             vec![3u8; 32],

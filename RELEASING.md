@@ -101,7 +101,8 @@ needs `cargo-fuzz` and a nightly toolchain (`cargo install cargo-fuzz`,
 ```sh
 cd fuzz
 cargo +nightly fuzz run -O plugins corpus/plugins seeds/plugins -- -len_control=0 -max_total_time=600
-for t in peers metrics plugin_line config; do
+cargo +nightly fuzz run -O peers corpus/peers seeds/peers -- -max_total_time=600
+for t in metrics plugin_line config; do
   cargo +nightly fuzz run -O "$t" -- -max_total_time=600 || break
 done
 cd ..

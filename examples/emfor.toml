@@ -51,7 +51,9 @@ ttl = "1s"                   # whole seconds, 0s to 3600s
 # to each other over UDP (see docs/manual/03-configuration.md). Every member
 # lists the same members, including itself; listen is this host's entry.
 # The secret file needs at least 32 bytes and mode 0600 or 0640.
-# Changing listen requires a restart; members and secret_file reload.
+# Messages are encrypted with a key derived from the secret; set
+# encrypt = false while some members still run 0.3.0, which cannot read them.
+# Changing listen requires a restart; members, secret_file and encrypt reload.
 # A service with peers = false (below) stays out of the group; the host
 # tells the other members, which then leave it out of that service's
 # assigned checkers (every member needs this version for that).
@@ -59,6 +61,7 @@ ttl = "1s"                   # whole seconds, 0s to 3600s
 # listen = "10.0.0.5:5302"
 # members = ["10.0.0.5:5302", "10.0.0.6:5302", "10.0.0.7:5302"]
 # secret_file = "/etc/emfor/peers.key"
+# encrypt = true
 
 # Built-in defaults, shown here explicitly. Any service can override them.
 [defaults]

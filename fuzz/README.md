@@ -9,14 +9,19 @@ cargo install cargo-fuzz
 rustup toolchain install nightly
 cd fuzz
 cargo +nightly fuzz run -O plugins corpus/plugins seeds/plugins -- -len_control=0 -max_total_time=600
-cargo +nightly fuzz run -O peers -- -max_total_time=600
+cargo +nightly fuzz run -O peers corpus/peers seeds/peers -- -max_total_time=600
 ```
 
 `seeds/plugins/` holds well-formed answers for each plugin, written by
 `seeds/plugins.py`; the first directory is where the fuzzer keeps what it
-finds. Without the seeds the fuzzer rarely gets past a length field and an
-identifier that must match, and without `-len_control=0` it cuts the seeds
-short at first.
+finds. `seeds/peers/` holds a `heartbeat`, a `down` and a `result` message
+as `EMP1` and `EMP2` datagrams and as bare payloads, written by
+`seeds/peers.py`; the first byte of a `peers` input picks which (see
+`peers::fuzz_decode`). A mutated `EMP2` datagram almost never passes the
+decryption, so bare payloads are encrypted by the target itself to reach
+the JSON parsing behind it. Without the seeds the fuzzer rarely gets past
+a length field and an identifier that must match, and without
+`-len_control=0` it cuts the seeds short at first.
 
 All plugins share one run, so each gets about a tenth of it.
 `EMFOR_FUZZ_PLUGIN=<name>` gives every input to that plugin instead; pass
@@ -32,7 +37,7 @@ seeds/plugins/*`.
 | Target | Input |
 | --- | --- |
 | `plugins` | What a backend answers to an `emfor-check` plugin: redis, ldap, dns, radius, sip, diameter, smtp, amqp, mongodb and grpc, each with a few sets of options |
-| `peers` | A datagram from another member of a peer group |
+| `peers` | A datagram from another member of a peer group, `EMP1` or `EMP2`, or a payload to encrypt as `EMP2` |
 | `metrics` | A request to the metrics listener |
 | `plugin_line` | A line a plugin writes to stdout |
 | `config` | An `emfor.toml` |

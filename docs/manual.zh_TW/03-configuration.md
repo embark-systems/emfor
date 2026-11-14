@@ -88,11 +88,14 @@ secret_file = "/etc/emfor/peers.key"
 | --- | --- | --- |
 | `listen` | 必填 | 這個 daemon 在群組中的 UDP 位址，必須是 `members` 之一。要寫具體位址，不能是 `0.0.0.0` 或 `::`；其他成員會檢查訊息是否來自這個位址。慣用的 port 是 5302。 |
 | `members` | 必填 | 每個成員的 `listen`，包含這個 daemon 自己：2 到 64 個位址，不可重複，和 `listen` 一樣全是 IPv4 或全是 IPv6。同一個機房的每台主機可以用同一份清單。 |
-| `secret_file` | 必填 | 共用密鑰的絕對路徑，用來簽署每則訊息（HMAC-SHA256）：去掉一個結尾換行後至少 32 bytes，其他使用者不能讀取（`chmod 600` 或 `640`）。 |
+| `secret_file` | 必填 | 共用密鑰的絕對路徑，用來驗證並加密每則訊息：去掉一個結尾換行後至少 32 bytes，其他使用者不能讀取（`chmod 600` 或 `640`）。 |
+| `encrypt` | `true` | `true` 時每則訊息都加密送出（`EMP2`：ChaCha20-Poly1305，金鑰由密鑰導出）；`false` 時只簽署（`EMP1`：HMAC-SHA256），網路上看得到 backend 名稱、位址與原因。兩種格式都一律接受；`true` 時，對仍送 `EMP1` 的每個成員，daemon 每分鐘記一行警告。 |
 
 只有當某個服務在兩邊的檢查定義相同時，成員之間才會分享該服務的回報：相同的 `check`、`check_options` 與 `timeout`。其他設定（`interval`、`rise`、`fall`、backend 清單）可以不同。
 
 密鑰檔每秒重新讀取一次。要更換密鑰時，在一分鐘內把新密鑰寫到每台主機：主機自己的檔案改變後，仍用舊密鑰簽署 60 秒、接受舊密鑰 120 秒，所以期間不會丟失訊息。和接收端時鐘相差超過 5 秒的訊息會被丟棄，所以要讓主機時鐘保持同步（NTP）。
+
+加密是這個版本新增的。0.3.0 的成員只送、只收 `EMP1`，會丟棄加密的訊息（算在 `malformed`），所以升級群組時，每台主機升級時先設 `encrypt = false`；所有成員都升級後，刪掉這一行（或設 `encrypt = true`），再讓每個 daemon reload。加密沒有前向保密：日後取得密鑰的人可以讀出先前錄下的訊息。請照上面的方式定期更換密鑰，並讓密鑰檔只有 daemon 能讀。
 
 ## [defaults]
 
@@ -210,5 +213,5 @@ services."api.svc.emfor".timeout: timeout must not exceed interval
 | `[store]` 中的任何設定 | 拒絕；需要重新啟動。 |
 | `[dns] listen`、新增或移除 `[dns]` | 拒絕（`dns listen settings require restart`）。 |
 | `[metrics] listen`、新增或移除 `[metrics]` | 拒絕（`metrics listen settings require restart`）。 |
-| `[peers] members`、`[peers] secret_file` | 套用；新加入的成員從不存活開始。 |
+| `[peers] members`、`[peers] secret_file`、`[peers] encrypt` | 套用；新加入的成員從不存活開始。 |
 | `[peers] listen`、新增或移除 `[peers]` | 拒絕（`peers listen settings require restart`）。 |

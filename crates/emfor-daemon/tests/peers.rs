@@ -9,7 +9,7 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use assert_cmd::cargo::cargo_bin;
-use emfor_daemon::peers::{Kind, Message, encode};
+use emfor_daemon::peers::{Kind, Message, encode, open_with};
 use nix::sys::signal::Signal;
 
 mod common;
@@ -46,6 +46,13 @@ impl Member {
 /// The secret every test member uses, as written to its file.
 const SECRET: &str = "0123456789abcdef0123456789abcdef\n";
 
+/// The JSON payload of a datagram a member sent, in either format.
+fn payload(data: &[u8]) -> serde_json::Value {
+    let json = open_with(data, SECRET.trim_end().as_bytes())
+        .expect("the datagram is signed or encrypted with the test secret");
+    serde_json::from_slice(&json).expect("the payload is JSON")
+}
+
 /// A secret file with mode 0600 in `dir`.
 fn secret(dir: &Path) -> std::path::PathBuf {
     let path = dir.join("peers.key");
@@ -65,9 +72,22 @@ fn config(
     backend: SocketAddr,
     service: &str,
 ) -> String {
+    config_peers(dir, metrics, listen, members, backend, service, "")
+}
+
+/// [`config`] with `peers_extra` added to the `[peers]` table.
+fn config_peers(
+    dir: &Path,
+    metrics: SocketAddr,
+    listen: SocketAddr,
+    members: &[SocketAddr],
+    backend: SocketAddr,
+    service: &str,
+    peers_extra: &str,
+) -> String {
     let members: Vec<String> = members.iter().map(|m| format!("\"{m}\"")).collect();
     format!(
-        "site = \"dc1\"\n\n[store]\npath = \"{}\"\nmap_size = \"4MiB\"\n\n[metrics]\nlisten = [\"{metrics}\"]\n\n[peers]\nlisten = \"{listen}\"\nmembers = [{}]\nsecret_file = \"{}\"\n\n[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"{backend}\"]\n{service}",
+        "site = \"dc1\"\n\n[store]\npath = \"{}\"\nmap_size = \"4MiB\"\n\n[metrics]\nlisten = [\"{metrics}\"]\n\n[peers]\nlisten = \"{listen}\"\nmembers = [{}]\nsecret_file = \"{}\"\n{peers_extra}\n[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"{backend}\"]\n{service}",
         dir.join("state.mdb").display(),
         members.join(", "),
         secret(dir).display(),
@@ -247,8 +267,8 @@ fn member_stops_and_member_added_on_reload() {
         .recv_from(&mut buf)
         .expect("C receives a heartbeat within 3s");
     assert_eq!(from, a);
-    assert_eq!(&buf[..4], b"EMP1");
-    assert!(String::from_utf8_lossy(&buf[36..n]).contains("\"kind\":\"heartbeat\""));
+    assert_eq!(&buf[..4], b"EMP2");
+    assert_eq!(payload(&buf[..n])["kind"], "heartbeat");
 }
 
 /// Service-config "Peers listen change requires restart".
@@ -829,9 +849,7 @@ fn next_heartbeat_off(socket: &UdpSocket) -> serde_json::Value {
         let n = socket
             .recv(&mut buf)
             .expect("a heartbeat arrives within the timeout");
-        // EMP1 and the 32-byte tag, then the JSON payload.
-        let payload: serde_json::Value =
-            serde_json::from_slice(&buf[36..n]).expect("the payload is JSON");
+        let payload = payload(&buf[..n]);
         if payload["kind"] == "heartbeat" {
             return payload["off"].clone();
         }
@@ -909,4 +927,108 @@ fn more_services_left_out_than_fit() {
     // Give a second warning time to show up.
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(warnings(&d), 1, "{}", d.log());
+}
+
+/// The next datagram `socket` receives from a member.
+fn next_datagram(socket: &UdpSocket) -> Vec<u8> {
+    let mut buf = [0u8; 1500];
+    let n = socket
+        .recv(&mut buf)
+        .expect("a datagram arrives within the timeout");
+    buf[..n].to_vec()
+}
+
+/// Spec peer-group "Encrypted heartbeat": by default heartbeats are `EMP2`,
+/// and the site cannot be read on the wire.
+#[test]
+fn heartbeats_are_encrypted_by_default() {
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
+    let backend = held.local_addr().expect("the backend has an address");
+    let other =
+        sockets(|| UdpSocket::bind("127.0.0.1:0")).expect("the other member's address is free");
+    other
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("a read timeout can be set");
+    let peer = other.local_addr().expect("the other member has an address");
+    let a = free_udp();
+    let _d = spawn(|dir, m| config(dir, m, a, &[a, peer], backend, ""));
+    let data = next_datagram(&other);
+    assert_eq!(&data[..4], b"EMP2");
+    assert!(!data.windows(3).any(|w| w == b"dc1"), "site in plaintext");
+    assert_eq!(payload(&data)["kind"], "heartbeat");
+    assert_eq!(payload(&data)["site"], "dc1");
+}
+
+/// Two members that both set `encrypt = true` read each other's `EMP2`
+/// messages: both are live, none is rejected, and neither warns about
+/// plaintext.
+#[test]
+fn encrypting_members_are_live() {
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
+    let backend = held.local_addr().expect("the backend has an address");
+    let (a, b) = (free_udp(), free_udp());
+    let encrypt = "encrypt = true\n";
+    let da = spawn(|dir, m| config_peers(dir, m, a, &[a, b], backend, "", encrypt));
+    let db = spawn(|dir, m| config_peers(dir, m, b, &[a, b], backend, "", encrypt));
+    for d in [&da, &db] {
+        d.wait_log(HEALTHY);
+    }
+    wait_within("both members live", Duration::from_secs(5), || {
+        da.has_line(&format!("emfor_peer_up{{peer=\"{b}\"}} 1"))
+            && db.has_line(&format!("emfor_peer_up{{peer=\"{a}\"}} 1"))
+    });
+    for d in [&da, &db] {
+        for reason in ["malformed", "auth"] {
+            assert!(
+                d.has_line(&format!(
+                    "emfor_peer_messages_rejected_total{{reason=\"{reason}\"}} 0"
+                )),
+                "{reason} rejections"
+            );
+        }
+        assert!(!d.log().contains("sends plaintext messages"));
+    }
+}
+
+/// Spec peer-group "Mixed formats during an upgrade": A encrypts, B does
+/// not; both stay live and A warns that B sends plaintext.
+#[test]
+fn mixed_formats_during_an_upgrade() {
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
+    let backend = held.local_addr().expect("the backend has an address");
+    let (a, b) = (free_udp(), free_udp());
+    let da = spawn(|dir, m| config(dir, m, a, &[a, b], backend, ""));
+    let db = spawn(|dir, m| config_peers(dir, m, b, &[a, b], backend, "", "encrypt = false\n"));
+    for d in [&da, &db] {
+        d.wait_log(HEALTHY);
+    }
+    wait_within("both members live", Duration::from_secs(5), || {
+        da.has_line(&format!("emfor_peer_up{{peer=\"{b}\"}} 1"))
+            && db.has_line(&format!("emfor_peer_up{{peer=\"{a}\"}} 1"))
+    });
+    da.wait_log(&format!("peer {b} sends plaintext messages (EMP1)"));
+    assert!(!db.log().contains("sends plaintext messages"));
+}
+
+/// Spec peer-group "Peer listen requires restart": `encrypt` changes on
+/// reload, from the next message sent.
+#[test]
+fn encrypt_follows_reloads() {
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
+    let backend = held.local_addr().expect("the backend has an address");
+    let other =
+        sockets(|| UdpSocket::bind("127.0.0.1:0")).expect("the other member's address is free");
+    other
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("a read timeout can be set");
+    let peer = other.local_addr().expect("the other member has an address");
+    let a = free_udp();
+    let d = spawn(|dir, m| config_peers(dir, m, a, &[a, peer], backend, "", "encrypt = false\n"));
+    assert_eq!(&next_datagram(&other)[..4], b"EMP1");
+    d.write_whole_config(&config(d.dir.path(), d.metrics, a, &[a, peer], backend, ""));
+    d.signal(Signal::SIGHUP);
+    d.wait_log("config reloaded");
+    wait_within("EMP2 after the reload", Duration::from_secs(3), || {
+        next_datagram(&other)[..4] == *b"EMP2"
+    });
 }

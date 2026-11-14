@@ -210,7 +210,7 @@ The server answers only `GET /metrics` (a query string is ignored): other paths 
 | `emfor_plugin_up` | gauge | `plugin` | 1 while the plugin runs and has answered the handshake, 0 while it is down or restarting; only with `[plugins]` |
 | `emfor_plugin_restarts_total` | counter | `plugin` | Times the plugin was started again after it exited; from 0 when the plugin is started for a config |
 | `emfor_peer_up` | gauge | `peer` | With `[peers]`: one per other member, 1 while a message from it was accepted in the last 3 seconds; a member removed on reload loses its series |
-| `emfor_peer_messages_rejected_total` | counter | `reason` | With `[peers]`: dropped peer messages by the first check they failed: `malformed`, `auth`, `sender`, `site`, `stale`, `replay`; all six from 0 |
+| `emfor_peer_messages_rejected_total` | counter | `reason` | With `[peers]`: dropped peer messages by the first check they failed: `malformed`, `auth` (wrong secret, or a message that does not decrypt), `sender`, `site`, `stale`, `replay`; all six from 0 |
 | `emfor_peer_notifications_total` | counter | `direction` | With `[peers]`: backend failure reports `sent` (one per receiving member) and `received` (accepted, whether acted on or not) |
 | `emfor_peer_results_total` | counter | `direction` | With `[peers]`: check results of assigned checkers `sent` (one per receiving member) and `received` (accepted, whether counted or not) |
 | `emfor_peer_disagreements` | gauge | | With `[peers]`: backends the group votes down while this daemon's own check passes |
@@ -245,6 +245,8 @@ The daemons of one site can pass backend failures on to each other and, with thr
 
 3. Allow UDP on port 5302 between the members, and keep their clocks in sync (NTP): messages more than 5 seconds off are dropped.
 4. Restart each daemon (adding `[peers]` needs a restart). At start it logs `peer group on <listen> with <n> other members`, and `peer <address> is live` as the others come up. Hosts not yet configured just get no reports; nothing else changes for them.
+
+Messages are encrypted with a key derived from the secret (`encrypt = true`, the default). Members running 0.3.0 cannot read them, so while some members still run 0.3.0, set `encrypt = false` on the upgraded ones (see [`[peers]`](../manual/03-configuration.md#peers)).
 
 With three or more live members, each backend has three assigned checkers (chosen per backend): they check it every `interval` and send their results to the others. The other members check it themselves at least every fifth `interval`, and every `interval` while fewer than two assigned checkers agree or while their own check fails, so a backend gets about `3 + (N − 3) ÷ 5` checks per `interval` from N members instead of N (see [Peer groups](../manual/01-concepts.md#peer-groups)). With fewer than three live members every member checks every backend every `interval`, and a member that sets `peers = false` on a service checks that service's backends itself every `interval` while the others choose the assigned checkers among the rest. The result messages go to every member, so each host sends and receives about `3 × backends ÷ interval` result messages a second (estimated: 1000 backends at a 2-second interval are about 1500 messages and 375 KB a second, whatever the group size). Peer groups are new in 0.3.0, and 0.2.0 refuses a config with `[peers]`, so every member of a group runs a version that votes.
 

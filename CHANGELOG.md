@@ -9,7 +9,24 @@ fail every lookup on a version 2 store with `INCOMPATIBLE`. Upgrade the
 clients on a host before the daemon (see
 [Store format version](docs/manual/06-clients.md#store-format-version)).
 
+**Peer messages are encrypted by default.** Members running 0.3.0 cannot
+read them and drop them as `malformed`. To upgrade a peer group, set
+`encrypt = false` in `[peers]` on each host as it is upgraded; once every
+member runs this release, remove the line and reload each daemon.
+
 ### Daemon
+
+- Peer group messages are encrypted (`EMP2`: ChaCha20-Poly1305 with a key
+  derived from `secret_file` by HKDF-SHA256 and a random nonce per
+  message), so backend names, addresses and reasons no longer travel in
+  the clear. New `[peers] encrypt` (default `true`, applied on reload):
+  `false` sends the signed plaintext `EMP1` of 0.3.0. Both formats are
+  accepted either way; with `encrypt = true` the daemon warns once a
+  minute per member that still sends `EMP1`. A message that does not
+  decrypt counts as `auth` in `emfor_peer_messages_rejected_total`.
+  Secret rotation works as before. There is no forward secrecy: whoever
+  later gets the secret can read recorded messages, so rotate it
+  regularly. See [`[peers]`](docs/manual/03-configuration.md#peers).
 
 - Backup backends: a backend table takes `backup = true`. Backups are
   used only while no other backend passes its checks: clients and the DNS

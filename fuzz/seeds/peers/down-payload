@@ -1,0 +1,1 @@
+{"from":"10.0.0.6:5302","site":"dc1","boot":"0000000000000001","seq":2,"ts":1763000000000,"kind":"down","service":"api.svc.emfor","digest":"0123456789abcdef0123456789abcdef","backend":"10.0.0.11:8080","reason":"connect: refused"}

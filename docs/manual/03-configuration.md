@@ -118,7 +118,8 @@ secret_file = "/etc/emfor/peers.key"
 | --- | --- | --- |
 | `listen` | required | This daemon's UDP address in the group, one of `members`. A specific address, not `0.0.0.0` or `::`; other members check that messages come from it. 5302 is the usual port. |
 | `members` | required | Every member's `listen`, this daemon included: 2 to 64 addresses, no repeats, all IPv4 or all IPv6 like `listen`. The same list can go on every host of the site. |
-| `secret_file` | required | Absolute path to the shared secret that signs every message (HMAC-SHA256): at least 32 bytes after one trailing line feed is removed, not readable by other users (`chmod 600` or `640`). |
+| `secret_file` | required | Absolute path to the shared secret that authenticates and encrypts every message: at least 32 bytes after one trailing line feed is removed, not readable by other users (`chmod 600` or `640`). |
+| `encrypt` | `true` | `true` sends every message encrypted (`EMP2`: ChaCha20-Poly1305 with a key derived from the secret); `false` sends them only signed (`EMP1`: HMAC-SHA256), so backend names, addresses and reasons can be read on the network. Both are accepted either way; with `true` the daemon logs a warning, once a minute per member, for each member that still sends `EMP1`. |
 
 Members only share reports for a service when its check is defined the
 same way on both: the same `check`, `check_options` and `timeout`. Other
@@ -129,6 +130,15 @@ new one on every host within a minute of each other: after its own file
 changed, a host still signs with the previous secret for 60 seconds and
 accepts it for 120 seconds, so no message is dropped meanwhile. Messages more than 5 seconds off the
 receiver's clock are dropped, so keep the hosts' clocks in sync (NTP).
+
+Encryption is new in this release. Members running 0.3.0 send and accept
+only `EMP1` and drop encrypted messages (counted as `malformed`), so to
+upgrade a group, set `encrypt = false` on each host as it is upgraded;
+once every member runs this release, remove the line (or set
+`encrypt = true`) and reload each daemon. The encryption has no forward
+secrecy: whoever later gets the secret can read messages recorded before.
+Rotate the secret regularly, as above, and keep the file readable only by
+the daemon.
 
 ## [defaults]
 
@@ -261,5 +271,5 @@ error and keeps running the old config.
 | Anything in `[store]` | Rejected; needs a restart. |
 | `[dns] listen`, adding or removing `[dns]` | Rejected (`dns listen settings require restart`). |
 | `[metrics] listen`, adding or removing `[metrics]` | Rejected (`metrics listen settings require restart`). |
-| `[peers] members`, `[peers] secret_file` | Applied; added members start as not live. |
+| `[peers] members`, `[peers] secret_file`, `[peers] encrypt` | Applied; added members start as not live. |
 | `[peers] listen`, adding or removing `[peers]` | Rejected (`peers listen settings require restart`). |

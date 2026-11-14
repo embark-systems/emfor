@@ -167,6 +167,8 @@ pub struct PeersConfig {
     /// Every member, this daemon included, in config order.
     pub members: Vec<SocketAddr>,
     pub secret_file: PathBuf,
+    /// `encrypt`: send `EMP2` (encrypted) rather than `EMP1` messages.
+    pub encrypt: bool,
 }
 
 impl PeersConfig {
@@ -808,7 +810,15 @@ impl Validator {
     fn peers(&mut self, root: &toml::Table) -> Option<PeersConfig> {
         let t = self.table(root, "peers")?;
         let before = self.errors.len();
-        self.unknown_keys(t, "peers", &["listen", "members", "secret_file"]);
+        self.unknown_keys(t, "peers", &["listen", "members", "secret_file", "encrypt"]);
+        let encrypt = match t.get("encrypt") {
+            None => true,
+            Some(toml::Value::Boolean(b)) => *b,
+            Some(_) => {
+                self.err("peers.encrypt", "encrypt must be true or false");
+                true
+            }
+        };
         let listen = match t.get("listen") {
             None => {
                 self.err("peers.listen", "missing: this daemon's peer address");
@@ -896,6 +906,7 @@ impl Validator {
             listen: listen?,
             members,
             secret_file: secret_file?,
+            encrypt,
         })
     }
 
@@ -1530,6 +1541,15 @@ backends = ["10.0.0.1:80"]
             (
                 peers_conf(
                     site,
+                    &format!("listen = \"10.0.0.5:5302\"\n{m2}encrypt = \"yes\"\n"),
+                    &key,
+                ),
+                "peers.encrypt",
+                "encrypt must be true or false",
+            ),
+            (
+                peers_conf(
+                    site,
                     "listen = \"10.0.0.5:5302\"\nmembers = [\"10.0.0.5:5302\", \"[2001:db8::6]:5302\"]\n",
                     &key,
                 ),
@@ -1563,7 +1583,16 @@ backends = ["10.0.0.1:80"]
             &format!("listen = \"10.0.0.5:5302\"\n{m2}"),
             &exact,
         ));
-        assert!(c.peers.is_some());
+        assert!(
+            c.peers.as_ref().is_some_and(|p| p.encrypt),
+            "encrypt defaults to true"
+        );
+        let c = parse_ok(&peers_conf(
+            site,
+            &format!("listen = \"10.0.0.5:5302\"\n{m2}encrypt = false\n"),
+            &key,
+        ));
+        assert!(c.peers.as_ref().is_some_and(|p| !p.encrypt));
         // Reported together with other errors.
         let e = parse_err(&format!(
             "{}interval = \"50ms\"\n",
