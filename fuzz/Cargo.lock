@@ -636,7 +636,6 @@ name = "emfor-format"
 version = "0.3.0"
 dependencies = [
  "serde",
- "serde_json",
 ]
 
 [[package]]
