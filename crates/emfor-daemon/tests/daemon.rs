@@ -1,188 +1,28 @@
 //! End-to-end tests: run the `emfor` binary and read its LMDB store.
 
-use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::cargo_bin;
-use emfor_format::{HealthState, ServiceHistory, ServiceRecord};
+use emfor_format::{HealthState, ServiceHistory};
 use heed::types::Str;
-use heed::{Database, Env, EnvFlags, EnvOpenOptions, WithoutTls};
+use heed::{Database, EnvFlags, EnvOpenOptions};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
 mod common;
-use common::{Locked, free_port, sockets};
-
-/// Read-only view of a store, opened the way a client would.
-struct Reader {
-    env: Env<WithoutTls>,
-    db: Database<Str, Str>,
-}
-
-impl Reader {
-    fn open(path: &Path) -> Reader {
-        let env = unsafe {
-            let mut o = EnvOpenOptions::new().read_txn_without_tls();
-            o.flags(EnvFlags::NO_SUB_DIR | EnvFlags::READ_ONLY);
-            o.open(path).unwrap()
-        };
-        let rtxn = env.read_txn().unwrap();
-        let db = env.open_database(&rtxn, None).unwrap().unwrap();
-        rtxn.commit().unwrap();
-        Reader { env, db }
-    }
-
-    fn dump(&self) -> BTreeMap<String, String> {
-        let rtxn = self.env.read_txn().unwrap();
-        self.db
-            .iter(&rtxn)
-            .unwrap()
-            .map(|r| r.unwrap())
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
-    fn get(&self, key: &str) -> Option<String> {
-        self.dump().remove(key)
-    }
-
-    fn service(&self, name: &str) -> Option<ServiceRecord> {
-        self.get(&format!("svc/{name}"))
-            .map(|j| serde_json::from_str(&j).unwrap())
-    }
-
-    fn svc_keys(&self) -> Vec<String> {
-        self.dump()
-            .into_keys()
-            .filter(|k| k.starts_with("svc/"))
-            .collect()
-    }
-}
-
-struct Daemon {
-    child: Child,
-    dir: tempfile::TempDir,
-    /// The daemon's stderr, read as it comes so a long log never fills the
-    /// pipe and blocks the daemon.
-    log: std::sync::Arc<std::sync::Mutex<String>>,
-    log_reader: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Daemon {
-    fn store(&self) -> PathBuf {
-        self.dir.path().join("state.mdb")
-    }
-    fn config(&self) -> PathBuf {
-        self.dir.path().join("emfor.toml")
-    }
-    fn signal(&self, s: Signal) {
-        kill(Pid::from_raw(self.child.id() as i32), s).unwrap();
-    }
-    /// Stop with SIGTERM and return (exit code, stderr).
-    fn stop(mut self) -> (i32, String) {
-        self.signal(Signal::SIGTERM);
-        let code = self.wait();
-        (code, self.log())
-    }
-    /// Wait for the daemon to exit and for its stderr to be read.
-    fn wait(&mut self) -> i32 {
-        let status = self.child.wait().unwrap();
-        if let Some(r) = self.log_reader.take() {
-            r.join().unwrap();
-        }
-        status.code().unwrap_or(-1)
-    }
-    fn log(&self) -> String {
-        self.log.lock().unwrap().clone()
-    }
-    fn running(&mut self) -> bool {
-        self.child.try_wait().unwrap().is_none()
-    }
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-    }
-}
-
-fn store_header(dir: &Path) -> String {
-    format!(
-        "[store]\npath = \"{}\"\nmap_size = \"4MiB\"\n\n",
-        dir.join("state.mdb").display()
-    )
-}
+use common::{
+    Daemon, Locked, Reader, emfor, free_port, http_backend, listener, sockets, store_header,
+    wait_for,
+};
 
 fn tcp_service(name: &str, addr: &str) -> String {
     format!(
         "[services.\"{name}\"]\ncheck = \"tcp\"\nbackends = [\"{addr}\"]\ninterval = \"200ms\"\ntimeout = \"100ms\"\nrise = 2\nfall = 2\njitter = \"0%\"\n\n"
     )
-}
-
-fn start(services: &str) -> Daemon {
-    start_in(tempfile::tempdir().unwrap(), services)
-}
-
-fn start_in(dir: tempfile::TempDir, services: &str) -> Daemon {
-    start_with_env(dir, services, &[])
-}
-
-/// `start_in` with extra environment variables for the daemon.
-fn start_with_env(dir: tempfile::TempDir, services: &str, env: &[(&str, &Path)]) -> Daemon {
-    let cfg = dir.path().join("emfor.toml");
-    std::fs::write(&cfg, format!("{}{services}", store_header(dir.path()))).unwrap();
-    let mut child = Command::new(cargo_bin("emfor"))
-        .arg("server")
-        .arg("--config")
-        .arg(&cfg)
-        .envs(env.iter().copied())
-        .env_remove("RUST_LOG")
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn_locked()
-        .unwrap();
-    let log = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let mut stderr = child.stderr.take().unwrap();
-    let sink = log.clone();
-    let log_reader = std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        while let Ok(n) = stderr.read(&mut buf) {
-            if n == 0 {
-                break;
-            }
-            sink.lock()
-                .unwrap()
-                .push_str(&String::from_utf8_lossy(&buf[..n]));
-        }
-    });
-    let d = Daemon {
-        child,
-        dir,
-        log,
-        log_reader: Some(log_reader),
-    };
-    wait_for(|| {
-        d.store().exists()
-            && std::fs::metadata(d.store())
-                .map(|m| m.len() > 0)
-                .unwrap_or(false)
-    });
-    d
-}
-
-fn wait_for(mut cond: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if cond() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    panic!("condition not met within 10s");
 }
 
 /// A state writer that panics while the daemon runs (a store commit that
@@ -192,7 +32,7 @@ fn wait_for(mut cond: impl FnMut() -> bool) {
 fn daemon_exits_70_when_the_writer_panics() {
     let dir = tempfile::tempdir().unwrap();
     let trigger = dir.path().join("panic-now");
-    let mut d = start_with_env(
+    let mut d = Daemon::start_in(
         dir,
         &tcp_service("api.svc.emfor", "127.0.0.1:1"),
         &[("EMFOR_TEST_COMMIT_PANIC_FILE", &trigger)],
@@ -201,8 +41,7 @@ fn daemon_exits_70_when_the_writer_panics() {
     assert!(d.running(), "daemon stopped before the commit panicked");
     std::fs::write(&trigger, "").unwrap();
     wait_for(|| !d.running());
-    let code = d.wait();
-    let log = d.log();
+    let (code, log) = d.wait();
     assert_eq!(code, 70, "{log}");
     assert!(log.contains("test hook: a commit panics"), "{log}");
     assert!(log.contains("state writer panicked; exiting"), "{log}");
@@ -214,28 +53,21 @@ fn daemon_exits_70_when_the_writer_panics() {
 fn start_dns(services: &str) -> (Daemon, String) {
     for _ in 0..5 {
         let dns = format!("[dns]\nlisten = [\"127.0.0.1:{}\"]\n\n", free_port());
-        let mut d = start(&format!("{dns}{services}"));
+        let mut d = Daemon::start(&format!("{dns}{services}"));
         std::thread::sleep(Duration::from_millis(200));
         if d.running() {
             return (d, dns);
         }
-        d.wait();
-        let err = d.log();
+        let (_, err) = d.wait();
         assert!(err.contains("Address already in use"), "{err}");
     }
     panic!("no free DNS port after 5 tries");
 }
 
-fn listener() -> (TcpListener, String) {
-    let l = sockets(|| TcpListener::bind("127.0.0.1:0")).unwrap();
-    let a = l.local_addr().unwrap().to_string();
-    (l, a)
-}
-
 #[test]
 fn sighup_with_new_service_adds_its_record() {
     let (_l, addr) = listener();
-    let d = start(&tcp_service("api.svc.emfor", &addr));
+    let d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
     let r = Reader::open(&d.store());
     wait_for(|| r.service("api.svc.emfor").is_some());
     let cfg = format!(
@@ -253,7 +85,7 @@ fn sighup_with_new_service_adds_its_record() {
 #[test]
 fn invalid_reload_keeps_previous_config() {
     let (_l, addr) = listener();
-    let mut d = start(&tcp_service("api.svc.emfor", &addr));
+    let mut d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
     let r = Reader::open(&d.store());
     wait_for(|| {
         r.service("api.svc.emfor")
@@ -281,7 +113,7 @@ fn invalid_reload_keeps_previous_config() {
 #[test]
 fn store_change_on_reload_requires_restart() {
     let (_l, addr) = listener();
-    let d = start(&tcp_service("api.svc.emfor", &addr));
+    let d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
     let cfg = format!(
         "[store]\npath = \"{}\"\n\n{}",
         d.dir.path().join("other.mdb").display(),
@@ -298,7 +130,7 @@ fn store_change_on_reload_requires_restart() {
 #[test]
 fn sigterm_exits_zero_and_zeroes_heartbeat() {
     let (_l, addr) = listener();
-    let d = start(&tcp_service("api.svc.emfor", &addr));
+    let d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
     let store = d.store();
     let r = Reader::open(&store);
     wait_for(|| r.get("meta/heartbeat").is_some_and(|h| h != "0"));
@@ -314,7 +146,7 @@ fn damaged_store_is_replaced_at_start() {
     use std::io::Write;
     let (_l, addr) = listener();
     // A good store from a run that stopped, then its two meta pages zeroed.
-    let mut d = start(&tcp_service("api.svc.emfor", &addr));
+    let mut d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
     let (path, page) = {
         let r = Reader::open(&d.store());
         wait_for(|| r.service("api.svc.emfor").is_some());
@@ -329,7 +161,7 @@ fn damaged_store_is_replaced_at_start() {
     f.write_all(&vec![0u8; 2 * page as usize]).unwrap();
     drop(f);
     let corrupt = dir.path().join("state.mdb.corrupt");
-    let d = start_in(dir, &tcp_service("api.svc.emfor", &addr));
+    let d = Daemon::start_in(dir, &tcp_service("api.svc.emfor", &addr), &[]);
     wait_for(|| corrupt.exists());
     let r = Reader::open(&d.store());
     wait_for(|| r.get("meta/heartbeat").is_some_and(|h| h != "0"));
@@ -354,7 +186,7 @@ fn escape_sequence_in_a_reason_is_stored_escaped() {
         "[services.\"x.svc.emfor\"]\ncheck = \"exec\"\nbackends = [\"127.0.0.1:1\"]\ninterval = \"200ms\"\ntimeout = \"100ms\"\njitter = \"0%\"\n[services.\"x.svc.emfor\".check_options]\ncommand = [\"{}\"]\n\n",
         script.display()
     );
-    let d = start_in(dir, &svc);
+    let d = Daemon::start_in(dir, &svc, &[]);
     let r = Reader::open(&d.store());
     wait_for(|| {
         r.service("x.svc.emfor")
@@ -374,7 +206,7 @@ fn backend_known_within_a_second_of_start() {
     let svc = format!(
         "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"{addr}\"]\ninterval = \"2s\"\ntimeout = \"1s\"\nrise = 2\njitter = \"0%\"\n\n"
     );
-    let d = start(&svc);
+    let d = Daemon::start(&svc);
     let r = Reader::open(&d.store());
     wait_for(|| {
         r.service("api.svc.emfor")
@@ -394,7 +226,7 @@ fn backend_known_within_a_second_of_start() {
 #[test]
 fn second_daemon_on_same_store_exits_one() {
     let (_l, addr) = listener();
-    let mut d = start(&tcp_service("api.svc.emfor", &addr));
+    let mut d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
     let out = Command::new(cargo_bin("emfor"))
         .arg("server")
         .arg("--config")
@@ -529,7 +361,7 @@ fn unparseable_history_discarded_at_start() {
         &[("hist/api.svc.emfor", "not json")],
     );
     let (_l, addr) = listener();
-    let d = start_in(dir, &tcp_service("api.svc.emfor", &addr));
+    let d = Daemon::start_in(dir, &tcp_service("api.svc.emfor", &addr), &[]);
     let r = Reader::open(&d.store());
     wait_for(|| {
         r.get("hist/api.svc.emfor")
@@ -548,7 +380,7 @@ fn unparseable_history_discarded_at_start() {
 #[test]
 fn backend_goes_unhealthy_and_recovers() {
     let (l, addr) = listener();
-    let d = start(&tcp_service("api.svc.emfor", &addr));
+    let d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
     let r = Reader::open(&d.store());
     let state = || r.service("api.svc.emfor").map(|s| s.backends[0].state);
     let latency = || {
@@ -586,7 +418,7 @@ fn backend_goes_unhealthy_and_recovers() {
 #[test]
 fn reload_reports_store_change_together_with_other_errors() {
     let (_l, addr) = listener();
-    let d = start(&tcp_service("api.svc.emfor", &addr));
+    let d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
     let cfg = format!(
         "[store]\npath = \"{}\"\n\n{}",
         d.dir.path().join("other.mdb").display(),
@@ -711,7 +543,7 @@ fn reload_reports_backends_on_different_ports() {
 #[test]
 fn reload_applies_log_level() {
     let (_l, addr) = listener();
-    let d = start(&tcp_service("api.svc.emfor", &addr));
+    let d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
     let cfg = format!(
         "{}[log]\nlevel = \"debug\"\n\n{}",
         store_header(d.dir.path()),
@@ -736,7 +568,7 @@ fn service_record_with_healthy_and_unhealthy_backends() {
         &format!("backends = [\"{up}\"]"),
         &format!("backends = [\"{up}\", \"{down}\"]"),
     );
-    let d = start(&svc);
+    let d = Daemon::start(&svc);
     let r = Reader::open(&d.store());
     wait_for(|| {
         r.service("api.svc.emfor").is_some_and(|s| {
@@ -762,7 +594,7 @@ fn balance_written_from_config_and_changed_on_reload() {
     use emfor_format::Balance;
     let (_l, addr) = listener();
     let svc = tcp_service("api.svc.emfor", &addr);
-    let d = start(&format!("{svc}balance = \"failover\"\n"));
+    let d = Daemon::start(&format!("{svc}balance = \"failover\"\n"));
     let r = Reader::open(&d.store());
     wait_for(|| r.service("api.svc.emfor").is_some());
     let rec = r.get("svc/api.svc.emfor").unwrap();
@@ -787,30 +619,10 @@ fn fastest_service(name: &str, check: &str, backends: &[&str]) -> String {
     )
 }
 
-/// HTTP backend answering every request with 200 after `delay`.
-fn http_backend(delay: Duration) -> String {
-    use std::io::Write;
-    let (l, addr) = listener();
-    std::thread::spawn(move || {
-        for conn in l.incoming() {
-            let Ok(mut s) = conn else { continue };
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 2048];
-                let _ = s.read(&mut buf);
-                std::thread::sleep(delay);
-                let _ = s.write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                );
-            });
-        }
-    });
-    addr
-}
-
 #[test]
 fn fastest_pool_follows_health() {
     let (l, addr) = listener();
-    let d = start(&fastest_service("api.svc.emfor", "tcp", &[&addr]));
+    let d = Daemon::start(&fastest_service("api.svc.emfor", "tcp", &[&addr]));
     let r = Reader::open(&d.store());
     let pool = || r.service("api.svc.emfor").and_then(|s| s.pool);
     wait_for(|| pool() == Some(vec![addr.clone()]));
@@ -828,7 +640,7 @@ fn fastest_pool_follows_health() {
 fn fastest_pool_excludes_slow_backend() {
     let fast = http_backend(Duration::ZERO);
     let slow = http_backend(Duration::from_millis(30));
-    let d = start(&fastest_service("api.svc.emfor", "http", &[&fast, &slow]));
+    let d = Daemon::start(&fastest_service("api.svc.emfor", "http", &[&fast, &slow]));
     let r = Reader::open(&d.store());
     let ready = || {
         r.service("api.svc.emfor").is_some_and(|s| {
@@ -869,30 +681,6 @@ fn help_shows_the_built_in_config_path() {
 /// Run `emfor <args>`: (exit code, stdout, stderr). Fails instead of
 /// hanging when emfor has not exited within 10 s (for example, because it
 /// started a daemon).
-fn emfor(args: &[&str]) -> (i32, String, String) {
-    let mut child = Command::new(cargo_bin("emfor"))
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn_locked()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while child.try_wait().unwrap().is_none() {
-        if Instant::now() > deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!("emfor {args:?} still running after 10s");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let out = child.wait_with_output().unwrap();
-    (
-        out.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
-}
-
 /// Service-config "Command line subcommands": without a usable subcommand,
 /// emfor prints usage or the `--check-config` hint, exits 2, and leaves
 /// the store alone.
@@ -938,7 +726,7 @@ fn no_subcommand_prints_usage_and_touches_nothing() {
 #[test]
 fn no_subcommand_beside_a_running_daemon() {
     let (_l, addr) = listener();
-    let mut d = start(&tcp_service("api.svc.emfor", &addr));
+    let mut d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
     let r = Reader::open(&d.store());
     let heartbeat = || r.dump().get("meta/heartbeat").cloned().unwrap_or_default();
     wait_for(|| r.service("api.svc.emfor").is_some());
@@ -995,7 +783,7 @@ fn status(cfg: &Path, args: &[&str]) -> (i32, String, String) {
 #[test]
 fn status_beside_a_running_daemon() {
     let (_l, addr) = listener();
-    let d = start(&tcp_service("api.svc.emfor", &addr));
+    let d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
     let r = Reader::open(&d.store());
     wait_for(|| {
         r.service("api.svc.emfor")
@@ -1066,7 +854,7 @@ fn status_shows_listen_addresses() {
         .find_map(|_| {
             let dns = format!("127.0.0.1:{}", free_port());
             let metrics = format!("127.0.0.1:{}", free_port());
-            let mut d = start(&format!(
+            let mut d = Daemon::start(&format!(
                 "[dns]\nlisten = [\"{dns}\"]\n\n[metrics]\nlisten = [\"{metrics}\"]\n\n{}",
                 tcp_service("api.svc.emfor", &backend)
             ));
@@ -1283,7 +1071,7 @@ fn status_history_refuses_watch_and_json() {
 #[test]
 fn history_kept_across_a_restart() {
     let (l, addr) = listener();
-    let mut d = start(&tcp_service("api.svc.emfor", &addr));
+    let mut d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
     let r = Reader::open(&d.store());
     let state = || r.service("api.svc.emfor").map(|s| s.backends[0].state);
     wait_for(|| state() == Some(HealthState::Healthy));
@@ -1314,7 +1102,7 @@ fn history_kept_across_a_restart() {
         .unwrap()
         .1
         .to_owned();
-    let d = start_in(dir, &services);
+    let d = Daemon::start_in(dir, &services, &[]);
     let r = Reader::open(&d.store());
     wait_for(|| r.get("meta/heartbeat").is_some_and(|h| h != "0"));
     let after: ServiceHistory =

@@ -2,93 +2,45 @@
 //! binaries on loopback ports that were free a moment ago and watch their
 //! logs and `/metrics`.
 
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
+use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use assert_cmd::cargo::cargo_bin;
 use emfor_daemon::peers::{Kind, Message, encode};
-use nix::sys::signal::{Signal, kill};
-use nix::unistd::Pid;
+use nix::sys::signal::Signal;
 
 mod common;
-use common::{Locked, free_tcp, free_udp, sockets};
+use common::{Daemon, Locked, free_tcp, free_udp, scrape, sockets, wait_within};
 
-struct Daemon {
-    child: Child,
-    dir: tempfile::TempDir,
+/// A member: a daemon with a `[metrics]` listener on `metrics`.
+struct Member {
+    daemon: Daemon,
     metrics: SocketAddr,
-    /// Everything the daemon wrote to stderr so far.
-    log: Arc<Mutex<String>>,
-    reader: Option<JoinHandle<()>>,
 }
 
-impl Daemon {
-    fn write_config(&self, body: &str) {
-        std::fs::write(self.dir.path().join("emfor.toml"), body)
-            .expect("the test config can be written");
+impl std::ops::Deref for Member {
+    type Target = Daemon;
+    fn deref(&self) -> &Daemon {
+        &self.daemon
     }
-    fn signal(&self, s: Signal) {
-        kill(Pid::from_raw(self.child.id() as i32), s).expect("the daemon can be signalled");
+}
+
+impl std::ops::DerefMut for Member {
+    fn deref_mut(&mut self) -> &mut Daemon {
+        &mut self.daemon
     }
-    fn log(&self) -> String {
-        self.log.lock().expect("log lock").clone()
-    }
-    fn wait_log(&self, text: &str) {
-        let limit = Duration::from_secs(10);
-        let deadline = Instant::now() + limit;
-        while Instant::now() < deadline {
-            if self.log().contains(text) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        panic!("{text}: not within {limit:?}; log:\n{}", self.log());
-    }
-    fn wait(&mut self) -> (i32, String) {
-        let status = self.child.wait().expect("the daemon can be waited for");
-        if let Some(r) = self.reader.take() {
-            r.join().expect("the log reader ends");
-        }
-        (status.code().unwrap_or(-1), self.log())
-    }
+}
+
+impl Member {
     fn scrape(&self) -> String {
-        let mut s =
-            sockets(|| TcpStream::connect(self.metrics)).expect("the metrics endpoint answers");
-        s.set_read_timeout(Some(Duration::from_secs(10)))
-            .expect("a read timeout can be set");
-        s.write_all(b"GET /metrics HTTP/1.1\r\nHost: test\r\n\r\n")
-            .expect("the request can be sent");
-        let mut out = String::new();
-        s.read_to_string(&mut out)
-            .expect("the response can be read");
-        out
+        scrape(self.metrics)
     }
     fn has_line(&self, line: &str) -> bool {
         self.scrape().lines().any(|l| l == line)
     }
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-    }
-}
-
-fn wait_for(what: &str, limit: Duration, mut cond: impl FnMut() -> bool) {
-    let deadline = Instant::now() + limit;
-    while Instant::now() < deadline {
-        if cond() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("{what}: not within {limit:?}");
 }
 
 /// The secret every test member uses, as written to its file.
@@ -122,7 +74,7 @@ fn config(
     )
 }
 
-fn spawn(config_for: impl FnOnce(&Path, SocketAddr) -> String) -> Daemon {
+fn spawn(config_for: impl FnOnce(&Path, SocketAddr) -> String) -> Member {
     spawn_env(config_for, &[])
 }
 
@@ -130,38 +82,11 @@ fn spawn(config_for: impl FnOnce(&Path, SocketAddr) -> String) -> Daemon {
 fn spawn_env(
     config_for: impl FnOnce(&Path, SocketAddr) -> String,
     env: &[(&str, &Path)],
-) -> Daemon {
-    let dir = tempfile::tempdir().expect("a temporary directory can be created");
+) -> Member {
     let metrics = free_tcp();
-    let cfg = dir.path().join("emfor.toml");
-    std::fs::write(&cfg, config_for(dir.path(), metrics)).expect("the config can be written");
-    let mut child = Command::new(cargo_bin("emfor"))
-        .arg("server")
-        .arg("--config")
-        .arg(&cfg)
-        .env_remove("RUST_LOG")
-        .envs(env.iter().copied())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn_locked()
-        .expect("the emfor binary starts");
-    let mut pipe = child.stderr.take().expect("stderr is piped");
-    let log = Arc::new(Mutex::new(String::new()));
-    let sink = log.clone();
-    let reader = std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        while let Ok(n @ 1..) = pipe.read(&mut buf) {
-            sink.lock()
-                .expect("log lock")
-                .push_str(&String::from_utf8_lossy(&buf[..n]));
-        }
-    });
-    Daemon {
-        child,
-        dir,
+    Member {
+        daemon: Daemon::spawn_with(|dir| config_for(dir, metrics), env),
         metrics,
-        log,
-        reader: Some(reader),
     }
 }
 
@@ -171,7 +96,7 @@ const HEALTHY: &str = "changed from unknown to healthy";
 /// Two members checking one TCP backend: A every second, B every 30
 /// seconds (the digest leaves `interval` out, so they still share). `b_extra`
 /// is added to B's service.
-fn pair(backend: SocketAddr, b_extra: &str) -> (Daemon, Daemon, SocketAddr, SocketAddr) {
+fn pair(backend: SocketAddr, b_extra: &str) -> (Member, Member, SocketAddr, SocketAddr) {
     let (a, b) = (free_udp(), free_udp());
     let da = spawn(|dir, m| {
         config(
@@ -196,7 +121,7 @@ fn pair(backend: SocketAddr, b_extra: &str) -> (Daemon, Daemon, SocketAddr, Sock
     for d in [&da, &db] {
         d.wait_log(HEALTHY);
     }
-    wait_for("both members live", Duration::from_secs(5), || {
+    wait_within("both members live", Duration::from_secs(5), || {
         da.has_line(&format!("emfor_peer_up{{peer=\"{b}\"}} 1"))
             && db.has_line(&format!("emfor_peer_up{{peer=\"{a}\"}} 1"))
     });
@@ -211,11 +136,11 @@ fn peer_sees_the_failure_first() {
     let backend = held.local_addr().expect("the backend has an address");
     let (da, db, a, _b) = pair(backend, "");
     drop(held);
-    wait_for("A marks it unhealthy", Duration::from_secs(10), || {
+    wait_within("A marks it unhealthy", Duration::from_secs(10), || {
         da.log().contains(UNHEALTHY)
     });
     let first = Instant::now();
-    wait_for("B follows within 2s", Duration::from_secs(2), || {
+    wait_within("B follows within 2s", Duration::from_secs(2), || {
         db.log().contains(UNHEALTHY)
     });
     assert!(first.elapsed() <= Duration::from_secs(2));
@@ -269,14 +194,14 @@ fn digest_differs() {
     for d in [&da, &db] {
         d.wait_log(HEALTHY);
     }
-    wait_for("A live at B", Duration::from_secs(5), || {
+    wait_within("A live at B", Duration::from_secs(5), || {
         db.has_line(&format!("emfor_peer_up{{peer=\"{a}\"}} 1"))
     });
     drop(held);
-    wait_for("A marks it unhealthy", Duration::from_secs(10), || {
+    wait_within("A marks it unhealthy", Duration::from_secs(10), || {
         da.log().contains(UNHEALTHY)
     });
-    wait_for("B accepts the report", Duration::from_secs(2), || {
+    wait_within("B accepts the report", Duration::from_secs(2), || {
         db.has_line("emfor_peer_notifications_total{direction=\"received\"} 1")
     });
     std::thread::sleep(Duration::from_secs(2));
@@ -296,7 +221,7 @@ fn member_stops_and_member_added_on_reload() {
     db.signal(Signal::SIGTERM);
     db.wait();
     let stopped = Instant::now();
-    wait_for("B not live at A", Duration::from_secs(5), || {
+    wait_within("B not live at A", Duration::from_secs(5), || {
         da.has_line(&format!("emfor_peer_up{{peer=\"{b}\"}} 0"))
     });
     assert!(stopped.elapsed() <= Duration::from_secs(4) + Duration::from_millis(500));
@@ -306,7 +231,7 @@ fn member_stops_and_member_added_on_reload() {
     c.set_read_timeout(Some(Duration::from_secs(3)))
         .expect("a read timeout can be set");
     let c_addr = c.local_addr().expect("C has an address");
-    da.write_config(&config(
+    da.write_whole_config(&config(
         da.dir.path(),
         da.metrics,
         a,
@@ -334,7 +259,7 @@ fn reload_rejects_peers_listen_change() {
     let d = spawn(|dir, m| config(dir, m, a, &[a, b], backend, ""));
     d.wait_log("emfor started");
     let other = free_udp();
-    d.write_config(&config(
+    d.write_whole_config(&config(
         d.dir.path(),
         d.metrics,
         other,
@@ -367,7 +292,7 @@ fn reload_rejects_peers_listen_change() {
         SECRET.trim_end().as_bytes(),
     );
     sb.send_to(&heartbeat, a).expect("B can send to A");
-    wait_for("B live at A", Duration::from_secs(3), || {
+    wait_within("B live at A", Duration::from_secs(3), || {
         d.has_line(&format!("emfor_peer_up{{peer=\"{b}\"}} 1"))
     });
 }
@@ -408,7 +333,7 @@ fn exec_config(
 }
 
 /// `emfor status` for daemon `d`: (stdout of the text output, `--json`).
-fn status(d: &Daemon) -> (String, serde_json::Value) {
+fn status(d: &Member) -> (String, serde_json::Value) {
     let cfg = d.dir.path().join("emfor.toml");
     let run = |json: bool| {
         let mut c = Command::new(cargo_bin("emfor"));
@@ -438,7 +363,7 @@ fn majority_of_three() {
     let flags = tempfile::tempdir().expect("a temporary directory can be created");
     let flag = |i: usize| flags.path().join(format!("down-{i}"));
     let members = [free_udp(), free_udp(), free_udp()];
-    let daemons: Vec<Daemon> = (0..3)
+    let daemons: Vec<Member> = (0..3)
         .map(|i| {
             let f = flag(i);
             spawn_env(
@@ -450,7 +375,7 @@ fn majority_of_three() {
     for d in &daemons {
         d.wait_log(HEALTHY);
     }
-    wait_for(
+    wait_within(
         "every member live everywhere",
         Duration::from_secs(10),
         || {
@@ -470,10 +395,10 @@ fn majority_of_three() {
     // (about `fall` = 3 checks of 1s; wait_log allows 10s for slow hosts).
     c.wait_log("changed from healthy to unhealthy (peers 2/3: refused)");
     c.wait_log("is down at 2/3 peers but up here");
-    wait_for("C counts the disagreement", Duration::from_secs(10), || {
+    wait_within("C counts the disagreement", Duration::from_secs(10), || {
         c.has_line("emfor_peer_disagreements 1")
     });
-    wait_for("meta/peers lists it", Duration::from_secs(10), || {
+    wait_within("meta/peers lists it", Duration::from_secs(10), || {
         status(c).1["peers"]["disagreements"]
             == serde_json::json!([{"service":"api.svc.emfor","backend":"127.0.0.1:9","down":2,"fresh":3}])
     });
@@ -500,7 +425,7 @@ fn majority_of_three() {
         (sent, checks)
     };
     let (sent0, checks0) = sent_and_checks();
-    wait_for(
+    wait_within(
         "one round of results per check",
         Duration::from_secs(10),
         || {
@@ -513,12 +438,12 @@ fn majority_of_three() {
     for i in [0, 1] {
         std::fs::remove_file(flag(i)).expect("the flag can be removed");
     }
-    wait_for("all healthy again", Duration::from_secs(10), || {
+    wait_within("all healthy again", Duration::from_secs(10), || {
         daemons
             .iter()
             .all(|d| d.log().contains("changed from unhealthy to healthy"))
     });
-    wait_for("C clears the disagreement", Duration::from_secs(10), || {
+    wait_within("C clears the disagreement", Duration::from_secs(10), || {
         c.has_line("emfor_peer_disagreements 0")
     });
 
@@ -550,7 +475,7 @@ fn split_checks() {
     let flag = |i: usize| files.path().join(format!("down-{i}"));
     let count = |i: usize| files.path().join(format!("checks-{i}"));
     let members = [free_udp(), free_udp(), free_udp(), free_udp()];
-    let mut daemons: Vec<Daemon> = (0..4)
+    let mut daemons: Vec<Member> = (0..4)
         .map(|i| {
             let (f, c) = (flag(i), count(i));
             spawn_env(
@@ -568,7 +493,7 @@ fn split_checks() {
     for d in &daemons {
         d.wait_log(HEALTHY);
     }
-    wait_for(
+    wait_within(
         "every member live everywhere",
         Duration::from_secs(10),
         || {
@@ -609,7 +534,7 @@ fn split_checks() {
         .collect();
     std::fs::write(flag(spare), "").expect("the flag can be written");
     let text = "changed from healthy to unhealthy (local: refused)";
-    wait_for(text, Duration::from_secs(15), || {
+    wait_within(text, Duration::from_secs(15), || {
         daemons[spare].log().contains(text)
     });
     for i in &checkers {
@@ -621,7 +546,7 @@ fn split_checks() {
         );
     }
     std::fs::remove_file(flag(spare)).expect("the flag can be removed");
-    wait_for(
+    wait_within(
         "the spare one is healthy again",
         Duration::from_secs(10),
         || {
@@ -639,7 +564,7 @@ fn split_checks() {
     } else {
         spare
     }];
-    wait_for(
+    wait_within(
         "the stopped member is not live",
         Duration::from_secs(10),
         || counter(&spare_d.scrape(), "emfor_peer_up", "") == 2,
@@ -660,7 +585,7 @@ fn service_left_out_on_one_member() {
     let flags = tempfile::tempdir().expect("a temporary directory can be created");
     let flag = |i: usize| flags.path().join(format!("down-{i}"));
     let members = [free_udp(), free_udp(), free_udp()];
-    let daemons: Vec<Daemon> = (0..3)
+    let daemons: Vec<Member> = (0..3)
         .map(|i| {
             let f = flag(i);
             spawn_env(
@@ -679,7 +604,7 @@ fn service_left_out_on_one_member() {
     for d in &daemons {
         d.wait_log(HEALTHY);
     }
-    wait_for(
+    wait_within(
         "every member live everywhere",
         Duration::from_secs(10),
         || {
@@ -697,7 +622,7 @@ fn service_left_out_on_one_member() {
     // C announces the service, so A and B do not count it as a candidate:
     // with two candidates left the backend has no assigned checkers there.
     // `meta/peers` follows within 2 seconds.
-    let c_off = |d: &Daemon| {
+    let c_off = |d: &Member| {
         status(d).1["peers"]["members"]
             .as_array()
             .expect("members is an array")
@@ -707,7 +632,7 @@ fn service_left_out_on_one_member() {
             .expect("C is a member")
     };
     for d in [a, b] {
-        wait_for(
+        wait_within(
             "C's services_off at A and B",
             Duration::from_secs(2),
             || c_off(d) == serde_json::json!(["api.svc.emfor"]),
@@ -809,7 +734,7 @@ fn services_another_member_leaves_out() {
             .send_to(&data, a)
             .expect("the other member can send");
     };
-    let member = |d: &Daemon| status(d).1["peers"]["members"][0].clone();
+    let member = |d: &Member| status(d).1["peers"]["members"][0].clone();
     heartbeat();
     let first = Instant::now();
     let mut seen = false;
@@ -825,10 +750,10 @@ fn services_another_member_leaves_out() {
     }
     assert!(seen, "{}", member(&d));
     // Stop sending: not live after 3 seconds, and then nothing announced.
-    wait_for("the other member not live", Duration::from_secs(5), || {
+    wait_within("the other member not live", Duration::from_secs(5), || {
         d.has_line(&format!("emfor_peer_up{{peer=\"{other}\"}} 0"))
     });
-    wait_for("its services forgotten", Duration::from_secs(2), || {
+    wait_within("its services forgotten", Duration::from_secs(2), || {
         member(&d)
             == serde_json::json!({"addr": other.to_string(), "live": false, "services_off": []})
     });
@@ -855,16 +780,16 @@ fn services_off_follow_reloads() {
     };
     let d = spawn(|dir, m| cfg(dir, m, false));
     d.wait_log(HEALTHY);
-    let off = |d: &Daemon| status(d).1["peers"]["services_off"].clone();
+    let off = |d: &Member| status(d).1["peers"]["services_off"].clone();
     assert_eq!(
         off(&d),
         serde_json::json!(["api.svc.emfor", "db.svc.emfor", "web.svc.emfor"])
     );
-    d.write_config(&cfg(d.dir.path(), d.metrics, true));
+    d.write_whole_config(&cfg(d.dir.path(), d.metrics, true));
     d.signal(Signal::SIGHUP);
     d.wait_log("config reloaded");
     let reloaded = Instant::now();
-    wait_for(
+    wait_within(
         "web.svc.emfor back in the group",
         Duration::from_secs(2),
         || off(&d) == serde_json::json!(["api.svc.emfor", "db.svc.emfor"]),
@@ -933,7 +858,7 @@ fn heartbeat_announces_services_left_out() {
         next_heartbeat_off(&other),
         serde_json::json!(["a513a047", "fa6f63b4"])
     );
-    d.write_config(&three_services(
+    d.write_whole_config(&three_services(
         d.dir.path(),
         d.metrics,
         a,
@@ -944,7 +869,7 @@ fn heartbeat_announces_services_left_out() {
     d.signal(Signal::SIGHUP);
     d.wait_log("config reloaded");
     // The heartbeat after the next tick has no `off`.
-    wait_for("heartbeats without off", Duration::from_secs(3), || {
+    wait_within("heartbeats without off", Duration::from_secs(3), || {
         next_heartbeat_off(&other).is_null()
     });
 }
@@ -976,9 +901,9 @@ fn more_services_left_out_than_fit() {
     };
     let d = spawn(|dir, m| cfg(dir, m));
     d.wait_log("1 tag is not sent");
-    let warnings = |d: &Daemon| d.log().matches("1 tag is not sent").count();
+    let warnings = |d: &Member| d.log().matches("1 tag is not sent").count();
     assert_eq!(warnings(&d), 1, "{}", d.log());
-    d.write_config(&cfg(d.dir.path(), d.metrics));
+    d.write_whole_config(&cfg(d.dir.path(), d.metrics));
     d.signal(Signal::SIGHUP);
     d.wait_log("config reloaded");
     // Give a second warning time to show up.

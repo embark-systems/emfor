@@ -1,17 +1,14 @@
 //! End-to-end tests of plugins: run the `emfor` binary with `[plugins]`
 //! configs that use the `emfor-test-plugin` binary.
 
-use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+mod common;
+
+use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use assert_cmd::cargo::cargo_bin;
-use emfor_format::{BackendRecord, HealthState, ServiceRecord};
-use heed::types::Str;
-use heed::{Database, Env, EnvFlags, EnvOpenOptions, WithoutTls};
+use common::{Daemon, Locked, Reader, WAIT, emfor, wait_within};
+use emfor_format::HealthState;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
@@ -50,176 +47,60 @@ fn plugin_service(svc: &str, plugin: &str, mode: &str, settings: &str) -> String
 
 const FAST: &str = "interval = \"200ms\"\ntimeout = \"100ms\"\nrise = 2\nfall = 2\n";
 
-fn store_header(dir: &Path) -> String {
-    format!(
-        "[store]\npath = \"{}\"\nmap_size = \"4MiB\"\n\n",
-        dir.join("state.mdb").display()
-    )
-}
-
-/// Process ids of plugins started with `mark`.
-fn pgrep(mark: &str) -> Vec<u32> {
-    let out = Command::new("pgrep").args(["-f", mark]).output().unwrap();
+/// Process ids `pgrep` finds with `args`.
+fn pgrep_args(args: &[&str]) -> Vec<u32> {
+    let out = Command::new("pgrep")
+        .args(args)
+        .output_locked()
+        .expect("pgrep runs");
     String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .filter_map(|p| p.parse().ok())
         .collect()
 }
 
+/// Process ids of plugins started with `mark`.
+fn pgrep(mark: &str) -> Vec<u32> {
+    pgrep_args(&["-f", mark])
+}
+
 fn alive(pid: u32) -> bool {
     kill(Pid::from_raw(pid as i32), None).is_ok()
 }
 
-fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
-        if cond() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    panic!("not within 15s: {what}");
-}
-
-struct Daemon {
-    child: Child,
-    dir: tempfile::TempDir,
-    log: Arc<Mutex<String>>,
-}
-
-impl Daemon {
-    fn start(body: &str) -> Daemon {
-        let d = Daemon::spawn(body);
-        wait_for("store created", || {
-            std::fs::metadata(d.store()).is_ok_and(|m| m.len() > 0)
-        });
-        d
-    }
-
-    /// Start the daemon without waiting for it to finish starting.
-    fn spawn(body: &str) -> Daemon {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = dir.path().join("emfor.toml");
-        std::fs::write(&cfg, format!("{}{body}", store_header(dir.path()))).unwrap();
-        let mut child = Command::new(cargo_bin("emfor"))
-            .arg("server")
-            .arg("--config")
-            .arg(&cfg)
-            .env_remove("RUST_LOG")
-            .env("NO_COLOR", "1")
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let log = Arc::new(Mutex::new(String::new()));
-        let mut stderr = child.stderr.take().unwrap();
-        let sink = log.clone();
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            while let Ok(n) = stderr.read(&mut buf) {
-                if n == 0 {
-                    break;
-                }
-                sink.lock()
-                    .unwrap()
-                    .push_str(&String::from_utf8_lossy(&buf[..n]));
-            }
-        });
-        Daemon { child, dir, log }
-    }
-
-    fn store(&self) -> PathBuf {
-        self.dir.path().join("state.mdb")
-    }
-
-    fn log(&self) -> String {
-        self.log.lock().unwrap().clone()
-    }
-
-    fn rewrite(&self, body: &str) {
-        let cfg = self.dir.path().join("emfor.toml");
-        std::fs::write(cfg, format!("{}{body}", store_header(self.dir.path()))).unwrap();
-    }
-
+/// What these tests do with a daemon beyond the shared helpers.
+trait PluginDaemon {
     /// Rewrite the config, send SIGHUP, and wait for `outcome` in the log.
+    fn reload(&self, body: &str, outcome: &str);
+    /// Pids from the `plugin <name> started (pid P, ...)` log lines, in order.
+    fn started_pids(&self, name: &str) -> Vec<u32>;
+}
+
+impl PluginDaemon for Daemon {
     fn reload(&self, body: &str, outcome: &str) {
         let before = self.log().matches(outcome).count();
-        self.rewrite(body);
-        kill(Pid::from_raw(self.child.id() as i32), Signal::SIGHUP).unwrap();
-        wait_for(outcome, || self.log().matches(outcome).count() > before);
+        self.write_config(body);
+        self.signal(Signal::SIGHUP);
+        wait_within(outcome, WAIT, || {
+            self.log().matches(outcome).count() > before
+        });
     }
 
-    /// Pids from the `plugin <name> started (pid P, ...)` log lines, in order.
     fn started_pids(&self, name: &str) -> Vec<u32> {
         let needle = format!("plugin {name} started (pid ");
-        self.log()
-            .match_indices(&needle)
-            .filter_map(|(i, _)| {
-                let rest = &self.log()[i + needle.len()..];
-                rest.split(',').next()?.parse().ok()
-            })
+        let log = self.log();
+        log.match_indices(&needle)
+            .filter_map(|(i, _)| log[i + needle.len()..].split(',').next()?.parse().ok())
             .collect()
     }
-
-    fn stop(mut self) -> (i32, String) {
-        kill(Pid::from_raw(self.child.id() as i32), Signal::SIGTERM).unwrap();
-        let status = self.child.wait().unwrap();
-        std::thread::sleep(Duration::from_millis(100)); // let the log thread finish
-        (status.code().unwrap_or(-1), self.log())
-    }
 }
 
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-    }
-}
-
-struct Reader {
-    env: Env<WithoutTls>,
-    db: Database<Str, Str>,
-}
-
-impl Reader {
-    fn open(path: &Path) -> Reader {
-        let env = unsafe {
-            let mut o = EnvOpenOptions::new().read_txn_without_tls();
-            o.flags(EnvFlags::NO_SUB_DIR | EnvFlags::READ_ONLY);
-            o.open(path).unwrap()
-        };
-        let rtxn = env.read_txn().unwrap();
-        let db = env.open_database(&rtxn, None).unwrap().unwrap();
-        rtxn.commit().unwrap();
-        Reader { env, db }
-    }
-
-    fn service(&self, name: &str) -> Option<ServiceRecord> {
-        let rtxn = self.env.read_txn().unwrap();
-        self.db
-            .get(&rtxn, &format!("svc/{name}"))
-            .unwrap()
-            .map(|j| serde_json::from_str(j).unwrap())
-    }
-
-    fn backend(&self, name: &str) -> Option<BackendRecord> {
-        self.service(name).map(|s| s.backends[0].clone())
-    }
-}
-
+/// `emfor check-config` on a config of `body` alone.
 fn check_config(body: &str) -> (i32, String, String) {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
     std::fs::write(&cfg, body).unwrap();
-    let out = Command::new(cargo_bin("emfor"))
-        .args(["check-config", "--config"])
-        .arg(&cfg)
-        .output()
-        .unwrap();
-    (
-        out.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    emfor(&["check-config", "--config", cfg.to_str().unwrap()])
 }
 
 const SVC: &str = "cache.svc.emfor";
@@ -233,7 +114,7 @@ fn plugin_service_becomes_healthy_and_stderr_is_logged() {
         plugin_service(SVC, "fake", "up", FAST)
     ));
     let r = Reader::open(&d.store());
-    wait_for("backend healthy", || {
+    wait_within("backend healthy", WAIT, || {
         r.backend(SVC)
             .is_some_and(|b| b.state == HealthState::Healthy)
     });
@@ -248,7 +129,9 @@ fn plugin_service_becomes_healthy_and_stderr_is_logged() {
             .any(|l| l.contains("INFO") && l.contains("plugin fake: test plugin started")),
         "{log}"
     );
-    wait_for("plugin stopped on shutdown", || pgrep(&mark).is_empty());
+    wait_within("plugin stopped on shutdown", WAIT, || {
+        pgrep(&mark).is_empty()
+    });
 }
 
 #[test]
@@ -300,35 +183,21 @@ fn check_config_with_broken_plugin() {
 
 #[test]
 fn broken_plugin_at_startup_exits_two() {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = dir.path().join("emfor.toml");
     let mark = marker("startup");
-    std::fs::write(
-        &cfg,
-        format!(
-            "{}{}{}",
-            store_header(dir.path()),
-            plugin_decl("fake", &["EMFOR_TEST_PLUGIN_PROTOCOL=2"], &mark),
-            plugin_service(SVC, "fake", "up", "")
-        ),
-    )
-    .unwrap();
-    let out = Command::new(cargo_bin("emfor"))
-        .arg("server")
-        .arg("--config")
-        .arg(&cfg)
-        .env("NO_COLOR", "1")
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(2));
-    let err = String::from_utf8_lossy(&out.stderr);
+    let mut d = Daemon::spawn(&format!(
+        "{}{}",
+        plugin_decl("fake", &["EMFOR_TEST_PLUGIN_PROTOCOL=2"], &mark),
+        plugin_service(SVC, "fake", "up", "")
+    ));
+    let (code, err) = d.wait();
+    assert_eq!(code, 2, "{err}");
     assert!(
         err.contains(
             "plugins.fake.command: plugin fake speaks protocol 2, emfor speaks protocol 1"
         ),
         "{err}"
     );
-    assert!(!dir.path().join("state.mdb").exists());
+    assert!(!d.store().exists());
     assert!(pgrep(&mark).is_empty(), "plugin left running");
 }
 
@@ -341,7 +210,7 @@ fn unchanged_plugin_survives_reload() {
         plugin_service(SVC, "fake", "up", FAST)
     ));
     let r = Reader::open(&d.store());
-    wait_for("backend healthy", || {
+    wait_within("backend healthy", WAIT, || {
         r.backend(SVC)
             .is_some_and(|b| b.state == HealthState::Healthy)
     });
@@ -367,7 +236,7 @@ fn rejected_reload_with_new_plugin() {
         plugin_service(SVC, "fake", "up", FAST)
     ));
     let r = Reader::open(&d.store());
-    wait_for("backend healthy", || {
+    wait_within("backend healthy", WAIT, || {
         r.backend(SVC)
             .is_some_and(|b| b.state == HealthState::Healthy)
     });
@@ -384,7 +253,7 @@ fn rejected_reload_with_new_plugin() {
     assert!(d.log().contains("timeout must not exceed interval"));
     // Previous checks continue.
     let before = r.backend(SVC).unwrap().checked_at;
-    wait_for("checks continue", || {
+    wait_within("checks continue", WAIT, || {
         r.backend(SVC).unwrap().checked_at > before
     });
     assert_eq!(r.backend(SVC).unwrap().state, HealthState::Healthy);
@@ -400,7 +269,7 @@ fn command_change_restarts_plugin_and_resets_backends() {
         plugin_service(SVC, "fake", "up", slow_rise)
     ));
     let r = Reader::open(&d.store());
-    wait_for("backend healthy", || {
+    wait_within("backend healthy", WAIT, || {
         r.backend(SVC)
             .is_some_and(|b| b.state == HealthState::Healthy)
     });
@@ -423,7 +292,7 @@ fn command_change_restarts_plugin_and_resets_backends() {
     let pids = d.started_pids("fake");
     assert_eq!(pids.len(), 2, "{}", d.log());
     assert_ne!(pids[1], old);
-    wait_for("old plugin stopped", || !alive(old));
+    wait_within("old plugin stopped", WAIT, || !alive(old));
     assert_eq!(pgrep(&mark), vec![pids[1]]);
 }
 
@@ -444,20 +313,20 @@ fn crash_and_recovery() {
         plugin_service(SVC, "fake", "up", settings)
     ));
     let r = Reader::open(&d.store());
-    wait_for("backend healthy", || {
+    wait_within("backend healthy", WAIT, || {
         r.backend(SVC)
             .is_some_and(|b| b.state == HealthState::Healthy)
     });
     let pid = d.started_pids("fake")[0];
     std::fs::write(&block, "").unwrap();
     kill(Pid::from_raw(pid as i32), Signal::SIGKILL).unwrap();
-    wait_for("error result during the outage", || {
+    wait_within("error result during the outage", WAIT, || {
         let b = r.backend(SVC).unwrap();
         assert_eq!(b.state, HealthState::Healthy, "backend left healthy: {b:?}");
         b.reason.as_deref().is_some_and(|r| r.starts_with("plugin"))
     });
     std::fs::remove_file(&block).unwrap();
-    wait_for("plugin restarted", || {
+    wait_within("plugin restarted", WAIT, || {
         let b = r.backend(SVC).unwrap();
         assert_eq!(b.state, HealthState::Healthy, "backend left healthy: {b:?}");
         d.started_pids("fake").len() == 2
@@ -465,7 +334,7 @@ fn crash_and_recovery() {
     assert_eq!(d.log().matches("test plugin started").count(), 2);
     assert!(d.log().contains("plugin fake exited"), "{}", d.log());
     // Results return after the restart.
-    wait_for("plugin results again", || {
+    wait_within("plugin results again", WAIT, || {
         r.backend(SVC).unwrap().reason.is_none()
     });
     assert_eq!(r.backend(SVC).unwrap().state, HealthState::Healthy);
@@ -480,7 +349,7 @@ fn plugin_timeout_is_not_a_backend_failure() {
         plugin_service(SVC, "fake", "hang", FAST)
     ));
     let r = Reader::open(&d.store());
-    wait_for("timeout reason", || {
+    wait_within("timeout reason", WAIT, || {
         r.backend(SVC)
             .and_then(|b| b.reason)
             .is_some_and(|s| s == "plugin did not answer within timeout")
@@ -497,7 +366,7 @@ fn invalid_plugin_output_is_logged() {
         plugin_service(SVC, "fake", "up", FAST)
     ));
     let r = Reader::open(&d.store());
-    wait_for("backend healthy", || {
+    wait_within("backend healthy", WAIT, || {
         r.backend(SVC)
             .is_some_and(|b| b.state == HealthState::Healthy)
     });
@@ -548,7 +417,7 @@ fn reload_while_plugin_is_restarting() {
         "{decl}{}",
         plugin_service(SVC, "fake", "crash", settings)
     ));
-    wait_for("a 4s restart delay", || {
+    wait_within("a 4s restart delay", WAIT, || {
         d.log().contains("plugin fake restarting in 4s")
     });
     // New options cannot be validated while the plugin is down.
@@ -587,11 +456,8 @@ fn slow_plugin_config(mark: &str) -> String {
 fn spawn_loading(mark: &str) -> Daemon {
     let d = Daemon::spawn(&slow_plugin_config(mark));
     let pid = d.child.id().to_string();
-    wait_for("plugin spawned", || {
-        Command::new("pgrep")
-            .args(["-P", &pid])
-            .output()
-            .is_ok_and(|o| !o.stdout.is_empty())
+    wait_within("plugin spawned", WAIT, || {
+        !pgrep_args(&["-P", &pid]).is_empty()
     });
     d
 }
@@ -599,9 +465,11 @@ fn spawn_loading(mark: &str) -> Daemon {
 #[test]
 fn sighup_while_starting_reloads_once_started() {
     let mut d = spawn_loading(&marker("hup-start"));
-    kill(Pid::from_raw(d.child.id() as i32), Signal::SIGHUP).unwrap();
-    wait_for("reload after start", || d.log().contains("config reloaded"));
-    assert!(d.child.try_wait().unwrap().is_none(), "{}", d.log());
+    d.signal(Signal::SIGHUP);
+    wait_within("reload after start", WAIT, || {
+        d.log().contains("config reloaded")
+    });
+    assert!(d.running(), "{}", d.log());
     let (code, log) = d.stop();
     assert_eq!(code, 0, "{log}");
     assert!(log.contains("emfor started"), "{log}");
@@ -616,7 +484,7 @@ fn sigterm_while_starting_stops_cleanly() {
     // The start is abandoned, not finished first.
     assert!(log.contains("stop requested while starting"), "{log}");
     assert!(!log.contains("emfor started"), "{log}");
-    wait_for("plugin stopped", || pgrep(&mark).is_empty());
+    wait_within("plugin stopped", WAIT, || pgrep(&mark).is_empty());
 }
 
 /// A SIGTERM while a reload waits on a plugin stops the daemon at once
@@ -631,14 +499,14 @@ fn sigterm_during_a_reload_does_not_wait_for_it() {
         "{decl}{}",
         plugin_service(SVC, "fake", "up", FAST)
     ));
-    wait_for("started", || d.log().contains("emfor started"));
-    d.rewrite(&format!(
+    wait_within("started", WAIT, || d.log().contains("emfor started"));
+    d.write_config(&format!(
         "{decl}{}{}",
         plugin_decl("hang", &["EMFOR_TEST_PLUGIN_VALIDATE_HANG=1"], &hang),
         plugin_service("h.svc.emfor", "hang", "up", FAST)
     ));
-    kill(Pid::from_raw(d.child.id() as i32), Signal::SIGHUP).unwrap();
-    wait_for("reload waits on validate", || {
+    d.signal(Signal::SIGHUP);
+    wait_within("reload waits on validate", WAIT, || {
         !d.started_pids("hang").is_empty()
     });
     std::thread::sleep(Duration::from_millis(200));
@@ -649,7 +517,7 @@ fn sigterm_during_a_reload_does_not_wait_for_it() {
     assert!(took < Duration::from_secs(3), "stopped after {took:?}");
     assert!(log.contains("the reload is abandoned"), "{log}");
     assert!(!log.contains("config reloaded"), "{log}");
-    wait_for("plugins stopped", || {
+    wait_within("plugins stopped", WAIT, || {
         pgrep(&mark).is_empty() && pgrep(&hang).is_empty()
     });
 }
@@ -664,7 +532,7 @@ fn sigterm_during_startup_does_not_wait_for_it() {
         plugin_decl("hang", &["EMFOR_TEST_PLUGIN_VALIDATE_HANG=1"], &hang),
         plugin_service("h.svc.emfor", "hang", "up", FAST)
     ));
-    wait_for("start waits on validate", || {
+    wait_within("start waits on validate", WAIT, || {
         !d.started_pids("hang").is_empty()
     });
     std::thread::sleep(Duration::from_millis(200));
@@ -675,7 +543,7 @@ fn sigterm_during_startup_does_not_wait_for_it() {
     assert!(took < Duration::from_secs(3), "stopped after {took:?}");
     assert!(log.contains("stop requested while starting"), "{log}");
     assert!(!log.contains("emfor started"), "{log}");
-    wait_for("plugin stopped", || pgrep(&hang).is_empty());
+    wait_within("plugin stopped", WAIT, || pgrep(&hang).is_empty());
 }
 
 /// Spec "Plugin output line limit", oversized answer line.
@@ -690,11 +558,11 @@ fn oversized_stdout_line_restarts_the_plugin() {
         plugin_decl("p", &[], &mark),
         plugin_service("s.svc.emfor", "p", "long_stdout", slow)
     ));
-    wait_for("oversized line logged", || {
+    wait_within("oversized line logged", WAIT, || {
         d.log()
             .contains("plugin p wrote a line longer than 65536 bytes")
     });
-    wait_for("plugin restarted", || d.started_pids("p").len() >= 2);
+    wait_within("plugin restarted", WAIT, || d.started_pids("p").len() >= 2);
     let r = Reader::open(&d.store());
     let b = r.backend("s.svc.emfor").unwrap();
     assert_eq!(b.reason.as_deref(), Some("plugin exited"), "{}", d.log());
@@ -713,7 +581,7 @@ fn oversized_stderr_line_is_cut() {
         plugin_service("s.svc.emfor", "p", "long_stderr", FAST)
     ));
     let r = Reader::open(&d.store());
-    wait_for("backend healthy", || {
+    wait_within("backend healthy", WAIT, || {
         r.backend("s.svc.emfor")
             .is_some_and(|b| b.state == HealthState::Healthy)
     });

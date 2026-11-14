@@ -1,8 +1,15 @@
-//! Helpers shared by the daemon integration tests: free loopback ports and
-//! starting processes without leaking the tests' sockets into them.
+//! Helpers shared by the daemon integration tests: free loopback ports,
+//! starting processes without leaking the tests' sockets into them, running
+//! the `emfor` binary ([`daemon`]) and reading its store ([`store`]).
 //!
 //! Each test file uses only some of these.
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
+
+pub mod daemon;
+pub mod store;
+
+pub use daemon::*;
+pub use store::Reader;
 
 use std::io;
 use std::net::{SocketAddr, TcpListener, UdpSocket};
