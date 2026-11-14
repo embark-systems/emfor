@@ -58,6 +58,8 @@ SRV 回答帶有每個 backend 的 port，並列出所有候選：最近一次�
 | `fastest` | 在 pool 中為 0，不在為 1 | 1 | 每次查詢輪替 |
 | `round-robin`、`sticky` | 0 | 1 | 每次查詢輪替 |
 
+有候選正在[慢啟動](05-backend-selection.md#慢啟動slow-start)時，除了 `failover` 以外的方式都把每台的 weight 設為降低後的權重：它的 `weight`（`weighted`）或 1，乘上 1 到 10 的級數。
+
 每筆記錄的 target 是由 backend 位址衍生、放在服務名稱之下的名稱，不論 backend 是否健康，emfor 都會解析它：
 
 - `10.0.0.11` → `10-0-0-11.api.svc.emfor`

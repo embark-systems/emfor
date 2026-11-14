@@ -302,6 +302,7 @@ mod tests {
             checked_at: None,
             reason: None,
             latency_us,
+            recovered_at: None,
         }
     }
 

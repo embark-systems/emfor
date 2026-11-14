@@ -460,3 +460,60 @@ tests:
   - crates/emfor-daemon/tests/daemon.rs
   - crates/emfor-daemon/tests/plugins.rs
 -->
+
+---
+### Requirement: Slow start setting
+
+A service SHALL accept `slow_start`, a duration, in its own table or in `[defaults]`, with the service's value taking precedence and a built-in default of `"0s"`. `slow_start` SHALL be `0s` (slow start off) or from 1s to 1h; any other value SHALL be a validation error prefixed with its TOML path, reported together with every other violation as in "Config validation rules". `slow_start` SHALL be accepted under every `balance` value. A change of `slow_start` SHALL take effect on reload, including for backends whose slow start is in progress.
+
+#### Scenario: Default and override
+
+- **WHEN** `[defaults]` sets `slow_start = "30s"`, service `a.svc.emfor` sets nothing and service `b.svc.emfor` sets `slow_start = "0s"`
+- **THEN** `a.svc.emfor` has slow start 30s and `b.svc.emfor` has slow start off
+
+#### Scenario: Out of range
+
+- **WHEN** service `api.svc.emfor` sets `slow_start = "2h"`
+- **THEN** check-config fails with an error starting `services."api.svc.emfor".slow_start:`
+
+##### Example: slow_start validation
+
+| `slow_start` | Result |
+| --- | --- |
+| absent | ok, off |
+| `"0s"` | ok, off |
+| `"500ms"` | error |
+| `"1s"` | ok |
+| `"30s"` | ok |
+| `"1h"` | ok |
+| `"2h"` | error |
+| `30` | error: not a duration string |
+
+<!-- @trace
+source: emfor-slow-start
+updated: 2026-11-14
+code:
+  - examples/emfor.toml
+  - crates/emfor-daemon/src/state.rs
+  - tools/emfor-fixture/src/lib.rs
+  - docs/manual.zh_TW/07-dns.md
+  - tests/conformance/v1/README.md
+  - crates/emfor-daemon/src/config.rs
+  - crates/emfor-format/src/rules.rs
+  - tests/conformance/v1/cases.json
+  - crates/emfor-format/src/lib.rs
+  - docs/manual/07-dns.md
+  - crates/emfor-daemon/src/select.rs
+  - crates/emfor-daemon/src/writer.rs
+  - docs/manual/03-configuration.md
+  - crates/emfor-daemon/src/supervisor.rs
+  - docs/manual.zh_TW/05-backend-selection.md
+  - crates/emfor-daemon/src/metrics.rs
+  - CHANGELOG.md
+  - docs/manual/05-backend-selection.md
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/live.rs
+  - crates/emfor-daemon/src/dns.rs
+  - docs/manual.zh_TW/03-configuration.md
+  - clients/rust/src/client.rs
+-->

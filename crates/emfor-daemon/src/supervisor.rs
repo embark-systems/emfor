@@ -267,6 +267,8 @@ impl Supervisor {
                 on_all_down: new.settings.on_all_down,
                 balance: new.settings.balance,
                 dns_ttl: new.dns_ttl,
+                slow_start_ms: u64::try_from(new.settings.slow_start.as_millis())
+                    .unwrap_or(u64::MAX),
                 backends: new.backends.clone(),
                 generation,
                 reset,

@@ -108,6 +108,7 @@ jitter = "10%"
 on_all_down = "open"
 balance = "round-robin"
 peers = true
+slow_start = "0s"
 ```
 
 | Key | 規則 | 意義 |
@@ -120,6 +121,7 @@ peers = true
 | `on_all_down` | `open` 或 `closed` | 沒有 backend 健康時查詢怎麼做（[第 5 章](05-backend-selection.md#沒有任何-backend-健康時)）。 |
 | `balance` | 見[第 5 章](05-backend-selection.md) | 如何選擇 backend。 |
 | `peers` | `true` 或 `false` | 這個服務是否參加[聯防群組](#peers)。沒有 `[peers]` 時沒有作用。 |
+| `slow_start` | `0s`（關閉），或 `1s` 到 `1h` | 恢復的 backend 在這段時間內逐步增加分到的流量（[第 5 章](05-backend-selection.md#慢啟動slow-start)）。 |
 
 ## [services."name"]
 
@@ -139,7 +141,7 @@ path = "/healthz"
 | `check` | 是 | `tcp`、`http`、`exec`，或已宣告的 plugin 名稱。 |
 | `backends` | 是 | 非空的 backend 清單（見下）。 |
 | `check_options` | 否 | checker 的選項（[第 4 章](04-health-checks.md)）。 |
-| `interval`、`timeout`、`rise`、`fall`、`jitter`、`on_all_down`、`balance`、`peers` | 否 | 為這個服務覆寫 `[defaults]`。 |
+| `interval`、`timeout`、`rise`、`fall`、`jitter`、`on_all_down`、`balance`、`peers`、`slow_start` | 否 | 為這個服務覆寫 `[defaults]`。 |
 | `dns_ttl` | 否 | 為這個服務覆寫 `[dns] ttl`；整數秒，`0s` 到 `3600s`。 |
 
 **服務名稱**類似主機名稱：轉為小寫、去掉一個結尾的點，最多 253 個字元，由點分隔的 label 組成，每個 label 1–63 個 `a-z`、`0-9` 與 `-` 字元，且不以 `-` 開頭或結尾。只差在大小寫的兩個名稱視為重複。client 查詢時也用同樣方式正規化名稱。
@@ -199,7 +201,7 @@ services."api.svc.emfor".timeout: timeout must not exceed interval
 | 新增或移除服務與 backend | 套用；新的 backend 從 `unknown` 開始。 |
 | 服務的 `check` 或 `check_options` | 套用；它的 backend 從 `unknown` 重新開始。 |
 | `interval`、`timeout`、`rise`、`fall`、`jitter`、`on_all_down`、`peers` | 套用；backend 保留原狀態。 |
-| `balance`、`weight`、`site`（最上層與 backend）、`dns_ttl` | 套用。 |
+| `balance`、`weight`、`site`（最上層與 backend）、`dns_ttl`、`slow_start` | 套用；正在慢啟動的 backend 保留它的恢復時間。 |
 | `[dns] zone`、`[dns] ttl` | 套用。 |
 | `[log] level` | 套用（除非設定了 `RUST_LOG`）。 |
 | plugin 的 `command` | 該 plugin 重新啟動，使用它的服務從 `unknown` 重新開始。未變更的 plugin 繼續執行。 |

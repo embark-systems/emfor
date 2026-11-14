@@ -10,6 +10,16 @@
   check instead of after `fall` of them. When every healthy backend is
   failing, all of them are used as before. The store format is
   unchanged.
+- `slow_start` (per service, or in `[defaults]`; `"0s"`, off, by
+  default, else `1s` to `1h`): a backend that turns from unhealthy to
+  healthy gets a growing share of traffic over that time, in 10 steps,
+  instead of its full share at once. It applies to client lookups and
+  DNS A/AAAA answers for every method but `failover` and `sticky` with a
+  key, and to SRV weights. The store gains `slow_start_ms` on services
+  and `recovered_at` on backends; the format version stays 1, and older
+  clients ignore both, so a recovered backend gets its full share at once
+  with them. See
+  [Slow start](docs/manual/05-backend-selection.md#slow-start).
 - The `http` check takes `expect_body`: text the response body must
   contain, for health endpoints that answer 200 either way. The body is
   read only when the status matches, up to 64 KiB.

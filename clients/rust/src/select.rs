@@ -84,8 +84,10 @@ pub fn rendezvous_index<'a>(key: &str, ids: impl Iterator<Item = &'a str>) -> us
     best.map_or(0, |(_, i)| i)
 }
 
-/// Pick one candidate by `balance`. `site` is the host's site (`meta/site`);
-/// `next` gives this service's next round-robin counter value.
+/// Pick one candidate by `balance`, with slow start off. `site` is the
+/// host's site (`meta/site`); `next` gives this service's next round-robin
+/// counter value.
+#[cfg(test)]
 pub fn pick(
     balance: Balance,
     candidates: &[&BackendRecord],
@@ -93,41 +95,72 @@ pub fn pick(
     site: Option<&str>,
     next: impl FnOnce() -> u64,
 ) -> String {
-    let key = affinity_key.filter(|k| !k.is_empty());
-    let i = match (balance, key) {
-        (Balance::Failover, _) => 0,
-        (Balance::Sticky, Some(k)) => rendezvous_index(k, candidates.iter().map(|b| b.id.as_str())),
-        (Balance::Weighted, _) => weighted_index(candidates, next()),
-        (Balance::Locality, _) => {
-            let all: Vec<usize> = (0..candidates.len()).collect();
-            let local = rules::subset_or_all(&all, |i| {
-                rules::preferred(Balance::Locality, candidates[i], site, None)
-            });
-            local[(next() % local.len() as u64) as usize]
-        }
-        // round-robin, sticky without a key, and a balance this client does
-        // not know (written by a newer daemon).
-        _ => (next() % candidates.len() as u64) as usize,
-    };
-    candidates[i].id.clone()
+    pick_at(balance, candidates, affinity_key, site, 0, 0, next)
 }
 
-/// `weighted`: the first candidate, in config order, whose cumulative weight
-/// exceeds `counter % W`, W being the sum of the weights.
-pub fn weighted_index(candidates: &[&BackendRecord], counter: u64) -> usize {
-    let total: u64 = candidates.iter().map(|b| u64::from(b.weight)).sum();
+/// [`pick`] at `now_ms` for a service whose `slow_start_ms` is given (0
+/// when the store is stale). While a backend the method would choose from
+/// is in slow start, the choice goes by effective weights with the counter;
+/// `failover` and `sticky` with a key are not affected.
+pub fn pick_at(
+    balance: Balance,
+    candidates: &[&BackendRecord],
+    affinity_key: Option<&str>,
+    site: Option<&str>,
+    slow_start_ms: u64,
+    now_ms: u64,
+    next: impl FnOnce() -> u64,
+) -> String {
+    let key = affinity_key.filter(|k| !k.is_empty());
+    match (balance, key) {
+        (Balance::Failover, _) => return candidates[0].id.clone(),
+        (Balance::Sticky, Some(k)) => {
+            let i = rendezvous_index(k, candidates.iter().map(|b| b.id.as_str()));
+            return candidates[i].id.clone();
+        }
+        _ => {}
+    }
+    // `locality` chooses among the backends at the host's site, if any.
+    let pool: Vec<&BackendRecord> = if balance == Balance::Locality {
+        rules::subset_or_all(candidates, |b| {
+            rules::preferred(Balance::Locality, b, site, None)
+        })
+    } else {
+        candidates.to_vec()
+    };
+    let weights: Vec<u64> = if rules::any_ramping(&pool, slow_start_ms, now_ms, |b| b) {
+        pool.iter()
+            .map(|b| {
+                let base = rules::base_weight(balance, b);
+                u64::from(rules::effective_weight(b, base, slow_start_ms, now_ms))
+            })
+            .collect()
+    } else if balance == Balance::Weighted {
+        pool.iter().map(|b| u64::from(b.weight)).collect()
+    } else {
+        // round-robin, locality, sticky without a key, and a balance this
+        // client does not know (written by a newer daemon).
+        vec![1; pool.len()]
+    };
+    pool[cumulative_index(&weights, next())].id.clone()
+}
+
+/// The first index, in config order, whose cumulative weight exceeds
+/// `counter % W`, W being the sum of `weights`; with W = 0, `counter % len`.
+fn cumulative_index(weights: &[u64], counter: u64) -> usize {
+    let total: u64 = weights.iter().sum();
     if total == 0 {
-        return (counter % candidates.len() as u64) as usize;
+        return (counter % weights.len() as u64) as usize;
     }
     let r = counter % total;
     let mut cumulative = 0;
-    for (i, b) in candidates.iter().enumerate() {
-        cumulative += u64::from(b.weight);
+    for (i, w) in weights.iter().enumerate() {
+        cumulative += w;
         if cumulative > r {
             return i;
         }
     }
-    candidates.len() - 1
+    weights.len() - 1
 }
 
 #[cfg(test)]
@@ -147,6 +180,7 @@ mod tests {
             checked_at: Some(1),
             reason: None,
             latency_us: None,
+            recovered_at: None,
         }
     }
 
@@ -160,6 +194,7 @@ mod tests {
             on_all_down,
             balance,
             all_down: false,
+            slow_start_ms: 0,
             pool: None,
             backends,
         }
@@ -348,7 +383,7 @@ mod tests {
         // A weight of 0 (never written by the daemon) does not panic.
         let mut zero = light.clone();
         zero.weight = 0;
-        assert_eq!(weighted_index(&[&zero], 5), 0);
+        assert_eq!(cumulative_index(&[u64::from(zero.weight)], 5), 0);
     }
 
     #[test]
@@ -428,5 +463,126 @@ mod tests {
             let r = fastest_rec(pool);
             assert_eq!(fastest_picks(&r, false, 2), [API[0], API[1]], "{pool:?}");
         }
+    }
+
+    /// Slow start of 100 s; `ramping` recovered 25 s ago (step 3 of 10).
+    const SLOW: u64 = 100_000;
+    const NOW: u64 = 1_700_000_100_000;
+
+    fn ramping(id: &str) -> BackendRecord {
+        let mut b = be(id, Healthy);
+        b.recovered_at = Some(NOW - 25_000);
+        b
+    }
+
+    /// How often each id is picked for counter values 0..n.
+    fn slow_counts(
+        balance: Balance,
+        refs: &[&BackendRecord],
+        key: Option<&str>,
+        site: Option<&str>,
+        slow: u64,
+        n: u64,
+    ) -> std::collections::BTreeMap<String, u64> {
+        let mut m = std::collections::BTreeMap::new();
+        for i in 0..n {
+            *m.entry(pick_at(balance, refs, key, site, slow, NOW, || i))
+                .or_insert(0) += 1;
+        }
+        m
+    }
+
+    fn map(pairs: &[(&str, u64)]) -> std::collections::BTreeMap<String, u64> {
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    #[test]
+    fn slow_start_round_robin_share() {
+        let (a, b) = (be(API[0], Healthy), ramping(API[1]));
+        let refs = [&a, &b];
+        for balance in [Balance::RoundRobin, Balance::Fastest] {
+            assert_eq!(
+                slow_counts(balance, &refs, None, None, SLOW, 13),
+                map(&[(API[0], 10), (API[1], 3)]),
+                "{balance:?}"
+            );
+        }
+        // Sticky without a key ramps too.
+        assert_eq!(
+            slow_counts(Balance::Sticky, &refs, Some(""), None, SLOW, 13),
+            map(&[(API[0], 10), (API[1], 3)])
+        );
+        // Slow start off (or a stale store): plain round-robin.
+        assert_eq!(
+            slow_counts(Balance::RoundRobin, &refs, None, None, 0, 4),
+            map(&[(API[0], 2), (API[1], 2)])
+        );
+    }
+
+    #[test]
+    fn slow_start_weighted_share() {
+        let mut a = ramping(API[0]);
+        a.weight = 3;
+        let b = be(API[1], Healthy);
+        assert_eq!(
+            slow_counts(Balance::Weighted, &[&a, &b], None, None, SLOW, 19),
+            map(&[(API[0], 9), (API[1], 10)])
+        );
+    }
+
+    #[test]
+    fn slow_start_over_is_full_share() {
+        let mut a = ramping(API[0]);
+        a.recovered_at = Some(NOW - 200_000);
+        let b = be(API[1], Healthy);
+        assert_eq!(
+            slow_counts(Balance::RoundRobin, &[&a, &b], None, None, SLOW, 4),
+            map(&[(API[0], 2), (API[1], 2)])
+        );
+    }
+
+    #[test]
+    fn slow_start_leaves_failover_and_sticky_key() {
+        let (a, b) = (ramping(API[0]), be(API[1], Healthy));
+        let refs = [&a, &b];
+        assert_eq!(
+            slow_counts(Balance::Failover, &refs, None, None, SLOW, 5),
+            map(&[(API[0], 5)])
+        );
+        let all: Vec<BackendRecord> = API.iter().map(|id| ramping(id)).collect();
+        let refs: Vec<&BackendRecord> = all.iter().collect();
+        let never = || panic!("sticky with a key must not use the counter");
+        assert_eq!(
+            pick_at(
+                Balance::Sticky,
+                &refs,
+                Some("user-42"),
+                None,
+                SLOW,
+                NOW,
+                never
+            ),
+            API[1]
+        );
+    }
+
+    #[test]
+    fn slow_start_locality_within_the_site() {
+        let mut a = ramping(API[0]);
+        a.site = Some("tpe".into());
+        let mut b = be(API[1], Healthy);
+        b.site = Some("tpe".into());
+        let c = be(API[2], Healthy);
+        assert_eq!(
+            slow_counts(
+                Balance::Locality,
+                &[&a, &b, &c],
+                None,
+                Some("tpe"),
+                SLOW,
+                13
+            ),
+            map(&[(API[0], 3), (API[1], 10)])
+        );
     }
 }

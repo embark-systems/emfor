@@ -19,6 +19,9 @@ data" of the emfor-clients change.
 - `store.heartbeat` is `fresh`, `stale` (now minus twice the maximum
   staleness), `zero` or `missing`; `store.raw` holds keys written verbatim,
   such as `meta/site` for `locality` or malformed records.
+- A backend may have `recovered_ago_ms` instead of `recovered_at`: the
+  store gets `recovered_at` = the time the store is written minus that many
+  milliseconds, so slow start cases do not depend on the date they run.
 - `sticky-v1.json`: rendezvous hash vectors (`hashes`: key, id, big-endian
   u32 of the first 4 bytes of MD5(key ++ id)) and pick vectors (`picks`).
   Generated with Python's hashlib.

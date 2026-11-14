@@ -273,6 +273,9 @@ pub struct Settings {
     pub balance: Balance,
     /// Take part in the peer group (no effect without `[peers]`).
     pub peers: bool,
+    /// How long a backend that recovered from unhealthy takes to get its
+    /// full share; zero is off.
+    pub slow_start: Duration,
 }
 
 impl Default for Settings {
@@ -286,6 +289,7 @@ impl Default for Settings {
             on_all_down: OnAllDown::Open,
             balance: Balance::RoundRobin,
             peers: true,
+            slow_start: Duration::ZERO,
         }
     }
 }
@@ -561,6 +565,7 @@ struct PartialSettings {
     on_all_down: Option<OnAllDown>,
     balance: Option<Balance>,
     peers: Option<bool>,
+    slow_start: Option<Duration>,
 }
 
 impl PartialSettings {
@@ -574,6 +579,7 @@ impl PartialSettings {
             on_all_down: self.on_all_down.unwrap_or(base.on_all_down),
             balance: self.balance.unwrap_or(base.balance),
             peers: self.peers.unwrap_or(base.peers),
+            slow_start: self.slow_start.unwrap_or(base.slow_start),
         }
     }
 }
@@ -587,6 +593,7 @@ const SETTING_KEYS: &[&str] = &[
     "on_all_down",
     "balance",
     "peers",
+    "slow_start",
 ];
 
 #[derive(Default)]
@@ -1035,6 +1042,16 @@ impl Validator {
                 );
             } else {
                 p.timeout = Some(d);
+            }
+        }
+        if let Some(d) = self.duration(t, parent, "slow_start") {
+            if d.is_zero() || (Duration::from_secs(1)..=Duration::from_secs(3600)).contains(&d) {
+                p.slow_start = Some(d);
+            } else {
+                self.err(
+                    key_path(parent, "slow_start"),
+                    "slow_start must be 0s or from 1s to 1h",
+                );
             }
         }
         p.rise = self.count(t, parent, "rise");
@@ -1639,6 +1656,49 @@ backends = ["10.0.0.1:80"]
         assert_eq!(c.services[0].name, "api.svc.emfor");
         assert_eq!(c.services[0].settings.balance, Balance::RoundRobin);
         assert_eq!(c.services[1].settings.balance, Balance::Failover);
+    }
+
+    /// Spec "Slow start setting", scenario "Default and override" and
+    /// example "slow_start validation".
+    #[test]
+    fn slow_start_setting() {
+        let c = parse_ok(
+            r#"[defaults]
+slow_start = "30s"
+[services."a.svc.emfor"]
+check = "tcp"
+backends = ["10.0.0.1:80"]
+[services."b.svc.emfor"]
+check = "tcp"
+backends = ["10.0.0.2:80"]
+slow_start = "0s"
+"#,
+        );
+        assert_eq!(c.services[0].settings.slow_start, Duration::from_secs(30));
+        assert_eq!(c.services[1].settings.slow_start, Duration::ZERO);
+        let rows: &[(&str, Option<Duration>)] = &[
+            ("", Some(Duration::ZERO)),
+            ("slow_start = \"0s\"\n", Some(Duration::ZERO)),
+            ("slow_start = \"500ms\"\n", None),
+            ("slow_start = \"1s\"\n", Some(Duration::from_secs(1))),
+            ("slow_start = \"30s\"\n", Some(Duration::from_secs(30))),
+            ("slow_start = \"1h\"\n", Some(Duration::from_secs(3600))),
+            ("slow_start = \"2h\"\n", None),
+            ("slow_start = 30\n", None),
+        ];
+        for (line, want) in rows {
+            match (parse(&format!("{SVC}{line}"), &Registry::builtin()), want) {
+                (Ok(c), Some(d)) => assert_eq!(c.services[0].settings.slow_start, *d, "{line:?}"),
+                (Err(e), None) => assert!(
+                    e.iter()
+                        .any(|e| e.path == "services.\"api.svc.emfor\".slow_start"),
+                    "{line:?}: {e:?}"
+                ),
+                (r, _) => panic!("{line:?}: unexpected {r:?}"),
+            }
+        }
+        let e = parse_err(&format!("{SVC}slow_start = \"2h\"\n"));
+        assert_eq!(e[0].message, "slow_start must be 0s or from 1s to 1h");
     }
 
     #[test]

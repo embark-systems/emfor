@@ -74,6 +74,11 @@ ask for `_http._tcp.api.svc.emfor`, which emfor answers.
 | `fastest` | 0 in the pool, 1 outside it | 1 | rotates per query |
 | `round-robin`, `sticky` | 0 | 1 | rotates per query |
 
+While a candidate is in [slow
+start](05-backend-selection.md#slow-start), every method but `failover`
+sets each weight to the backend's reduced weight: its `weight` (for
+`weighted`) or 1, times its step of 1 to 10.
+
 Each record's target is a name derived from the backend's address under
 the service name, which emfor resolves whatever the backend's health:
 

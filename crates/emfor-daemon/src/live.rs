@@ -242,6 +242,7 @@ mod tests {
             pool: None,
             balance: Balance::RoundRobin,
             all_down: true,
+            slow_start_ms: 0,
             backends: vec![],
         };
         (name.to_string(), LiveService::new(record, None))

@@ -106,6 +106,35 @@ every backend, nothing changes.
   peers still find the backend up (the reason starts with `local: `), so
   this host stops choosing it at once.
 
+## Slow start
+
+A backend that comes back may have cold caches or connection pools. With
+`slow_start` set (for example `slow_start = "30s"`), a backend that turns
+from `unhealthy` to `healthy` gets a growing share of traffic over that
+time instead of its full share at once.
+
+- The time is split into 10 equal steps. In the first tenth the backend
+  counts as 1/10 of its weight, in the second as 2/10, and so on; after
+  `slow_start` it counts in full. Its weight is its `weight` for
+  `weighted` and 1 for every other method.
+- While at least one candidate is in slow start, `round-robin`,
+  `weighted`, `locality`, `fastest` and `sticky` without a key choose by
+  these reduced weights. `locality` and `fastest` first narrow to the
+  site or the pool, as usual. `failover` and `sticky` with a key are not
+  affected.
+- Only a recovery counts: a backend that is `unknown` when the daemon
+  starts, or that a reload adds or restarts, gets its full share at once.
+  A backend that turns unhealthy again leaves slow start.
+- It has an effect only when some backends recover and others are already
+  healthy. A service with one backend still sends it everything, and
+  backends that recover together keep equal shares.
+- A stale store has no slow start, and a clock that went back ends it.
+- Clients older than this feature ignore it: a recovered backend gets its
+  full share at once.
+
+DNS A/AAAA answers follow the same reduced weights, and SRV records carry
+them as their weight ([chapter 7](07-dns.md#srv-records)).
+
 ## When no backend is healthy
 
 | `on_all_down` | Lookup | DNS A/AAAA/SRV |

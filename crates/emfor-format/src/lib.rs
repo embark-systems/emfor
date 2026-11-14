@@ -155,6 +155,11 @@ pub struct BackendRecord {
     /// from older daemons.
     #[serde(default)]
     pub latency_us: Option<u64>,
+    /// Unix milliseconds of the check that last turned the backend from
+    /// unhealthy to healthy; `None` after any other transition, before the
+    /// first one, and in records from older daemons. Slow start counts from it.
+    #[serde(default)]
+    pub recovered_at: Option<u64>,
 }
 
 fn default_weight() -> u32 {
@@ -171,6 +176,10 @@ pub struct ServiceRecord {
     pub balance: Balance,
     /// `true` when no backend is [`HealthState::Healthy`].
     pub all_down: bool,
+    /// The service's `slow_start` in milliseconds; 0 when slow start is off
+    /// and in records from older daemons.
+    #[serde(default)]
+    pub slow_start_ms: u64,
     /// Backends in config order.
     pub backends: Vec<BackendRecord>,
     /// Ids of the fast backends in config order, decided by the daemon.
@@ -241,6 +250,7 @@ mod tests {
             on_all_down: OnAllDown::Closed,
             balance: Balance::RoundRobin,
             all_down: false,
+            slow_start_ms: 0,
             backends: vec![BackendRecord {
                 id: "[2001:db8::5]:5432".into(),
                 ip: "2001:db8::5".into(),
@@ -251,6 +261,7 @@ mod tests {
                 checked_at: Some(1762905600123),
                 reason: None,
                 latency_us: Some(1834),
+                recovered_at: None,
             }],
             pool: None,
         }
@@ -261,7 +272,7 @@ mod tests {
         let json = serde_json::to_string(&db_example()).unwrap();
         assert_eq!(
             json,
-            r#"{"name":"db.svc.emfor","on_all_down":"closed","balance":"round-robin","all_down":false,"backends":[{"id":"[2001:db8::5]:5432","ip":"2001:db8::5","port":5432,"weight":1,"site":null,"state":"healthy","checked_at":1762905600123,"reason":null,"latency_us":1834}]}"#
+            r#"{"name":"db.svc.emfor","on_all_down":"closed","balance":"round-robin","all_down":false,"slow_start_ms":0,"backends":[{"id":"[2001:db8::5]:5432","ip":"2001:db8::5","port":5432,"weight":1,"site":null,"state":"healthy","checked_at":1762905600123,"reason":null,"latency_us":1834,"recovered_at":null}]}"#
         );
     }
 
@@ -325,6 +336,33 @@ mod tests {
         assert!(json.contains(r#""weight":3,"site":"dc1""#), "{json}");
     }
 
+    /// Spec "Store record format version 1", example "slow start fields
+    /// written".
+    #[test]
+    fn slow_start_fields_written() {
+        let mut rec = db_example();
+        rec.slow_start_ms = 30000;
+        rec.backends[0].recovered_at = Some(1762905600123);
+        let json = serde_json::to_string(&rec).unwrap();
+        assert!(
+            json.contains(r#""all_down":false,"slow_start_ms":30000,"#),
+            "{json}"
+        );
+        assert!(
+            json.contains(r#""latency_us":1834,"recovered_at":1762905600123}"#),
+            "{json}"
+        );
+    }
+
+    /// Records from older daemons have neither field.
+    #[test]
+    fn missing_slow_start_fields_read_as_off() {
+        let json = r#"{"name":"a","on_all_down":"open","all_down":false,"backends":[{"id":"10.0.0.1:80","ip":"10.0.0.1","port":80,"state":"healthy","checked_at":1,"reason":null}]}"#;
+        let rec: ServiceRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(rec.slow_start_ms, 0);
+        assert_eq!(rec.backends[0].recovered_at, None);
+    }
+
     #[test]
     fn pool_written_only_when_set() {
         let mut rec = db_example();
@@ -333,7 +371,7 @@ mod tests {
         rec.pool = Some(vec!["[2001:db8::5]:5432".into()]);
         let json = serde_json::to_string(&rec).unwrap();
         assert!(
-            json.ends_with(r#""latency_us":1834}],"pool":["[2001:db8::5]:5432"]}"#),
+            json.ends_with(r#""recovered_at":null}],"pool":["[2001:db8::5]:5432"]}"#),
             "{json}"
         );
         let missing: ServiceRecord = serde_json::from_str(

@@ -72,6 +72,8 @@ balance = "round-robin" # "round-robin", "sticky" (by affinity key), "failover",
                         # "weighted" (by backend weight), "locality" (same site first)
                         # or "fastest" (backends whose checks answer fastest, in turn)
 peers = true           # take part in the peer group, when [peers] is set
+# slow_start = "30s"   # a backend that recovers gets a growing share over
+                       # this time; "0s" (default) is off, else 1s to 1h
 
 # A plain TCP service: a backend is up when it accepts a connection.
 [services."db.svc.emfor"]

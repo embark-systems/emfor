@@ -44,6 +44,58 @@ pub fn healthy_or_all<'a, T: Copy>(
     }
 }
 
+/// Steps of slow start: a ramping backend gets 1 to 9 tenths of its base
+/// weight, one that is not ramping all ten.
+pub const SLOW_START_STEPS: u32 = 10;
+
+/// The slow start step of `b`, from 1 to [`SLOW_START_STEPS`]: the tenths of
+/// `slow_start_ms` passed since `b.recovered_at`, rounded up and at least 1,
+/// or all of them when `b` has not recovered, slow start is off, the clock
+/// is earlier than `recovered_at`, or `slow_start_ms` has passed.
+pub fn slow_start_step(b: &BackendRecord, slow_start_ms: u64, now_ms: u64) -> u32 {
+    let full = SLOW_START_STEPS;
+    let Some(at) = b.recovered_at else {
+        return full;
+    };
+    if slow_start_ms == 0 || now_ms < at {
+        return full;
+    }
+    let elapsed = now_ms - at;
+    if elapsed >= slow_start_ms {
+        return full;
+    }
+    // elapsed < slow_start_ms, so the quotient is below `full`.
+    let step = (u64::from(full) * elapsed).div_ceil(slow_start_ms);
+    u32::try_from(step).unwrap_or(full).max(1)
+}
+
+/// `base` (the backend's weight for `weighted`, 1 otherwise) times the slow
+/// start step of `b`.
+pub fn effective_weight(b: &BackendRecord, base: u32, slow_start_ms: u64, now_ms: u64) -> u32 {
+    base.saturating_mul(slow_start_step(b, slow_start_ms, now_ms))
+}
+
+/// Whether any of `list` is in slow start (its step is below the full one).
+pub fn any_ramping<'a, T: Copy>(
+    list: &[T],
+    slow_start_ms: u64,
+    now_ms: u64,
+    backend: impl Fn(T) -> &'a BackendRecord,
+) -> bool {
+    list.iter()
+        .any(|&t| slow_start_step(backend(t), slow_start_ms, now_ms) < SLOW_START_STEPS)
+}
+
+/// The base weight for slow start: the backend's `weight` for `weighted`,
+/// 1 for every other method.
+pub fn base_weight(balance: Balance, b: &BackendRecord) -> u32 {
+    if balance == Balance::Weighted {
+        b.weight
+    } else {
+        1
+    }
+}
+
 /// Whether `balance` prefers backend `b`: `locality` prefers the host's
 /// `site`, `fastest` the backends in the daemon's `pool`; other methods
 /// prefer none.
@@ -82,6 +134,7 @@ mod tests {
             checked_at: None,
             reason: None,
             latency_us: None,
+            recovered_at: None,
         }
     }
 
@@ -195,6 +248,59 @@ mod tests {
             Some("dc1"),
             Some(&pool)
         ));
+    }
+
+    /// Spec "Slow start effective weight", example "step and effective
+    /// weight", every row.
+    #[test]
+    fn slow_start_effective_weight_table() {
+        let at = 1_762_905_600_000;
+        /// recovered_at, slow_start_ms, now, balance, weight, step, effective.
+        type Row = (Option<u64>, u64, u64, Balance, u32, u32, u32);
+        let rows: &[Row] = &[
+            (Some(at), 30000, at, Balance::RoundRobin, 1, 1, 1),
+            (Some(at), 30000, at + 1000, Balance::RoundRobin, 1, 1, 1),
+            (Some(at), 30000, at + 7500, Balance::RoundRobin, 1, 3, 3),
+            (Some(at), 30000, at + 29900, Balance::Weighted, 4, 10, 40),
+            (Some(at), 30000, at + 30000, Balance::Weighted, 4, 10, 40),
+            (Some(at), 30000, at + 7500, Balance::Weighted, 4, 3, 12),
+            (None, 30000, at + 7500, Balance::Weighted, 4, 10, 40),
+            (Some(at), 0, at + 7500, Balance::RoundRobin, 1, 10, 10),
+            (
+                Some(at),
+                30000,
+                at - 100_000,
+                Balance::RoundRobin,
+                1,
+                10,
+                10,
+            ),
+        ];
+        for &(recovered_at, slow, now, balance, weight, step, effective) in rows {
+            let mut r = b("10.0.0.1:80", HealthState::Healthy, None);
+            r.recovered_at = recovered_at;
+            r.weight = weight;
+            let row = format!("{recovered_at:?} {slow} {now} {balance:?} {weight}");
+            assert_eq!(slow_start_step(&r, slow, now), step, "{row}");
+            let base = base_weight(balance, &r);
+            assert_eq!(effective_weight(&r, base, slow, now), effective, "{row}");
+        }
+    }
+
+    /// Spec scenario "Step during a 30 second slow start".
+    #[test]
+    fn slow_start_steps_over_thirty_seconds() {
+        let mut r = b("10.0.0.1:80", HealthState::Healthy, None);
+        r.recovered_at = Some(1_762_905_600_000);
+        let steps: Vec<u32> = [0, 3000, 10000, 30000, 40000]
+            .iter()
+            .map(|d| slow_start_step(&r, 30000, 1_762_905_600_000 + d))
+            .collect();
+        assert_eq!(steps, [1, 1, 4, 10, 10]);
+        let other = b("10.0.0.2:80", HealthState::Healthy, None);
+        assert!(any_ramping(&[&r, &other], 30000, 1_762_905_610_000, |x| x));
+        assert!(!any_ramping(&[&r, &other], 30000, 1_762_905_630_000, |x| x));
+        assert!(!any_ramping(&[&other], 30000, 1_762_905_610_000, |x| x));
     }
 
     #[test]

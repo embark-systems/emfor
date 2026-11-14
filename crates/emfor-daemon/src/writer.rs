@@ -117,6 +117,8 @@ pub struct ServiceLayout {
     pub balance: Balance,
     /// Per-service override of `[dns] ttl`, in seconds.
     pub dns_ttl: Option<u32>,
+    /// `slow_start` in milliseconds; 0 is off.
+    pub slow_start_ms: u64,
     pub backends: Vec<Backend>,
     /// Updates from tasks of any other generation are dropped.
     pub generation: u64,
@@ -290,6 +292,14 @@ impl<S: Sink> Writer<S> {
         b.checked_at = Some(u.checked_at);
         b.reason = u.reason;
         b.latency_us = u.latency_us;
+        // Slow start counts from a recovery: unhealthy to healthy only.
+        match u.transition {
+            Some(t) if t.from == HealthState::Unhealthy && t.to == HealthState::Healthy => {
+                b.recovered_at = Some(u.checked_at);
+            }
+            Some(_) => b.recovered_at = None,
+            None => {}
+        }
         let reason = b.reason.clone();
         rec.refresh_all_down();
         refresh_pool(rec);
@@ -412,6 +422,7 @@ impl<S: Sink> Writer<S> {
                 on_all_down: s.on_all_down,
                 balance: s.balance,
                 all_down: true,
+                slow_start_ms: s.slow_start_ms,
                 backends,
                 pool: old.and_then(|o| o.pool),
             };
@@ -564,6 +575,7 @@ fn fresh_backend(b: &Backend) -> BackendRecord {
         checked_at: None,
         reason: None,
         latency_us: None,
+        recovered_at: None,
     }
 }
 
@@ -584,6 +596,7 @@ mod tests {
             on_all_down: OnAllDown::Open,
             balance: Balance::RoundRobin,
             dns_ttl: None,
+            slow_start_ms: 0,
             backends: ids.iter().map(|i| be(i)).collect(),
             generation,
             reset,
@@ -936,6 +949,86 @@ mod tests {
         settled(&tx).await;
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(store.get(KEY_PEERS).unwrap(), Some(live));
+    }
+
+    /// An update of `id` with state `to` from a check that finished at `at`,
+    /// with a transition from `from` when it is not `to`.
+    fn upd_at(id: &str, from: HealthState, to: HealthState, at: u64) -> WriterMsg {
+        let WriterMsg::Update(mut u) = upd("api.svc.emfor", id, to, from != to) else {
+            unreachable!("upd builds an update")
+        };
+        u.checked_at = at;
+        u.transition = u.transition.map(|t| Transition { from, ..t });
+        WriterMsg::Update(u)
+    }
+
+    /// Spec "Recovery time in the store", example "recovered_at after each
+    /// transition", and the reload rules.
+    #[tokio::test]
+    async fn recovered_at_follows_transitions() {
+        use HealthState::*;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
+        let id = "10.0.0.11:8080";
+        let mut l = layout("api.svc.emfor", &[id], 0, true);
+        l.slow_start_ms = 30000;
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![l.clone()],
+        })
+        .unwrap();
+        let at = |store: &Store| record(store, "api.svc.emfor").backends[0].recovered_at;
+        let steps = [
+            (Unknown, Healthy, 1762905590000, None),
+            (Healthy, Unhealthy, 1762905595000, None),
+            (Unhealthy, Healthy, 1762905600123, Some(1762905600123)),
+            (Healthy, Healthy, 1762905602000, Some(1762905600123)),
+            (Healthy, Unhealthy, 1762905609000, None),
+        ];
+        for (from, to, checked, want) in steps {
+            tx.send(upd_at(id, from, to, checked)).unwrap();
+            settled(&tx).await;
+            assert_eq!(at(&store), want, "{from} -> {to}");
+        }
+        assert_eq!(record(&store, "api.svc.emfor").slow_start_ms, 30000);
+        tx.send(upd_at(id, Unhealthy, Healthy, 1762905620000))
+            .unwrap();
+        settled(&tx).await;
+        // A reload that keeps the backend keeps it; one that resets clears it.
+        l.reset = false;
+        l.slow_start_ms = 0;
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![l.clone()],
+        })
+        .unwrap();
+        settled(&tx).await;
+        assert_eq!(at(&store), Some(1762905620000));
+        assert_eq!(record(&store, "api.svc.emfor").slow_start_ms, 0);
+        // A reload from "0s" back to "30s" writes the new value too.
+        l.slow_start_ms = 30000;
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![l.clone()],
+        })
+        .unwrap();
+        settled(&tx).await;
+        assert_eq!(record(&store, "api.svc.emfor").slow_start_ms, 30000);
+        l.reset = true;
+        l.generation = 1;
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![l],
+        })
+        .unwrap();
+        settled(&tx).await;
+        assert_eq!(at(&store), None);
     }
 
     #[tokio::test]

@@ -68,6 +68,19 @@ backend 要連續失敗 `fall` 次才會轉為不健康；在那之前它仍是�
 - 使用 `sticky` 時，正在失敗的 backend 的 key 會改對到其他候選，在它下一次檢查通過後回來。
 - 在 peer group 中，即使 peer 仍判定 backend 為 up，本機自己的檢查失敗也算數（`reason` 以 `local: ` 開頭），所以本機會立即不再選它。
 
+## 慢啟動（slow start）
+
+剛恢復的 backend 可能快取還是冷的、連線池還沒建立。設定 `slow_start`（例如 `slow_start = "30s"`）後，從 `unhealthy` 轉為 `healthy` 的 backend 會在這段時間內逐步增加分到的流量，而不是立刻拿到全部份額。
+
+- 這段時間平均分成 10 級。第一個十分之一的時間裡，backend 以它權重的 1/10 計算，第二個十分之一以 2/10，依此類推；`slow_start` 過後回到全額。權重在 `weighted` 是 backend 的 `weight`，其他方式都是 1。
+- 只要有至少一個候選正在慢啟動，`round-robin`、`weighted`、`locality`、`fastest` 與沒有 key 的 `sticky` 就依這些降低後的權重挑選。`locality` 與 `fastest` 照常先縮小到同 site 或 pool。`failover` 與有 key 的 `sticky` 不受影響。
+- 只有「恢復」才算：daemon 啟動時為 `unknown` 的 backend，以及 reload 新增或重新開始檢查的 backend，立刻拿到全部份額。再次轉為不健康的 backend 會結束慢啟動。
+- 只有部分 backend 恢復、其他 backend 已經健康時才有效果。只有一台 backend 的服務照樣把全部流量給它；同時恢復的 backend 彼此份額相同。
+- 過期的 store 沒有慢啟動；時鐘往回調時視為慢啟動結束。
+- 早於這個功能的 client 會忽略它：恢復的 backend 立刻拿到全部份額。
+
+DNS 的 A/AAAA 回答依同樣降低後的權重挑選，SRV 記錄以它作為 weight（[第 7 章](07-dns.md#srv-記錄)）。
+
 ## 沒有任何 backend 健康時
 
 | `on_all_down` | 查詢 | DNS A/AAAA/SRV |

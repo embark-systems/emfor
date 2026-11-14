@@ -144,6 +144,7 @@ jitter = "10%"
 on_all_down = "open"
 balance = "round-robin"
 peers = true
+slow_start = "0s"
 ```
 
 | Key | Rule | Meaning |
@@ -156,6 +157,7 @@ peers = true
 | `on_all_down` | `open` or `closed` | What lookups do when no backend is healthy ([chapter 5](05-backend-selection.md#when-no-backend-is-healthy)). |
 | `balance` | see [chapter 5](05-backend-selection.md) | How a backend is chosen. |
 | `peers` | `true` or `false` | Whether the service takes part in the [peer group](#peers). No effect without `[peers]`. |
+| `slow_start` | `0s` (off), or `1s` to `1h` | How long a backend that recovers gets a growing share of traffic ([chapter 5](05-backend-selection.md#slow-start)). |
 
 ## [services."name"]
 
@@ -175,7 +177,7 @@ path = "/healthz"
 | `check` | yes | `tcp`, `http`, `exec`, or the name of a declared plugin. |
 | `backends` | yes | A non-empty list of backends (below). |
 | `check_options` | no | Options of the checker ([chapter 4](04-health-checks.md)). |
-| `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, `balance`, `peers` | no | Override `[defaults]` for this service. |
+| `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, `balance`, `peers`, `slow_start` | no | Override `[defaults]` for this service. |
 | `dns_ttl` | no | Overrides `[dns] ttl` for this service; whole seconds, `0s` to `3600s`. |
 
 **Service names** are host-name-like: lowercased, one trailing dot
@@ -249,7 +251,7 @@ error and keeps running the old config.
 | Services and backends added or removed | Applied; new backends start `unknown`. |
 | `check` or `check_options` of a service | Applied; its backends start over from `unknown`. |
 | `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, `peers` | Applied; backends keep their state. |
-| `balance`, `weight`, `site` (top level and backends), `dns_ttl` | Applied. |
+| `balance`, `weight`, `site` (top level and backends), `dns_ttl`, `slow_start` | Applied; a backend in slow start keeps its recovery time. |
 | `[dns] zone`, `[dns] ttl` | Applied. |
 | `[log] level` | Applied (unless `RUST_LOG` is set). |
 | A plugin's `command` | The plugin is restarted, and the services that use it start over from `unknown`. Unchanged plugins keep running. |

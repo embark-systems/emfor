@@ -7,7 +7,9 @@
 //! - `schema_version`: string written to `meta/schema_version`; absent → key absent.
 //! - `heartbeat`: `"fresh"` (now), `"stale"` (now − 2 × max staleness),
 //!   `"zero"` (`"0"`) or `"missing"` (key absent).
-//! - `services`: records written as JSON to `svc/<name>`.
+//! - `services`: records written as JSON to `svc/<name>`. A backend's
+//!   `recovered_ago_ms` (test data only) becomes `recovered_at` = now minus
+//!   that many milliseconds and is not written itself.
 //! - `raw`: extra keys written verbatim, for malformed records.
 
 use std::path::Path;
@@ -68,7 +70,10 @@ pub fn store_entries(
             .get("name")
             .and_then(Value::as_str)
             .ok_or("every service needs a string name")?;
-        out.push((service_key(name), svc.to_string()));
+        out.push((
+            service_key(name),
+            with_recovered_at(svc, now_ms)?.to_string(),
+        ));
     }
     for (k, v) in obj
         .get("raw")
@@ -82,6 +87,29 @@ pub fn store_entries(
         out.push((k.clone(), v.to_string()));
     }
     Ok(out)
+}
+
+/// `svc` with each backend's `recovered_ago_ms` replaced by `recovered_at`
+/// = `now_ms` minus it.
+fn with_recovered_at(svc: &Value, now_ms: u64) -> Result<Value, String> {
+    let mut svc = svc.clone();
+    for b in svc
+        .get_mut("backends")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        let Some(obj) = b.as_object_mut() else {
+            continue;
+        };
+        if let Some(ago) = obj.remove("recovered_ago_ms") {
+            let ago = ago
+                .as_u64()
+                .ok_or("recovered_ago_ms must be a non-negative integer")?;
+            obj.insert("recovered_at".into(), now_ms.saturating_sub(ago).into());
+        }
+    }
+    Ok(svc)
 }
 
 /// Write `store` to a new LMDB file at `path` and close it again, so the
@@ -193,5 +221,24 @@ mod tests {
         let path = dir.path().join("s.mdb");
         write_store(&serde_json::json!({"heartbeat": "missing"}), 3000, 1, &path).unwrap();
         assert!(read_all(&path).is_empty());
+    }
+
+    #[test]
+    fn recovered_ago_becomes_recovered_at() {
+        let store: Value = serde_json::from_str(
+            r#"{"heartbeat":"fresh","services":[{"name":"a.svc.emfor","on_all_down":"open","all_down":false,"backends":[{"id":"10.0.0.1:80","ip":"10.0.0.1","port":80,"state":"healthy","checked_at":1,"reason":null,"recovered_ago_ms":25000},{"id":"10.0.0.2:80","ip":"10.0.0.2","port":80,"state":"healthy","checked_at":1,"reason":null}]}],"raw":{}}"#,
+        )
+        .unwrap();
+        let now = 1_762_905_700_000;
+        let entries = store_entries(&store, now, 3000).unwrap();
+        let (_, json) = entries
+            .iter()
+            .find(|(k, _)| k == "svc/a.svc.emfor")
+            .unwrap();
+        let rec: Value = serde_json::from_str(json).unwrap();
+        let backends = rec["backends"].as_array().unwrap();
+        assert_eq!(backends[0]["recovered_at"], now - 25000);
+        assert!(backends[0].get("recovered_ago_ms").is_none(), "{json}");
+        assert!(backends[1].get("recovered_at").is_none(), "{json}");
     }
 }

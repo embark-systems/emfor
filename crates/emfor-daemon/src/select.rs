@@ -77,9 +77,8 @@ pub fn candidates(record: &ServiceRecord, family: Family) -> Result<Vec<IpAddr>,
 /// Smooth weighted round-robin: add each weight to its current value, take
 /// the largest (earlier on a tie), subtract the total from it. The state is
 /// reset when the candidate list differs from the previous call's.
-fn smooth_weighted(state: &Mutex<Swrr>, candidates: &[(IpAddr, &BackendRecord)]) -> usize {
+fn smooth_weighted(state: &Mutex<Swrr>, list: Vec<(IpAddr, u32)>) -> usize {
     let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-    let list: Vec<(IpAddr, u32)> = candidates.iter().map(|(ip, b)| (*ip, b.weight)).collect();
     if s.candidates != list {
         s.current = vec![0; list.len()];
         s.candidates = list;
@@ -104,24 +103,56 @@ pub fn select(
     choice: &FamilyChoice,
     site: Option<&str>,
 ) -> Selection {
+    select_at(record, family, choice, site, crate::schedule::unix_ms())
+}
+
+/// [`select`] at Unix time `now_ms`, which decides slow start.
+pub fn select_at(
+    record: &ServiceRecord,
+    family: Family,
+    choice: &FamilyChoice,
+    site: Option<&str>,
+    now_ms: u64,
+) -> Selection {
     let c = match candidate_backends(record, family) {
         Ok(c) => c,
         Err(s) => return s,
     };
     let next = |len: usize| (choice.counter.fetch_add(1, Ordering::Relaxed) % len as u64) as usize;
-    let ip = match record.balance {
-        Balance::Failover => c[0].0,
-        Balance::Weighted => c[smooth_weighted(&choice.swrr, &c)].0,
-        // Candidates in the host's site, or in the daemon's pool, in turn;
-        // all candidates in turn when none of them qualifies.
+    // Candidates in the host's site, or in the daemon's pool; all
+    // candidates when none of them qualifies.
+    let c = match record.balance {
         Balance::Locality | Balance::Fastest => {
             let pool = record.pool.as_deref();
-            let preferred =
-                rules::subset_or_all(&c, |(_, b)| rules::preferred(record.balance, b, site, pool));
-            preferred[next(preferred.len())].0
+            rules::subset_or_all(&c, |(_, b)| rules::preferred(record.balance, b, site, pool))
         }
-        // No affinity key on this path: sticky behaves as round-robin.
-        Balance::RoundRobin | Balance::Sticky | Balance::Unknown => c[next(c.len())].0,
+        _ => c,
+    };
+    let slow = record.slow_start_ms;
+    if record.balance != Balance::Failover && rules::any_ramping(&c, slow, now_ms, |(_, b)| b) {
+        // Slow start: every method but failover goes by effective weight.
+        let list = c
+            .iter()
+            .map(|(ip, b)| {
+                let base = rules::base_weight(record.balance, b);
+                (*ip, rules::effective_weight(b, base, slow, now_ms))
+            })
+            .collect();
+        return Selection::Chosen(c[smooth_weighted(&choice.swrr, list)].0);
+    }
+    let ip = match record.balance {
+        Balance::Failover => c[0].0,
+        Balance::Weighted => {
+            let list = c.iter().map(|(ip, b)| (*ip, b.weight)).collect();
+            c[smooth_weighted(&choice.swrr, list)].0
+        }
+        // Locality and fastest take turns over the candidates kept above;
+        // with no affinity key on this path, sticky behaves as round-robin.
+        Balance::Locality
+        | Balance::Fastest
+        | Balance::RoundRobin
+        | Balance::Sticky
+        | Balance::Unknown => c[next(c.len())].0,
     };
     Selection::Chosen(ip)
 }
@@ -143,16 +174,36 @@ pub fn srv_targets(
     rotation: &AtomicU64,
     site: Option<&str>,
 ) -> Result<Vec<SrvTarget>, Selection> {
+    srv_targets_at(record, rotation, site, crate::schedule::unix_ms())
+}
+
+/// [`srv_targets`] at Unix time `now_ms`, which decides slow start: while a
+/// candidate ramps, every method but failover gives each record the
+/// candidate's effective weight.
+pub fn srv_targets_at(
+    record: &ServiceRecord,
+    rotation: &AtomicU64,
+    site: Option<&str>,
+    now_ms: u64,
+) -> Result<Vec<SrvTarget>, Selection> {
     let all: Vec<(IpAddr, &BackendRecord)> = parsed(record).collect();
     if all.is_empty() {
         return Err(Selection::NoFamily);
     }
     let c = healthy_or_all(record, all)?;
+    let slow = record.slow_start_ms;
+    let ramping =
+        record.balance != Balance::Failover && rules::any_ramping(&c, slow, now_ms, |(_, b)| b);
     let target = |(ip, b): (IpAddr, &BackendRecord), priority: u16, weight: u16| SrvTarget {
         ip,
         port: b.port,
         priority,
-        weight,
+        weight: if ramping {
+            let base = rules::base_weight(record.balance, b);
+            u16::try_from(rules::effective_weight(b, base, slow, now_ms)).unwrap_or(u16::MAX)
+        } else {
+            weight
+        },
     };
     let rotated = || {
         let start = (rotation.fetch_add(1, Ordering::Relaxed) % c.len() as u64) as usize;
@@ -216,6 +267,7 @@ mod tests {
             on_all_down,
             balance,
             all_down: true,
+            slow_start_ms: 0,
             pool: None,
             backends: backends
                 .iter()
@@ -229,6 +281,7 @@ mod tests {
                     checked_at: None,
                     reason: None,
                     latency_us: None,
+                    recovered_at: None,
                 })
                 .collect(),
         };
@@ -667,6 +720,7 @@ mod tests {
                 checked_at: None,
                 reason: None,
                 latency_us: None,
+                recovered_at: None,
             })
             .collect();
         r.refresh_all_down();
@@ -883,6 +937,187 @@ mod tests {
         assert_eq!(
             srv(&r, &AtomicU64::new(0), None).unwrap(),
             vec![row("10.0.0.12", 8080, 0, 1), row("10.0.0.13", 8080, 1, 1)]
+        );
+    }
+
+    /// Unix time the slow start tests run at.
+    const NOW: u64 = 1_762_905_700_000;
+
+    /// `r` with a 100 s slow start and backend `ip` recovered so that its
+    /// step at [`NOW`] is `step` (1 to 9).
+    fn ramping(mut r: ServiceRecord, ip: &str, step: u64) -> ServiceRecord {
+        r.slow_start_ms = 100_000;
+        let b = r
+            .backends
+            .iter_mut()
+            .find(|b| b.ip == ip)
+            .expect("the backend is in the record");
+        b.recovered_at = Some(NOW - (step - 1) * 10_000 - 5_000);
+        r
+    }
+
+    /// How often each address is chosen in `n` IPv4 answers at [`NOW`].
+    fn counts(r: &ServiceRecord, n: usize) -> std::collections::BTreeMap<String, usize> {
+        counts_at_site(r, None, n)
+    }
+
+    /// [`counts`] on a host whose site is `site`.
+    fn counts_at_site(
+        r: &ServiceRecord,
+        site: Option<&str>,
+        n: usize,
+    ) -> std::collections::BTreeMap<String, usize> {
+        let c = FamilyChoice::default();
+        let mut out = std::collections::BTreeMap::new();
+        for _ in 0..n {
+            let Selection::Chosen(ip) = select_at(r, Family::V4, &c, site, NOW) else {
+                panic!("no answer");
+            };
+            *out.entry(ip.to_string()).or_insert(0) += 1;
+        }
+        out
+    }
+
+    fn count_map(list: &[(&str, usize)]) -> std::collections::BTreeMap<String, usize> {
+        list.iter().map(|(ip, n)| (ip.to_string(), *n)).collect()
+    }
+
+    /// `locality` narrows to the host's site first, then uses the reduced
+    /// weights there; the backend at another site gets nothing.
+    #[test]
+    fn slow_start_locality_within_the_site() {
+        let mut r = rec(
+            &[
+                ("10.0.0.1", Healthy),
+                ("10.0.0.2", Healthy),
+                ("10.0.0.3", Healthy),
+            ],
+            OnAllDown::Open,
+            Balance::Locality,
+        );
+        for b in &mut r.backends[..2] {
+            b.site = Some("tpe".into());
+        }
+        let r = ramping(r, "10.0.0.1", 3);
+        assert_eq!(
+            counts_at_site(&r, Some("tpe"), 13),
+            count_map(&[("10.0.0.1", 3), ("10.0.0.2", 10)])
+        );
+    }
+
+    /// Spec "Slow start choice in the daemon", scenario "Ramping backend
+    /// gets a smaller share".
+    #[test]
+    fn slow_start_ramping_share() {
+        let r = rec(
+            &[("10.0.0.1", Healthy), ("10.0.0.2", Healthy)],
+            OnAllDown::Open,
+            Balance::RoundRobin,
+        );
+        let r = ramping(r, "10.0.0.2", 3);
+        assert_eq!(
+            counts(&r, 13),
+            count_map(&[("10.0.0.1", 10), ("10.0.0.2", 3)])
+        );
+        // Once the slow start is over, plain turns again.
+        let c = FamilyChoice::default();
+        let later: Vec<_> = (0..4)
+            .map(|_| select_at(&r, Family::V4, &c, None, NOW + 100_000))
+            .collect();
+        let (a, b) = (chosen("10.0.0.1"), chosen("10.0.0.2"));
+        assert_eq!(later, [a, b, a, b]);
+    }
+
+    /// Spec "Slow start choice in the daemon", scenario "Failover ignores
+    /// slow start".
+    #[test]
+    fn slow_start_failover_unchanged() {
+        let r = rec(
+            &[("10.0.0.1", Healthy), ("10.0.0.2", Healthy)],
+            OnAllDown::Open,
+            Balance::Failover,
+        );
+        let r = ramping(r, "10.0.0.1", 1);
+        assert_eq!(counts(&r, 5), count_map(&[("10.0.0.1", 5)]));
+    }
+
+    /// Spec "Slow start choice in the daemon", scenario "Weighted ramping
+    /// backend".
+    #[test]
+    fn slow_start_weighted_ramping() {
+        let mut r = rec(
+            &[("10.0.0.1", Healthy), ("10.0.0.2", Healthy)],
+            OnAllDown::Open,
+            Balance::Weighted,
+        );
+        r.backends[0].weight = 3;
+        let r = ramping(r, "10.0.0.1", 2);
+        assert_eq!(
+            counts(&r, 16),
+            count_map(&[("10.0.0.1", 6), ("10.0.0.2", 10)])
+        );
+    }
+
+    fn srv_at(r: &ServiceRecord) -> Vec<(String, u16, u16, u16)> {
+        srv_targets_at(r, &AtomicU64::new(0), None, NOW)
+            .unwrap()
+            .into_iter()
+            .map(|t| (t.ip.to_string(), t.port, t.priority, t.weight))
+            .collect()
+    }
+
+    /// Spec "SRV weights during slow start", scenario "Round-robin with a
+    /// ramping backend".
+    #[test]
+    fn srv_slow_start_round_robin() {
+        let r = srv_rec(
+            &[
+                ("10.0.0.11", 8080, Healthy, 1, None),
+                ("10.0.0.12", 8080, Healthy, 1, None),
+            ],
+            OnAllDown::Open,
+            Balance::RoundRobin,
+        );
+        let r = ramping(r, "10.0.0.12", 3);
+        assert_eq!(
+            srv_at(&r),
+            vec![row("10.0.0.11", 8080, 0, 10), row("10.0.0.12", 8080, 0, 3)]
+        );
+    }
+
+    /// Spec "SRV weights during slow start", scenario "Weighted with a
+    /// ramping backend".
+    #[test]
+    fn srv_slow_start_weighted() {
+        let r = srv_rec(
+            &[
+                ("10.0.0.11", 8080, Healthy, 3, None),
+                ("10.0.0.12", 8080, Healthy, 1, None),
+            ],
+            OnAllDown::Open,
+            Balance::Weighted,
+        );
+        let r = ramping(r, "10.0.0.11", 2);
+        let weights: Vec<u16> = srv_at(&r).iter().map(|t| t.3).collect();
+        assert_eq!(weights, [6, 10]);
+    }
+
+    /// Spec "SRV weights during slow start", scenario "Failover keeps
+    /// weight 1".
+    #[test]
+    fn srv_slow_start_failover() {
+        let r = srv_rec(
+            &[
+                ("10.0.0.11", 8080, Healthy, 1, None),
+                ("10.0.0.12", 8080, Healthy, 1, None),
+            ],
+            OnAllDown::Open,
+            Balance::Failover,
+        );
+        let r = ramping(r, "10.0.0.11", 2);
+        assert_eq!(
+            srv_at(&r),
+            vec![row("10.0.0.11", 8080, 0, 1), row("10.0.0.12", 8080, 1, 1)]
         );
     }
 

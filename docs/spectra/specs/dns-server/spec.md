@@ -400,3 +400,52 @@ tests:
   - crates/emfor-daemon/tests/daemon.rs
   - crates/emfor-daemon/tests/plugins.rs
 -->
+
+---
+### Requirement: SRV weights during slow start
+
+When at least one SRV candidate is ramping, as defined by the backend-selection requirement "Slow start effective weight", each SRV record's weight SHALL be that candidate's effective weight, for every `balance` value except `failover`; priorities and record order SHALL follow the requirement "SRV answers" unchanged. When no candidate is ramping, or for `failover`, weights SHALL be as in "SRV answers".
+
+#### Scenario: Round-robin with a ramping backend
+
+- **WHEN** a `round-robin` service `api.svc.emfor` has healthy backends `10.0.0.11:8080` (not ramping) and `10.0.0.12:8080` (step 3), and a client queries SRV with a fresh SRV counter
+- **THEN** the answer is `0 10 8080 10-0-0-11.api.svc.emfor.` followed by `0 3 8080 10-0-0-12.api.svc.emfor.`
+
+#### Scenario: Weighted with a ramping backend
+
+- **WHEN** a `weighted` service has healthy backends `10.0.0.11:8080` (weight 3, step 2) and `10.0.0.12:8080` (weight 1, not ramping)
+- **THEN** the SRV weights are 6 and 10 in config order
+
+#### Scenario: Failover keeps weight 1
+
+- **WHEN** a `failover` service has healthy backends `10.0.0.11:8080` (step 2) and `10.0.0.12:8080` (not ramping)
+- **THEN** the answer is `0 1 8080 10-0-0-11.api.svc.emfor.` followed by `1 1 8080 10-0-0-12.api.svc.emfor.`
+
+<!-- @trace
+source: emfor-slow-start
+updated: 2026-11-14
+code:
+  - examples/emfor.toml
+  - crates/emfor-daemon/src/state.rs
+  - tools/emfor-fixture/src/lib.rs
+  - docs/manual.zh_TW/07-dns.md
+  - tests/conformance/v1/README.md
+  - crates/emfor-daemon/src/config.rs
+  - crates/emfor-format/src/rules.rs
+  - tests/conformance/v1/cases.json
+  - crates/emfor-format/src/lib.rs
+  - docs/manual/07-dns.md
+  - crates/emfor-daemon/src/select.rs
+  - crates/emfor-daemon/src/writer.rs
+  - docs/manual/03-configuration.md
+  - crates/emfor-daemon/src/supervisor.rs
+  - docs/manual.zh_TW/05-backend-selection.md
+  - crates/emfor-daemon/src/metrics.rs
+  - CHANGELOG.md
+  - docs/manual/05-backend-selection.md
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/live.rs
+  - crates/emfor-daemon/src/dns.rs
+  - docs/manual.zh_TW/03-configuration.md
+  - clients/rust/src/client.rs
+-->

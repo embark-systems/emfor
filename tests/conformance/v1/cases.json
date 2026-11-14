@@ -2348,5 +2348,262 @@
         }
       }
     ]
+  },
+  {
+    "case": "slow start: a recovering backend gets a share by its step",
+    "store": {
+      "heartbeat": "fresh",
+      "services": [
+        {
+          "name": "api.svc.emfor",
+          "on_all_down": "open",
+          "balance": "round-robin",
+          "all_down": false,
+          "slow_start_ms": 100000,
+          "backends": [
+            {
+              "id": "10.0.0.11:8080",
+              "ip": "10.0.0.11",
+              "port": 8080,
+              "weight": 1,
+              "site": null,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null
+            },
+            {
+              "id": "10.0.0.12:8080",
+              "ip": "10.0.0.12",
+              "port": 8080,
+              "weight": 1,
+              "site": null,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null,
+              "recovered_ago_ms": 25000
+            }
+          ]
+        }
+      ],
+      "raw": {},
+      "schema_version": "1"
+    },
+    "max_staleness_ms": 3000,
+    "lookups": [
+      {
+        "name": "api.svc.emfor",
+        "expect_counts": {
+          "10.0.0.11:8080": 10,
+          "10.0.0.12:8080": 3
+        }
+      }
+    ]
+  },
+  {
+    "case": "slow start: weighted multiplies the weight by the step",
+    "store": {
+      "heartbeat": "fresh",
+      "services": [
+        {
+          "name": "api.svc.emfor",
+          "on_all_down": "open",
+          "balance": "weighted",
+          "all_down": false,
+          "slow_start_ms": 100000,
+          "backends": [
+            {
+              "id": "10.0.0.11:8080",
+              "ip": "10.0.0.11",
+              "port": 8080,
+              "weight": 3,
+              "site": null,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null,
+              "recovered_ago_ms": 25000
+            },
+            {
+              "id": "10.0.0.12:8080",
+              "ip": "10.0.0.12",
+              "port": 8080,
+              "weight": 1,
+              "site": null,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null
+            }
+          ]
+        }
+      ],
+      "raw": {},
+      "schema_version": "1"
+    },
+    "max_staleness_ms": 3000,
+    "lookups": [
+      {
+        "name": "api.svc.emfor",
+        "expect_counts": {
+          "10.0.0.11:8080": 9,
+          "10.0.0.12:8080": 10
+        }
+      }
+    ]
+  },
+  {
+    "case": "slow start over: a full share",
+    "store": {
+      "heartbeat": "fresh",
+      "services": [
+        {
+          "name": "api.svc.emfor",
+          "on_all_down": "open",
+          "balance": "round-robin",
+          "all_down": false,
+          "slow_start_ms": 100000,
+          "backends": [
+            {
+              "id": "10.0.0.11:8080",
+              "ip": "10.0.0.11",
+              "port": 8080,
+              "weight": 1,
+              "site": null,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null,
+              "recovered_ago_ms": 200000
+            },
+            {
+              "id": "10.0.0.12:8080",
+              "ip": "10.0.0.12",
+              "port": 8080,
+              "weight": 1,
+              "site": null,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null
+            }
+          ]
+        }
+      ],
+      "raw": {},
+      "schema_version": "1"
+    },
+    "max_staleness_ms": 3000,
+    "lookups": [
+      {
+        "name": "api.svc.emfor",
+        "expect_counts": {
+          "10.0.0.11:8080": 2,
+          "10.0.0.12:8080": 2
+        }
+      }
+    ]
+  },
+  {
+    "case": "slow start does not change failover",
+    "store": {
+      "heartbeat": "fresh",
+      "services": [
+        {
+          "name": "api.svc.emfor",
+          "on_all_down": "open",
+          "balance": "failover",
+          "all_down": false,
+          "slow_start_ms": 100000,
+          "backends": [
+            {
+              "id": "10.0.0.11:8080",
+              "ip": "10.0.0.11",
+              "port": 8080,
+              "weight": 1,
+              "site": null,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null,
+              "recovered_ago_ms": 25000
+            },
+            {
+              "id": "10.0.0.12:8080",
+              "ip": "10.0.0.12",
+              "port": 8080,
+              "weight": 1,
+              "site": null,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null
+            }
+          ]
+        }
+      ],
+      "raw": {},
+      "schema_version": "1"
+    },
+    "max_staleness_ms": 3000,
+    "lookups": [
+      {
+        "name": "api.svc.emfor",
+        "expect": "10.0.0.11:8080"
+      }
+    ]
+  },
+  {
+    "case": "slow start: a stale heartbeat has no slow start",
+    "store": {
+      "heartbeat": "stale",
+      "services": [
+        {
+          "name": "api.svc.emfor",
+          "on_all_down": "open",
+          "balance": "round-robin",
+          "all_down": false,
+          "slow_start_ms": 100000,
+          "backends": [
+            {
+              "id": "10.0.0.11:8080",
+              "ip": "10.0.0.11",
+              "port": 8080,
+              "weight": 1,
+              "site": null,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null,
+              "recovered_ago_ms": 25000
+            },
+            {
+              "id": "10.0.0.12:8080",
+              "ip": "10.0.0.12",
+              "port": 8080,
+              "weight": 1,
+              "site": null,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null
+            }
+          ]
+        }
+      ],
+      "raw": {},
+      "schema_version": "1"
+    },
+    "max_staleness_ms": 3000,
+    "lookups": [
+      {
+        "name": "api.svc.emfor",
+        "expect_counts": {
+          "10.0.0.11:8080": 2,
+          "10.0.0.12:8080": 2
+        }
+      }
+    ]
   }
 ]

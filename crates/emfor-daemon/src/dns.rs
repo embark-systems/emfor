@@ -437,6 +437,7 @@ mod tests {
             on_all_down,
             balance,
             all_down: true,
+            slow_start_ms: 0,
             pool: None,
             backends: backends
                 .iter()
@@ -450,6 +451,7 @@ mod tests {
                     checked_at: None,
                     reason: None,
                     latency_us: None,
+                    recovered_at: None,
                 })
                 .collect(),
         };
@@ -866,6 +868,7 @@ mod tests {
                     checked_at: None,
                     reason: None,
                     latency_us: None,
+                    recovered_at: None,
                 }
             })
             .collect();

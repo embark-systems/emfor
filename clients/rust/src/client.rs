@@ -10,7 +10,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use emfor_format::{SCHEMA_VERSION, ServiceRecord, service_key};
 
-use crate::select::{candidates, is_stale, normalize, pick, pool_candidates};
+use crate::select::{candidates, is_stale, normalize, pick_at, pool_candidates};
 use crate::store::{Env, Snapshot};
 use crate::{Error, ErrorCode};
 
@@ -212,7 +212,8 @@ impl Client {
                 format!("store {path}: meta/heartbeat {heartbeat:?} is not a decimal integer"),
             )
         })?;
-        let stale = is_stale(heartbeat, now_ms(), max);
+        let now = now_ms();
+        let stale = is_stale(heartbeat, now, max);
         if stale && may_reopen && self.reopen_if_replaced() {
             return self.lookup_once(name, affinity_key, false);
         }
@@ -226,11 +227,15 @@ impl Client {
             )
         })?;
         let cands = pool_candidates(&record, candidates(&record, stale)?, stale);
-        Ok(pick(
+        // A stale store has no slow start: its recovery times may be old.
+        let slow_start_ms = if stale { 0 } else { record.slow_start_ms };
+        Ok(pick_at(
             record.balance,
             &cands,
             affinity_key,
             snap.site.as_deref(),
+            slow_start_ms,
+            now,
             || self.next(&service),
         ))
     }

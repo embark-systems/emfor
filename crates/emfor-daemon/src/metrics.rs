@@ -556,6 +556,7 @@ mod tests {
             checked_at: None,
             reason: None,
             latency_us: None,
+            recovered_at: None,
         }
     }
 
@@ -565,6 +566,7 @@ mod tests {
             on_all_down: OnAllDown::Open,
             balance,
             all_down: true,
+            slow_start_ms: 0,
             backends,
             pool: None,
         };
