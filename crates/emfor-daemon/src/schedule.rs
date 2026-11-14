@@ -204,8 +204,7 @@ fn combine(
     if c.assigned
         && let Some(outcome) = outcome
     {
-        // The peer task is gone only while the daemon stops.
-        let _ = p.out.send(PeerOut::Result(BackendResult {
+        p.out.send(PeerOut::Result(BackendResult {
             service: service.clone(),
             digest: digest.to_string(),
             backend: backend.to_string(),
@@ -397,8 +396,7 @@ pub fn spawn_backend(
                     t.from == HealthState::Healthy && t.to == HealthState::Unhealthy
                 });
             if announce && let Some(p) = hooks {
-                // The peer task is gone only while the daemon stops.
-                let _ = p.out.send(PeerOut::Down(BackendDown {
+                p.out.send(PeerOut::Down(BackendDown {
                     service: service.clone(),
                     digest: digest.clone(),
                     backend: backend.id.clone(),
@@ -895,9 +893,13 @@ mod tests {
         format!("10.0.0.{i}:5302").parse().unwrap()
     }
 
+    fn peer_channel() -> (crate::peers::PeerSender, mpsc::Receiver<PeerOut>) {
+        crate::peers::PeerSender::channel(Arc::default())
+    }
+
     /// Peer hooks of a daemon at `me` whose service `a` has [`DIGEST`]; no
     /// member is live yet.
-    fn hooks(out: mpsc::UnboundedSender<PeerOut>, me: &str) -> PeerHooks {
+    fn hooks(out: crate::peers::PeerSender, me: &str) -> PeerHooks {
         let targets = crate::peers::Targets::default();
         targets.replace(std::collections::HashMap::from([(
             "a".to_string(),
@@ -923,7 +925,7 @@ mod tests {
         kept: &[(u8, Outcome)],
         chk: Arc<Switch>,
     ) -> (Vec<BackendUpdate>, Vec<PeerOut>) {
-        let (otx, mut orx) = mpsc::unbounded_channel();
+        let (otx, mut orx) = peer_channel();
         let h = hooks(otx, &member(me).to_string());
         h.quorum.set_live((5..=9).map(member));
         let send = |h: &PeerHooks, kept: &[(u8, Outcome)]| {
@@ -1064,7 +1066,7 @@ mod tests {
     /// not the one a reload during the check brought.
     #[tokio::test(start_paused = true)]
     async fn result_carries_the_digest_its_check_ran_with() {
-        let (otx, mut orx) = mpsc::unbounded_channel();
+        let (otx, mut orx) = peer_channel();
         let h = hooks(otx, &member(7).to_string());
         h.quorum.set_live((5..=9).map(member));
         let chk = Arc::new(ReloadDuringCheck(h.targets.clone()));
@@ -1198,7 +1200,7 @@ mod tests {
         Arc<Switch>,
         PeerHooks,
         mpsc::UnboundedReceiver<WriterMsg>,
-        mpsc::UnboundedReceiver<PeerOut>,
+        mpsc::Receiver<PeerOut>,
         JoinHandle<()>,
     ) {
         not_assigned_with_fall(3).await
@@ -1211,7 +1213,7 @@ mod tests {
         Arc<Switch>,
         PeerHooks,
         mpsc::UnboundedReceiver<WriterMsg>,
-        mpsc::UnboundedReceiver<PeerOut>,
+        mpsc::Receiver<PeerOut>,
         JoinHandle<()>,
     ) {
         with_live(5..=9, fall).await
@@ -1226,7 +1228,7 @@ mod tests {
         Arc<Switch>,
         PeerHooks,
         mpsc::UnboundedReceiver<WriterMsg>,
-        mpsc::UnboundedReceiver<PeerOut>,
+        mpsc::Receiver<PeerOut>,
         JoinHandle<()>,
     ) {
         let (chk, h, rx, orx, task, _link) = with_live_link(live, fall).await;
@@ -1241,11 +1243,11 @@ mod tests {
         Arc<Switch>,
         PeerHooks,
         mpsc::UnboundedReceiver<WriterMsg>,
-        mpsc::UnboundedReceiver<PeerOut>,
+        mpsc::Receiver<PeerOut>,
         JoinHandle<()>,
         PeerLink,
     ) {
-        let (otx, orx) = mpsc::unbounded_channel();
+        let (otx, orx) = peer_channel();
         let h = hooks(otx, "10.0.0.5:5302");
         h.quorum.set_live(live.into_iter().map(member));
         record_all(&h, [Outcome::Up, Outcome::Up, Outcome::Up]);
@@ -1282,7 +1284,7 @@ mod tests {
     /// own check, and nothing is sent to the peer task.
     #[tokio::test(start_paused = true)]
     async fn service_left_out_ignores_votes() {
-        let (otx, mut orx) = mpsc::unbounded_channel();
+        let (otx, mut orx) = peer_channel();
         let h = hooks(otx, "10.0.0.5:5302");
         h.quorum.set_live((5..=9).map(member));
         record_all(
@@ -1708,7 +1710,7 @@ mod tests {
     async fn healthy_switch() -> (
         Arc<Switch>,
         PeerLink,
-        mpsc::UnboundedReceiver<PeerOut>,
+        mpsc::Receiver<PeerOut>,
         mpsc::UnboundedReceiver<WriterMsg>,
         JoinHandle<()>,
         watch::Sender<Settings>,
@@ -1721,7 +1723,7 @@ mod tests {
         };
         let (stx, srx) = watch::channel(settings);
         let (tx, rx) = mpsc::unbounded_channel();
-        let (dtx, drx) = mpsc::unbounded_channel();
+        let (dtx, drx) = peer_channel();
         let link = PeerLink {
             recheck: Arc::new(Recheck::default()),
             peers: Some(hooks(dtx, "10.0.0.5:5302")),
@@ -1827,7 +1829,7 @@ mod tests {
         chk.down.store(true, Ordering::SeqCst);
         let (_stx, srx) = watch::channel(Settings::default());
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (dtx, mut drx) = mpsc::unbounded_channel();
+        let (dtx, mut drx) = peer_channel();
         let link = PeerLink {
             recheck: Arc::new(Recheck::default()),
             peers: Some(hooks(dtx, "10.0.0.5:5302")),

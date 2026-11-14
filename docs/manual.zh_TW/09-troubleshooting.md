@@ -45,6 +45,7 @@
 | reason 開頭 | 原因 |
 | --- | --- |
 | `plugin <name> unavailable`、`plugin exited` | plugin 當掉、不再回應，或正在重新啟動；從 log 看它的結束狀態或 `stopped answering`。 |
+| `plugin <name> busy: it is not reading its requests` | plugin 不再讀 stdin，已有 1024 個請求在等它。連續 3 個請求沒有回應時它會被重新啟動；若持續出現，表示 plugin 卡在讀取請求的迴圈之外。 |
 | `plugin did not answer within timeout` | plugin 太慢，或一次只處理一個檢查。 |
 | `password_file: `、`ca_file: ` | daemon 的使用者無法讀取該檔案。 |
 | `exit code N`（exec，N 不是 1 或 2） | script 以預期外的方式失敗。 |

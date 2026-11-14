@@ -26,6 +26,14 @@
 - State changes already queued when one is written are committed in the
   same transaction, so a burst of changes (a network split) costs one
   commit, not one per backend.
+- The queues from checks to the peer task and to a plugin's stdin are
+  bounded. A peer task that falls more than 4096 messages behind drops new
+  `down` and `result` messages instead of holding them (counted in the new
+  `emfor_peer_queue_dropped_total`, logged once a minute); checks never
+  wait for it. A plugin that stops reading its stdin gets at most 1024
+  waiting requests; further checks are `error` at once with
+  `plugin <name> busy: it is not reading its requests` instead of each
+  waiting for its timeout while memory grows.
 - `tls_cert_file` and `tls_key_file` (the `diameter` plugin) are parsed
   again only when they change, like `ca_file`: an unchanged file costs one
   `stat` per check instead of a read and a parse, and a renewed one still

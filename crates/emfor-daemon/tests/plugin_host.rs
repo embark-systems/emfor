@@ -255,6 +255,46 @@ async fn answers_between_unanswered_requests_keep_the_plugin() {
     host.stop().await;
 }
 
+/// Spec checker-plugins "Request queue": a plugin that stops reading its
+/// stdin gets at most `REQUEST_QUEUE` requests queued; further calls fail
+/// at once as `Busy` instead of piling up in memory.
+#[tokio::test]
+async fn plugin_that_stops_reading_makes_calls_busy() {
+    use emfor_daemon::plugin::host::REQUEST_QUEUE;
+    let host = Arc::new(PluginHost::start("fake", &command(&[])).await.unwrap());
+    let blocker = {
+        let host = host.clone();
+        tokio::spawn(async move { host.call(check("stop_reading")).await })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Callers that keep waiting: nothing counts as unanswered, so the
+    // plugin is not restarted meanwhile. The pipe takes some lines too.
+    let mut waiting = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let busy = loop {
+        let host2 = host.clone();
+        let mut call = tokio::spawn(async move { host2.call(check("up")).await });
+        match tokio::time::timeout(Duration::from_millis(1), &mut call).await {
+            Ok(r) => break r.unwrap(),
+            Err(_) => waiting.push(call),
+        }
+        assert!(Instant::now() < deadline, "no call was refused");
+    };
+    assert_eq!(busy.unwrap_err(), CallError::Busy);
+    assert!(waiting.len() >= REQUEST_QUEUE, "{} queued", waiting.len());
+    assert!(
+        waiting.len() < REQUEST_QUEUE + 2000,
+        "{} queued",
+        waiting.len()
+    );
+    assert_eq!(REQUEST_QUEUE, 1024);
+    host.stop().await;
+    for w in waiting {
+        assert!(w.await.unwrap().is_err());
+    }
+    assert!(blocker.await.unwrap().is_err());
+}
+
 // PluginFactory / PluginChecker through `run_check`.
 
 use std::sync::Arc;

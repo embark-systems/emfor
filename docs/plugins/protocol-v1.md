@@ -108,6 +108,7 @@ Rules:
   - A plugin that stops answering counts as crashed too: when emfor gives up waiting on 3 requests in a row and no answer to any request arrives in between, it logs that the plugin stopped answering and kills it. Answering every check within `timeout_ms` keeps this from ever happening.
   - emfor restarts the plugin after 1s, then 2s, 4s, and so on, up to 30s between attempts. The delay goes back to 1s once the plugin has run for 30 seconds.
   - Until the plugin is running again, its checks are `error` with reason `plugin <name> unavailable`.
+  - A plugin that stops reading stdin is not killed for that alone, but once 1024 requests wait to be written to it, further checks are `error` with reason `plugin <name> busy: it is not reading its requests` at once.
   - After a restart, options are not validated again.
 - **Reload:** on `SIGHUP`, a plugin whose `command` did not change keeps running. A plugin with a new `command` is started again, and the services that use it start over from `unknown`.
 

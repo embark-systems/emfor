@@ -82,6 +82,7 @@ fn call_error(name: &str, e: CallError) -> String {
     match e {
         CallError::Unavailable => format!("plugin {name} unavailable"),
         CallError::Exited => "plugin exited".into(),
+        CallError::Busy => format!("plugin {name} busy: it is not reading its requests"),
     }
 }
 

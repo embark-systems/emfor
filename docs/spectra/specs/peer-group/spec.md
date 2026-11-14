@@ -343,6 +343,13 @@ When one of this daemon's own checks moves a backend from `healthy` to `unhealth
 
 When a daemon accepts a `down` message for a service it has with the same digest and a backend of that service, it SHALL start a fast recheck run for that backend when all of these hold: the backend is `healthy` in this daemon, no fast recheck run is in progress for it, and its last fast recheck run ended more than `fall × interval` ago. Otherwise it SHALL ignore the message. A `down` message SHALL NOT change any backend's state by itself; states change only through this daemon's checks and their combined results (see "Region verdict and combined result"). Starting a fast recheck run SHALL be logged at `info` level as `peer <member> reports backend <backend> of <service> down (<reason>); checking now`.
 
+The `down` and `result` messages of backend tasks SHALL go to the peer task through a queue of at most 4096 messages; a check SHALL NOT wait for room in it. A message that finds the queue full SHALL be dropped and counted in `emfor_peer_queue_dropped_total` (spec metrics-endpoint), and the daemon SHALL log at `warn` level, at most once per 60 seconds, that the peer task is behind.
+
+#### Scenario: Peer queue full
+
+- **WHEN** backend tasks queue messages while 4096 are already waiting for the peer task
+- **THEN** each new message is dropped, `emfor_peer_queue_dropped_total` grows by one for each, at most one `warn` line is logged per 60 seconds, and the messages already queued are still sent
+
 #### Scenario: Peer sees the failure first
 
 - **WHEN** daemons A and B in one peer group both check a TCP backend of `api.svc.emfor` with `fall = 3`, A with `interval = "1s"` and B with `interval = "30s"` (the digest leaves `interval` out), both see it `healthy`, and the backend stops listening

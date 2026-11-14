@@ -46,6 +46,11 @@ pub const LOG_PER_SECOND: u32 = 10;
 /// restarted.
 pub const STALL_UNANSWERED: u32 = 3;
 
+/// Requests waiting to be written to a plugin's stdin. A plugin that stops
+/// reading it blocks the writes; further requests then fail at once
+/// ([`CallError::Busy`]) instead of piling up in memory.
+pub const REQUEST_QUEUE: usize = 1024;
+
 /// Delay before the next start after `failures` consecutive failures
 /// (1 → 1s, 2 → 2s, 3 → 4s, … capped at 30s).
 pub fn restart_delay(failures: u32) -> Duration {
@@ -78,6 +83,9 @@ pub enum CallError {
     Unavailable,
     /// The plugin exited while the request was pending.
     Exited,
+    /// [`REQUEST_QUEUE`] requests are already waiting to be written to the
+    /// plugin's stdin: it is not reading them.
+    Busy,
 }
 
 /// Requests waiting for an answer. `closed` is set when the plugin closes
@@ -109,7 +117,7 @@ fn lock(p: &Pending) -> std::sync::MutexGuard<'_, Waiters> {
 /// The running process's request side.
 #[derive(Clone)]
 struct Conn {
-    tx: mpsc::UnboundedSender<String>,
+    tx: mpsc::Sender<String>,
     pending: Pending,
     pid: u32,
 }
@@ -224,9 +232,16 @@ impl PluginHost {
                 pending: Some(conn.pending.clone()),
                 id,
             };
-            if conn.tx.send(line).is_err() {
-                guard.done();
-                return Err(CallError::Unavailable);
+            match conn.tx.try_send(line) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    guard.done();
+                    return Err(CallError::Busy);
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    guard.done();
+                    return Err(CallError::Unavailable);
+                }
             }
             guard
         };
@@ -419,7 +434,7 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
     let log_name = name.to_string();
     tokio::spawn(async move { log_stderr(&log_name, BufReader::new(stderr)).await });
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let (tx, mut rx) = mpsc::channel::<String>(REQUEST_QUEUE);
     tokio::spawn(async move {
         while let Some(line) = rx.recv().await {
             if stdin.write_all(line.as_bytes()).await.is_err() || stdin.flush().await.is_err() {
@@ -432,7 +447,8 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
     let hello = serde_json::to_string(&Request::Hello { protocol: PROTOCOL })
         .expect("a Request serializes: it holds only strings, numbers and string-keyed maps")
         + "\n";
-    let _ = tx.send(hello);
+    // The queue is empty: the hello is the first line.
+    let _ = tx.try_send(hello);
     let mut stdout = BufReader::new(stdout);
     let first = match tokio::time::timeout(
         HANDSHAKE_TIMEOUT,

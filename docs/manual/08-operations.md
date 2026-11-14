@@ -99,6 +99,7 @@ no TLS; keep it on loopback or firewall it.
 | `emfor_peer_results_total{direction}` | With `[peers]`: check results of assigned checkers `sent` (one per member) and `received` |
 | `emfor_peer_disagreements` | With `[peers]`: backends the group votes down while this host's own check passes |
 | `emfor_peer_checks_skipped_total` | With `[peers]`: checks this host did not make because two assigned checkers agreed |
+| `emfor_peer_queue_dropped_total` | With `[peers]`: `down` and `result` messages not sent because the peer task fell more than 4096 messages behind (logged as `the peer task is behind`); should stay 0 |
 | `emfor_build_info{version}`, `emfor_start_time_seconds` | The daemon |
 
 [examples/prometheus/emfor-rules.yml](../../examples/prometheus/emfor-rules.yml)

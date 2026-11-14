@@ -80,6 +80,7 @@ pipe 提早關閉（`emfor status | head -1`）不會改變結束代碼。store 
 | `emfor_peer_results_total{direction}` | 有 `[peers]` 時：負責主機的檢查結果 `sent`（每個成員算一次）與 `received` |
 | `emfor_peer_disagreements` | 有 `[peers]` 時：群組投票判為 down、而本機檢查通過的 backend 數 |
 | `emfor_peer_checks_skipped_total` | 有 `[peers]` 時：因兩台負責主機意見一致而沒有做的檢查次數 |
+| `emfor_peer_queue_dropped_total` | 有 `[peers]` 時：peer task 落後超過 4096 則訊息，因而沒送出的 `down` 與 `result` 訊息數（log 記為 `the peer task is behind`）；應該保持 0 |
 | `emfor_build_info{version}`、`emfor_start_time_seconds` | daemon 本身 |
 
 [examples/prometheus/emfor-rules.yml](../../examples/prometheus/emfor-rules.yml) 提供告警規則：endpoint 無法抓取、服務 `ALL DOWN`、store commit 失敗、backend 不健康達 10 分鐘、flapping、大多是 error，或不再被檢查。完整的 metrics 與規則清單見 [docs/deploy/daemon.md](../deploy/daemon.md#metrics)。

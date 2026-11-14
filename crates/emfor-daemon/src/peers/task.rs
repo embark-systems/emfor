@@ -54,7 +54,41 @@ pub enum PeerOut {
     Result(BackendResult),
 }
 
-pub type PeerSender = mpsc::UnboundedSender<PeerOut>;
+/// Messages backend tasks can queue for the peer task. Past that, while
+/// the peer task cannot keep up (its socket buffer full), new ones are
+/// dropped and counted rather than held in memory without bound; a check
+/// never waits for the peer task.
+pub const PEER_QUEUE: usize = 4096;
+
+/// Where backend tasks queue messages for the peer task.
+#[derive(Debug, Clone)]
+pub struct PeerSender {
+    tx: mpsc::Sender<PeerOut>,
+    stats: Arc<PeerStats>,
+}
+
+impl PeerSender {
+    /// A queue of [`PEER_QUEUE`] messages, counting drops in `stats`.
+    pub fn channel(stats: Arc<PeerStats>) -> (PeerSender, mpsc::Receiver<PeerOut>) {
+        PeerSender::with_capacity(PEER_QUEUE, stats)
+    }
+
+    pub(crate) fn with_capacity(
+        capacity: usize,
+        stats: Arc<PeerStats>,
+    ) -> (PeerSender, mpsc::Receiver<PeerOut>) {
+        let (tx, rx) = mpsc::channel(capacity);
+        (PeerSender { tx, stats }, rx)
+    }
+
+    /// Queue `ev`, or drop and count it when the queue is full. The peer
+    /// task is gone only while the daemon stops; then `ev` is dropped.
+    pub fn send(&self, ev: PeerOut) {
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(ev) {
+            self.stats.count_queue_dropped(Instant::now());
+        }
+    }
+}
 
 /// What a backend task of a daemon in a peer group uses: where to send
 /// announcements and results, the votes to combine with, and the current
@@ -207,7 +241,7 @@ pub fn start_on(
         accept_plaintext: config.accept_plaintext,
     };
     let (settings_tx, settings_rx) = watch::channel(settings);
-    let (out_tx, out_rx) = mpsc::unbounded_channel();
+    let (out_tx, out_rx) = PeerSender::channel(stats.clone());
     let initial_state = quorum.summary(&group.members_live(), Instant::now());
     let task = tokio::spawn(run(
         socket,
@@ -349,7 +383,7 @@ async fn run(
     socket: UdpSocket,
     mut group: Group,
     mut settings: watch::Receiver<PeerSettings>,
-    mut out: mpsc::UnboundedReceiver<PeerOut>,
+    mut out: mpsc::Receiver<PeerOut>,
     targets: Targets,
     quorum: Arc<Quorum>,
     mut state: StateOut,
@@ -450,6 +484,56 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn queued_down(n: u32) -> PeerOut {
+        PeerOut::Down(BackendDown {
+            service: "api.svc.emfor".into(),
+            digest: "d".into(),
+            backend: format!("10.0.0.{n}:8080"),
+            reason: "refused".into(),
+        })
+    }
+
+    /// Spec peer-group "Peer queue": a full queue drops new messages and
+    /// counts them, logging at most once a minute; the queued ones stay.
+    #[tokio::test(start_paused = true)]
+    #[tracing_test::traced_test]
+    async fn full_queue_drops_and_counts() {
+        let stats = Arc::new(PeerStats::default());
+        let (tx, mut rx) = PeerSender::with_capacity(2, stats.clone());
+        for n in 1..=4 {
+            tx.send(queued_down(n));
+        }
+        assert_eq!(stats.queue_dropped(), 2);
+        assert_eq!(rx.recv().await, Some(queued_down(1)));
+        assert_eq!(rx.recv().await, Some(queued_down(2)));
+        assert!(rx.try_recv().is_err(), "the dropped ones are gone");
+        tx.send(queued_down(5));
+        assert_eq!(
+            rx.recv().await,
+            Some(queued_down(5)),
+            "room again once read"
+        );
+        tx.send(queued_down(6));
+        tx.send(queued_down(7));
+        // Full again: dropped, but logged only once a minute.
+        tx.send(queued_down(8));
+        assert_eq!(stats.queue_dropped(), 3);
+        tokio::time::advance(Duration::from_secs(61)).await;
+        tx.send(queued_down(9));
+        assert_eq!(stats.queue_dropped(), 4);
+        logs_assert(|lines: &[&str]| {
+            match lines
+                .iter()
+                .filter(|l| l.contains("the peer task is behind"))
+                .count()
+            {
+                2 => Ok(()),
+                n => Err(format!("{n} warnings")),
+            }
+        });
+        assert_eq!(PEER_QUEUE, 4096);
+    }
     use crate::config::tests::secret_file;
     use crate::peers::crypto::encode;
     use crate::peers::targets::ServiceTargets;
@@ -732,14 +816,12 @@ mod tests {
             None,
             Vec::new(),
         );
-        ha.out
-            .send(PeerOut::Down(BackendDown {
-                service: "api.svc.emfor".into(),
-                digest: DIGEST.into(),
-                backend: "10.0.0.11:8080".into(),
-                reason: "refused".into(),
-            }))
-            .expect("the peer task is running");
+        ha.out.send(PeerOut::Down(BackendDown {
+            service: "api.svc.emfor".into(),
+            digest: DIGEST.into(),
+            backend: "10.0.0.11:8080".into(),
+            reason: "refused".into(),
+        }));
         tokio::time::timeout(Duration::from_secs(2), rb.notified())
             .await
             .expect("b's backend task is woken within 2s");
@@ -768,15 +850,13 @@ mod tests {
         let (ha, hb, _dir, _path) = pair(ta, tb).await;
         let a = ha.listen;
         for service in ["api.svc.emfor", "other.svc.emfor"] {
-            ha.out
-                .send(PeerOut::Result(BackendResult {
-                    service: service.into(),
-                    digest: DIGEST.into(),
-                    backend: "10.0.0.11:8080".into(),
-                    outcome: Outcome::Down("refused".into()),
-                    interval: Duration::from_secs(2),
-                }))
-                .expect("the peer task is running");
+            ha.out.send(PeerOut::Result(BackendResult {
+                service: service.into(),
+                digest: DIGEST.into(),
+                backend: "10.0.0.11:8080".into(),
+                outcome: Outcome::Down("refused".into()),
+                interval: Duration::from_secs(2),
+            }));
         }
         wait_until("counters", Duration::from_secs(2), || {
             ha.stats.results_sent() == 2 && hb.stats.results_received() == 2
@@ -806,14 +886,12 @@ mod tests {
         let (tb, left_out) = targets(DIGEST);
         tb.replace(HashMap::new());
         let (ha, hb, _dir, _path) = pair(ta, tb).await;
-        ha.out
-            .send(PeerOut::Down(BackendDown {
-                service: "api.svc.emfor".into(),
-                digest: "f".repeat(32),
-                backend: "10.0.0.11:8080".into(),
-                reason: "refused".into(),
-            }))
-            .expect("the peer task is running");
+        ha.out.send(PeerOut::Down(BackendDown {
+            service: "api.svc.emfor".into(),
+            digest: "f".repeat(32),
+            backend: "10.0.0.11:8080".into(),
+            reason: "refused".into(),
+        }));
         wait_until("B accepts the down", Duration::from_secs(2), || {
             hb.stats.received() == 1
         })
@@ -829,15 +907,13 @@ mod tests {
         let (ta, _) = targets(DIGEST);
         let (tb, _) = targets(&"f".repeat(32));
         let (ha, hb, _dir, _path) = pair(ta, tb).await;
-        ha.out
-            .send(PeerOut::Result(BackendResult {
-                service: "api.svc.emfor".into(),
-                digest: DIGEST.into(),
-                backend: "10.0.0.11:8080".into(),
-                outcome: Outcome::Up,
-                interval: Duration::from_secs(2),
-            }))
-            .expect("the peer task is running");
+        ha.out.send(PeerOut::Result(BackendResult {
+            service: "api.svc.emfor".into(),
+            digest: DIGEST.into(),
+            backend: "10.0.0.11:8080".into(),
+            outcome: Outcome::Up,
+            interval: Duration::from_secs(2),
+        }));
         let a = ha.listen.to_string();
         wait_until("mismatch", Duration::from_secs(2), || {
             hb.quorum

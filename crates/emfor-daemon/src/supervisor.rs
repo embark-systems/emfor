@@ -905,7 +905,7 @@ mod tests {
             ))
         };
         let first = svc("\"10.0.0.1:80\", \"10.0.0.2:80\"", "1s");
-        let (out, _out_rx) = mpsc::unbounded_channel();
+        let (out, _out_rx) = crate::peers::PeerSender::channel(Arc::default());
         let quorum = Arc::new(crate::quorum::Quorum::new("10.0.0.5:5302".parse().unwrap()));
         let hooks = crate::peers::PeerHooks {
             out,
@@ -1000,7 +1000,7 @@ mod tests {
             ))
         };
         let on = svc(true);
-        let (out, _out_rx) = mpsc::unbounded_channel();
+        let (out, _out_rx) = crate::peers::PeerSender::channel(Arc::default());
         let quorum = Arc::new(crate::quorum::Quorum::new("10.0.0.5:5302".parse().unwrap()));
         let hooks = crate::peers::PeerHooks {
             out,

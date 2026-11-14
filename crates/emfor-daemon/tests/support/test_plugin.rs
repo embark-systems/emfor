@@ -7,8 +7,9 @@
 //!   `slow_first` (the first check
 //!   is answered after 300ms, later ones at once, so answers come out of order),
 //!   `long_stdout` (writes 70000 bytes to stdout without a line feed instead
-//!   of answering), or `long_stderr` (writes a 70000-byte line to stderr,
-//!   then answers `up`).
+//!   of answering), `long_stderr` (writes a 70000-byte line to stderr,
+//!   then answers `up`), or `stop_reading` (never answers and stops reading
+//!   stdin, so the daemon's writes to it block).
 //!
 //! Environment switches:
 //! - `EMFOR_TEST_PLUGIN_PROTOCOL=<n>`: answer the handshake with protocol `n`.
@@ -118,6 +119,11 @@ fn main() {
                     .and_then(|m| m.as_str())
                     .unwrap_or("up")
                     .to_string();
+                if mode == "stop_reading" {
+                    loop {
+                        std::thread::sleep(Duration::from_secs(3600));
+                    }
+                }
                 let delay = if mode == "slow_first" && first_check.swap(false, Ordering::SeqCst) {
                     Duration::from_millis(300)
                 } else {

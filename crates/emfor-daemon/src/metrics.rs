@@ -412,6 +412,17 @@ pub fn render(view: &LiveView, version: &str) -> String {
         put!(out, "emfor_peer_disagreements {}", peers.disagreements());
         family(
             &mut out,
+            "emfor_peer_queue_dropped_total",
+            "counter",
+            "Down and result messages not sent because the queue to the peer task was full.",
+        );
+        put!(
+            out,
+            "emfor_peer_queue_dropped_total {}",
+            peers.queue_dropped()
+        );
+        family(
+            &mut out,
             "emfor_peer_checks_skipped_total",
             "counter",
             "Scheduled checks not made because the votes of the backend's assigned checkers decided the result.",
@@ -705,6 +716,7 @@ mod tests {
             "emfor_peer_results_total{direction=\"sent\"} 0",
             "emfor_peer_disagreements 0",
             "emfor_peer_checks_skipped_total 0",
+            "emfor_peer_queue_dropped_total 0",
             "emfor_peer_up{peer=\"127.0.0.1:5303\"} 1",
             "emfor_peer_messages_rejected_total{reason=\"auth\"} 1",
             "emfor_peer_messages_rejected_total{reason=\"replay\"} 0",

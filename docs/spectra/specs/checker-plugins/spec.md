@@ -73,9 +73,14 @@ A plugin answer SHALL become the check result given by its `result` and `reason`
 ---
 ### Requirement: Plugin process supervision
 
-When a plugin process exits or closes its stdout, or stops answering, the daemon SHALL log its exit status at `warn`, resolve every pending request of that plugin to `error` with reason `plugin exited`, and restart the plugin after a delay that starts at 1 second, doubles after each consecutive failure, is capped at 30 seconds, and resets to 1 second once the plugin has stayed up for 30 seconds. A failed handshake on restart SHALL count as a failure. While a plugin is not running, its checks SHALL return `error` with reason `plugin <name> unavailable` without waiting for the timeout.
+When a plugin process exits or closes its stdout, or stops answering, the daemon SHALL log its exit status at `warn`, resolve every pending request of that plugin to `error` with reason `plugin exited`, and restart the plugin after a delay that starts at 1 second, doubles after each consecutive failure, is capped at 30 seconds, and resets to 1 second once the plugin has stayed up for 30 seconds. A failed handshake on restart SHALL count as a failure. While a plugin is not running, its checks SHALL return `error` with reason `plugin <name> unavailable` without waiting for the timeout. The daemon SHALL hold at most 1024 requests waiting to be written to a plugin's stdin; while that many wait (the plugin does not read its stdin), a further check SHALL return `error` with reason `plugin <name> busy: it is not reading its requests` without waiting for the timeout.
 
 A running plugin SHALL count as having stopped answering when the callers of 3 requests in a row (`check` or `validate`) gave up waiting for their answers, with no answer to any request arriving in between; any answer, including one to a request nobody waits for any more, SHALL reset the count. The daemon SHALL then log at `warn` that plugin `<name>` stopped answering, kill the process, and handle it as a plugin that exited. A plugin that answers every `check` within `timeout_ms` is never killed this way.
+
+#### Scenario: Plugin that stops reading its stdin
+
+- **WHEN** a plugin stops reading its stdin while its checks keep coming and their callers keep waiting
+- **THEN** once 1024 requests wait to be written, further checks of that plugin are `error` with reason `plugin <name> busy: it is not reading its requests` at once, and the daemon's memory for them stops growing
 
 #### Scenario: Plugin stops answering
 

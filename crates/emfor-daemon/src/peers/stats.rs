@@ -56,6 +56,9 @@ pub struct PeerStats {
     pub(super) results_received: AtomicU64,
     pub(super) disagreements: AtomicU64,
     pub(super) checks_skipped: AtomicU64,
+    queue_dropped: AtomicU64,
+    /// When a dropped message was last logged.
+    queue_warned: Mutex<Option<tokio::time::Instant>>,
     up: Mutex<BTreeMap<SocketAddr, bool>>,
 }
 
@@ -92,6 +95,25 @@ impl PeerStats {
     /// Check times decided by votes alone, as of the last heartbeat round.
     pub fn checks_skipped(&self) -> u64 {
         self.checks_skipped.load(Ordering::Relaxed)
+    }
+
+    /// `down` and `result` messages not sent because the queue to the
+    /// peer task was full.
+    pub fn queue_dropped(&self) -> u64 {
+        self.queue_dropped.load(Ordering::Relaxed)
+    }
+
+    /// Count a message dropped at a full queue, and log it at most once
+    /// per [`super::group::WARN_EVERY`].
+    pub(super) fn count_queue_dropped(&self, now: tokio::time::Instant) {
+        let n = self.queue_dropped.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut warned = self.queue_warned.lock().unwrap_or_else(|e| e.into_inner());
+        if warned.is_none_or(|t| now.saturating_duration_since(t) >= super::group::WARN_EVERY) {
+            *warned = Some(now);
+            tracing::warn!(
+                "the peer task is behind: a down or result message was not sent ({n} so far); see emfor_peer_queue_dropped_total"
+            );
+        }
     }
 
     /// Set the skipped-check counter.
