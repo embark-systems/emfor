@@ -6,7 +6,7 @@ exclude = ["tests/spike/probe"]
 members = ["crates/emfor-daemon", "crates/emfor-format", "crates/emfor-check", "crates/emfor-plugin", "crates/emfor-tls", "tools/emfor-fixture", "clients/rust"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "BSD-2-Clause"
 

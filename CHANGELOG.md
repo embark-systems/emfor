@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-11-14
 
 **Breaking: the store format is version 2.** The daemon writes
 `meta/schema_version` 2, which adds the backend field `backup`. Clients
@@ -13,6 +13,16 @@ clients on a host before the daemon (see
 read them and drop them as `malformed`. To upgrade a peer group, set
 `encrypt = false` in `[peers]` on each host as it is upgraded; once every
 member runs this release, remove the line and reload each daemon.
+
+**Breaking, on FreeBSD only: `examples/rc.d/emfor` is gone**, and the
+example port keeps the store in `/var/db/emfor` (see Deployment).
+
+The main additions are backup backends, slow start, a preference for
+backends whose last check passed, sticky lookups that honour `weight`,
+encrypted peer messages, and the `smtp`, `amqp`, `mongodb`, `grpc` and
+`quic` plugins of `emfor-check`. The plugin protocol (1) is unchanged.
+As with every release, install `libemfor` from the same release as the
+daemon.
 
 ### Daemon
 
@@ -51,9 +61,9 @@ member runs this release, remove the line and reload each daemon.
   instead of its full share at once. It applies to client lookups and
   DNS A/AAAA answers for every method but `failover` and `sticky` with a
   key, and to SRV weights. The store gains `slow_start_ms` on services
-  and `recovered_at` on backends; the format version stays 1, and older
-  clients ignore both, so a recovered backend gets its full share at once
-  with them. See
+  and `recovered_at` on backends; clients that do not know them (as
+  emfor-client 0.3.0 reading a version 1 store) give a recovered backend
+  its full share at once. See
   [Slow start](docs/manual/05-backend-selection.md#slow-start).
 - With `on_all_down = "open"` and no healthy backend, clients and the DNS
   server now use the `unknown` backends (not decided yet, or whose checks
@@ -80,23 +90,6 @@ member runs this release, remove the line and reload each daemon.
   `interval` from N members instead of 3 + (N − 3) / 5. Measured with
   `interval = "2s"` and `fall = 3`: 0.8 to 5.8 seconds, 3.3 seconds
   median, over 12 failures started at different points of the schedule.
-- FreeBSD: the rc.d script starts `daemon(8)` with `-f`. Without it,
-  `daemon(8)` and emfor kept the terminal or SSH session that ran
-  `service emfor start`, so that session never closed. The rc.d script,
-  the port and the tests have now run on FreeBSD 15.1-RELEASE (arm64).
-- FreeBSD: the example port puts the store in `/var/db/emfor`, where
-  FreeBSD keeps daemon state, instead of `/var/lib/emfor`: it creates that
-  directory, and its sample config sets `[store] path =
-  "/var/db/emfor/state.mdb"`. The daemon's and the clients' default stay
-  `/var/lib/emfor/state.mdb`, so applications on the host set
-  `EMFOR_STORE`. After updating an installed port, move the store or keep
-  the old `[store] path`; the history is all it holds.
-- **Breaking, on FreeBSD only:** `examples/rc.d/emfor` is gone. The port's
-  `examples/freebsd/files/emfor.in` is the only rc.d script; to use it
-  without the port, fill in `%%PREFIX%%` (chapter 2 of the manual shows
-  the command). Its `emfor_user` defaults to `emfor`, not `root`, so
-  create that user or set `emfor_user`.
-
 ### Clients
 
 - **Behaviour change:** `balance = "sticky"` with an affinity key now
@@ -174,12 +167,67 @@ member runs this release, remove the line and reload each daemon.
   this on port 636 when it has no certificate. The same reason applies to
   the daemon's `tcp` check with `tls = true`.
 
+### Deployment
+
+- The FreeBSD rc.d script starts `daemon(8)` with `-f`. Without it,
+  `daemon(8)` and emfor kept the terminal or SSH session that ran
+  `service emfor start`, so that session never closed. The rc.d script,
+  the port and the tests have now run on FreeBSD 15.1-RELEASE (arm64).
+- The example FreeBSD port puts the store in `/var/db/emfor`, where
+  FreeBSD keeps daemon state, instead of `/var/lib/emfor`: it creates that
+  directory, and its sample config sets `[store] path =
+  "/var/db/emfor/state.mdb"`. The daemon's and the clients' default stay
+  `/var/lib/emfor/state.mdb`, so applications on the host set
+  `EMFOR_STORE`. After updating an installed port, move the store or keep
+  the old `[store] path`; the history is all it holds.
+- `examples/rc.d/emfor` is gone. The port's
+  `examples/freebsd/files/emfor.in` is the only rc.d script; to use it
+  without the port, fill in `%%PREFIX%%` (chapter 2 of the manual shows
+  the command). Its `emfor_user` defaults to `emfor`, not `root`, so
+  create that user or set `emfor_user`.
+
+### Documentation
+
+- The operations chapter of the manual says what a host crash loses with
+  `[store] sync = false` (the state history only) and how to keep the
+  store on a tmpfs ([Keeping the store in
+  memory](docs/manual/08-operations.md#keeping-the-store-in-memory)).
+- [docs/deploy/plugins.md](docs/deploy/plugins.md) says which servers
+  each plugin was checked against, and what was checked by hand against
+  Active Directory.
+
+### Development
+
+- cargo-fuzz targets for plugin answers, peer messages, metrics, plugin
+  lines and the config ([fuzz/](fuzz/README.md)); RELEASING.md runs each
+  for 10 minutes before a release.
+
+### Known limits
+
+- FreeBSD has been tested on 15.1-RELEASE (arm64, in a VM), the port with
+  `make stage check-plist install`; not with poudriere, on 14.x or on
+  amd64.
+- Peer messages have no forward secrecy: whoever later gets
+  `secret_file` can read recorded messages. Rotate the secret regularly.
+- The `ldap` plugin has been checked against Active Directory only
+  without a certificate and without a successful login; the `mysql`
+  plugin only against MariaDB.
+- Unchanged from 0.1.0: lookup throughput across threads levels off at
+  about two million a second on Linux
+  ([docs/performance.md](docs/performance.md)).
+- Unchanged from 0.2.0: with `[store] sync = false` (the default), a host
+  crash can leave the store damaged; the daemon then sets it aside at the
+  next start and the state history is lost.
+- Unchanged from 0.3.0: a host announces at most 80 services left out of
+  the peer group; the other members still count it as a candidate for
+  the rest.
+
 ## 0.3.0 — 2026-11-14
 
 **Breaking, on FreeBSD only: the rc.d script keeps its pid files in
 `/var/run/emfor/`.** Scripts that read `/var/run/emfor.child.pid` must read
 `/var/run/emfor/emfor.child.pid`, and installed copies of
-[examples/rc.d/emfor](examples/rc.d/emfor) must be replaced (see
+`examples/rc.d/emfor` must be replaced (see
 Deployment). Nothing else needs a change: configs, commands and the
 `--json` output of 0.2.0 work as before.
 
@@ -300,7 +348,7 @@ daemon.
   user cannot write `/var/run`. The pid files are now in `/var/run/emfor/`,
   which `service emfor start` creates owned by `emfor_user`, and daemon(8)
   no longer gets `-u` (it needs root). Replace installed copies of
-  [examples/rc.d/emfor](examples/rc.d/emfor); scripts that read
+  `examples/rc.d/emfor`; scripts that read
   `/var/run/emfor.child.pid` read `/var/run/emfor/emfor.child.pid` now.
 
 ### Documentation
@@ -345,7 +393,7 @@ the service definition before restarting:
 
 `--check-config` now only prints `--check-config was replaced by "emfor
 check-config"` and exits 2. `emfor status` is unchanged.
-[examples/rc.d/emfor](examples/rc.d/emfor),
+`examples/rc.d/emfor`,
 [examples/systemd/emfor.service](examples/systemd/emfor.service) and the
 FreeBSD port example use the new commands; copies of the 0.1.x versions
 must be replaced. See [docs/deploy/daemon.md](docs/deploy/daemon.md#commands).
@@ -454,7 +502,7 @@ file's reader slots (below).
 - `service emfor configtest`, which the rc.d script also runs before
   starting, checked the config as root and so started the config's plugins
   as root even with `emfor_user` set. It now runs as `emfor_user`.
-  Replace copies of [examples/rc.d/emfor](examples/rc.d/emfor).
+  Replace copies of `examples/rc.d/emfor`.
 - The example FreeBSD port installs the rc.d script with `USE_RC_SUBR`
   from `files/emfor.in`; a test keeps it in step with
   `examples/rc.d/emfor`.
