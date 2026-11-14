@@ -50,8 +50,11 @@ check_options = { tls = true, server_name = "imap.internal", expect = "* OK" }
 ```
 
 Typical reasons: `expect: got "421 too busy\r\n"` (the first 64 bytes
-received, escaped), `send: ...`, `tls: ...`, and
-`tls: no answer to the TLS handshake (does the port speak TLS?)`.
+received, escaped), `send: ...`, `tls: ...`,
+`tls: no answer to the TLS handshake (does the port speak TLS?)`, and
+`tls: connection closed during the TLS handshake (does the server have a
+certificate?)` when the server closes the connection instead of
+answering, as Active Directory does on port 636 without a certificate.
 
 ## http
 

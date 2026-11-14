@@ -146,6 +146,15 @@ member runs this release, remove the line and reload each daemon.
   h3-quinn 0.0.10, which make the `emfor-check` release binary about
   1.3 MiB (13%) larger, 11.2 MiB on macOS arm64; the daemon does not
   link them. See [docs/deploy/plugins.md](docs/deploy/plugins.md#quic).
+- `ldap` reasons no longer end with a NUL byte when the server is Active
+  Directory, which ends its diagnostic message with one: a wrong password
+  is now `auth: 49 invalidCredentials: 80090308: LdapErr: …, data 52e, …`.
+- A server that closes or resets the connection during the TLS handshake
+  is down with `tls: connection closed during the TLS handshake (does the
+  server have a certificate?)` instead of `tls: tls handshake eof` or
+  `tls: Connection reset by peer (os error 54)`. Active Directory does
+  this on port 636 when it has no certificate. The same reason applies to
+  the daemon's `tcp` check with `tls = true`.
 
 ## 0.3.0 — 2026-11-14
 

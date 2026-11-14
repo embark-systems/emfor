@@ -538,7 +538,7 @@ tests:
 ---
 ### Requirement: LDAP check
 
-The `ldap` plugin SHALL perform an LDAPv3 simple bind and SHALL answer `up` when the BindResponse resultCode is 0. Without `user` it SHALL bind anonymously (empty name, empty password); with `user` it SHALL bind with `user` as the DN and the content of `password_file` as the password. After a successful bind it SHALL send an UnbindRequest before closing the connection. A BindResponse with a non-zero resultCode SHALL be `down` with reason `auth: <code> <name>`, followed by `: <diagnosticMessage>` when the server sent a non-empty diagnosticMessage; `<name>` SHALL be the resultCode name defined in RFC 4511 section 4.1.9 (for example `invalidCredentials` for 49), and SHALL be left out (keeping only the code) for codes RFC 4511 does not define. A response that is not a valid LDAPMessage, has another messageID, carries another protocol operation, or a Notice of Disconnection, SHALL be `down` with a reason starting `query: `. The plugin SHALL read at most 65536 bytes for one response and SHALL answer `down` with a reason starting `query: ` when a response is longer.
+The `ldap` plugin SHALL perform an LDAPv3 simple bind and SHALL answer `up` when the BindResponse resultCode is 0. Without `user` it SHALL bind anonymously (empty name, empty password); with `user` it SHALL bind with `user` as the DN and the content of `password_file` as the password. After a successful bind it SHALL send an UnbindRequest before closing the connection. A BindResponse with a non-zero resultCode SHALL be `down` with reason `auth: <code> <name>`, followed by `: <diagnosticMessage>` when the server sent a diagnosticMessage that is not empty once trailing NUL bytes are removed (Active Directory ends it with one), without those NUL bytes; `<name>` SHALL be the resultCode name defined in RFC 4511 section 4.1.9 (for example `invalidCredentials` for 49), and SHALL be left out (keeping only the code) for codes RFC 4511 does not define. A response that is not a valid LDAPMessage, has another messageID, carries another protocol operation, or a Notice of Disconnection, SHALL be `down` with a reason starting `query: `. The plugin SHALL read at most 65536 bytes for one response and SHALL answer `down` with a reason starting `query: ` when a response is longer.
 
 #### Scenario: Anonymous bind
 
@@ -569,6 +569,7 @@ The `ldap` plugin SHALL perform an LDAPv3 simple bind and SHALL answer `up` when
 | 53 | `unauthenticated bind (DN with no password) disallowed` | `auth: 53 unwillingToPerform: unauthenticated bind (DN with no password) disallowed` |
 | 8 | empty | `auth: 8 strongerAuthRequired` |
 | 4096 | empty | `auth: 4096` |
+| 49 | `80090308: LdapErr: DSID-0C090434, comment: AcceptSecurityContext error, data 52e, v4f7c` followed by a NUL byte | `auth: 49 invalidCredentials: 80090308: LdapErr: DSID-0C090434, comment: AcceptSecurityContext error, data 52e, v4f7c` |
 
 #### Scenario: Malformed response
 

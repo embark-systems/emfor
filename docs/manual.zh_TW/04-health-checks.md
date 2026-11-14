@@ -43,7 +43,7 @@ backends = ["10.0.8.11:993"]
 check_options = { tls = true, server_name = "imap.internal", expect = "* OK" }
 ```
 
-常見的 reason：`expect: got "421 too busy\r\n"`（收到的前 64 位元組，已跳脫）、`send: ...`、`tls: ...`，以及 `tls: no answer to the TLS handshake (does the port speak TLS?)`。
+常見的 reason：`expect: got "421 too busy\r\n"`（收到的前 64 位元組，已跳脫）、`send: ...`、`tls: ...`、`tls: no answer to the TLS handshake (does the port speak TLS?)`，以及伺服器不回應握手、直接關閉連線時的 `tls: connection closed during the TLS handshake (does the server have a certificate?)`（例如 Active Directory 沒有憑證時的 636 port）。
 
 ## http
 

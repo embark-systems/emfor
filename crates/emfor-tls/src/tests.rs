@@ -108,6 +108,45 @@ async fn silent_plaintext_server_is_no_answer() {
     }
 }
 
+/// A server that reads the ClientHello and then closes the connection, or
+/// resets it with `reset`, as Active Directory does on 636 when it has no
+/// certificate.
+async fn closing_server(reset: bool) -> std::net::SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            // The whole ClientHello record: closing with unread bytes
+            // would make the close a reset.
+            let mut header = [0u8; 5];
+            s.read_exact(&mut header).await.unwrap();
+            let len = usize::from(u16::from_be_bytes([header[3], header[4]]));
+            s.read_exact(&mut vec![0u8; len]).await.unwrap();
+            if reset {
+                s.set_zero_linger().unwrap();
+            }
+        }
+    });
+    addr
+}
+
+#[tokio::test]
+async fn closed_during_the_handshake() {
+    for reset in [false, true] {
+        let addr = closing_server(reset).await;
+        match connect_tls(addr, &settings(None, None, false), T).await {
+            Err(TlsFailure {
+                local: false,
+                reason,
+            }) => assert_eq!(reason, CLOSED_DURING_HANDSHAKE, "reset = {reset}"),
+            other => panic!(
+                "reset = {reset}: expected down, got {:?}",
+                other.map(|_| ())
+            ),
+        }
+    }
+}
+
 #[tokio::test]
 async fn little_time_left_is_not_blamed_on_tls() {
     // 90% of 50 ms is below the minimum: no `tls: no answer` reason; the

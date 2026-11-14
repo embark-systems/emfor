@@ -134,7 +134,7 @@ If the file cannot be read during a check, the check is `error`, which does not 
 
 ### TLS
 
-With `tls = true` (or `starttls = true` for `ldap`), the certificate is checked against `server_name`, or against the backend IP when `server_name` is not set. Backends are listed by IP, and database certificates usually name a host, so set `server_name` unless the certificate has the IP in its subject alternative names. Use `ca_file` for an internal CA. `tls_verify = false` keeps the connection encrypted but accepts any certificate.
+With `tls = true` (or `starttls = true` for `ldap`), the certificate is checked against `server_name`, or against the backend IP when `server_name` is not set. Backends are listed by IP, and database certificates usually name a host, so set `server_name` unless the certificate has the IP in its subject alternative names. Use `ca_file` for an internal CA. `tls_verify = false` keeps the connection encrypted but accepts any certificate. A server that closes the connection during the handshake is down with `tls: connection closed during the TLS handshake (does the server have a certificate?)`; Active Directory does this on 636, and refuses StartTLS with `52 unavailable`, until a certificate for LDAPS is installed on the domain controller.
 
 ### LDAP
 
@@ -152,7 +152,7 @@ check_options = { user = "cn=monitor,dc=example,dc=org", password_file = "/etc/e
 
 - Without `user`, the bind is anonymous. Many servers accept an anonymous bind even when their database is broken, so a bind with a dedicated account says more: give it an entry with a password and no other rights.
 - Use `starttls = true` on port 389 or `tls = true` (LDAPS) on port 636, so the password is never sent in plaintext. With `starttls`, a server that refuses StartTLS is down with `tls: StartTLS refused: <code> <name>`, and no bind is sent.
-- A rejected bind is down with `auth: <code> <name>`, followed by the server's diagnostic message when it sends one, for example `auth: 49 invalidCredentials`, `auth: 53 unwillingToPerform: …` or `auth: 8 strongerAuthRequired` (the server wants TLS). The names are those of RFC 4511; an unknown code shows only the number.
+- A rejected bind is down with `auth: <code> <name>`, followed by the server's diagnostic message when it sends one, for example `auth: 49 invalidCredentials`, `auth: 53 unwillingToPerform: …` or `auth: 8 strongerAuthRequired` (the server wants TLS). Active Directory adds its own code to the message, for example `auth: 49 invalidCredentials: 80090308: LdapErr: DSID-0C090434, comment: AcceptSecurityContext error, data 52e, v4f7c` (`data 52e` is a wrong user name or password). The names are those of RFC 4511; an unknown code shows only the number.
 - A response that is not valid LDAP, answers another message, is longer than 65536 bytes, or is a Notice of Disconnection is down with `query: `.
 - Every check is a bind, which LDAP servers usually log. Lower the server's log level for this account, or use a longer `interval`.
 

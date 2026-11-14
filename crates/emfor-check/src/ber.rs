@@ -194,11 +194,17 @@ pub fn decode_response(msg: &[u8]) -> Result<Response, BerError> {
     let result_code = to_integer(result.expect(ENUMERATED, "a resultCode")?, "resultCode")?;
     result.expect(OCTET_STRING, "a matchedDN")?;
     let diagnostic = result.expect(OCTET_STRING, "a diagnosticMessage")?;
+    // Active Directory ends its diagnosticMessage with a NUL byte, as a C
+    // string; it is not part of the message.
+    let end = diagnostic
+        .iter()
+        .rposition(|b| *b != 0)
+        .map_or(0, |last| last + 1);
     Ok(Response {
         message_id,
         op,
         result_code,
-        diagnostic: String::from_utf8_lossy(diagnostic).into_owned(),
+        diagnostic: String::from_utf8_lossy(&diagnostic[..end]).into_owned(),
     })
 }
 
@@ -343,6 +349,30 @@ mod tests {
         assert_eq!(
             (r.op, r.result_code, r.diagnostic.as_str()),
             (EXTENDED_RESPONSE, 4096, "x")
+        );
+    }
+
+    #[test]
+    fn trailing_nul_bytes_are_not_part_of_the_diagnostic() {
+        // As Active Directory sends it (Windows Server, invalid password).
+        let ad = "80090308: LdapErr: DSID-0C090434, comment: AcceptSecurityContext error, data 52e, v4f7c\0";
+        for (sent, want) in [
+            (ad, &ad[..ad.len() - 1]),
+            ("x\0\0", "x"),
+            ("\0", ""),
+            ("a\0b", "a\0b"),
+        ] {
+            let r = decode_response(&response(1, BIND_RESPONSE, 49, sent)).unwrap();
+            assert_eq!(r.diagnostic, want, "{sent:?}");
+        }
+        assert_eq!(
+            result_text(
+                49,
+                &decode_response(&response(1, BIND_RESPONSE, 49, "\0"))
+                    .unwrap()
+                    .diagnostic
+            ),
+            "49 invalidCredentials"
         );
     }
 

@@ -85,6 +85,23 @@ pub fn is_local_io_error(e: &io::Error) -> bool {
     )
 }
 
+/// The reason when the backend closes or resets the connection before the
+/// handshake is done, for example a server that listens on a TLS port but
+/// has no certificate (Active Directory on 636 without one).
+pub const CLOSED_DURING_HANDSHAKE: &str =
+    "tls: connection closed during the TLS handshake (does the server have a certificate?)";
+
+/// Whether `e` means the other end closed or reset the connection.
+fn is_closed(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::BrokenPipe
+    )
+}
+
 /// TLS handshake on a connected `stream` to `ip`.
 ///
 /// The handshake may use 90% of what is left of `remaining` (the time left
@@ -131,6 +148,7 @@ pub async fn handshake_with_config<S: AsyncRead + AsyncWrite + Unpin>(
     match tokio::time::timeout(budget, handshake).await {
         Ok(Ok(stream)) => Ok(stream),
         Ok(Err(e)) if is_local_io_error(&e) => Err(TlsFailure::local(format!("tls: {e}"))),
+        Ok(Err(e)) if is_closed(&e) => Err(TlsFailure::down(CLOSED_DURING_HANDSHAKE)),
         Ok(Err(e)) => Err(TlsFailure::down(format!("tls: {e}"))),
         Err(_) => Err(TlsFailure::down(
             "tls: no answer to the TLS handshake (does the port speak TLS?)",
