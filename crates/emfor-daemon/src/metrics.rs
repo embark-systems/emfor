@@ -674,6 +674,7 @@ mod tests {
             "emfor_peer_up{peer=\"127.0.0.1:5303\"} 1",
             "emfor_peer_messages_rejected_total{reason=\"auth\"} 1",
             "emfor_peer_messages_rejected_total{reason=\"replay\"} 0",
+            "emfor_peer_messages_rejected_total{reason=\"plaintext\"} 0",
             "emfor_peer_notifications_total{direction=\"sent\"} 0",
             "emfor_peer_notifications_total{direction=\"received\"} 0",
         ] {

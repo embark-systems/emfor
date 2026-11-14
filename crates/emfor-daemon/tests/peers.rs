@@ -1018,6 +1018,47 @@ fn mixed_formats_during_an_upgrade() {
     assert!(!db.log().contains("sends plaintext messages"));
 }
 
+/// Spec peer-group "Plaintext refused": A sets `accept_plaintext = false`
+/// and drops B's `EMP1` messages as `plaintext`, so B is not live at A;
+/// a reload that accepts plaintext again makes B live.
+#[test]
+fn plaintext_refused_until_reload() {
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
+    let backend = held.local_addr().expect("the backend has an address");
+    let (a, b) = (free_udp(), free_udp());
+    let da = spawn(|dir, m| {
+        config_peers(
+            dir,
+            m,
+            a,
+            &[a, b],
+            backend,
+            "",
+            "accept_plaintext = false\n",
+        )
+    });
+    let db = spawn(|dir, m| config_peers(dir, m, b, &[a, b], backend, "", "encrypt = false\n"));
+    for d in [&da, &db] {
+        d.wait_log(HEALTHY);
+    }
+    wait_within("B's messages refused at A", Duration::from_secs(5), || {
+        da.scrape().lines().any(|l| {
+            l.strip_prefix("emfor_peer_messages_rejected_total{reason=\"plaintext\"} ")
+                .and_then(|n| n.parse::<u64>().ok())
+                .is_some_and(|n| n >= 2)
+        }) && db.has_line(&format!("emfor_peer_up{{peer=\"{a}\"}} 1"))
+    });
+    assert!(da.has_line(&format!("emfor_peer_up{{peer=\"{b}\"}} 0")));
+    da.write_whole_config(&config(da.dir.path(), da.metrics, a, &[a, b], backend, ""));
+    da.signal(Signal::SIGHUP);
+    da.wait_log("config reloaded");
+    wait_within(
+        "B live at A after the reload",
+        Duration::from_secs(5),
+        || da.has_line(&format!("emfor_peer_up{{peer=\"{b}\"}} 1")),
+    );
+}
+
 /// Spec peer-group "Peer listen requires restart": `encrypt` changes on
 /// reload, from the next message sent.
 #[test]

@@ -73,6 +73,7 @@ pub struct PeerSettings {
     pub secret_file: PathBuf,
     pub site: String,
     pub encrypt: bool,
+    pub accept_plaintext: bool,
 }
 
 /// The running peer task.
@@ -99,13 +100,14 @@ impl PeersHandle {
         }
     }
 
-    /// Apply new members, secret file, site and `encrypt`.
+    /// Apply new members, secret file, site, `encrypt` and `accept_plaintext`.
     pub fn reload(&self, config: &PeersConfig, site: &str) {
         self.settings.send_replace(PeerSettings {
             members: config.members.clone(),
             secret_file: config.secret_file.clone(),
             site: site.to_string(),
             encrypt: config.encrypt,
+            accept_plaintext: config.accept_plaintext,
         });
     }
 }
@@ -195,12 +197,14 @@ pub fn start_on(
         stats.clone(),
     );
     group.set_encrypt(config.encrypt);
+    group.set_accept_plaintext(config.accept_plaintext);
     group.share_live_with(quorum.clone());
     let settings = PeerSettings {
         members: config.members.clone(),
         secret_file: config.secret_file.clone(),
         site: site.to_string(),
         encrypt: config.encrypt,
+        accept_plaintext: config.accept_plaintext,
     };
     let (settings_tx, settings_rx) = watch::channel(settings);
     let (out_tx, out_rx) = mpsc::unbounded_channel();
@@ -433,6 +437,7 @@ async fn run(
                 group.set_members(s.members);
                 group.set_site(s.site);
                 group.set_encrypt(s.encrypt);
+                group.set_accept_plaintext(s.accept_plaintext);
                 if s.secret_file != secret_file {
                     secret_file = s.secret_file;
                     refresh_secret(&mut group, &secret_file, &mut secret_warned, Instant::now()).await;
@@ -504,6 +509,7 @@ mod tests {
             secret_file: new_path.clone(),
             previous_secret_file: previous,
             encrypt: true,
+            accept_plaintext: true,
         };
         let now = Instant::now();
         let at = |s| now + Duration::from_secs(s);
@@ -606,6 +612,7 @@ mod tests {
             secret_file: path.clone(),
             previous_secret_file: None,
             encrypt: true,
+            accept_plaintext: true,
         };
         let ha = start_on(
             sa,
@@ -662,6 +669,7 @@ mod tests {
                 secret_file: path,
                 previous_secret_file: None,
                 encrypt: true,
+                accept_plaintext: true,
             },
             "dc1",
         );
@@ -704,6 +712,7 @@ mod tests {
                 secret_file: path.clone(),
                 previous_secret_file: None,
                 encrypt: true,
+                accept_plaintext: true,
             },
             "dc1",
         );
@@ -715,6 +724,7 @@ mod tests {
                 secret_file: path,
                 previous_secret_file: None,
                 encrypt: true,
+                accept_plaintext: true,
             },
             "dc1",
             Keys::new(vec![3u8; 32]),

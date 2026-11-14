@@ -120,7 +120,9 @@ encrypted messages of upgraded members: set `encrypt = false` on those
 until it is upgraded (see
 [`[peers]`](03-configuration.md#peers)). A warning `peer <address> sends
 plaintext messages (EMP1); set encrypt = true there` means that member
-still sends readable messages; they are accepted.
+still sends readable messages; they are accepted unless
+`accept_plaintext = false`, in which case they count as `plaintext` and
+that member is not live here.
 
 Reasons tell where a `down` came from: `peers 2/3: <reason>` means two of
 the three assigned checkers saw the backend down (the reason is theirs),

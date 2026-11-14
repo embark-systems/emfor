@@ -173,6 +173,8 @@ pub struct PeersConfig {
     pub previous_secret_file: Option<PathBuf>,
     /// `encrypt`: send `EMP2` (encrypted) rather than `EMP1` messages.
     pub encrypt: bool,
+    /// `accept_plaintext`: accept `EMP1` messages; `false` needs `encrypt`.
+    pub accept_plaintext: bool,
 }
 
 impl PeersConfig {
@@ -824,6 +826,7 @@ impl Validator {
                 "secret_file",
                 "previous_secret_file",
                 "encrypt",
+                "accept_plaintext",
             ],
         );
         let encrypt = match t.get("encrypt") {
@@ -834,6 +837,24 @@ impl Validator {
                 true
             }
         };
+        let accept_plaintext = match t.get("accept_plaintext") {
+            None => true,
+            Some(toml::Value::Boolean(b)) => *b,
+            Some(_) => {
+                self.err(
+                    "peers.accept_plaintext",
+                    "accept_plaintext must be true or false",
+                );
+                true
+            }
+        };
+        if !accept_plaintext && !encrypt {
+            // Every member with this config would drop every message.
+            self.err(
+                "peers.accept_plaintext",
+                "accept_plaintext = false needs encrypt = true: this daemon would send the plaintext messages it refuses",
+            );
+        }
         let listen = match t.get("listen") {
             None => {
                 self.err("peers.listen", "missing: this daemon's peer address");
@@ -933,6 +954,7 @@ impl Validator {
             secret_file: secret_file?,
             previous_secret_file,
             encrypt,
+            accept_plaintext,
         })
     }
 
@@ -1631,6 +1653,26 @@ backends = ["10.0.0.1:80"]
             (
                 peers_conf(
                     site,
+                    &format!("listen = \"10.0.0.5:5302\"\n{m2}accept_plaintext = 0\n"),
+                    &key,
+                ),
+                "peers.accept_plaintext",
+                "accept_plaintext must be true or false",
+            ),
+            (
+                peers_conf(
+                    site,
+                    &format!(
+                        "listen = \"10.0.0.5:5302\"\n{m2}encrypt = false\naccept_plaintext = false\n"
+                    ),
+                    &key,
+                ),
+                "peers.accept_plaintext",
+                "needs encrypt = true",
+            ),
+            (
+                peers_conf(
+                    site,
                     "listen = \"10.0.0.5:5302\"\nmembers = [\"10.0.0.5:5302\", \"[2001:db8::6]:5302\"]\n",
                     &key,
                 ),
@@ -1674,6 +1716,16 @@ backends = ["10.0.0.1:80"]
             &key,
         ));
         assert!(c.peers.as_ref().is_some_and(|p| !p.encrypt));
+        assert!(
+            c.peers.as_ref().is_some_and(|p| p.accept_plaintext),
+            "accept_plaintext defaults to true"
+        );
+        let c = parse_ok(&peers_conf(
+            site,
+            &format!("listen = \"10.0.0.5:5302\"\n{m2}accept_plaintext = false\n"),
+            &key,
+        ));
+        assert!(c.peers.as_ref().is_some_and(|p| !p.accept_plaintext));
         // Reported together with other errors.
         let e = parse_err(&format!(
             "{}interval = \"50ms\"\n",

@@ -123,6 +123,7 @@ secret_file = "/etc/emfor/peers.key"
 | `secret_file` | required | Absolute path to the shared secret that authenticates and encrypts every message: at least 32 bytes after one trailing line feed is removed, not readable by other users (`chmod 600` or `640`). |
 | `previous_secret_file` | none | Optional. Absolute path to the secret `secret_file` held before its last change, with the same conditions. Read only at start, so that a daemon restarted during a secret change keeps signing with and accepting the previous secret as if it had not restarted (see below). |
 | `encrypt` | `true` | `true` sends every message encrypted (`EMP2`: ChaCha20-Poly1305 with a key derived from the secret); `false` sends them only signed (`EMP1`: HMAC-SHA256), so backend names, addresses and reasons can be read on the network. Both are accepted either way; with `true` the daemon logs a warning, once a minute per member, for each member that still sends `EMP1`. |
+| `accept_plaintext` | `true` | `false` drops every `EMP1` message (counted as `plaintext` in `emfor_peer_messages_rejected_total`), so nobody who learns the secret can make this daemon read a signed but unencrypted message. Needs `encrypt = true`. Set it once every member sends `EMP2`. |
 
 Members only share reports for a service when its check is defined the
 same way on both: the same `check`, `check_options` and `timeout`. Other
@@ -159,7 +160,9 @@ Encryption is new in this release. Members running 0.3.0 send and accept
 only `EMP1` and drop encrypted messages (counted as `malformed`), so to
 upgrade a group, set `encrypt = false` on each host as it is upgraded;
 once every member runs this release, remove the line (or set
-`encrypt = true`) and reload each daemon. The encryption has no forward
+`encrypt = true`) and reload each daemon. Once no member logs the
+plaintext warning, you can set `accept_plaintext = false` everywhere and
+reload. The encryption has no forward
 secrecy: whoever later gets the secret can read messages recorded before.
 Rotate the secret regularly, as above, and keep the file readable only by
 the daemon.
@@ -295,5 +298,5 @@ error and keeps running the old config.
 | Anything in `[store]` | Rejected; needs a restart. |
 | `[dns] listen`, adding or removing `[dns]` | Rejected (`dns listen settings require restart`). |
 | `[metrics] listen`, adding or removing `[metrics]` | Rejected (`metrics listen settings require restart`). |
-| `[peers] members`, `[peers] secret_file`, `[peers] encrypt` | Applied; added members start as not live. `previous_secret_file` is checked, but read only at start. |
+| `[peers] members`, `[peers] secret_file`, `[peers] encrypt`, `[peers] accept_plaintext` | Applied; added members start as not live. `previous_secret_file` is checked, but read only at start. |
 | `[peers] listen`, adding or removing `[peers]` | Rejected (`peers listen settings require restart`). |

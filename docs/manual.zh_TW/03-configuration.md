@@ -91,6 +91,7 @@ secret_file = "/etc/emfor/peers.key"
 | `secret_file` | 必填 | 共用密鑰的絕對路徑，用來驗證並加密每則訊息：去掉一個結尾換行後至少 32 bytes，其他使用者不能讀取（`chmod 600` 或 `640`）。 |
 | `previous_secret_file` | 無 | 選用。`secret_file` 上次改變前那把密鑰的絕對路徑，條件與 `secret_file` 相同。只在啟動時讀取，讓更換密鑰期間重新啟動的 daemon 仍像沒有重新啟動一樣，用舊密鑰簽署並接受它（見下文）。 |
 | `encrypt` | `true` | `true` 時每則訊息都加密送出（`EMP2`：ChaCha20-Poly1305，金鑰由密鑰導出）；`false` 時只簽署（`EMP1`：HMAC-SHA256），網路上看得到 backend 名稱、位址與原因。兩種格式都一律接受；`true` 時，對仍送 `EMP1` 的每個成員，daemon 每分鐘記一行警告。 |
+| `accept_plaintext` | `true` | `false` 時丟棄所有 `EMP1` 訊息（在 `emfor_peer_messages_rejected_total` 算成 `plaintext`），所以就算有人拿到密鑰，也無法讓這個 daemon 接受只簽署、未加密的訊息。必須搭配 `encrypt = true`。等每個成員都送 `EMP2` 之後再設。 |
 
 只有當某個服務在兩邊的檢查定義相同時，成員之間才會分享該服務的回報：相同的 `check`、`check_options` 與 `timeout`。其他設定（`interval`、`rise`、`fall`、backend 清單）可以不同。
 
@@ -107,7 +108,7 @@ cat new.key > /etc/emfor/peers.key  # 每台主機寫入同一把新密鑰；權
 
 和接收端時鐘相差超過 5 秒的訊息會被丟棄，所以要讓主機時鐘保持同步（NTP）。
 
-加密是這個版本新增的。0.3.0 的成員只送、只收 `EMP1`，會丟棄加密的訊息（算在 `malformed`），所以升級群組時，每台主機升級時先設 `encrypt = false`；所有成員都升級後，刪掉這一行（或設 `encrypt = true`），再讓每個 daemon reload。加密沒有前向保密：日後取得密鑰的人可以讀出先前錄下的訊息。請照上面的方式定期更換密鑰，並讓密鑰檔只有 daemon 能讀。
+加密是這個版本新增的。0.3.0 的成員只送、只收 `EMP1`，會丟棄加密的訊息（算在 `malformed`），所以升級群組時，每台主機升級時先設 `encrypt = false`；所有成員都升級後，刪掉這一行（或設 `encrypt = true`），再讓每個 daemon reload。沒有任何成員再記明文警告之後，就可以在每台主機設 `accept_plaintext = false` 並 reload。加密沒有前向保密：日後取得密鑰的人可以讀出先前錄下的訊息。請照上面的方式定期更換密鑰，並讓密鑰檔只有 daemon 能讀。
 
 ## [defaults]
 
@@ -225,5 +226,5 @@ services."api.svc.emfor".timeout: timeout must not exceed interval
 | `[store]` 中的任何設定 | 拒絕；需要重新啟動。 |
 | `[dns] listen`、新增或移除 `[dns]` | 拒絕（`dns listen settings require restart`）。 |
 | `[metrics] listen`、新增或移除 `[metrics]` | 拒絕（`metrics listen settings require restart`）。 |
-| `[peers] members`、`[peers] secret_file`、`[peers] encrypt` | 套用；新加入的成員從不存活開始。`previous_secret_file` 會檢查，但只在啟動時讀取。 |
+| `[peers] members`、`[peers] secret_file`、`[peers] encrypt`、`[peers] accept_plaintext` | 套用；新加入的成員從不存活開始。`previous_secret_file` 會檢查，但只在啟動時讀取。 |
 | `[peers] listen`、新增或移除 `[peers]` | 拒絕（`peers listen settings require restart`）。 |

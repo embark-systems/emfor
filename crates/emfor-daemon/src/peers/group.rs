@@ -125,6 +125,8 @@ pub struct Group {
     plain_warned: HashMap<SocketAddr, Instant>,
     /// `[peers] encrypt`: send `EMP2` rather than `EMP1`.
     encrypt: bool,
+    /// `[peers] accept_plaintext`: accept `EMP1` messages.
+    accept_plaintext: bool,
     stats: Arc<PeerStats>,
     /// Where the live members go besides `stats`; see [`Group::share_live_with`].
     quorum: Option<Arc<Quorum>>,
@@ -176,6 +178,7 @@ impl Group {
             warned: HashMap::new(),
             plain_warned: HashMap::new(),
             encrypt: true,
+            accept_plaintext: true,
             stats,
             quorum: None,
         };
@@ -209,6 +212,12 @@ impl Group {
     /// `[peers] encrypt`: the format of the next messages sent.
     pub fn set_encrypt(&mut self, encrypt: bool) {
         self.encrypt = encrypt;
+    }
+
+    /// `[peers] accept_plaintext`: whether `EMP1` messages received from
+    /// now on are accepted.
+    pub fn set_accept_plaintext(&mut self, accept: bool) {
+        self.accept_plaintext = accept;
     }
 
     /// Members other than this daemon, in config order.
@@ -288,6 +297,11 @@ impl Group {
             Some(m) if m == MAGIC => {
                 if !(HEADER_LEN..=MAX_DATAGRAM).contains(&data.len()) {
                     return Err(Reject::Malformed);
+                }
+                // Refused before the tag is checked: nothing in an `EMP1`
+                // datagram matters once plaintext is not accepted.
+                if !self.accept_plaintext {
+                    return Err(Reject::Plaintext);
                 }
                 // The tag first: unauthenticated bytes never reach the JSON
                 // parser, and a forged datagram counts as `auth`.
@@ -582,6 +596,44 @@ mod tests {
                 n => Err(format!("{n} warnings")),
             }
         });
+    }
+
+    /// Spec peer-group "Plaintext refused": with `accept_plaintext =
+    /// false` every `EMP1` datagram is dropped as `plaintext`, also one
+    /// whose tag does not verify, before anything else is looked at;
+    /// `EMP2` is accepted as before.
+    #[test]
+    fn plaintext_refused_when_not_accepted() {
+        let now = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let secret = Secret::new(KEY.to_vec());
+        let mut g = group(now);
+        g.set_accept_plaintext(false);
+        let good = encode(&msg(B, 1, 1, t, Kind::Heartbeat(Vec::new())), KEY);
+        assert_eq!(
+            g.accept(&good, addr(B), t, now).map(|_| ()),
+            Err(Reject::Plaintext)
+        );
+        let forged = encode(
+            &msg(B, 1, 2, t, Kind::Heartbeat(Vec::new())),
+            b"another key",
+        );
+        assert_eq!(
+            g.accept(&forged, addr(B), t, now).map(|_| ()),
+            Err(Reject::Plaintext)
+        );
+        assert_eq!(
+            g.accept(&[b'E'; 20], addr(B), t, now).map(|_| ()),
+            Err(Reject::Malformed),
+            "too short is still malformed"
+        );
+        assert_eq!(g.stats().rejected(Reject::Plaintext), 2);
+        let enc = encode_encrypted(&msg(B, 1, 3, t, Kind::Heartbeat(Vec::new())), &secret);
+        assert!(g.accept(&enc, addr(B), t, now).is_ok());
+        // Accepted again once the option is back on (a reload).
+        g.set_accept_plaintext(true);
+        let again = encode(&msg(B, 1, 4, t, Kind::Heartbeat(Vec::new())), KEY);
+        assert!(g.accept(&again, addr(B), t, now).is_ok());
     }
 
     /// Spec peer-group "acceptance checks" table.

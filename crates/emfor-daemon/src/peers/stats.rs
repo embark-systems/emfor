@@ -14,16 +14,19 @@ pub enum Reject {
     Site,
     Stale,
     Replay,
+    /// An `EMP1` datagram while `[peers] accept_plaintext` is `false`.
+    Plaintext,
 }
 
 impl Reject {
-    pub const ALL: [Reject; 6] = [
+    pub const ALL: [Reject; 7] = [
         Reject::Malformed,
         Reject::Auth,
         Reject::Sender,
         Reject::Site,
         Reject::Stale,
         Reject::Replay,
+        Reject::Plaintext,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -34,6 +37,7 @@ impl Reject {
             Reject::Site => "site",
             Reject::Stale => "stale",
             Reject::Replay => "replay",
+            Reject::Plaintext => "plaintext",
         }
     }
 
@@ -45,7 +49,7 @@ impl Reject {
 /// Counters and member liveness, read by `/metrics`.
 #[derive(Debug, Default)]
 pub struct PeerStats {
-    pub(super) rejected: [AtomicU64; 6],
+    pub(super) rejected: [AtomicU64; 7],
     pub(super) sent: AtomicU64,
     pub(super) received: AtomicU64,
     pub(super) results_sent: AtomicU64,

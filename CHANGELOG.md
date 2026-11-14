@@ -103,6 +103,12 @@
 
 ### Peers
 
+- New `[peers] accept_plaintext` (default `true`, applied on reload).
+  `false` drops every plaintext `EMP1` message without checking it,
+  counted under the new reason `plaintext` of
+  `emfor_peer_messages_rejected_total`, so a group whose members all
+  encrypt no longer has to accept signed plaintext. It needs
+  `encrypt = true`; `check-config` refuses it otherwise.
 - A kept result counts once. A member kept another member's latest result
   for 3 of the sender's intervals and counted it at every one of its own
   check times in that span, so with `interval = "1s"` here and `"30s"` at
