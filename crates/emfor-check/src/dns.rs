@@ -186,6 +186,8 @@ fn domain_name(s: &str) -> Option<Name> {
 /// Run one check.
 pub async fn check(req: &CheckRequest, settings: &Settings) -> CheckOutcome {
     let mut query = Message::query();
+    // Random like hickory's own, but zero in fuzzing builds.
+    query.metadata.id = net::random();
     query.metadata.recursion_desired = settings.recursion_desired;
     query.add_query(Query::query(settings.name.clone(), settings.record_type));
     let id = query.metadata.id;

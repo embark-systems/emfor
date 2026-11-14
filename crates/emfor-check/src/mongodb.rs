@@ -172,7 +172,7 @@ pub async fn check(req: &CheckRequest, settings: &Settings) -> CheckOutcome {
     };
     let mut conn = Connection {
         stream,
-        next_id: rand::random::<u16>().into(),
+        next_id: net::random::<u16>().into(),
     };
     match converse(&mut conn, settings, login).await {
         Ok(()) => CheckOutcome::Up,
@@ -231,7 +231,7 @@ async fn authenticate(
     password: &str,
 ) -> Result<(), CheckOutcome> {
     let mut nonce = [0u8; 24];
-    rand::fill(&mut nonce);
+    net::fill(&mut nonce);
     let mut scram = Scram::new(user, password, &BASE64.encode(nonce));
 
     let mut options = Document::new();

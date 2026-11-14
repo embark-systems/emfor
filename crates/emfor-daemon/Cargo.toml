@@ -57,3 +57,7 @@ emfor-tls = { path = "../emfor-tls", features = ["testing"] }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["test-util", "full"] }
 tracing-test = "0.2.6"
+
+# cargo fuzz builds with --cfg fuzzing, see fuzz/README.md.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }

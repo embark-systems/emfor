@@ -1,7 +1,7 @@
 use super::testing::*;
 use super::*;
 use tokio::io::AsyncReadExt;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 const T: Duration = Duration::from_secs(2);
 

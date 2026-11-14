@@ -1,0 +1,58 @@
+[package]
+name = "emfor-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "BSD-2-Clause"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+emfor-check = { path = "../crates/emfor-check" }
+emfor-daemon = { path = "../crates/emfor-daemon" }
+emfor-plugin = { path = "../crates/emfor-plugin" }
+libfuzzer-sys = "0.4"
+serde_json = "1"
+# The plugins' checks run on a current-thread runtime whose clock is
+# paused, so their timeouts and waits end at once.
+tokio = { version = "1.54.1", features = ["rt", "time", "test-util"] }
+
+# Its own workspace: built only by cargo fuzz, with a nightly toolchain.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "plugins"
+path = "fuzz_targets/plugins.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "peers"
+path = "fuzz_targets/peers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "metrics"
+path = "fuzz_targets/metrics.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plugin_line"
+path = "fuzz_targets/plugin_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false

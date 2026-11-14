@@ -326,8 +326,8 @@ struct Ids {
 impl Ids {
     fn random() -> Ids {
         Ids {
-            hop_by_hop: rand::random(),
-            end_to_end: rand::random(),
+            hop_by_hop: net::random(),
+            end_to_end: net::random(),
         }
     }
 

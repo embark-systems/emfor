@@ -16,7 +16,7 @@ use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signat
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 
@@ -93,12 +93,12 @@ pub fn is_local_io_error(e: &io::Error) -> bool {
 /// that has to end as a `tls: ` failure before the whole check times out.
 /// When less than [`MIN_HANDSHAKE_BUDGET`] would be left for it, the check's
 /// own timeout applies instead.
-pub async fn handshake(
-    stream: TcpStream,
+pub async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
     tls: &TlsSettings,
     ip: IpAddr,
     remaining: Duration,
-) -> Result<TlsStream<TcpStream>, TlsFailure> {
+) -> Result<TlsStream<S>, TlsFailure> {
     let start = Instant::now();
     let config = client_config(tls)?;
     handshake_with_config(
@@ -114,13 +114,13 @@ pub async fn handshake(
 /// [`handshake`] with a configuration built beforehand, for example by
 /// [`client_config_with_client`] before connecting; `tls` gives the server
 /// name. The budget rule is the same, from `remaining` as given.
-pub async fn handshake_with_config(
-    stream: TcpStream,
+pub async fn handshake_with_config<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
     config: Arc<ClientConfig>,
     tls: &TlsSettings,
     ip: IpAddr,
     remaining: Duration,
-) -> Result<TlsStream<TcpStream>, TlsFailure> {
+) -> Result<TlsStream<S>, TlsFailure> {
     let handshake = TlsConnector::from(config).connect(server_name(tls, ip), stream);
     let budget = remaining * 9 / 10;
     let budget = if budget >= MIN_HANDSHAKE_BUDGET {

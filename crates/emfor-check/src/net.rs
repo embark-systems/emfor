@@ -3,7 +3,9 @@
 //! handshake timing) is `emfor-tls`, shared with the daemon's `tcp` checker.
 
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
+#[cfg(not(fuzzing))]
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
 use emfor_plugin::CheckOutcome;
@@ -11,6 +13,7 @@ use emfor_tls::{TlsFailure, TlsSettings};
 use rustls::ClientConfig;
 use rustls::pki_types::CertificateDer;
 use tokio::io::{AsyncRead, AsyncWrite};
+#[cfg(not(fuzzing))]
 use tokio::net::{TcpStream, UdpSocket};
 
 pub use emfor_tls::is_local_io_error;
@@ -46,13 +49,53 @@ pub fn io_failure(prefix: &str, e: &io::Error) -> CheckOutcome {
     }
 }
 
+/// A random value for request identifiers and nonces. Fuzzing builds use
+/// the default (zero), so the fuzzer can write replies that match them.
+#[cfg(not(fuzzing))]
+pub fn random<T>() -> T
+where
+    rand::distr::StandardUniform: rand::distr::Distribution<T>,
+{
+    rand::random()
+}
+
+/// A random value for request identifiers and nonces; zero in fuzzing
+/// builds.
+#[cfg(fuzzing)]
+pub fn random<T: Default>() -> T {
+    T::default()
+}
+
+/// Fill `buf` with random bytes; zeros in fuzzing builds, see [`random`].
+pub fn fill(buf: &mut [u8]) {
+    if cfg!(fuzzing) {
+        buf.fill(0);
+    } else {
+        rand::fill(buf);
+    }
+}
+
+/// A TCP connection to a backend. Fuzzing builds (`cfg(fuzzing)`) talk to
+/// [`fuzz::Conn`] instead, which answers with the fuzzer's bytes.
+#[cfg(not(fuzzing))]
+pub type Tcp = TcpStream;
+#[cfg(fuzzing)]
+pub type Tcp = fuzz::Conn;
+
 /// Open a TCP connection to the backend.
-pub async fn connect(ip: IpAddr, port: u16) -> Result<TcpStream, CheckOutcome> {
+#[cfg(not(fuzzing))]
+pub async fn connect(ip: IpAddr, port: u16) -> Result<Tcp, CheckOutcome> {
     let stream = TcpStream::connect((ip, port))
         .await
         .map_err(|e| io_failure("connect: ", &e))?;
     let _ = stream.set_nodelay(true);
     Ok(stream)
+}
+
+/// Open a TCP connection to the backend.
+#[cfg(fuzzing)]
+pub async fn connect(_ip: IpAddr, _port: u16) -> Result<Tcp, CheckOutcome> {
+    Ok(fuzz::Conn::new())
 }
 
 /// Open a connection to the backend, wrapped in TLS when `tls` is set.
@@ -101,6 +144,7 @@ pub async fn udp_exchange<T>(
 /// [`udp_exchange`] for a request that names the local address it is sent
 /// from (as SIP's Via does): `build` gets the socket's local address once
 /// it is connected to the backend.
+#[cfg(not(fuzzing))]
 pub async fn udp_exchange_from<T>(
     ip: IpAddr,
     port: u16,
@@ -145,6 +189,113 @@ pub async fn udp_exchange_from<T>(
     }
 }
 
+/// [`udp_exchange_from`] in fuzzing builds: the first of the
+/// [`fuzz::set_reply`] datagrams that `matches` takes, or `down` with
+/// reason `timeout`.
+#[cfg(fuzzing)]
+pub async fn udp_exchange_from<T>(
+    _ip: IpAddr,
+    _port: u16,
+    build: impl FnOnce(SocketAddr) -> Vec<u8>,
+    _timeout: Duration,
+    mut matches: impl FnMut(&[u8]) -> Option<T>,
+) -> Result<T, CheckOutcome> {
+    let _request = build(SocketAddr::from(([127, 0, 0, 1], 40000)));
+    fuzz::datagrams()
+        .iter()
+        .find_map(|d| matches(d))
+        .ok_or_else(|| CheckOutcome::Down("timeout".into()))
+}
+
+/// Stand-ins for the backend in fuzzing builds: every connection and UDP
+/// exchange of the current thread gets the bytes given to [`fuzz::set_reply`].
+#[cfg(fuzzing)]
+pub mod fuzz {
+    use std::cell::RefCell;
+    use std::io;
+    use std::net::SocketAddr;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+    thread_local! {
+        static REPLY: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// What the backend answers from now on in this thread: the bytes a TCP
+    /// connection reads, and for UDP the datagrams they hold, each prefixed
+    /// with its length as two bytes, big-endian.
+    pub fn set_reply(bytes: &[u8]) {
+        REPLY.with(|r| *r.borrow_mut() = bytes.to_vec());
+    }
+
+    pub(super) fn datagrams() -> Vec<Vec<u8>> {
+        let bytes = REPLY.with(|r| r.borrow().clone());
+        let mut rest = bytes.as_slice();
+        let mut out = Vec::new();
+        while let [a, b, tail @ ..] = rest {
+            let n = usize::from(u16::from_be_bytes([*a, *b])).min(tail.len());
+            out.push(tail[..n].to_vec());
+            rest = &tail[n..];
+        }
+        out
+    }
+
+    /// A connection that reads the reply, then end of file, and takes
+    /// whatever is written.
+    pub struct Conn {
+        data: Vec<u8>,
+        pos: usize,
+    }
+
+    impl Conn {
+        pub(super) fn new() -> Conn {
+            Conn {
+                data: REPLY.with(|r| r.borrow().clone()),
+                pos: 0,
+            }
+        }
+
+        pub fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok(SocketAddr::from(([127, 0, 0, 1], 40000)))
+        }
+    }
+
+    impl AsyncRead for Conn {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let rest = &self.data[self.pos..];
+            let n = rest.len().min(buf.remaining());
+            buf.put_slice(&rest[..n]);
+            self.pos += n;
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncWrite for Conn {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+}
+
+#[cfg(not(fuzzing))]
 /// A failed bind to the unspecified address and port 0 is this host's
 /// problem, never the backend's: no socket of the address family (for
 /// example IPv6 disabled), or no free descriptors.
@@ -152,6 +303,7 @@ fn bind_failure(e: &std::io::Error) -> CheckOutcome {
     CheckOutcome::Error(format!("connect: {e}"))
 }
 
+#[cfg(not(fuzzing))]
 /// Send one datagram; a datagram socket sends all of it or fails.
 async fn send_datagram(socket: &UdpSocket, datagram: &[u8]) -> Result<(), CheckOutcome> {
     socket

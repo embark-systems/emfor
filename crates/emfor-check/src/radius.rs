@@ -235,9 +235,9 @@ pub async fn check(req: &CheckRequest, settings: &Settings) -> CheckOutcome {
         }
         _ => None,
     };
-    let id: u8 = rand::random();
+    let id: u8 = net::random();
     let mut authenticator = [0u8; 16];
-    rand::fill(&mut authenticator);
+    net::fill(&mut authenticator);
     let code = match settings.request {
         Request::StatusServer => STATUS_SERVER,
         Request::AccessRequest => ACCESS_REQUEST,

@@ -463,6 +463,16 @@ async fn skip_line<R: AsyncBufRead + Unpin>(r: &mut R) -> std::io::Result<()> {
     }
 }
 
+/// Fuzzing entry point (`fuzz/fuzz_targets/plugin_line.rs`): handle `line`
+/// as a line the plugin wrote to stdout, with a request waiting for id 1.
+#[cfg(fuzzing)]
+pub fn fuzz_line(line: &str) {
+    let pending: Pending = Arc::default();
+    let (tx, _rx) = oneshot::channel();
+    lock(&pending).map.insert(1, tx);
+    route("fuzz", &pending, line);
+}
+
 /// Deliver one stdout line to the request waiting for it.
 fn route(name: &str, pending: &Pending, line: &str) {
     let answer = match serde_json::from_str::<Response>(line) {

@@ -276,6 +276,13 @@ fn decode(data: &[u8]) -> Option<Message> {
     })
 }
 
+/// Fuzzing entry point (`fuzz/fuzz_targets/peers.rs`): decode a datagram
+/// as received from the network.
+#[cfg(fuzzing)]
+pub fn fuzz_decode(data: &[u8]) {
+    let _ = decode(data);
+}
+
 /// Why a datagram was dropped, in the order the checks run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reject {

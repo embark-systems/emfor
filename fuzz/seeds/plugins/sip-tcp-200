@@ -1,0 +1,8 @@
+SIP/2.0 200 OK
+Via: SIP/2.0/TCP 127.0.0.1:40000;branch=z9hG4bK0000000000000000;rport=40000
+From: <sip:emfor@emfor.invalid>;tag=0000000000
+To: <sip:127.0.0.1:4242>;tag=abc
+Call-ID: 00000000000000000000@emfor
+CSeq: 1 OPTIONS
+Content-Length: 0
+

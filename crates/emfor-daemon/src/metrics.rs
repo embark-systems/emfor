@@ -151,6 +151,14 @@ fn find_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
 }
 
+/// Fuzzing entry point (`fuzz/fuzz_targets/metrics.rs`): answer `data` as
+/// the bytes a client sent.
+#[cfg(fuzzing)]
+pub fn fuzz_request(data: &[u8]) {
+    let head = find_end(data).map(|end| &data[..end]);
+    let _ = respond(head, || Some(String::new()));
+}
+
 /// The full response for a request `head` (`None`: longer than
 /// [`MAX_HEAD`]); `body` is called only for a `GET /metrics` and returns
 /// `None` until the daemon has applied its first layout.

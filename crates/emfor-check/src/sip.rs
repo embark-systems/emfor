@@ -163,7 +163,7 @@ impl Ids {
     fn random() -> Ids {
         let hex = |n: usize| -> String {
             (0..n)
-                .map(|_| char::from(b"0123456789abcdef"[usize::from(rand::random::<u8>() % 16)]))
+                .map(|_| char::from(b"0123456789abcdef"[usize::from(net::random::<u8>() % 16)]))
                 .collect()
         };
         Ids {
