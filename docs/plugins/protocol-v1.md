@@ -104,6 +104,7 @@ Rules:
 - **Concurrency:** answers may be sent in any order. emfor sends checks for all services and backends that use the plugin to the same process, so handle requests concurrently. A plugin that works through them one at a time delays every other check.
 - **Ignored lines:** emfor logs a stdout line that is not JSON, or has an unknown `type`, at `warn` and ignores it. It ignores an answer whose `id` it is not waiting for, for example one that arrived after the timeout.
 - **Crashes:** if the plugin exits or closes stdout, every check waiting for an answer becomes `error` with reason `plugin exited`.
+  - A plugin that stops answering counts as crashed too: when emfor gives up waiting on 3 requests in a row and no answer to any request arrives in between, it logs that the plugin stopped answering and kills it. Answering every check within `timeout_ms` keeps this from ever happening.
   - emfor restarts the plugin after 1s, then 2s, 4s, and so on, up to 30s between attempts. The delay goes back to 1s once the plugin has run for 30 seconds.
   - Until the plugin is running again, its checks are `error` with reason `plugin <name> unavailable`.
   - After a restart, options are not validated again.

@@ -176,7 +176,7 @@ checks per `interval` instead of N.
 | The emfor daemon stops or hangs | After 3 seconds the store is stale: `open` services return any backend, `closed` services fail. Lookups never block. |
 | The store file is missing or unreadable | Lookups fail with `UNAVAILABLE`. |
 | The checking host loses its network | Checks fail, backends turn `unhealthy`; the applications on that host cannot reach them either. |
-| A plugin crashes | Its checks are `error` (no state change) until the daemon has restarted it. |
+| A plugin crashes or stops answering | Its checks are `error` (no state change) until the daemon has restarted it. A plugin that leaves 3 requests in a row unanswered is killed and restarted. |
 
 ## Files the daemon uses
 

@@ -1,5 +1,6 @@
 //! [`PluginHost`]: runs one plugin process, routes answers to requests by
-//! id, logs its stderr, and restarts it with backoff when it exits.
+//! id, logs its stderr, and restarts it with backoff when it exits or stops
+//! answering.
 
 use std::collections::HashMap;
 use std::process::{ExitStatus, Stdio};
@@ -9,7 +10,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -33,6 +34,10 @@ pub const LINE_LIMIT: usize = 65536;
 const STDERR_LINE_CHARS: usize = 1000;
 /// How long to keep routing answers the plugin wrote just before it exited.
 const EXIT_DRAIN: Duration = Duration::from_millis(100);
+/// Requests in a row whose callers gave up waiting, with no answer to any
+/// request in between, after which a running plugin counts as stuck and is
+/// restarted.
+pub const STALL_UNANSWERED: u32 = 3;
 
 /// Delay before the next start after `failures` consecutive failures
 /// (1 → 1s, 2 → 2s, 3 → 4s, … capped at 30s).
@@ -70,10 +75,14 @@ pub enum CallError {
 
 /// Requests waiting for an answer. `closed` is set when the plugin closes
 /// stdout, so no request is accepted that could never be answered.
+/// `unanswered` counts requests in a row whose callers gave up waiting; any
+/// answer resets it, and reaching [`STALL_UNANSWERED`] wakes `stalled`.
 #[derive(Default)]
 struct Waiters {
     closed: bool,
     map: HashMap<u64, oneshot::Sender<Response>>,
+    unanswered: u32,
+    stalled: Arc<Notify>,
 }
 
 impl Waiters {
@@ -205,16 +214,17 @@ impl PluginHost {
                 waiters.map.insert(id, tx);
             }
             let guard = PendingGuard {
-                pending: conn.pending.clone(),
+                pending: Some(conn.pending.clone()),
                 id,
             };
             if conn.tx.send(line).is_err() {
+                guard.done();
                 return Err(CallError::Unavailable);
             }
             guard
         };
         let answer = rx.await.map_err(|_| CallError::Exited);
-        drop(guard);
+        guard.done();
         answer
     }
 
@@ -233,15 +243,34 @@ impl PluginHost {
     }
 }
 
-/// Removes a request from the pending map when its caller stops waiting.
+/// Removes a request from the pending map when its caller stops waiting,
+/// and counts it as unanswered when it was still pending then.
 struct PendingGuard {
-    pending: Pending,
+    pending: Option<Pending>,
     id: u64,
+}
+
+impl PendingGuard {
+    /// The call finished (answered, or the plugin exited): nothing to count.
+    fn done(mut self) {
+        if let Some(p) = self.pending.take() {
+            lock(&p).map.remove(&self.id);
+        }
+    }
 }
 
 impl Drop for PendingGuard {
     fn drop(&mut self) {
-        lock(&self.pending).map.remove(&self.id);
+        let Some(p) = self.pending.take() else {
+            return;
+        };
+        let mut waiters = lock(&p);
+        if waiters.map.remove(&self.id).is_some() && !waiters.closed {
+            waiters.unanswered += 1;
+            if waiters.unanswered == STALL_UNANSWERED {
+                waiters.stalled.notify_one();
+            }
+        }
     }
 }
 
@@ -486,7 +515,13 @@ fn route(name: &str, pending: &Pending, line: &str) {
         tracing::debug!(plugin = %name, "plugin {name}: ignoring unexpected hello");
         return;
     };
-    let waiter = lock(pending).map.remove(&id);
+    let waiter = {
+        let mut waiters = lock(pending);
+        // Any answer, even to a request nobody waits for any more, shows the
+        // plugin is still working.
+        waiters.unanswered = 0;
+        waiters.map.remove(&id)
+    };
     match waiter {
         Some(w) => {
             let _ = w.send(answer);
@@ -500,19 +535,22 @@ fn route(name: &str, pending: &Pending, line: &str) {
 enum Event {
     Exited(std::io::Result<ExitStatus>),
     StdoutClosed,
+    Stalled,
     Stop,
 }
 
-/// Watch the process; restart it with backoff when it exits; stop it when
-/// asked.
+/// Watch the process; restart it with backoff when it exits, closes stdout
+/// or stops answering ([`STALL_UNANSWERED`]); stop it when asked.
 async fn supervise(shared: Arc<Shared>, mut process: Process, mut stop: watch::Receiver<bool>) {
     let name = shared.name.clone();
     let mut backoff = Backoff::default();
     loop {
         let started = Instant::now();
+        let stalled = lock(&process.conn.pending).stalled.clone();
         let event = tokio::select! {
             s = process.child.wait() => Event::Exited(s),
             _ = &mut process.router => Event::StdoutClosed,
+            _ = stalled.notified() => Event::Stalled,
             _ = stop.changed() => Event::Stop,
         };
         shared.set_conn(None);
@@ -526,6 +564,15 @@ async fn supervise(shared: Arc<Shared>, mut process: Process, mut stop: watch::R
                     let _ = process.child.kill().await;
                 }
                 return;
+            }
+            Event::Stalled => {
+                tracing::warn!(
+                    plugin = %name,
+                    "plugin {name} stopped answering: {STALL_UNANSWERED} requests in a row got no answer"
+                );
+                let _ = process.child.start_kill();
+                let status = process.child.wait().await;
+                log_exit(&name, status);
             }
             Event::StdoutClosed => {
                 let _ = process.child.start_kill();

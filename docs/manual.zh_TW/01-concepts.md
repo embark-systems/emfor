@@ -104,7 +104,7 @@ daemon 啟動時會把每筆服務記錄重寫一遍，所有 backend 都是 `un
 | emfor daemon 停止或卡住 | 3 秒後 store 過期：`open` 的服務回傳任一 backend，`closed` 的服務失敗。查詢永遠不會卡住。 |
 | store 檔案不存在或無法讀取 | 查詢以 `UNAVAILABLE` 失敗。 |
 | 檢查端主機斷網 | 檢查失敗，backend 變成 `unhealthy`；這台主機上的應用程式本來也連不到它們。 |
-| plugin 當掉 | 它的檢查都是 `error`（狀態不變），直到 daemon 把它重新啟動。 |
+| plugin 當掉或不再回應 | 它的檢查都是 `error`（狀態不變），直到 daemon 把它重新啟動。連續 3 個請求都沒回應的 plugin 會被砍掉並重新啟動。 |
 
 ## daemon 使用的檔案
 

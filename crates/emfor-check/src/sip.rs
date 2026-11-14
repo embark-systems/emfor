@@ -476,10 +476,13 @@ async fn read_message(
         buf.extend_from_slice(&chunk[..n]);
     };
     let (response, content_length) = parse_head(&buf[..head_end]).map_err(CheckOutcome::Down)?;
-    let total = head_end + content_length.unwrap_or(0);
-    if total > MAX_RESPONSE {
-        return Err(too_long());
-    }
+    // Checked: a Content-Length near usize::MAX would otherwise wrap total
+    // below head_end, and the caller would loop over the same buffered
+    // provisional response without ever reading (or timing out).
+    let total = head_end
+        .checked_add(content_length.unwrap_or(0))
+        .filter(|&total| total <= MAX_RESPONSE)
+        .ok_or_else(too_long)?;
     while buf.len() < total {
         let n = conn
             .read(&mut chunk)
@@ -1030,6 +1033,30 @@ mod tests {
             check(&req(addr), &s).await,
             down("query: response longer than 65536 bytes")
         );
+    }
+
+    #[tokio::test]
+    async fn tcp_content_length_near_usize_max_is_too_long() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = s.read(&mut buf).await.unwrap();
+            let request = String::from_utf8(buf[..n].to_vec()).unwrap();
+            // head_end + Content-Length overflows usize.
+            let provisional = respond(&request, reply("100 Trying")).replace(
+                "Content-Length: 0",
+                &format!("Content-Length: {}", usize::MAX),
+            );
+            s.write_all(provisional.as_bytes()).await.unwrap();
+            let _ = s.read(&mut buf).await;
+        });
+        let s = parse(&options(json!({ "transport": "tcp" })), true).unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), check(&req(addr), &s))
+            .await
+            .expect("check returns instead of looping");
+        assert_eq!(outcome, down("query: response longer than 65536 bytes"));
     }
 
     #[tokio::test]

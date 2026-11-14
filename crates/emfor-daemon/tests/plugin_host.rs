@@ -213,6 +213,48 @@ async fn dropped_request_is_forgotten() {
     host.stop().await;
 }
 
+#[tokio::test]
+async fn plugin_that_stops_answering_is_restarted() {
+    let host = PluginHost::start("fake", &command(&[])).await.unwrap();
+    let first_pid = host.pid().unwrap();
+    // Callers give up on three requests in a row, with no answer between.
+    for _ in 0..3 {
+        let r = tokio::time::timeout(Duration::from_millis(100), host.call(check("hang"))).await;
+        assert!(r.is_err());
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let new_pid = loop {
+        if let Some(p) = host.pid().filter(|&p| p != first_pid) {
+            break p;
+        }
+        assert!(Instant::now() < deadline, "stuck plugin not restarted");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(!alive(first_pid), "stuck plugin {first_pid} still running");
+    let (_, result, _) = result_of(host.call(check("up")).await.unwrap());
+    assert_eq!(result, "up");
+    host.stop().await;
+    assert!(!alive(new_pid));
+}
+
+#[tokio::test]
+async fn answers_between_unanswered_requests_keep_the_plugin() {
+    let host = PluginHost::start("fake", &command(&[])).await.unwrap();
+    let pid = host.pid().unwrap();
+    for _ in 0..4 {
+        for _ in 0..2 {
+            let r =
+                tokio::time::timeout(Duration::from_millis(100), host.call(check("hang"))).await;
+            assert!(r.is_err());
+        }
+        let (_, result, _) = result_of(host.call(check("up")).await.unwrap());
+        assert_eq!(result, "up");
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(host.pid(), Some(pid), "plugin was restarted");
+    host.stop().await;
+}
+
 // PluginFactory / PluginChecker through `run_check`.
 
 use std::sync::Arc;

@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Daemon
+
+- A plugin that stops answering is restarted. Until now only a plugin
+  that exited or closed its stdout was restarted: one that kept running
+  but answered nothing (stuck in a loop, deadlocked, stopped) left every
+  check of its backends `error` for good, and the requests for it queued
+  up without bound. Now, when the callers of 3 requests in a row give up
+  waiting and no answer to any request arrives in between, the daemon
+  logs that the plugin stopped answering, kills it and restarts it with
+  the usual backoff. A plugin that answers within `timeout_ms` is never
+  affected (see [Plugin protocol](docs/plugins/protocol-v1.md#rules)).
+
+### emfor-check
+
+- `sip` over TCP or TLS: a response with a Content-Length near the
+  largest 64-bit number made the plugin loop forever on the same
+  provisional response, holding a worker thread at full CPU, with no
+  timeout to end it. Such a response is now `down` with
+  `query: response longer than 65536 bytes`.
+
 ### Development
 
 - `tests/plugins/mysql.sh [version]` runs the `mysql` plugin's live tests

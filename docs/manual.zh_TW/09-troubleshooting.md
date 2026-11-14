@@ -44,7 +44,7 @@
 
 | reason 開頭 | 原因 |
 | --- | --- |
-| `plugin <name> unavailable`、`plugin exited` | plugin 當掉或正在重新啟動；從 log 看它的結束狀態。 |
+| `plugin <name> unavailable`、`plugin exited` | plugin 當掉、不再回應，或正在重新啟動；從 log 看它的結束狀態或 `stopped answering`。 |
 | `plugin did not answer within timeout` | plugin 太慢，或一次只處理一個檢查。 |
 | `password_file: `、`ca_file: ` | daemon 的使用者無法讀取該檔案。 |
 | `exit code N`（exec，N 不是 1 或 2） | script 以預期外的方式失敗。 |

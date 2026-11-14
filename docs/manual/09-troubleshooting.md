@@ -57,7 +57,7 @@ only errors for `fall × interval` returns to `unknown`. Typical reasons:
 
 | Reason starts with | Cause |
 | --- | --- |
-| `plugin <name> unavailable`, `plugin exited` | The plugin crashed or is restarting; see the log for its exit status. |
+| `plugin <name> unavailable`, `plugin exited` | The plugin crashed, stopped answering, or is restarting; see the log for its exit status or `stopped answering`. |
 | `plugin did not answer within timeout` | The plugin is too slow or handles checks one at a time. |
 | `password_file: `, `ca_file: ` | The file cannot be read by the daemon's user. |
 | `exit code N` (exec, N not 1 or 2) | The script failed in an unexpected way. |
