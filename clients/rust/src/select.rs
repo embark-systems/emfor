@@ -241,9 +241,10 @@ mod tests {
             OnAllDown::Open,
             vec![be("10.0.1.5:5432", Unhealthy), be("10.0.1.6:5432", Unknown)],
         );
+        // Open with nothing healthy prefers the backend not known to be down.
         assert_eq!(
             pick(r.balance, &candidates(&r, false).unwrap(), None, None, || 0),
-            "10.0.1.5:5432"
+            "10.0.1.6:5432"
         );
         let r = rec(
             Balance::Failover,

@@ -61,8 +61,11 @@ The zone has a synthesized SOA whose negative-caching TTL is also
 SRV answers carry each backend's port and list every candidate: the
 healthy backends whose last check passed, or every healthy backend when
 all of them are failing (see [A backend whose checks start
-failing](05-backend-selection.md#a-backend-whose-checks-start-failing)), or
-all backends when none is healthy and `on_all_down` is `open`. IPv4 and IPv6 backends are listed together. Go's
+failing](05-backend-selection.md#a-backend-whose-checks-start-failing)), or,
+when none is healthy and `on_all_down` is `open`, the `unknown` backends
+(those whose last check passed first) before all of them (see [When no
+backend is healthy](05-backend-selection.md#when-no-backend-is-healthy)).
+IPv4 and IPv6 backends are listed together. Go's
 `net.LookupSRV("http", "tcp", "api.svc.emfor")`, gRPC and similar clients
 ask for `_http._tcp.api.svc.emfor`, which emfor answers.
 

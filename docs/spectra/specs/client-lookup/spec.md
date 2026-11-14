@@ -282,7 +282,7 @@ tests:
 ---
 ### Requirement: Candidates follow health and on_all_down
 
-When the store is fresh, the candidates SHALL be the passing backends, in config order: a backend is passing when its `state` is `healthy` and its `reason` is `null`, and failing when its `state` is `healthy` and its `reason` is not `null`. When the store is fresh and no backend is passing, the candidates SHALL be every `healthy` backend, failing ones included, in config order. When the store is stale, `reason` SHALL NOT affect the candidates. When no backend is a candidate (all unhealthy, or the store is stale), a service with `on_all_down = "closed"` SHALL fail with `ALL_DOWN`, and a service with `on_all_down = "open"` SHALL use every backend, in config order, as a candidate. The lookup SHALL NOT tell the caller that the result came from an all-down service or from a service whose healthy backends are all failing.
+When the store is fresh, the candidates SHALL be the passing backends, in config order: a backend is passing when its `state` is `healthy` and its `reason` is `null`, and failing when its `state` is `healthy` and its `reason` is not `null`. When the store is fresh and no backend is passing, the candidates SHALL be every `healthy` backend, failing ones included, in config order. When the store is stale, `reason` SHALL NOT affect the candidates. When no backend is a candidate (none healthy, or the store is stale), a service with `on_all_down = "closed"` SHALL fail with `ALL_DOWN`. A service with `on_all_down = "open"` SHALL then use, in config order: when the store is fresh and at least one backend is unknown and passing (`state` `unknown` and `reason` `null`), only those backends; otherwise, when the store is fresh and at least one backend's `state` is `unknown`, every `unknown` backend; otherwise every backend. When the store is stale, every backend SHALL be a candidate of an open service. The lookup SHALL NOT tell the caller that the result came from an all-down service or from a service whose healthy backends are all failing.
 
 #### Scenario: Unhealthy backends are skipped
 
@@ -292,7 +292,22 @@ When the store is fresh, the candidates SHALL be the passing backends, in config
 #### Scenario: Open service with every backend down
 
 - **WHEN** a fresh failover service with `on_all_down = "open"` lists `10.0.1.5:5432` (`unhealthy`) then `10.0.1.6:5432` (`unknown`)
-- **THEN** the lookup returns `10.0.1.5:5432`
+- **THEN** the lookup returns `10.0.1.6:5432`
+
+#### Scenario: Open service prefers a passing unknown backend
+
+- **WHEN** a fresh round-robin service with `on_all_down = "open"` lists `10.0.1.5:5432` (`unhealthy`, reason `refused`), `10.0.1.6:5432` (`unknown`, reason `timeout`) and `10.0.1.7:5432` (`unknown`, reason `null`)
+- **THEN** consecutive lookups return only `10.0.1.7:5432`
+
+#### Scenario: Open service with every unknown backend failing
+
+- **WHEN** a fresh round-robin service with `on_all_down = "open"` lists `10.0.1.5:5432` (`unhealthy`, reason `refused`), `10.0.1.6:5432` (`unknown`, reason `timeout`) and `10.0.1.7:5432` (`unknown`, reason `refused`)
+- **THEN** consecutive lookups return `10.0.1.6:5432` and `10.0.1.7:5432` and never `10.0.1.5:5432`
+
+#### Scenario: Open service with only unhealthy backends
+
+- **WHEN** a fresh round-robin service with `on_all_down = "open"` lists `10.0.1.5:5432` and `10.0.1.6:5432`, both `unhealthy`
+- **THEN** consecutive lookups return both backends
 
 #### Scenario: Failing backend is skipped while another passes
 
@@ -316,25 +331,32 @@ When the store is fresh, the candidates SHALL be the passing backends, in config
 | A (healthy, null), B (healthy, "refused"), C (unhealthy, "refused") | fresh | closed | A |
 | A (healthy, "refused"), B (healthy, "timeout"), C (unhealthy, "refused") | fresh | closed | A, B |
 | A (unhealthy, "refused"), B (unknown, null) | fresh | closed | none: `ALL_DOWN` |
-| A (unhealthy, "refused"), B (unknown, null) | fresh | open | A, B |
+| A (unhealthy, "refused"), B (unknown, null) | fresh | open | B |
+| A (unhealthy, "refused"), B (unknown, "timeout"), C (unknown, null) | fresh | open | C |
+| A (unhealthy, "refused"), B (unknown, "timeout"), C (unknown, "refused") | fresh | open | B, C |
+| A (unhealthy, "refused"), B (unhealthy, "timeout") | fresh | open | A, B |
+| A (unhealthy, "refused"), B (unknown, "timeout"), C (unknown, null) | fresh | closed | none: `ALL_DOWN` |
+| A (unhealthy, "refused"), B (unknown, null) | stale | open | A, B |
 | A (healthy, "refused"), B (healthy, null) | stale | open | A, B |
 | A (healthy, "refused"), B (healthy, null) | stale | closed | none: `ALL_DOWN` |
 
 
 <!-- @trace
-source: emfor-avoid-failing
+source: emfor-open-prefers-unknown
 updated: 2026-11-14
 code:
-  - crates/emfor-daemon/src/select.rs
-  - docs/deploy/dns-resolver.md
-  - docs/manual/07-dns.md
-  - clients/rust/src/select.rs
-  - docs/manual.zh_TW/07-dns.md
-  - docs/manual/05-backend-selection.md
-  - crates/emfor-format/src/rules.rs
   - tests/conformance/v1/cases.json
   - docs/manual.zh_TW/05-backend-selection.md
+  - docs/manual/07-dns.md
+  - crates/emfor-format/src/rules.rs
+  - docs/manual.zh_TW/01-concepts.md
+  - crates/emfor-daemon/src/select.rs
+  - clients/rust/src/select.rs
   - CHANGELOG.md
+  - docs/manual/05-backend-selection.md
+  - docs/deploy/dns-resolver.md
+  - docs/manual.zh_TW/07-dns.md
+  - docs/manual/01-concepts.md
 -->
 
 ---

@@ -183,7 +183,7 @@ code:
 ---
 ### Requirement: SRV answers
 
-For an SRV query on a service name or on one of its SRV owner names, the server SHALL take as candidates the service's backends of both address families in config order, keeping only passing backends (`state` `healthy` and `reason` `null`) when at least one backend is passing, and otherwise only healthy backends, failing ones (`state` `healthy` and `reason` not `null`) included, when at least one backend is healthy. When no backend is healthy, the candidates SHALL be every backend if `on_all_down` is `open`, and the server SHALL return SERVFAIL if it is `closed`. The server SHALL return NOERROR with the AA flag and one SRV record per candidate, whose owner is the query name as received, whose port is the backend's port, whose target is the backend's target name, and whose TTL equals the service's `dns_ttl` when set, otherwise `[dns] ttl`. Priority, weight and record order SHALL follow the service's `balance`:
+For an SRV query on a service name or on one of its SRV owner names, the server SHALL take as candidates the service's backends of both address families in config order, keeping only passing backends (`state` `healthy` and `reason` `null`) when at least one backend is passing, and otherwise only healthy backends, failing ones (`state` `healthy` and `reason` not `null`) included, when at least one backend is healthy. When no backend is healthy and `on_all_down` is `open`, the candidates SHALL be the backends whose `state` is `unknown` and `reason` is `null` when there is at least one, otherwise every `unknown` backend when there is at least one, otherwise every backend; when no backend is healthy and `on_all_down` is `closed`, the server SHALL return SERVFAIL. The server SHALL return NOERROR with the AA flag and one SRV record per candidate, whose owner is the query name as received, whose port is the backend's port, whose target is the backend's target name, and whose TTL equals the service's `dns_ttl` when set, otherwise `[dns] ttl`. Priority, weight and record order SHALL follow the service's `balance`:
 
 - `failover`: priority equals the candidate's position among the candidates (0 for the first), weight 1, config order.
 - `weighted`: priority 0, weight equals the backend's `weight`, config order.
@@ -258,6 +258,11 @@ The additional section SHALL contain one A or AAAA record per distinct target na
 - **WHEN** every backend of a `round-robin` service is unhealthy and `on_all_down = "open"`
 - **THEN** an SRV query lists every backend
 
+#### Scenario: All down open with an unknown backend
+
+- **WHEN** a `round-robin` service with `on_all_down = "open"` has backends `10.0.0.11:8080` (unhealthy) and `[2001:db8::11]:8080` (unknown, reason `null`), and a client queries SRV
+- **THEN** the SRV answer has one record, with target `2001-0db8-0000-0000-0000-0000-0000-0011.api.svc.emfor.`
+
 #### Scenario: Shared IP
 
 - **WHEN** service `api.svc.emfor` has backends `10.0.0.11:8080` and `10.0.0.11:8081`, both healthy
@@ -270,19 +275,21 @@ The additional section SHALL contain one A or AAAA record per distinct target na
 
 
 <!-- @trace
-source: emfor-avoid-failing
+source: emfor-open-prefers-unknown
 updated: 2026-11-14
 code:
-  - crates/emfor-daemon/src/select.rs
-  - docs/deploy/dns-resolver.md
-  - docs/manual/07-dns.md
-  - clients/rust/src/select.rs
-  - docs/manual.zh_TW/07-dns.md
-  - docs/manual/05-backend-selection.md
-  - crates/emfor-format/src/rules.rs
   - tests/conformance/v1/cases.json
   - docs/manual.zh_TW/05-backend-selection.md
+  - docs/manual/07-dns.md
+  - crates/emfor-format/src/rules.rs
+  - docs/manual.zh_TW/01-concepts.md
+  - crates/emfor-daemon/src/select.rs
+  - clients/rust/src/select.rs
   - CHANGELOG.md
+  - docs/manual/05-backend-selection.md
+  - docs/deploy/dns-resolver.md
+  - docs/manual.zh_TW/07-dns.md
+  - docs/manual/01-concepts.md
 -->
 
 ---

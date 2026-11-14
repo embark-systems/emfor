@@ -69,7 +69,7 @@ backend 一律是 IP 位址，不是主機名稱：emfor 找 backend 不依賴 D
 
 client 以服務中**健康**的 backend 作為候選，交給 `balance` 挑一個。沒有任何 backend 健康時，由 `on_all_down` 決定：
 
-- `open`（預設）：所有 backend 都是候選。應用程式照樣試一個；當出錯的是檢查本身而不是 backend 時，這通常比直接失敗好。
+- `open`（預設）：應用程式照樣拿到一個 backend；當出錯的是檢查本身而不是 backend 時，這通常比直接失敗好。仍是 `unknown`（還沒有定論，或檢查只回錯誤）的 backend 優先於已確定 `unhealthy` 的；見[第 5 章](05-backend-selection.md#沒有任何-backend-健康時)。
 - `closed`：查詢以 `ALL_DOWN` 失敗，DNS 回答 `SERVFAIL`。
 
 ## Heartbeat 與過期的 store
@@ -100,7 +100,7 @@ daemon 啟動時會把每筆服務記錄重寫一遍，所有 backend 都是 `un
 | 什麼故障 | 應用程式看到什麼 |
 | --- | --- |
 | 一個 backend | 經過 `fall` 次失敗的檢查後（預設約 6 秒）變成 `unhealthy`，不再被回傳。在聯防群組裡，只要一個成員發現，其他成員約一秒內跟上；三台負責主機中有兩台看到它 down 時，每個成員在 `fall` 次檢查後都把它標成 down，即使它在那台主機上仍有回應。只有一台非負責主機看到的故障，在那台主機上最多會晚大約五個 `interval` 才發現。 |
-| 某服務的所有 backend | `open`：任一個 backend；`closed`：`ALL_DOWN` / `SERVFAIL`。 |
+| 某服務的所有 backend | `open`：有 `unknown` 的 backend 時用它，否則任一個 backend；`closed`：`ALL_DOWN` / `SERVFAIL`。 |
 | emfor daemon 停止或卡住 | 3 秒後 store 過期：`open` 的服務回傳任一 backend，`closed` 的服務失敗。查詢永遠不會卡住。 |
 | store 檔案不存在或無法讀取 | 查詢以 `UNAVAILABLE` 失敗。 |
 | 檢查端主機斷網 | 檢查失敗，backend 變成 `unhealthy`；這台主機上的應用程式本來也連不到它們。 |

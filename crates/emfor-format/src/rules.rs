@@ -11,11 +11,15 @@ use crate::{BackendRecord, Balance, HealthState, OnAllDown};
 ///    when there are any;
 /// 2. otherwise the healthy ones, failing ones (`healthy` with a `reason`)
 ///    included, when there are any;
-/// 3. otherwise every entry when `on_all_down` is `open`, or `None` (all
-///    down) when it is `closed` or `list` is empty.
+/// 3. otherwise, when `on_all_down` is `open`, the passing unknown ones
+///    (`unknown` with no `reason`), when there are any;
+/// 4. otherwise, when `open`, every `unknown` one, when there are any;
+/// 5. otherwise every entry when `open`, or `None` (all down) when
+///    `on_all_down` is `closed` or `list` is empty.
 ///
 /// `backend` gives each entry's record; `trust_health` false (a stale
-/// store) counts no backend as healthy, so `reason` plays no part.
+/// store) counts no backend as healthy or unknown, so neither `state` nor
+/// `reason` plays a part and an open service uses every entry.
 pub fn healthy_or_all<'a, T: Copy>(
     on_all_down: OnAllDown,
     list: &[T],
@@ -38,10 +42,26 @@ pub fn healthy_or_all<'a, T: Copy>(
     if !healthy.is_empty() {
         return Some(healthy);
     }
-    match on_all_down {
-        OnAllDown::Open if !list.is_empty() => Some(list.to_vec()),
-        _ => None,
+    if on_all_down != OnAllDown::Open || list.is_empty() {
+        return None;
     }
+    let unknown: Vec<T> = list
+        .iter()
+        .copied()
+        .filter(|&t| trust_health && backend(t).state == HealthState::Unknown)
+        .collect();
+    let unknown_passing: Vec<T> = unknown
+        .iter()
+        .copied()
+        .filter(|&t| backend(t).reason.is_none())
+        .collect();
+    if !unknown_passing.is_empty() {
+        return Some(unknown_passing);
+    }
+    if !unknown.is_empty() {
+        return Some(unknown);
+    }
+    Some(list.to_vec())
 }
 
 /// Steps of slow start: a ramping backend gets 1 to 9 tenths of its base
@@ -170,6 +190,21 @@ mod tests {
         let all_failing = [&fa, &fb, &dc];
         let none_healthy = [&da, &ub];
         let mixed = [&fa, &pb];
+        let unknown_with = |id: &str, why: &str| {
+            let mut r = b(id, Unknown, None);
+            r.reason = Some(why.into());
+            r
+        };
+        let (ut, ur, uc) = (
+            unknown_with("10.0.0.2:80", "timeout"),
+            unknown_with("10.0.0.3:80", "refused"),
+            b("10.0.0.3:80", Unknown, None),
+        );
+        let mut db = b("10.0.0.2:80", Unhealthy, None);
+        db.reason = Some("timeout".into());
+        let unknown_passing = [&da, &ut, &uc];
+        let unknown_failing = [&da, &ut, &ur];
+        let two_down = [&da, &db];
         let both = [&up, &down];
         let only_down = [&down];
         type Case<'a> = (
@@ -207,6 +242,31 @@ mod tests {
                 &none_healthy,
                 OnAllDown::Open,
                 true,
+                Some(vec!["10.0.0.2:80"]),
+            ),
+            (
+                &unknown_passing,
+                OnAllDown::Open,
+                true,
+                Some(vec!["10.0.0.3:80"]),
+            ),
+            (
+                &unknown_failing,
+                OnAllDown::Open,
+                true,
+                Some(vec!["10.0.0.2:80", "10.0.0.3:80"]),
+            ),
+            (
+                &two_down,
+                OnAllDown::Open,
+                true,
+                Some(vec!["10.0.0.1:80", "10.0.0.2:80"]),
+            ),
+            (&unknown_passing, OnAllDown::Closed, true, None),
+            (
+                &none_healthy,
+                OnAllDown::Open,
+                false,
                 Some(vec!["10.0.0.1:80", "10.0.0.2:80"]),
             ),
             (

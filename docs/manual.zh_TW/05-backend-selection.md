@@ -85,8 +85,16 @@ DNS 的 A/AAAA 回答依同樣降低後的權重挑選，SRV 記錄以它作為 
 
 | `on_all_down` | 查詢 | DNS A/AAAA/SRV |
 | --- | --- | --- |
-| `open`（預設） | 在所有 backend 之間挑選，當作全部都健康 | 以所有 backend 回答 |
+| `open`（預設） | 在下列 open 的候選之間挑選 | 以下列 open 的候選回答 |
 | `closed` | 以 `ALL_DOWN` 失敗 | `SERVFAIL` |
+
+`open` 的候選依下列順序，取第一個不是空的集合：
+
+1. 最近一次檢查通過（沒有 `reason`）的 `unknown` backend；
+2. 全部 `unknown` backend；
+3. 全部 backend。
+
+`unhealthy` 的 backend 已經連續失敗 `fall` 次；`unknown` 的還沒有定論（剛啟動、新增或重設，或檢查只回錯誤超過 `fall × interval`），所以比較有機會成功。daemon 剛啟動時全部都是 `unknown`，全部都是候選。過期的 store 用全部 backend。早於這條規則的 client 會在全部 backend 之間挑選。
 
 查詢結果不會告訴應用程式這是來自全部 down 的服務。當「試一個 backend」比失敗好時（可能是檢查本身出錯）用 `open`；當把流量送到壞掉的 backend 比快速失敗更糟時用 `closed`。
 

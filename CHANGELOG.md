@@ -20,6 +20,13 @@
   clients ignore both, so a recovered backend gets its full share at once
   with them. See
   [Slow start](docs/manual/05-backend-selection.md#slow-start).
+- With `on_all_down = "open"` and no healthy backend, clients and the DNS
+  server now use the `unknown` backends (not decided yet, or whose checks
+  only give errors) before the `unhealthy` ones, which failed `fall`
+  checks in a row: first the `unknown` ones whose last check passed, then
+  every `unknown` one, then every backend as before. `closed` and a stale
+  store are unchanged, and so is the store format; older clients still
+  choose among all backends.
 - The `http` check takes `expect_body`: text the response body must
   contain, for health endpoints that answer 200 either way. The body is
   read only when the status matches, up to 64 KiB.

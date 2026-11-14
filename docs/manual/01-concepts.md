@@ -88,9 +88,11 @@ than `fall × interval` does it go back to `unknown`.
 The client takes the service's **healthy** backends as candidates and lets
 `balance` pick one. When none is healthy, `on_all_down` decides:
 
-- `open` (the default): every backend is a candidate. The application tries
-  one anyway, which is usually better than failing outright when the
-  checks, not the backends, are at fault.
+- `open` (the default): the application gets a backend anyway, which is
+  usually better than failing outright when the checks, not the backends,
+  are at fault. Backends still `unknown` (not yet decided, or whose checks
+  only give errors) come before those known to be `unhealthy`; see
+  [chapter 5](05-backend-selection.md#when-no-backend-is-healthy).
 - `closed`: the lookup fails with `ALL_DOWN`, and DNS answers `SERVFAIL`.
 
 ## The heartbeat and a stale store
@@ -168,7 +170,7 @@ instead of N.
 | What fails | What applications see |
 | --- | --- |
 | One backend | It turns `unhealthy` after `fall` failed checks (about 6 seconds with the defaults) and is no longer returned. In a peer group, once one member has noticed, the others follow within about a second; when two of its three assigned checkers see it down, every member marks it down after `fall` checks, also where it still answers. A failure that only one member that is not an assigned checker sees takes up to about five `interval`s longer there. |
-| Every backend of a service | `open`: any backend; `closed`: `ALL_DOWN` / `SERVFAIL`. |
+| Every backend of a service | `open`: an `unknown` backend if there is one, otherwise any backend; `closed`: `ALL_DOWN` / `SERVFAIL`. |
 | The emfor daemon stops or hangs | After 3 seconds the store is stale: `open` services return any backend, `closed` services fail. Lookups never block. |
 | The store file is missing or unreadable | Lookups fail with `UNAVAILABLE`. |
 | The checking host loses its network | Checks fail, backends turn `unhealthy`; the applications on that host cannot reach them either. |

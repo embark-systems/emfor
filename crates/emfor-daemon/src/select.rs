@@ -59,9 +59,8 @@ fn parsed(record: &ServiceRecord) -> impl Iterator<Item = (IpAddr, &BackendRecor
         .filter_map(|b| b.ip.parse::<IpAddr>().ok().map(|ip| (ip, b)))
 }
 
-/// The passing ones of `list` (healthy, last check up) when there are any,
-/// else the healthy ones, else all of them or `AllDown` by `on_all_down`;
-/// see [`rules::healthy_or_all`].
+/// The candidates of `list` by health and `on_all_down`, or `AllDown`; the
+/// daemon's store is always fresh. The tiers are in [`rules::healthy_or_all`].
 fn healthy_or_all<'a>(
     record: &ServiceRecord,
     list: Vec<(IpAddr, &'a BackendRecord)>,
@@ -324,6 +323,16 @@ mod tests {
                 &[("10.0.0.1", Unhealthy), ("10.0.0.2", Unknown)],
                 Open,
                 Family::V4,
+                Ok(&["10.0.0.2"]),
+            ),
+            (
+                &[
+                    ("10.0.0.1", Unhealthy),
+                    ("10.0.0.2", Unhealthy),
+                    ("2001:db8::1", Unknown),
+                ],
+                Open,
+                Family::V4,
                 Ok(&["10.0.0.1", "10.0.0.2"]),
             ),
             (
@@ -382,6 +391,38 @@ mod tests {
             "refused",
         );
         assert_eq!(candidates(&r, Family::V4), Ok(ips(&["10.0.0.1"])));
+        // Open with every unknown backend failing: all unknown ones.
+        let r = rec(
+            &[
+                ("10.0.0.1", Unhealthy),
+                ("10.0.0.2", Unknown),
+                ("10.0.0.3", Unknown),
+            ],
+            Open,
+            Balance::RoundRobin,
+        );
+        let r = failing(failing(r, "10.0.0.2", "timeout"), "10.0.0.3", "refused");
+        assert_eq!(
+            candidates(&r, Family::V4),
+            Ok(ips(&["10.0.0.2", "10.0.0.3"]))
+        );
+    }
+
+    /// Spec "Candidate backends per address family", scenario "Open
+    /// service prefers unknown backends".
+    #[test]
+    fn open_prefers_unknown_backends() {
+        let r = rec(
+            &[
+                ("10.0.0.1", Unhealthy),
+                ("10.0.0.2", Unknown),
+                ("10.0.0.3", Unknown),
+            ],
+            OnAllDown::Open,
+            Balance::RoundRobin,
+        );
+        let r = failing(r, "10.0.0.2", "timeout");
+        assert_eq!(candidates(&r, Family::V4), Ok(ips(&["10.0.0.3"])));
     }
 
     /// Spec "Candidate backends per address family", scenario "Failing
@@ -890,7 +931,19 @@ mod tests {
         assert_eq!(srv(&closed, &n, None), Err(Selection::AllDown));
         assert_eq!(n.load(Ordering::Relaxed), 0, "no answer, no rotation");
 
+        // Scenario "All down open with an unknown backend".
         let open = srv_rec(&down, OnAllDown::Open, Balance::RoundRobin);
+        assert_eq!(
+            srv(&open, &AtomicU64::new(0), None).unwrap(),
+            vec![row("2001:db8::11", 8080, 0, 1)]
+        );
+
+        // Scenario "All down open": every backend unhealthy lists them all.
+        let all_down = [
+            ("10.0.0.11", 8080, Unhealthy, 1, None),
+            ("2001:db8::11", 8080, Unhealthy, 1, None),
+        ];
+        let open = srv_rec(&all_down, OnAllDown::Open, Balance::RoundRobin);
         assert_eq!(
             srv(&open, &AtomicU64::new(0), None).unwrap(),
             vec![

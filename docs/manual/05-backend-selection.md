@@ -139,8 +139,22 @@ them as their weight ([chapter 7](07-dns.md#srv-records)).
 
 | `on_all_down` | Lookup | DNS A/AAAA/SRV |
 | --- | --- | --- |
-| `open` (default) | Chooses among all backends, as if all were healthy | Answers with all backends |
+| `open` (default) | Chooses among the open candidates below | Answers with the open candidates below |
 | `closed` | Fails with `ALL_DOWN` | `SERVFAIL` |
+
+With `open`, the candidates are, in this order, the first set that is not
+empty:
+
+1. the `unknown` backends whose last check passed (no `reason`);
+2. every `unknown` backend;
+3. every backend.
+
+An `unhealthy` backend failed `fall` checks in a row, while an `unknown`
+one is not decided yet (just started, added or reset, or its checks only
+gave errors for `fall × interval`), so it is the better bet. When the
+daemon starts, every backend is `unknown` and all of them are candidates.
+A stale store uses every backend. Clients older than this rule choose
+among all backends.
 
 The lookup does not tell the application that it came from an all-down
 service. Use `open` when trying a backend is better than failing (the
