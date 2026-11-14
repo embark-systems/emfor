@@ -135,13 +135,13 @@ package than the repository shows. Fix a bad release with a new version.
 ## 7. Publish the GitHub Release
 
 Take the version's changelog section, make its relative links absolute
-for the tag, and publish it:
+for the tag (anchors such as `#peers` included), and publish it:
 
 ```sh
 awk '/^## X.Y.Z /{f=1;next} /^## /{f=0} f' CHANGELOG.md \
-  | sed -E 's#\]\(([^)#:]+)\)#](https://github.com/embark-systems/emfor/blob/vX.Y.Z/\1)#g' \
+  | sed -E 's#\]\(([^):]+)\)#](https://github.com/embark-systems/emfor/blob/vX.Y.Z/\1)#g' \
   > /tmp/emfor-notes.md
-grep -n '](' /tmp/emfor-notes.md   # every link starts with https://
+grep -o '\]([^)]*)' /tmp/emfor-notes.md | grep -v '](https://'   # must print nothing
 gh release create vX.Y.Z --title "emfor X.Y.Z" --notes-file /tmp/emfor-notes.md --verify-tag
 ```
 
