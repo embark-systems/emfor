@@ -183,7 +183,10 @@ config is applied. Validation builds what a check builds: a `ca_file` must
 hold a certificate usable as a CA, a `tls_key_file` must be the key of
 `tls_cert_file`, and a value the protocol sends as a NUL-terminated or
 NUL-separated string (the `mysql` and `pgsql` `user`, the `pgsql`
-`database`, the `amqp` `user` and password) must not contain NUL.
+`database` and password, the `amqp` `user` and password) must not contain
+NUL. A message that must fit a size the protocol sets is built once: the
+`amqp` login must fit in the 4096-byte first frame, and the `diameter`
+Capabilities-Exchange-Request in 16777215 bytes.
 
 When a plugin exits, its pending checks become `error` (`plugin exited`),
 and the daemon restarts it after 1 s, then 2 s, 4 s … up to 30 s; until

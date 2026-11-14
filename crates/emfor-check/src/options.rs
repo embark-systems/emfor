@@ -134,9 +134,13 @@ fn parse_with(
         }
     }
 
+    let check_password: fn(&Path) -> Result<(), String> = match kind {
+        Kind::Pgsql => check_nul_free_password_file,
+        _ => check_password_file,
+    };
     let password_file = match options.get("password_file") {
         None => None,
-        Some(Value::String(p)) => match check_file(Path::new(p), read_files, check_password_file) {
+        Some(Value::String(p)) => match check_file(Path::new(p), read_files, check_password) {
             Ok(()) => Some(PathBuf::from(p)),
             Err(message) => {
                 errors.push(OptionError::new("password_file", message));
@@ -409,6 +413,21 @@ pub(crate) fn check_password_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The common password file rules, and no NUL: for protocols that send
+/// the password as a NUL-terminated string or with NUL as a separator.
+pub(crate) fn check_nul_free_password_file(path: &Path) -> Result<(), String> {
+    check_password_file(path)?;
+    nul_free(&read_password(path)?)
+}
+
+/// `Err` with the option message when `password` holds a NUL.
+pub(crate) fn nul_free(password: &str) -> Result<(), String> {
+    if password.contains('\0') {
+        return Err("password must not contain NUL".into());
+    }
+    Ok(())
+}
+
 fn check_ca_file(path: &Path) -> Result<(), String> {
     emfor_tls::check_ca_file(path)
 }
@@ -483,6 +502,7 @@ mod tests {
         let missing = f.missing();
         let not_pem = f.write("not-pem.txt", b"hello\n");
         let pass = f.write("ldap.pass", b"s3cret\n");
+        let nul_pass = f.write("nul.pass", b"s3\0cret\n");
         // A certificate PEM block that does not hold a certificate: a
         // check could not use it as a trust anchor.
         let unusable = f.write(
@@ -657,6 +677,13 @@ mod tests {
                 Kind::Pgsql,
                 json!({"user": "emfor", "database": "a\u{0}pp"}),
                 one("database", "must not contain NUL"),
+            ),
+            // PostgreSQL cannot store a password holding a NUL, and the
+            // driver refuses to send one.
+            (
+                Kind::Pgsql,
+                json!({"user": "emfor", "database": "app", "password_file": nul_pass}),
+                one("password_file", "password must not contain NUL"),
             ),
             (
                 Kind::Redis,

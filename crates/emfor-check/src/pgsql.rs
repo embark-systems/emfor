@@ -12,7 +12,7 @@ use tokio_postgres::{Client, Config, Error, NoTls};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use crate::net::{self, io_failure};
-use crate::options::{Role, Settings, read_password};
+use crate::options::{Role, Settings, nul_free, read_password};
 use crate::replica::lag_outcome;
 
 /// Recovery state, WAL receiver and replay lag in one query, so that the
@@ -45,10 +45,16 @@ pub async fn check(req: &CheckRequest, settings: &Settings) -> CheckOutcome {
         config.dbname(db);
     }
     if let Some(path) = &settings.password_file {
+        // PostgreSQL cannot store a password holding a NUL, and the driver
+        // refuses to send one; validation checked the file, which can
+        // have changed since.
         match read_password(path) {
-            Ok(p) => {
-                config.password(p);
-            }
+            Ok(p) => match nul_free(&p) {
+                Ok(()) => {
+                    config.password(p);
+                }
+                Err(message) => return CheckOutcome::Error(format!("password_file: {message}")),
+            },
             Err(reason) => return CheckOutcome::Error(reason),
         }
     }
@@ -321,6 +327,24 @@ mod tests {
             CheckOutcome::Down(
                 "auth: 28P01: password authentication failed for user \"emfor\"".into()
             )
+        );
+    }
+
+    /// A password file that gained a NUL after validation fails the check
+    /// as a configuration error, before connecting.
+    #[tokio::test]
+    async fn password_with_nul_is_error() {
+        let addr = fake_pg().await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pg.pass");
+        std::fs::write(&path, b"s3\0cret\n").unwrap();
+        let settings = Settings {
+            password_file: Some(path),
+            ..settings(None)
+        };
+        assert_eq!(
+            check(&req(addr), &settings).await,
+            CheckOutcome::Error("password_file: password must not contain NUL".into())
         );
     }
 

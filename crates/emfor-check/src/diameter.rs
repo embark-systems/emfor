@@ -38,6 +38,8 @@ const VENDOR_APP_MESSAGE: &str =
     "each entry needs vendor_id and one of auth_application_id, acct_application_id";
 /// The longest message read.
 const MAX_MESSAGE: usize = 65536;
+/// The longest message the 24-bit Message Length field can hold.
+const MAX_LENGTH: usize = 0xFF_FFFF;
 /// How long to wait for the Disconnect-Peer-Answer at most.
 const DPA_WAIT: Duration = Duration::from_millis(200);
 
@@ -149,8 +151,8 @@ pub fn parse(options: &Options, read_files: bool) -> Result<Settings, Vec<Option
     );
     let client_certificate = client_certificate(options, tls_on, read_files, &mut errors);
 
-    match (origin_host, origin_realm) {
-        (Some(origin_host), Some(origin_realm)) if errors.is_empty() => Ok(Settings {
+    let settings = match (origin_host, origin_realm) {
+        (Some(origin_host), Some(origin_realm)) if errors.is_empty() => Settings {
             origin_host,
             origin_realm,
             auth_application_ids,
@@ -160,9 +162,49 @@ pub fn parse(options: &Options, read_files: bool) -> Result<Settings, Vec<Option
             host_ip_address,
             tls,
             client_certificate,
-        }),
-        _ => Err(errors),
+        },
+        _ => return Err(errors),
+    };
+    match request_fits(&settings) {
+        Ok(()) => Ok(settings),
+        Err(error) => Err(vec![error]),
     }
+}
+
+/// Whether the Capabilities-Exchange-Request fits in the 24-bit Message
+/// Length, counted with an IPv6 Host-IP-Address when the check picks the
+/// address; the error names the longest list.
+fn request_fits(settings: &Settings) -> Result<(), OptionError> {
+    let ip = settings
+        .host_ip_address
+        .unwrap_or(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED));
+    let ids = Ids {
+        hop_by_hop: 0,
+        end_to_end: 0,
+    };
+    let length = capabilities_exchange_request(settings, ip, ids).len();
+    if length <= MAX_LENGTH {
+        return Ok(());
+    }
+    let key = [
+        ("auth_application_ids", settings.auth_application_ids.len()),
+        ("acct_application_ids", settings.acct_application_ids.len()),
+        (
+            "vendor_specific_application_ids",
+            settings.vendor_specific_application_ids.len(),
+        ),
+        ("supported_vendor_ids", settings.supported_vendor_ids.len()),
+    ]
+    .into_iter()
+    .max_by_key(|(_, n)| *n)
+    .map_or("supported_vendor_ids", |(key, _)| key);
+    Err(OptionError::new(
+        key,
+        format!(
+            "too many entries: the Capabilities-Exchange-Request would be {length} bytes, \
+             above Diameter's {MAX_LENGTH}-byte message limit"
+        ),
+    ))
 }
 
 /// `tls_cert_file` and `tls_key_file`: both or neither, only with TLS.
@@ -318,7 +360,8 @@ fn address(ip: IpAddr) -> Vec<u8> {
     }
 }
 
-/// The low 3 bytes of `n`, which callers keep below 2^24.
+/// The low 3 bytes of `n`, which callers keep below 2^24: validation
+/// refuses options whose Capabilities-Exchange-Request would not fit.
 fn length_bytes(n: usize) -> [u8; 3] {
     let [_, a, b, c] = u32::try_from(n).unwrap_or(u32::MAX).to_be_bytes();
     [a, b, c]
@@ -796,6 +839,36 @@ mod tests {
     }
 
     // ---- options ----
+
+    /// The message length field has 24 bits: options whose
+    /// Capabilities-Exchange-Request would not fit are refused, counted
+    /// with the longer IPv6 Host-IP-Address.
+    #[test]
+    fn capabilities_exchange_request_fits_the_length_field() {
+        let settings = parse(&options(base(json!({}))), true).unwrap();
+        let ip = IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED);
+        let ids = Ids {
+            hop_by_hop: 0,
+            end_to_end: 0,
+        };
+        let without = capabilities_exchange_request(&settings, ip, ids).len();
+        let entry = avp_u32(SUPPORTED_VENDOR_ID, 0).len();
+        let most = (MAX_LENGTH - without) / entry;
+
+        let vendors = |n: usize| base(json!({"supported_vendor_ids": vec![10415; n]}));
+        assert_eq!(errors(vendors(most)), Vec::new());
+        let over = without + (most + 1) * entry;
+        assert_eq!(
+            errors(vendors(most + 1)),
+            one(
+                "supported_vendor_ids",
+                &format!(
+                    "too many entries: the Capabilities-Exchange-Request would be \
+                     {over} bytes, above Diameter's 16777215-byte message limit"
+                )
+            )
+        );
+    }
 
     #[test]
     fn diameter_option_validation() {

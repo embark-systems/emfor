@@ -134,7 +134,7 @@ MariaDB Galera, multi-source replication (only the default connection is read), 
 
 If the file cannot be read during a check, the check is `error`, which does not count against the backend.
 
-A `user` (and for `pgsql` a `database`) with a NUL character is refused by `emfor check-config`: the protocols end those strings at NUL. For `amqp` the password must not contain NUL either, since the PLAIN login separates the fields with it.
+A `user` (and for `pgsql` a `database`) with a NUL character is refused by `emfor check-config`: the protocols end those strings at NUL. For `pgsql` the password must not contain NUL either (PostgreSQL cannot store one, and the driver refuses to send it), nor for `amqp`, since the PLAIN login separates the fields with it. The password file is read again at every check: a file that gained a NUL since is `error` with `password_file: password must not contain NUL`.
 
 ### TLS
 
@@ -292,7 +292,7 @@ supported_vendor_ids = [10415]
 | `tls_verify`, `server_name`, `ca_file` | | | As for the other plugins, see [TLS](#tls); need `tls = true` |
 | `tls_cert_file`, `tls_key_file` | absolute paths | | A PEM client certificate chain and its PEM private key, presented when the node asks for one; set both, with `tls = true` |
 
-At least one of `auth_application_ids`, `acct_application_ids` and `vendor_specific_application_ids` is required: the node accepts a peer only when they share an application, and emfor does not guess which one yours has. Any other key is an error. SCTP, DTLS, application requests (S6a AIR, Gx CCR, …) and a long-lived peer connection are not supported.
+At least one of `auth_application_ids`, `acct_application_ids` and `vendor_specific_application_ids` is required: the node accepts a peer only when they share an application, and emfor does not guess which one yours has. Options whose Capabilities-Exchange-Request would be longer than Diameter's 16777215-byte message limit (hundreds of thousands of entries) are refused, on the longest list. Any other key is an error. SCTP, DTLS, application requests (S6a AIR, Gx CCR, …) and a long-lived peer connection are not supported.
 
 - **Allow emfor as a peer.** Diameter nodes accept only the peers they know: add every emfor host's `origin_host` to the node's peer list or ACL. Many implementations allow a wildcard or a whole realm. Give each emfor host its own `origin_host` so the node's logs tell them apart.
 - **Client certificates.** RFC 6733 TLS authenticates both sides, and nodes such as freeDiameter require a client certificate whose name matches the peer's Origin-Host. Without one the TLS handshake completes on emfor's side and the node then closes the connection, so the check is down with `cea: connection closed by peer` (or `tls: ` when the node sends a TLS alert first). `tls_cert_file` and `tls_key_file` are checked for changes on every check (one `stat` each) and read again when they changed, so a renewed certificate takes effect at the next check without a reload; a file that cannot be read, or holds no certificate or no private key, is `error` with `tls_cert_file: ` or `tls_key_file: `, and nothing is sent. A key that does not belong to the certificate is reported as `tls_key_file: ` too, and `emfor check-config` already reports it on `tls_key_file`.
@@ -355,7 +355,7 @@ check_options = { user = "emfor", password_file = "/etc/emfor/amqp.pass", vhost 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `user` | string | required | The user, 1 to 255 bytes |
-| `password_file` | absolute path | required | As for the database plugins, see [Passwords](#passwords) |
+| `password_file` | absolute path | required | As for the database plugins, see [Passwords](#passwords). The login (Start-Ok) is sent before the broker sets the frame size, so it must fit in AMQP's 4096-byte first frame: with the 5-byte `user` `emfor`, a password of up to about 3970 bytes. A longer one is refused by `emfor check-config`, and is `error` at a check when the file grew since |
 | `vhost` | string | `/` | The virtual host to open, 1 to 255 bytes |
 | `tls` | boolean | `false` | TLS from the start of the connection (usually port 5671) |
 | `tls_verify`, `server_name`, `ca_file` | | | As for the other plugins, see [TLS](#tls); need `tls = true` |

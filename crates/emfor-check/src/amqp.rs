@@ -10,7 +10,7 @@ use tokio::io::AsyncWriteExt;
 use crate::frame::{Frame, FrameError, FrameReader};
 use crate::net::{self, Stream, io_failure};
 use crate::options::{
-    TlsSettings, boolean, check_password_file, file, read_password, string, tls_settings,
+    TlsSettings, boolean, check_nul_free_password_file, file, read_password, string, tls_settings,
 };
 
 const KEYS: &[&str] = &[
@@ -29,6 +29,10 @@ const MAX_NAME: usize = 255;
 /// The largest frame payload read, and the frame-max sent when the broker
 /// proposes none.
 const MAX_FRAME: u32 = 131_072;
+
+/// The largest frame a peer must accept before Connection.Tune sets
+/// frame-max (AMQP 0-9-1 frame-min-size); Start-Ok is sent before it.
+const FRAME_MIN: usize = 4096;
 
 /// How long to wait for Connection.Close-Ok at most.
 const CLOSE_WAIT: Duration = Duration::from_millis(200);
@@ -87,7 +91,7 @@ pub fn parse(options: &Options, read_files: bool) -> Result<Settings, Vec<Option
         options,
         "password_file",
         read_files,
-        check_plain_password_file,
+        check_nul_free_password_file,
         &mut errors,
     );
     if !options.contains_key("password_file") {
@@ -102,6 +106,14 @@ pub fn parse(options: &Options, read_files: bool) -> Result<Settings, Vec<Option
         read_files,
         &mut errors,
     );
+    // Start-Ok carries the password, so its length depends on the user.
+    if read_files
+        && let (Some(user), Some(path)) = (&user, &password_file)
+        && let Ok(password) = read_password(path)
+        && let Err(message) = login_fits(user, &password)
+    {
+        errors.push(OptionError::new("password_file", message));
+    }
     match (user, password_file) {
         (Some(user), Some(password_file)) if errors.is_empty() => Ok(Settings {
             user,
@@ -113,14 +125,17 @@ pub fn parse(options: &Options, read_files: bool) -> Result<Settings, Vec<Option
     }
 }
 
-/// The common password file rules, and no NUL, which PLAIN cannot carry.
-fn check_plain_password_file(path: &std::path::Path) -> Result<(), String> {
-    use crate::options::{read_option_file, trim_newline};
-    check_password_file(path)?;
-    if trim_newline(&read_option_file(path)?).contains(&0) {
-        return Err("password must not contain NUL".into());
+/// Whether Start-Ok for `user` and `password` fits in [`FRAME_MIN`].
+fn login_fits(user: &str, password: &str) -> Result<(), String> {
+    let size = method_frame(START_OK, &start_ok(user, password)).len();
+    if size <= FRAME_MIN {
+        return Ok(());
     }
-    Ok(())
+    let most = password.len().saturating_sub(size - FRAME_MIN);
+    Err(format!(
+        "password too long: Start-Ok must fit in AMQP's {FRAME_MIN}-byte first frame, \
+         at most {most} bytes with this user"
+    ))
 }
 
 /// A string option of 1 to 255 bytes.
@@ -141,6 +156,10 @@ pub async fn check(req: &CheckRequest, settings: &Settings) -> CheckOutcome {
         Ok(p) => p,
         Err(reason) => return CheckOutcome::Error(reason),
     };
+    // Validation checked the file, which can have changed since.
+    if let Err(message) = login_fits(&settings.user, &password) {
+        return CheckOutcome::Error(format!("password_file: {message}"));
+    }
     let stream = match net::open(req.ip, req.port, settings.tls.as_ref(), req.timeout).await {
         Ok(s) => s,
         Err(outcome) => return outcome,
@@ -595,6 +614,34 @@ mod tests {
         assert!(parse(&o, true).is_ok());
     }
 
+    /// Start-Ok goes out before Tune, so it must fit in AMQP's 4096-byte
+    /// frame-min-size; a longer password is refused when validated.
+    #[test]
+    fn amqp_login_fits_the_first_frame() {
+        let fits = |password: &str| method_frame(START_OK, &start_ok("emfor", password)).len();
+        let overhead = fits("");
+        let longest = "p".repeat(4096 - overhead);
+        assert_eq!(fits(&longest), 4096);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("amqp.pass");
+        let o = options(json!({"user": "emfor", "password_file": path.to_str().unwrap()}));
+        std::fs::write(&path, format!("{longest}\n")).unwrap();
+        assert!(parse(&o, true).is_ok());
+        std::fs::write(&path, format!("{longest}p\n")).unwrap();
+        let got: Vec<_> = parse(&o, true)
+            .expect_err("a password one byte too long is refused")
+            .into_iter()
+            .map(|e| (e.key, e.message))
+            .collect();
+        let message = format!(
+            "password too long: Start-Ok must fit in AMQP's 4096-byte first frame, \
+             at most {} bytes with this user",
+            longest.len()
+        );
+        assert_eq!(got, vec![err("password_file", &message)]);
+    }
+
     /// What the fake broker does, in order.
     #[derive(Clone)]
     enum Step {
@@ -916,6 +963,22 @@ mod tests {
         let (addr, _) = fake_broker(happy(), None).await;
         match check(&req(addr), &settings).await {
             CheckOutcome::Error(r) => assert!(r.starts_with("password_file: "), "{r}"),
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    /// A password file that grew too long after validation fails the
+    /// check as a configuration error before anything is sent.
+    #[tokio::test]
+    async fn too_long_password_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = settings(dir.path());
+        std::fs::write(&settings.password_file, "p".repeat(5000)).unwrap();
+        let (addr, _) = fake_broker(happy(), None).await;
+        match check(&req(addr), &settings).await {
+            CheckOutcome::Error(r) => {
+                assert!(r.starts_with("password_file: password too long"), "{r}")
+            }
             other => panic!("expected error, got {other:?}"),
         }
     }

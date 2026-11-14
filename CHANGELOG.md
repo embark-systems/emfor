@@ -220,9 +220,17 @@
   `tls_cert_file` and `tls_key_file`, so a key that does not belong to
   the certificate is reported on `tls_key_file` instead of failing every
   check.
-- mysql and pgsql `user` and pgsql `database` must not contain NUL. The
-  amqp `user` and password must not contain NUL (PLAIN separates them
-  with NUL).
+- mysql and pgsql `user` and pgsql `database` and password must not
+  contain NUL. The amqp `user` and password must not contain NUL (PLAIN
+  separates them with NUL). A pgsql password file that gained a NUL
+  after validation is `error` at the check instead of `down`.
+- amqp: a password too long for the login to fit in AMQP's 4096-byte
+  first frame is refused at validation, and is `error` at a check when
+  the file grew since. Before, every check sent a frame the
+  broker may refuse, and the backend could be down at every check.
+- diameter: options whose Capabilities-Exchange-Request would not fit in
+  Diameter's 24-bit message length are refused at validation. Before,
+  the length was cut silently and every check sent a malformed request.
 - sip `uri` and `from` must not contain `<` or `>`, which ended the
   To/From value early.
 - sip, diameter, mongodb, amqp and ldap read messages through one shared
