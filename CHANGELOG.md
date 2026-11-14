@@ -77,7 +77,15 @@ member runs this release, remove the line and reload each daemon.
   With the defaults the backend is down there after at most about 6.4
   seconds instead of about 14 (estimated from the schedule; 6 without a
   group). In exchange a backend gets about 3 + (N − 3) / 3 checks per
-  `interval` from N members instead of 3 + (N − 3) / 5.
+  `interval` from N members instead of 3 + (N − 3) / 5. Measured with
+  `interval = "2s"` and `fall = 3`: 0.8 to 5.8 seconds, 3.3 seconds
+  median, over 12 failures started at different points of the schedule.
+- FreeBSD: `examples/rc.d/emfor` starts `daemon(8)` with `-f`. Without it,
+  `daemon(8)` and emfor kept the terminal or SSH session that ran
+  `service emfor start`, so that session never closed. The example port
+  also lists `/var/lib` in its plist, which `make check-plist` asked for.
+  The rc.d script, the port and the tests have now run on FreeBSD
+  15.1-RELEASE (arm64).
 
 ### Clients
 

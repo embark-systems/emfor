@@ -32,8 +32,8 @@
 # restarts after exit status 1 (a listen address in use, the store held by
 # another emfor); the configtest before start catches an invalid config.
 #
-# Not yet run on FreeBSD: tests/resolver/freebsd.sh exercises start, reload
-# and stop on a FreeBSD host (also the optional CI freebsd job).
+# Checked on FreeBSD 15.1-RELEASE (arm64) with tests/resolver/freebsd.sh,
+# which exercises start, reload and stop (also the optional CI freebsd job).
 
 # PROVIDE: emfor
 # REQUIRE: LOGIN
@@ -58,11 +58,14 @@ emfor_rundir="/var/run/${name}"
 pidfile="${emfor_rundir}/${name}.pid"
 emfor_pidfile="${emfor_rundir}/${name}.child.pid"
 command="/usr/sbin/daemon"
+# -f: stdin, stdout and stderr of daemon(8) and emfor go to /dev/null (then
+#     -S sends emfor's output to syslog), so neither keeps the terminal or
+#     the SSH session that ran "service emfor start" open.
 # -P/-p: pid files of the supervisor and of emfor.
 # -R 2: start emfor again 2 seconds after it exits.
 # -S -T: send emfor's log output (stderr) to syslog with tag "emfor".
 # No -u: daemon(8) already runs as emfor_user, and -u needs root.
-command_args="-P ${pidfile} -p ${emfor_pidfile} -R 2 -S -T ${name} ${emfor_bin} server --config ${emfor_config}"
+command_args="-f -P ${pidfile} -p ${emfor_pidfile} -R 2 -S -T ${name} ${emfor_bin} server --config ${emfor_config}"
 required_files="${emfor_config}"
 extra_commands="reload configtest"
 start_precmd="emfor_precmd"

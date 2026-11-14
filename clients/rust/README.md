@@ -112,7 +112,7 @@ This installs:
 - `lib/libemfor.so` (`libemfor.dylib` on macOS), the shared library;
 - `lib/libemfor.a`, the static library;
 - `include/emfor/emfor.h`;
-- `lib/pkgconfig/emfor.pc`, so C code builds with `pkg-config --cflags --libs emfor`.
+- `lib/pkgconfig/emfor.pc` (`libdata/pkgconfig/emfor.pc` on FreeBSD, where `pkg-config` looks for it), so C code builds with `pkg-config --cflags --libs emfor`.
 
 Use `--libdir` to choose the library directory, and `--destdir` when building
 a package. `cargo cbuild --release --features capi` builds the same files

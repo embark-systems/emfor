@@ -10,7 +10,7 @@ Each snippet below is copied verbatim from a file in [resolver/](resolver/). `te
 | --- | --- | --- | --- |
 | dnsmasq | Linux | [resolver/dnsmasq.conf](resolver/dnsmasq.conf) | `tests/resolver/run.sh dnsmasq` (Debian container) |
 | unbound | Linux | [resolver/unbound.conf](resolver/unbound.conf) | `tests/resolver/run.sh unbound` (Debian container) |
-| `local_unbound` | FreeBSD | [resolver/unbound.conf](resolver/unbound.conf) | `tests/resolver/freebsd.sh` (optional CI `freebsd` job); not yet run on FreeBSD |
+| `local_unbound` | FreeBSD | [resolver/unbound.conf](resolver/unbound.conf) | `tests/resolver/freebsd.sh` (optional CI `freebsd` job); run on FreeBSD 15.1-RELEASE (arm64) |
 | systemd-resolved | Linux | [resolver/resolved.conf](resolver/resolved.conf) | `tests/resolver/resolved.sh` on an Ubuntu VM (version recorded below) |
 | `/etc/resolver` | macOS | [resolver/macos-resolver](resolver/macos-resolver) | manually (version recorded below) |
 
@@ -90,7 +90,7 @@ drill -p 5300 api.svc.emfor @127.0.0.1   # emfor directly
 getent hosts api.svc.emfor                # through the system resolver
 ```
 
-Not yet verified on FreeBSD: `tests/resolver/freebsd.sh` checks this recipe and `examples/rc.d/emfor` (`service emfor start`, `reload`, `stop`) on a FreeBSD host, and the optional CI `freebsd` job runs it.
+`tests/resolver/freebsd.sh` checks this recipe and `examples/rc.d/emfor` (`service emfor start`, `reload`, `stop`) on a FreeBSD host; it passes on FreeBSD 15.1-RELEASE (arm64), and the optional CI `freebsd` job runs it too.
 
 To run emfor itself, see `examples/rc.d/emfor`.
 

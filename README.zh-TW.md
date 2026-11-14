@@ -118,7 +118,7 @@ C 函式庫以及所有建立在它之上的 client，必須和 daemon 來自同
 
 ## 支援平台
 
-正式部署平台是 Linux 與 FreeBSD；macOS 只用於開發。FreeBSD 尚未在本機環境測試過，由選用的 CI job 涵蓋。
+正式部署平台是 Linux 與 FreeBSD；macOS 只用於開發。FreeBSD 上的測試、rc.d script 與範例 port 已在 FreeBSD 15.1-RELEASE（arm64，VM）上跑過；14.x 與 amd64 只由選用的 CI job 涵蓋。
 
 ## 目錄結構
 

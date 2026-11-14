@@ -5,9 +5,9 @@ from the GitHub release, installs the rc.d script and a sample config from
 the source's `examples/`, and creates the `emfor` user and the store
 directory.
 
-**Not yet built on FreeBSD.** The cargo commands it runs were checked on
-other systems; the port itself has not been through `make` or poudriere.
-See [Unverified](#unverified) for what to watch.
+Built and installed on FreeBSD 15.1-RELEASE (arm64, in a VM) with the
+2026Q4 ports branch and the `rust` package; see [Checked](#checked). Not
+yet through poudriere, and not on 14.x or amd64.
 
 ## Files
 
@@ -93,13 +93,24 @@ emfor status
 `libemfor` and the Go, Python, Perl and PHP clients are not part of this
 port.
 
-## Unverified
+## Checked
 
-- **TLS library.** rustls uses `aws-lc-sys`, which compiles AWS-LC from C.
-  If the build stops asking for `cmake` or for `libclang` (bindgen), add
-  `cmake:devel/cmake-core` to `BUILD_DEPENDS`, or `USES+= llvm` and
-  `CARGO_ENV+= LIBCLANG_PATH=${LLVM_PREFIX}/lib`.
-- **The rc.d script** has not run on FreeBSD either;
-  `tests/resolver/freebsd.sh` checks it on a FreeBSD host.
-- `make test` runs the whole workspace's tests, some of which start
-  daemons on loopback ports; they are not needed to build the package.
+On FreeBSD 15.1-RELEASE (arm64), with the ports tree on the same branch as
+the packages (`quarterly`, 2026Q4: its `lang/rust` matched the installed
+`rust` 1.98.1 package; a `main` ports tree wants a newer rust and builds
+it from source):
+
+- `make makesum`, then `make stage check-plist`: no plist issues. The
+  build takes about 2.5 minutes on 4 cores.
+- **TLS library.** rustls uses `aws-lc-sys`, which builds AWS-LC with
+  cmake. `USES=cargo` adds `cmake:devel/cmake-core` to `BUILD_DEPENDS` by
+  itself; `libclang` is not needed.
+- `make install`, then `emfor check-config`, `service emfor start` and
+  `emfor status` with the sample config: the daemon runs as `emfor`, the
+  store is `/var/lib/emfor/state.mdb`, and its log reaches syslog.
+- `pkg delete emfor` leaves `/var/lib/emfor` while the store is in it.
+- **The rc.d script**: `tests/resolver/freebsd.sh` passes (start, reload,
+  an invalid config refused, restart after a kill, stop).
+
+`make test` runs the whole workspace's tests, some of which start daemons
+on loopback ports; they are not needed to build the package.

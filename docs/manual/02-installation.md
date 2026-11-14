@@ -126,7 +126,9 @@ invalid config. The daemon's log goes to syslog with the tag `emfor`.
 (`net-mgmt/emfor`) that builds `emfor` and `emfor-check`, installs the rc.d
 script and a sample config, and creates the `emfor` user and
 `/var/lib/emfor`. Read the comments in the script and the port's README
-before using them: FreeBSD has not been tested on a host yet.
+before using them. Both have been run on FreeBSD 15.1-RELEASE (arm64, in a
+VM), the port with `make stage check-plist install`; not with poudriere,
+on 14.x or on amd64.
 
 ## Installing the client libraries
 

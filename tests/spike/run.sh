@@ -26,7 +26,8 @@ case "$spike" in
     ;;
 2)
     (cd tests/spike/probe && cargo cinstall --release --features capi \
-        --prefix "$work/prefix" --libdir "$work/prefix/lib" >/dev/null 2>&1) || exit 1
+        --prefix "$work/prefix" --libdir "$work/prefix/lib" \
+        --pkgconfigdir "$work/prefix/lib/pkgconfig" >/dev/null 2>&1) || exit 1
     export PKG_CONFIG_PATH="$work/prefix/lib/pkgconfig"
     libdir=$(pkg-config --variable=libdir emforprobe)
     if [ "$(uname)" = Darwin ]; then so="$libdir/libemforprobe.dylib"; else so="$libdir/libemforprobe.so"; fi

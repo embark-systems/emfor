@@ -116,7 +116,7 @@ The C library, and every client built on it, must come from the same emfor relea
 
 ## Platforms
 
-Linux and FreeBSD are the deployment platforms; macOS is for development. FreeBSD has not been tested on a local host yet; the optional CI job covers it.
+Linux and FreeBSD are the deployment platforms; macOS is for development. On FreeBSD, the tests, the rc.d script and the example port have been run on FreeBSD 15.1-RELEASE (arm64, in a VM); 14.x and amd64 are covered only by the optional CI job.
 
 ## Repository layout
 

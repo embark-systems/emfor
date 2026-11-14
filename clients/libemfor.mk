@@ -37,6 +37,6 @@ EMFOR_FIXTURE     := cd $(EMFOR_ROOT) && cargo run -q -p emfor-fixture --bin emf
 # build when nothing changed).
 libemfor:
 	cd $(EMFOR_ROOT)/clients/rust && cargo cinstall --release --features capi \
-	    --prefix $(PREFIX) --libdir $(LIBDIR) >/dev/null
+	    --prefix $(PREFIX) --libdir $(LIBDIR) --pkgconfigdir $(LIBDIR)/pkgconfig >/dev/null
 
 $(SHLIB): libemfor

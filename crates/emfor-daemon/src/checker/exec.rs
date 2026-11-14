@@ -305,6 +305,11 @@ mod tests {
     /// A child that leaves the process group survives the kill and keeps
     /// stdout open, so reading stops at the grace period; the first line
     /// already read must still be the reason.
+    ///
+    /// The child leaves the group with perl's `setpgrp`; FreeBSD has no perl
+    /// in its base system, and there `set -m` gives the background job its
+    /// own group instead (dash, Debian's sh, refuses `set -m` without a
+    /// terminal, so it cannot be used everywhere).
     #[tokio::test]
     async fn reason_is_kept_when_stdout_stays_open() {
         let dir = TempDir::new().unwrap();
@@ -312,7 +317,12 @@ mod tests {
         let pidfile = dir.path().join("child.pid");
         let body = format!(
             "echo 'still the reason'\n\
+             if command -v perl >/dev/null 2>&1; then\n\
              perl -e 'setpgrp(0, 0); open(F, \">\", $ARGV[0]); close(F); sleep 30' {ready} &\n\
+             else\n\
+             set -m\n\
+             (: > {ready}; exec sleep 30) &\n\
+             fi\n\
              echo $! > {pid}\n\
              while [ ! -f {ready} ]; do sleep 0.01; done\n\
              exit 1",

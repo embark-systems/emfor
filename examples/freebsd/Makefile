@@ -30,10 +30,12 @@ GROUPS=		emfor
 USE_RC_SUBR=	emfor
 
 # The store stays at /var/lib/emfor/state.mdb, the default of the daemon and
-# of every client (EMFOR_STORE), so applications need no setting.
+# of every client (EMFOR_STORE), so applications need no setting. FreeBSD has
+# no /var/lib, so the package owns it too (removed only when empty).
 PLIST_FILES=	bin/emfor \
 		bin/emfor-check \
 		"@sample etc/emfor/emfor.toml.sample" \
+		"@dir /var/lib" \
 		"@dir(emfor,emfor,0755) /var/lib/emfor"
 
 # The sample config comes from the source's examples/.
