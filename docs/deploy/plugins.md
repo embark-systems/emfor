@@ -445,6 +445,50 @@ Any other key is an error. The server must register the health service: in Go `g
 - With `tls = true`, a server that completes the handshake without selecting `h2` is down with `tls: server did not select h2 (ALPN)`; one that refuses `h2` with a TLS alert is down with `tls: ` and the alert.
 - Client certificates (mTLS), tokens and other metadata, compressed messages, `Watch` and HTTP/1.1 upgrade (`h2c` with `Upgrade:`) are not supported. A service that needs a token for the health service cannot be checked.
 
+### QUIC
+
+The `quic` plugin opens a new QUIC version 1 connection over UDP on every check, without 0-RTT, offering the ALPN values of `alpn` and verifying the certificate with TLS 1.3. With `http3 = false` (the default) it is up when the handshake completes, and it then closes the connection with application error code 0. With `http3 = true` it also sends one HTTP/3 `GET` for `path`, judged like the built-in [`http` check](../manual/04-health-checks.md#http): `:authority` is `host_header`, else `server_name` (an IPv6 address in brackets), else the backend's `ip:port`; redirects are not followed; `user-agent` is `emfor-check/<version>`. The connection then ends with `H3_NO_ERROR`. All checks of one plugin process share one local UDP socket per address family.
+
+```toml
+[plugins."quic"]
+command = ["/usr/local/libexec/emfor-check", "quic"]
+
+[services."web.svc.emfor"]
+check = "quic"
+backends = ["10.0.9.11:443", "10.0.9.12:443"]
+check_options = { http3 = true, path = "/healthz", server_name = "web.internal" }
+```
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `alpn` | array of strings | `["h3"]` | ALPN values offered, in order, each 1 to 255 bytes |
+| `tls_verify`, `server_name`, `ca_file` | | | As for the other plugins, see [TLS](#tls); QUIC is always encrypted, so there is no `tls` key and these never need one |
+| `http3` | boolean | `false` | Send an HTTP/3 `GET` after the handshake; needs `"h3"` in `alpn` |
+| `path` | string | `/` | The request path and optional query, starting with `/`, without spaces, control characters or `#`; needs `http3 = true` |
+| `host_header` | string | | `:authority`: a host with an optional port such as `api.internal:8443`, 1 to 256 bytes, no path or `user@`; needs `http3 = true` |
+| `expect_status` | array | `["200-399"]` | Status codes (integers or strings) and `"lo-hi"` ranges from 100 to 599; needs `http3 = true` |
+| `expect_body` | string | | 1 to 16384 bytes the body must contain (the first 65536 bytes are read, case-sensitive); needs `http3 = true` |
+
+Any other key is an error, `tls` included. The result is decided in this order; the first match is the reason:
+
+| Answer | Result |
+| --- | --- |
+| No answer within the service `timeout` | down: `timeout` |
+| The local UDP socket cannot be opened, `ca_file` cannot be read, or the host has no CA certificates | error |
+| The server supports no QUIC version 1 | down: `quic: version negotiation failed` |
+| The TLS handshake fails (certificate, server name, no shared ALPN) | down: `tls: ` and the cause, for example `tls: no application protocol (ALPN)` |
+| The server closes the connection, also during the HTTP/3 request or the body | down: `quic: closed by peer: <code>`, with `: <reason>` when it sends one, for example `quic: closed by peer: 2` for a refused connection; `quic: stateless reset`; another connection error is `quic: ` and the error |
+| The server selected an ALPN that is not in `alpn` (a server that does not follow RFC 9001) | down: `tls: server selected ALPN <value> not in alpn` |
+| `http3 = false` | up |
+| Another HTTP/3 error, such as a reset request stream | down: `query: HTTP/3: <error>` |
+| A status outside `expect_status` | down: `unexpected status <n>` |
+| A failure reading the body, or `expect_body` not found | down: `body: …`, or `expect_body: got "<first 64 bytes>"` |
+| Otherwise | up |
+
+- UDP has no "connection refused": a closed port, a firewall that drops UDP and a server that is down all end as `timeout` after the full service `timeout`. The daemon host must be able to send UDP to the backend's port and receive the answers.
+- The service `timeout` covers the whole check. A handshake takes at least one round trip, plus one more for `http3 = true`.
+- 0-RTT, QUIC version 2, client certificates, methods other than `GET`, request bodies and headers other than `:authority` and `user-agent` are not supported. Each check is a new connection; none is kept between checks.
+
 ## Reading results
 
 | Reason starts with | Result | Meaning |
@@ -462,8 +506,10 @@ Any other key is an error. The server must register the health service: in Go `g
 | `greeting: `, `ehlo: ` | down | `smtp`: a greeting other than 220 or an `EHLO` answer other than 250, see [SMTP](#smtp) |
 | `vhost: ` | down | `amqp`: the broker refused to open the vhost, see [AMQP](#amqp) |
 | `grpc: ` | down | `grpc`: a `grpc-status` other than 0, for example no health service (`12 UNIMPLEMENTED`) or an unknown `service` (`5 NOT_FOUND`), see [gRPC](#grpc) |
+| `quic: ` | down | `quic`: the server closed the connection, sent a stateless reset, or another QUIC transport error, see [QUIC](#quic) |
+| `unexpected status `, `expect_body: `, `body: ` | down | `quic` with `http3 = true`: a status outside `expect_status`, or a body without `expect_body`, see [QUIC](#quic) |
 | `password_file: `, `secret_file: `, `ca_file: `, `tls_cert_file: `, `tls_key_file: ` | error | The file could not be read during the check |
 
 ## What is tested
 
-`tests/plugins/run.sh` checks all twelve plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary, a replica that replicates from it, a replica whose primary is unreachable, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; Kamailio 5.6.3 over UDP, TCP and TLS; freeDiameter 1.2.1 over TCP and over TLS with a client certificate, with an ACL that knows one peer; Postfix 3.7 with STARTTLS, with TLS on port 465 and without TLS; RabbitMQ 3.10 over plaintext and TLS, with a vhost the user may open and one it may not; MongoDB 8.0 with a two-member replica set and a server with access control over plaintext and TLS; and a gRPC server written with Python grpcio 1.51 over plaintext and TLS, with and without a health service. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, the `sip` plugin against Kamailio only, the `diameter` plugin against freeDiameter only, the `smtp` plugin against Postfix only, the `amqp` plugin against RabbitMQ only, the `mongodb` plugin against MongoDB 8.0 only, and the `grpc` plugin against grpcio (Python) only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it (the replica check reads MySQL's `Replica_*` and `Seconds_Behind_Source` column names too, but only MariaDB's `Slave_*` names are tested). Like the rest of emfor, the plugins have not been tested on FreeBSD yet.
+`tests/plugins/run.sh` checks all thirteen plugins against real servers in a Debian container: redis 7, MariaDB and PostgreSQL 15, each with a primary, a replica that replicates from it, a replica whose primary is unreachable, and TLS; OpenLDAP 2.5 with LDAPS, StartTLS and a server without TLS; unbound 1.17 with a local zone, over UDP and TCP; FreeRADIUS 3.2.1 with Status-Server on the authentication and accounting ports and a test account; Kamailio 5.6.3 over UDP, TCP and TLS; freeDiameter 1.2.1 over TCP and over TLS with a client certificate, with an ACL that knows one peer; Postfix 3.7 with STARTTLS, with TLS on port 465 and without TLS; RabbitMQ 3.10 over plaintext and TLS, with a vhost the user may open and one it may not; MongoDB 8.0 with a two-member replica set and a server with access control over plaintext and TLS; a gRPC server written with Python grpcio 1.51 over plaintext and TLS, with and without a health service; and Caddy 2.6 with HTTP/3. The `ldap` plugin is tested against OpenLDAP only; Active Directory and other servers are untested. The `dns` plugin is tested against unbound only, the `radius` plugin against FreeRADIUS only, the `sip` plugin against Kamailio only, the `diameter` plugin against freeDiameter only, the `smtp` plugin against Postfix only, the `amqp` plugin against RabbitMQ only, the `mongodb` plugin against MongoDB 8.0 only, the `grpc` plugin against grpcio (Python) only, and the `quic` plugin against Caddy 2.6 only. The `mysql` plugin is tested against MariaDB only; check it against your MySQL version before relying on it (the replica check reads MySQL's `Replica_*` and `Seconds_Behind_Source` column names too, but only MariaDB's `Slave_*` names are tested). Like the rest of emfor, the plugins have not been tested on FreeBSD yet.

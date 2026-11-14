@@ -6,7 +6,9 @@
 //! (see `emfor_check::net::fuzz`). `seeds/plugins.py` writes a well-formed
 //! answer for each plugin to `seeds/plugins/`. `mysql` and `pgsql`
 //! are left out: their protocols are parsed by `mysql_async` and
-//! `tokio-postgres`, which connect on their own.
+//! `tokio-postgres`, which connect on their own. `quic` is left out too:
+//! everything after the first packet is encrypted, so bytes from the
+//! fuzzer never reach quinn's or h3's parsing.
 #![no_main]
 
 use std::net::{IpAddr, Ipv4Addr};
@@ -93,7 +95,7 @@ fn presets(kind: Kind) -> Vec<Value> {
             json!({"user": "u", "password_file": password}),
         ],
         Kind::Grpc => vec![json!({}), json!({"service": "emfor.Test"})],
-        Kind::Mysql | Kind::Pgsql => vec![json!({})],
+        Kind::Mysql | Kind::Pgsql | Kind::Quic => vec![json!({})],
     }
 }
 

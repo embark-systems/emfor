@@ -11,7 +11,7 @@ A service's `check` decides how each backend is tested, and its
 | `tcp` | A TCP connection, optionally TLS and a send/expect exchange | Any TCP service; greeting-based protocols such as SMTP |
 | `http` | One `GET` request and its status code | Web services and health endpoints |
 | `exec` | A program run once per check | Existing Nagios-style scripts, infrequent checks |
-| a plugin name | A long-running plugin program | redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB, gRPC (`emfor-check`), or your own |
+| a plugin name | A long-running plugin program | redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB, gRPC, QUIC and HTTP/3 (`emfor-check`), or your own |
 
 A check that has not finished within the service's `timeout` is `down`
 with reason `timeout`. The one exception is a plugin: a plugin that does not
@@ -144,6 +144,7 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 | `amqp` | An AMQP 0-9-1 login succeeds and the vhost opens |
 | `mongodb` | `hello` answers, the SCRAM-SHA-256 login succeeds when `user` is set, and the role matches |
 | `grpc` | The standard health service (`grpc.health.v1.Health/Check`) answers `SERVING` |
+| `quic` | A QUIC handshake over UDP completes with a verified certificate and an ALPN in `alpn`; with `http3 = true`, an HTTP/3 `GET` also gets a status in `expect_status` |
 
 Main options: `user`, `password_file` (never the password itself; read on
 every check), `database` (`pgsql`), `role` (`master`/`replica` for redis,
@@ -164,7 +165,9 @@ the application ids, `supported_vendor_ids`, `host_ip_address` and `tls`
 the TLS keys), and the `amqp` plugin `user`, `password_file`, `vhost` and
 `tls` (with the TLS keys), and the `mongodb` plugin `user`,
 `password_file`, `auth_source`, `role` and `tls` (with the TLS keys), and the
-`grpc` plugin `service` and `tls` (with the TLS keys).
+`grpc` plugin `service` and `tls` (with the TLS keys), and the `quic` plugin
+`alpn`, `tls_verify`, `server_name`, `ca_file` (always TLS, so no `tls`
+key), `http3`, `path`, `host_header`, `expect_status` and `expect_body`.
 [docs/deploy/plugins.md](../deploy/plugins.md) lists every option and
 reason.
 

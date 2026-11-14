@@ -1,8 +1,8 @@
 #!/bin/sh
 # Usage: tests/plugins/run.sh
 # Builds emfor and emfor-check in Docker and checks the redis, mysql,
-# pgsql, ldap, dns, radius, sip, diameter, smtp, amqp, mongodb and grpc
-# plugins against real servers (see crates/emfor-check/tests/live.rs).
+# pgsql, ldap, dns, radius, sip, diameter, smtp, amqp, mongodb, grpc and
+# quic plugins against real servers (see crates/emfor-check/tests/live.rs).
 set -eu
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"

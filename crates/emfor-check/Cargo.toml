@@ -16,11 +16,14 @@ hickory-proto = "0.26.3"
 base64 = "0.22"
 bytes = "1.12.1"
 h2 = "0.4"
+h3 = "=0.0.8"
+h3-quinn = "=0.0.10"
 hmac = "0.13"
 http = "1.5.0"
 libc = "0.2.191"
 md-5 = "0.11"
 mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust", "rustls-tls"] }
+quinn = { version = "=0.11.12", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
 rand = "0.10.3"
 rustls = "0.23.46"
 serde_json.workspace = true

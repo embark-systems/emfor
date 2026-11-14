@@ -121,6 +121,21 @@ member runs this release, remove the line and reload each daemon.
   `status: NOT_SERVING`, `grpc: 12 UNIMPLEMENTED` (no health service) or
   `grpc: 5 NOT_FOUND: …` (an unknown `service`). See
   [docs/deploy/plugins.md](docs/deploy/plugins.md#grpc).
+- `emfor-check quic` checks QUIC servers over UDP: a new QUIC version 1
+  handshake on every check, without 0-RTT, offering the ALPN values of
+  `alpn` (default `["h3"]`) and verifying the certificate (`tls_verify`,
+  `server_name`, `ca_file`; always TLS 1.3). It is up when the handshake
+  completes. With `http3 = true` it also sends an HTTP/3 `GET` for `path`
+  and judges `expect_status` and `expect_body` like the built-in `http`
+  check. It is down with `quic: version negotiation failed`, `tls: …`
+  (for example `tls: no application protocol (ALPN)`),
+  `quic: closed by peer: <code>[: <reason>]`, `quic: stateless reset`,
+  `query: HTTP/3: …`, `unexpected status <n>` or `expect_body: got "…"`.
+  UDP has no "connection refused", so a closed port or a firewall that
+  drops UDP is a `timeout`. The plugin uses quinn 0.11, h3 0.0.8 and
+  h3-quinn 0.0.10, which make the `emfor-check` release binary about
+  1.3 MiB (13%) larger, 11.2 MiB on macOS arm64; the daemon does not
+  link them. See [docs/deploy/plugins.md](docs/deploy/plugins.md#quic).
 
 ## 0.3.0 — 2026-11-14
 

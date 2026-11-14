@@ -1,7 +1,7 @@
 # Builds emfor, emfor-check and its live tests, and a Debian image with
 # redis, MariaDB, PostgreSQL, OpenLDAP, unbound, FreeRADIUS, Kamailio,
-# freeDiameter, Postfix, RabbitMQ, MongoDB and a Python gRPC server, for
-# run.sh.
+# freeDiameter, Postfix, RabbitMQ, MongoDB, a Python gRPC server and Caddy
+# (HTTP/3), for run.sh.
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
@@ -21,7 +21,7 @@ FROM debian:bookworm-slim
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends redis-server redis-tools mariadb-server mariadb-client \
     postgresql postgresql-client openssl dnsutils ca-certificates procps slapd ldap-utils unbound freeradius kamailio kamailio-tls-modules \
-    freediameterd freediameter-extensions postfix rabbitmq-server python3-grpcio \
+    freediameterd freediameter-extensions postfix rabbitmq-server python3-grpcio caddy \
  && rm -rf /var/lib/apt/lists/*
 # MongoDB is not in Debian: use MongoDB's own repository. It has no arm64
 # server package for Debian, so arm64 takes the Ubuntu 22.04 one.

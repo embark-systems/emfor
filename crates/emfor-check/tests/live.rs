@@ -1,6 +1,6 @@
 //! `emfor-check` against real redis, MariaDB, PostgreSQL, OpenLDAP,
-//! unbound, FreeRADIUS, Kamailio, freeDiameter, Postfix, RabbitMQ, MongoDB
-//! and gRPC (Python grpcio) servers.
+//! unbound, FreeRADIUS, Kamailio, freeDiameter, Postfix, RabbitMQ, MongoDB,
+//! gRPC (Python grpcio) and HTTP/3 (Caddy) servers.
 //!
 //! Ignored by default: these tests need the servers that
 //! tests/plugins/inside.sh starts in the `emfor-plugins-test` container
@@ -35,6 +35,8 @@
 //! | 50051 | gRPC health service: `""` SERVING, `down` NOT_SERVING, others NOT_FOUND |
 //! | 50052 | the same over TLS |
 //! | 50053 | gRPC without a health service |
+//! | 8443 (UDP) | Caddy, HTTP/3 with the `db.test` certificate: `/healthz` 200 `ok`, other paths 404 |
+//! | 8499 (UDP) | nothing |
 //!
 //! Server certificates are for `db.test`, signed by `$EMFOR_LIVE_DIR/ca.pem`;
 //! `$EMFOR_LIVE_DIR/good.pass` holds the password, `bad.pass` a wrong one.
@@ -646,4 +648,36 @@ fn grpc_live() {
     down(p.check(50051, tls("db.test", true)), "tls: ");
     down(p.check(50052, json!({})), "query: HTTP/2: ");
     down(p.check(50099, json!({})), "connect: ");
+}
+
+#[test]
+#[ignore = "needs the emfor-plugins-test container"]
+fn quic_live() {
+    let mut p = Plugin::start("quic");
+    let base = |extra: Value| {
+        let mut o = json!({"server_name": "db.test", "ca_file": file("ca.pem")});
+        for (k, v) in extra.as_object().unwrap() {
+            o[k] = v.clone();
+        }
+        o
+    };
+    up(p.check(8443, base(json!({}))));
+    up(p.check(8443, base(json!({"http3": true, "path": "/healthz"}))));
+    up(p.check(
+        8443,
+        base(json!({"http3": true, "path": "/healthz", "expect_body": "ok"})),
+    ));
+    down(
+        p.check(8443, base(json!({"http3": true, "path": "/nope"}))),
+        "unexpected status 404",
+    );
+    down(
+        p.check(8443, base(json!({"server_name": "nope.test"}))),
+        "tls: ",
+    );
+    down(
+        p.check(8443, base(json!({"alpn": ["hq-interop"]}))),
+        "tls: no application protocol (ALPN)",
+    );
+    down(p.check(8499, base(json!({}))), "timeout");
 }

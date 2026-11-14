@@ -1,8 +1,8 @@
 //! `emfor-check`: emfor checker plugins for redis, MySQL, PostgreSQL,
-//! LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB and gRPC.
+//! LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB, gRPC and QUIC.
 //!
 //! Usage:
-//! `emfor-check redis|mysql|pgsql|ldap|dns|radius|sip|diameter|smtp|amqp|mongodb|grpc`.
+//! `emfor-check redis|mysql|pgsql|ldap|dns|radius|sip|diameter|smtp|amqp|mongodb|grpc|quic`.
 //! The argument picks the plugin; the process then speaks plugin protocol 1
 //! on stdin and stdout (docs/plugins/protocol-v1.md). See
 //! docs/deploy/plugins.md.
@@ -19,7 +19,7 @@ fn main() -> ExitCode {
     };
     let Some(kind) = kind else {
         eprintln!(
-            "usage: emfor-check redis|mysql|pgsql|ldap|dns|radius|sip|diameter|smtp|amqp|mongodb|grpc"
+            "usage: emfor-check redis|mysql|pgsql|ldap|dns|radius|sip|diameter|smtp|amqp|mongodb|grpc|quic"
         );
         return ExitCode::from(2);
     };

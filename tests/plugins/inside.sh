@@ -418,6 +418,33 @@ until [ "$(cat /proc/net/tcp /proc/net/tcp6 | grep -cE ':(C383|C384|C385) 0+:000
     i=$((i + 1)); [ $i -lt 60 ] || { cat "$D/grpc.out"; fail "grpc server is not listening"; }; sleep 0.5
 done
 
+step "quic"
+# 8443: Caddy with HTTP/3 (on by default since Caddy 2.6), the test
+# certificate for db.test; /healthz answers 200, any other path 404.
+mkdir -p "$D/caddy"
+cat > "$D/Caddyfile" <<CADDY
+{
+    admin off
+    auto_https disable_redirects
+    servers {
+        protocols h1 h2 h3
+    }
+}
+:8443 {
+    bind 127.0.0.1
+    tls $D/server.crt $D/server.key
+    respond /healthz "ok" 200
+    respond 404
+}
+CADDY
+XDG_DATA_HOME="$D/caddy" XDG_CONFIG_HOME="$D/caddy" \
+    caddy run --config "$D/Caddyfile" --adapter caddyfile >"$D/caddy.out" 2>&1 &
+i=0
+# 8443 is 20FB in /proc/net/udp.
+until grep -qE ':20FB 0+:0000 07' /proc/net/udp; do
+    i=$((i + 1)); [ $i -lt 60 ] || { cat "$D/caddy.out"; fail "caddy is not listening on UDP 8443"; }; sleep 0.5
+done
+
 step "emfor-check against the servers"
 EMFOR_LIVE_DIR="$D" emfor-check-live-test --ignored --test-threads=1
 

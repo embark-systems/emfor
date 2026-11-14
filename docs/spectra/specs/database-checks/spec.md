@@ -8,7 +8,7 @@ Defines `emfor-check`, the plugin executable shipped with emfor, and its `redis`
 
 ### Requirement: Plugin selection by argument
 
-`emfor-check` SHALL take exactly one argument naming the plugin: `redis`, `mysql`, `pgsql`, `ldap`, `dns`, `radius`, `sip`, `diameter`, `smtp`, `amqp`, `mongodb` or `grpc`. With a missing, extra or unknown argument it SHALL print a usage line to stderr and exit with status 2 without answering the handshake. With a valid argument it SHALL speak checker-plugins protocol 1 and answer `hello` with `name` equal to the plugin name and `version` equal to the `emfor-check` package version. Each check of the `redis`, `mysql`, `pgsql` and `ldap` plugins SHALL open a new connection to the backend and close it before answering. A check that has not finished within the request's `timeout_ms` SHALL be answered `down` with reason `timeout`.
+`emfor-check` SHALL take exactly one argument naming the plugin: `redis`, `mysql`, `pgsql`, `ldap`, `dns`, `radius`, `sip`, `diameter`, `smtp`, `amqp`, `mongodb`, `grpc` or `quic`. With a missing, extra or unknown argument it SHALL print a usage line to stderr and exit with status 2 without answering the handshake. With a valid argument it SHALL speak checker-plugins protocol 1 and answer `hello` with `name` equal to the plugin name and `version` equal to the `emfor-check` package version. Each check of the `redis`, `mysql`, `pgsql` and `ldap` plugins SHALL open a new connection to the backend and close it before answering. A check that has not finished within the request's `timeout_ms` SHALL be answered `down` with reason `timeout`.
 
 #### Scenario: Unknown plugin argument
 
@@ -65,6 +65,11 @@ Defines `emfor-check`, the plugin executable shipped with emfor, and its `redis`
 - **WHEN** `emfor-check grpc` receives `{"type":"hello","protocol":1}`
 - **THEN** it answers `{"type":"hello","protocol":1,"name":"grpc","version":"<package version>"}`
 
+#### Scenario: QUIC plugin handshake
+
+- **WHEN** `emfor-check quic` receives `{"type":"hello","protocol":1}`
+- **THEN** it answers `{"type":"hello","protocol":1,"name":"quic","version":"<package version>"}`
+
 #### Scenario: Slow backend
 
 - **WHEN** a check request has `timeout_ms` 900 and the backend accepts the TCP connection but never answers
@@ -72,36 +77,27 @@ Defines `emfor-check`, the plugin executable shipped with emfor, and its `redis`
 
 
 <!-- @trace
-source: emfor-check-grpc
+source: emfor-quic-check
 updated: 2026-11-14
 code:
-  - crates/emfor-check/Cargo.toml
-  - crates/emfor-check/src/amqp.rs
-  - crates/emfor-check/src/mysql.rs
   - crates/emfor-check/src/lib.rs
-  - docs/manual/04-health-checks.md
-  - crates/emfor-check/src/smtp.rs
-  - examples/emfor.toml
-  - crates/emfor-check/src/mongodb.rs
-  - crates/emfor-check/src/redis.rs
-  - crates/emfor-check/src/pgsql.rs
-  - crates/emfor-daemon/src/checker/http.rs
-  - CHANGELOG.md
-  - examples/freebsd/Makefile.crates
-  - crates/emfor-check/src/radius.rs
-  - docs/deploy/plugins.md
-  - crates/emfor-check/src/grpc.rs
-  - crates/emfor-check/src/replica.rs
-  - tests/plugins/run.sh
-  - tests/plugins/grpc_server.py
-  - tests/plugins/inside.sh
-  - crates/emfor-check/src/options.rs
-  - tests/plugins/Dockerfile
-  - crates/emfor-check/src/main.rs
   - docs/manual.zh_TW/04-health-checks.md
+  - tests/plugins/inside.sh
+  - CHANGELOG.md
+  - crates/emfor-check/src/main.rs
+  - examples/freebsd/Makefile.crates
+  - crates/emfor-check/src/options.rs
+  - fuzz/fuzz_targets/plugins.rs
+  - tests/plugins/run.sh
+  - docs/deploy/plugins.md
+  - docs/manual/04-health-checks.md
+  - examples/emfor.toml
+  - crates/emfor-check/Cargo.toml
+  - crates/emfor-check/src/quic.rs
+  - tests/plugins/Dockerfile
 tests:
-  - crates/emfor-check/tests/cli.rs
   - crates/emfor-check/tests/live.rs
+  - crates/emfor-check/tests/cli.rs
 -->
 
 ---

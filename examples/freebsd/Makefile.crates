@@ -99,6 +99,8 @@ CARGO_CRATES=	adler2-2.0.1 \
 		getrandom-0.3.4 \
 		getrandom-0.4.3 \
 		h2-0.4.20 \
+		h3-0.0.8 \
+		h3-quinn-0.0.10 \
 		hashbrown-0.17.1 \
 		heck-0.5.0 \
 		heed-0.22.1 \

@@ -13,7 +13,7 @@ fn exe() -> Command {
 fn each_plugin_names_itself_in_the_handshake() {
     for name in [
         "redis", "mysql", "pgsql", "ldap", "dns", "radius", "sip", "diameter", "smtp", "amqp",
-        "mongodb", "grpc",
+        "mongodb", "grpc", "quic",
     ] {
         let mut child = exe()
             .arg(name)
