@@ -189,9 +189,9 @@ pub fn client_config(tls: &TlsSettings) -> Result<Arc<ClientConfig>, TlsFailure>
 }
 
 /// [`client_config`] that presents `client` when the server asks for a
-/// client certificate. Its files are read on every call; one that cannot
-/// be read, or holds no certificate or no private key, is a local failure
-/// (`tls_cert_file: ` or `tls_key_file: `).
+/// client certificate. Its files are parsed again only when they changed,
+/// like `ca_file`; one that cannot be read, or holds no certificate or no
+/// private key, is a local failure (`tls_cert_file: ` or `tls_key_file: `).
 pub fn client_config_with_client(
     tls: &TlsSettings,
     client: Option<&ClientCertificate>,
@@ -310,17 +310,20 @@ pub fn check_key_file(path: &Path) -> Result<(), String> {
 type ClientAuth = (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>);
 
 fn read_client_certificate(client: &ClientCertificate) -> Result<ClientAuth, TlsFailure> {
-    let certs = std::fs::read(&client.cert_file)
-        .map_err(|e| TlsFailure::local(format!("tls_cert_file: {}", e.kind())))?;
-    let certs = load_certificates(&certs);
-    if certs.is_empty() {
-        return Err(TlsFailure::local("tls_cert_file: no certificate found"));
-    }
-    let key = std::fs::read(&client.key_file)
-        .map_err(|e| TlsFailure::local(format!("tls_key_file: {}", e.kind())))?;
-    let key = PrivateKeyDer::from_pem_slice(&key)
-        .map_err(|_| TlsFailure::local("tls_key_file: no private key found"))?;
-    Ok((certs, key))
+    static CERTS: FileCache<Vec<CertificateDer<'static>>> = FileCache::new();
+    static KEYS: FileCache<PrivateKeyDer<'static>> = FileCache::new();
+    let certs = CERTS.get_or_parse(&client.cert_file, "tls_cert_file", |bytes| {
+        let certs = load_certificates(bytes);
+        if certs.is_empty() {
+            Err("no certificate found".into())
+        } else {
+            Ok(certs)
+        }
+    })?;
+    let key = KEYS.get_or_parse(&client.key_file, "tls_key_file", |bytes| {
+        PrivateKeyDer::from_pem_slice(bytes).map_err(|_| "no private key found".into())
+    })?;
+    Ok((certs.as_ref().clone(), key.clone_key()))
 }
 
 fn read_ca_file(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsFailure> {
@@ -360,45 +363,101 @@ impl FileStamp {
 
 /// A `ca_file` as read and parsed once.
 struct CaFile {
-    stamp: FileStamp,
     certs: Vec<CertificateDer<'static>>,
     /// `None` when no certificate in it is usable as a trust anchor.
     roots: Option<Arc<RootCertStore>>,
 }
 
-/// The certificates of `path`, parsed again only when the file changed
-/// since it was last read (see [`FileStamp`]): a check costs one `stat`, and
-/// a replaced file still takes effect at the next check. Failures are not
-/// remembered, so a fixed file is read at the next check too.
-fn ca_file(path: &Path) -> Result<Arc<CaFile>, TlsFailure> {
-    static CACHE: OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, Arc<CaFile>>>> =
-        OnceLock::new();
-    let cache = CACHE.get_or_init(Default::default);
-    let unreadable = |e: io::Error| TlsFailure::local(format!("ca_file: {}", e.kind()));
-    // Stamped before reading: a change during the read gets a new stamp,
-    // so it is read again at the next check.
-    let stamp = FileStamp::of(&std::fs::metadata(path).map_err(unreadable)?);
-    if let Some(cached) = cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(path)
-        .filter(|c| c.stamp == stamp)
-    {
-        return Ok(Arc::clone(cached));
+/// A file entry of a [`FileCache`] that no check used for this long is
+/// dropped at the next insert: a path removed from the config does not
+/// stay. One still in use costs one more read when it comes back.
+const UNUSED_FOR: Duration = Duration::from_secs(600);
+
+struct Cached<T> {
+    stamp: FileStamp,
+    value: Arc<T>,
+    used: Instant,
+}
+
+/// Files parsed once and kept by path: a file is parsed again only when
+/// it changed since it was last read (see [`FileStamp`]), so a check costs
+/// one `stat` and a replaced file still takes effect at the next check.
+/// Failures are not remembered, so a fixed file is read at the next check.
+struct FileCache<T> {
+    files: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, Cached<T>>>>,
+}
+
+impl<T> FileCache<T> {
+    const fn new() -> FileCache<T> {
+        FileCache {
+            files: std::sync::Mutex::new(None),
+        }
     }
-    let bytes = std::fs::read(path).map_err(unreadable)?;
-    let (certs, roots) =
-        parse_ca(&bytes).map_err(|m| TlsFailure::local(format!("ca_file: {m}")))?;
-    let parsed = Arc::new(CaFile {
-        stamp,
-        certs,
-        roots,
-    });
-    cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(path.to_path_buf(), Arc::clone(&parsed));
-    Ok(parsed)
+
+    /// The parsed content of `path`; errors start with `option: `.
+    fn get_or_parse(
+        &self,
+        path: &Path,
+        option: &str,
+        parse: impl FnOnce(&[u8]) -> Result<T, String>,
+    ) -> Result<Arc<T>, TlsFailure> {
+        self.get_or_parse_at(path, option, parse, Instant::now())
+    }
+
+    fn get_or_parse_at(
+        &self,
+        path: &Path,
+        option: &str,
+        parse: impl FnOnce(&[u8]) -> Result<T, String>,
+        now: Instant,
+    ) -> Result<Arc<T>, TlsFailure> {
+        let unreadable = |e: io::Error| TlsFailure::local(format!("{option}: {}", e.kind()));
+        // Stamped before reading: a change during the read gets a new
+        // stamp, so it is read again at the next check.
+        let stamp = FileStamp::of(&std::fs::metadata(path).map_err(unreadable)?);
+        {
+            let mut files = self.files.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(c) = files
+                .get_or_insert_with(Default::default)
+                .get_mut(path)
+                .filter(|c| c.stamp == stamp)
+            {
+                c.used = now;
+                return Ok(Arc::clone(&c.value));
+            }
+        }
+        let bytes = std::fs::read(path).map_err(unreadable)?;
+        let value =
+            Arc::new(parse(&bytes).map_err(|m| TlsFailure::local(format!("{option}: {m}")))?);
+        let mut files = self.files.lock().unwrap_or_else(|e| e.into_inner());
+        let files = files.get_or_insert_with(Default::default);
+        files.retain(|_, c| now.saturating_duration_since(c.used) < UNUSED_FOR);
+        files.insert(
+            path.to_path_buf(),
+            Cached {
+                stamp,
+                value: Arc::clone(&value),
+                used: now,
+            },
+        );
+        Ok(value)
+    }
+
+    #[cfg(test)]
+    fn paths(&self) -> Vec<PathBuf> {
+        let files = self.files.lock().unwrap_or_else(|e| e.into_inner());
+        let mut paths: Vec<PathBuf> = files.iter().flat_map(|f| f.keys().cloned()).collect();
+        paths.sort();
+        paths
+    }
+}
+
+/// The parsed `ca_file` at `path`, from [`FileCache`].
+fn ca_file(path: &Path) -> Result<Arc<CaFile>, TlsFailure> {
+    static CACHE: FileCache<CaFile> = FileCache::new();
+    CACHE.get_or_parse(path, "ca_file", |bytes| {
+        parse_ca(bytes).map(|(certs, roots)| CaFile { certs, roots })
+    })
 }
 
 /// The certificates in a `ca_file`'s content, and the trust anchors made of

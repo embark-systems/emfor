@@ -238,6 +238,73 @@ fn ca_file_is_parsed_again_only_when_it_changes() {
     ));
 }
 
+/// Like `ca_file`: unchanged client certificate and key files are not
+/// parsed again; a rewritten or replaced one is, and a removed one fails.
+#[test]
+fn client_files_are_parsed_again_only_when_they_change() {
+    let pki = mutual_pki("dra.test", "emfor.test");
+    let dir = tempfile::tempdir().unwrap();
+    let path = |name: &str| dir.path().join(name);
+    std::fs::write(path("client.crt"), &pki.client_cert_pem).unwrap();
+    std::fs::write(path("client.key"), &pki.client_key_pem).unwrap();
+    let parses = std::sync::atomic::AtomicUsize::new(0);
+    let cache: FileCache<String> = FileCache::new();
+    let get = |name: &str| {
+        cache.get_or_parse(&path(name), "tls_key_file", |b| {
+            parses.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(String::from_utf8_lossy(b).into_owned())
+        })
+    };
+    let first = get("client.key").unwrap();
+    assert!(Arc::ptr_eq(&first, &get("client.key").unwrap()));
+    assert_eq!(parses.load(std::sync::atomic::Ordering::SeqCst), 1);
+    std::fs::write(
+        path("client.key"),
+        format!("# rotated\n{}", pki.client_key_pem),
+    )
+    .unwrap();
+    assert!(!Arc::ptr_eq(&first, &get("client.key").unwrap()));
+    std::fs::remove_file(path("client.key")).unwrap();
+    assert_eq!(
+        get("client.key").map(|_| ()),
+        Err(TlsFailure::local("tls_key_file: entity not found"))
+    );
+    // The configuration keeps working through the cache.
+    std::fs::write(path("client.key"), &pki.client_key_pem).unwrap();
+    let client = ClientCertificate {
+        cert_file: path("client.crt"),
+        key_file: path("client.key"),
+    };
+    let tls = settings(None, None, false);
+    for _ in 0..2 {
+        assert!(client_config_with_client(&tls, Some(&client)).is_ok());
+    }
+}
+
+/// A path no check used for 10 minutes leaves the cache at the next
+/// insert, so paths removed from the config do not pile up.
+#[test]
+fn file_cache_drops_unused_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = |name: &str| dir.path().join(name);
+    for name in ["a", "b", "c"] {
+        std::fs::write(path(name), name).unwrap();
+    }
+    let cache: FileCache<Vec<u8>> = FileCache::new();
+    let at = |name: &str, now: Instant| {
+        cache
+            .get_or_parse_at(&path(name), "ca_file", |b| Ok(b.to_vec()), now)
+            .unwrap();
+    };
+    let t0 = Instant::now();
+    at("a", t0);
+    at("b", t0);
+    // "b" is used again: it stays.
+    at("b", t0 + Duration::from_secs(500));
+    at("c", t0 + Duration::from_secs(601));
+    assert_eq!(cache.paths(), [path("b"), path("c")]);
+}
+
 #[test]
 fn local_errors() {
     assert!(is_local_io_error(&io::Error::from_raw_os_error(

@@ -26,6 +26,12 @@
 - State changes already queued when one is written are committed in the
   same transaction, so a burst of changes (a network split) costs one
   commit, not one per backend.
+- `tls_cert_file` and `tls_key_file` (the `diameter` plugin) are parsed
+  again only when they change, like `ca_file`: an unchanged file costs one
+  `stat` per check instead of a read and a parse, and a renewed one still
+  takes effect at the next check. Parsed `ca_file`, certificate and key
+  files that no check used for 10 minutes are released, so files removed
+  from the config by reloads no longer stay in memory.
 - The DNS server limits UDP responses to each client network (IPv4 /24,
   IPv6 /56) to `[dns] rate_limit` a second, 100 by default (`0` turns it
   off). An SRV answer can be many times the size of its query, so a server
