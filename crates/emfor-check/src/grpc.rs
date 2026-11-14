@@ -112,10 +112,11 @@ pub async fn check(req: &CheckRequest, settings: &Settings) -> CheckOutcome {
     call(stream, "https", &authority, &settings.service).await
 }
 
-/// `:authority`: `server_name`, or the backend address.
+/// `:authority`: `server_name` (an IPv6 address in brackets), or the
+/// backend address.
 fn authority(settings: &Settings, ip: IpAddr, port: u16) -> String {
     match settings.tls.as_ref().and_then(|t| t.server_name.as_ref()) {
-        Some(name) => name.clone(),
+        Some(name) => net::authority_host(name),
         None => match ip {
             IpAddr::V4(v4) => format!("{v4}:{port}"),
             IpAddr::V6(v6) => format!("[{v6}]:{port}"),
@@ -446,6 +447,18 @@ mod tests {
             ..Settings::default()
         };
         assert_eq!(authority(&named, ip4, 50051), "orders.internal");
+        // An IPv6 `server_name` is bracketed, so the request URI parses.
+        let v6 = Settings {
+            tls: Some(TlsSettings {
+                verify: true,
+                server_name: Some("2001:db8::2".into()),
+                ca_file: None,
+            }),
+            ..Settings::default()
+        };
+        let a = authority(&v6, ip6, 50051);
+        assert_eq!(a, "[2001:db8::2]");
+        assert!(Request::post(format!("https://{a}{PATH}")).body(()).is_ok());
     }
 
     /// What the fake server answers.

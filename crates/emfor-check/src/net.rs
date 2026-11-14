@@ -329,6 +329,15 @@ async fn send_datagram(socket: &UdpSocket, datagram: &[u8]) -> Result<(), CheckO
 
 /// The rustls client configuration for one check, see
 /// [`emfor_tls::client_config`].
+/// `server_name` as the host of an `:authority`: an IPv6 address in
+/// brackets (RFC 3986), anything else as it is.
+pub fn authority_host(server_name: &str) -> String {
+    match server_name.parse::<std::net::Ipv6Addr>() {
+        Ok(v6) => format!("[{v6}]"),
+        Err(_) => server_name.to_owned(),
+    }
+}
+
 pub fn client_config(tls: &TlsSettings) -> Result<std::sync::Arc<ClientConfig>, CheckOutcome> {
     emfor_tls::client_config(tls).map_err(tls_outcome)
 }

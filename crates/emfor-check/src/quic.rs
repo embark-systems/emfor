@@ -347,10 +347,7 @@ fn authority(http3: &Http3, settings: &Settings, ip: IpAddr, port: u16) -> Strin
         return h.clone();
     }
     if let Some(name) = &settings.tls.server_name {
-        return match name.parse::<Ipv6Addr>() {
-            Ok(v6) => format!("[{v6}]"),
-            Err(_) => name.clone(),
-        };
+        return net::authority_host(name);
     }
     match ip {
         IpAddr::V4(v4) => format!("{v4}:{port}"),

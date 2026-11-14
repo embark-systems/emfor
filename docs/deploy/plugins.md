@@ -411,7 +411,7 @@ Another role is down with `role is <role>, want <role>`, for example `role is se
 
 ### gRPC
 
-The `grpc` plugin opens a new HTTP/2 connection on every check and calls the standard health service: `POST /grpc.health.v1.Health/Check` with `HealthCheckRequest { service }`. It is up when the answer is `SERVING`. Without TLS it speaks HTTP/2 directly (prior knowledge, as gRPC servers expect); with `tls = true` it offers ALPN `h2`. `:authority` is `server_name`, or the backend's `ip:port`. The request carries `content-type: application/grpc`, `te: trailers` and `user-agent: emfor-check/<version>`, and nothing else: no token or other metadata.
+The `grpc` plugin opens a new HTTP/2 connection on every check and calls the standard health service: `POST /grpc.health.v1.Health/Check` with `HealthCheckRequest { service }`. It is up when the answer is `SERVING`. Without TLS it speaks HTTP/2 directly (prior knowledge, as gRPC servers expect); with `tls = true` it offers ALPN `h2`. `:authority` is `server_name` (an IPv6 address in brackets), or the backend's `ip:port`. The request carries `content-type: application/grpc`, `te: trailers` and `user-agent: emfor-check/<version>`, and nothing else: no token or other metadata.
 
 ```toml
 [plugins."grpc"]
