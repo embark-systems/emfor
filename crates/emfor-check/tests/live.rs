@@ -4,7 +4,8 @@
 //!
 //! Ignored by default: these tests need the servers that
 //! tests/plugins/inside.sh starts in the `emfor-plugins-test` container
-//! (run tests/plugins/run.sh). The layout they expect:
+//! (run tests/plugins/run.sh). tests/plugins/mysql.sh runs `mysql_live`
+//! against MySQL with the same ports. The layout they expect:
 //!
 //! | Port | Server |
 //! | --- | --- |

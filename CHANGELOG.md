@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Development
+
+- `tests/plugins/mysql.sh [version]` runs the `mysql` plugin's live tests
+  against MySQL from the `mysql` Docker images (8.4 unless given), with
+  the layout `tests/plugins/run.sh` uses for MariaDB. They pass on MySQL
+  8.0 and 8.4, so the 0.4.0 known limit that the plugin was checked only
+  against MariaDB no longer holds for those versions.
+
 ## 0.4.0 — 2026-11-14
 
 **Breaking: the store format is version 2.** The daemon writes

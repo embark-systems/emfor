@@ -1,0 +1,19 @@
+# Builds emfor-check and its live tests, in a Debian image for mysql.sh:
+# the MySQL servers run in containers that share this container's network.
+FROM rust:1-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+COPY tools tools
+COPY clients/rust clients/rust
+COPY tests/spike/probe tests/spike/probe
+RUN cargo build --locked --bin emfor-check
+RUN cargo test --locked -p emfor-check --test live --no-run --message-format=json \
+    | grep -o '"executable":"[^"]*"' | grep '/live-' | cut -d'"' -f4 \
+    | xargs -I{} cp {} /src/live-test
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/debug/emfor-check /src/target/debug/emfor-check
+COPY --from=build /src/live-test /usr/local/bin/emfor-check-live-test

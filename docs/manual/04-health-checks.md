@@ -136,7 +136,7 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 | Argument | Up when |
 | --- | --- |
 | `redis` | `PING` answers `PONG` (after `AUTH` when a password is set) |
-| `mysql` | The login succeeds and `SELECT 1` returns 1 (tested with MariaDB) |
+| `mysql` | The login succeeds and `SELECT 1` returns 1 (tested with MariaDB, and MySQL 8.0 and 8.4) |
 | `pgsql` | The login succeeds and `SELECT 1` returns 1 |
 | `ldap` | A simple bind succeeds |
 | `dns` | One query gets an expected response code (and records, with `expect_answer`) |

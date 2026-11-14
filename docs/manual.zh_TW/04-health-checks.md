@@ -110,7 +110,7 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 | 參數 | 何時為 up |
 | --- | --- |
 | `redis` | `PING` 回答 `PONG`（設定密碼時先 `AUTH`） |
-| `mysql` | 登入成功且 `SELECT 1` 回傳 1（以 MariaDB 測試） |
+| `mysql` | 登入成功且 `SELECT 1` 回傳 1（以 MariaDB 與 MySQL 8.0、8.4 測試） |
 | `pgsql` | 登入成功且 `SELECT 1` 回傳 1 |
 | `ldap` | simple bind 成功 |
 | `dns` | 一次查詢得到預期的 response code（設定 `expect_answer` 時還要有記錄） |
