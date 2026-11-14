@@ -7,7 +7,7 @@ the applications that use it. It explains how the pieces fit together and
 walks through each task; the documents under [docs/deploy/](../deploy/) and
 the client READMEs hold the full detail and are linked where they apply.
 
-The manual describes emfor 0.2.
+The manual describes emfor 0.4.
 
 | Chapter | What it covers |
 | --- | --- |
