@@ -140,9 +140,34 @@ daemon 把 log 寫到 stderr：systemd 下進 journal，FreeBSD rc.d script 下�
 
 daemon 至少每秒 commit 一次 store，每次狀態變化也會 commit。預設（`[store] sync = false`）commit 不等待磁碟，所以磁碟卡住時不會讓 heartbeat 延遲、使主機上所有應用程式都看到過期的 store。store 中沒有任何東西需要在主機當機後保留：daemon 啟動時會重寫每個服務。只有狀態歷史（`emfor status --history`）會跨重新啟動保留。
 
-斷電後 store 可能損毀。這時 daemon 會記錄警告、把它移到 `<store>.corrupt`，並以新的 store 啟動；執行中的應用程式會自行跟上新檔案。設定 `sync = true` 會讓每次 commit 都寫入磁碟，但要承擔上述的風險。
+斷電後 store 可能損毀。這時 daemon 會記錄警告、把它移到 `<store>.corrupt`，並以新的 store 啟動；執行中的應用程式會自行跟上新檔案。唯一遺失的是狀態歷史，也就是 `emfor status --history` 顯示的每個 backend 最近 20 筆狀態變化。每次狀態變化也都記在 daemon 的 log 裡（`changed from healthy to unhealthy` 等），要查當機前發生了什麼，請看 log。設定 `sync = true` 會讓每次 commit 都寫入磁碟，但要承擔上述的風險。
 
 commit 在自己的執行緒上執行，所以慢的磁碟不會拖慢 DNS 回答、metrics 或檢查。請留意 `emfor_store_used_bytes` 與 `map_size` 的比例：store 滿了之後 commit 會失敗，client 很快就會看到過期的 store。
+
+### 把 store 放在記憶體
+
+store 裡沒有任何東西需要在重開機後保留，所以可以放在 tmpfs 上。這樣大約每秒一次的 commit 都不會寫到磁碟，就算設定 `sync = true`，磁碟卡住也不會延遲 commit；斷電後也不會留下損壞的檔案，daemon 只會以新的 store 啟動。代價是狀態歷史：每次重開機都會清空，不只是當機時（只重啟 daemon 會保留）。
+
+把 tmpfs 直接掛在 `/var/lib/emfor`，這樣 `[store] path` 和 client 的預設值（`EMFOR_STORE`）都不用改。大小至少要等於 `[store] map_size`（預設 `64MiB`）；只有實際用到的頁面會佔記憶體，幾個服務只需要幾十 KiB。
+
+- systemd：在 `/etc/fstab` 加上
+
+  ```
+  tmpfs  /var/lib/emfor  tmpfs  size=64m,mode=0755,nosuid,nodev,noexec  0 0
+  ```
+
+  並用 `systemctl edit emfor` 在 `[Unit]` 下加上 `RequiresMountsFor=/var/lib/emfor`，讓 daemon 等掛好之後才啟動。`StateDirectory=emfor` 每次啟動時都會把目錄交給 `emfor` 使用者。
+- FreeBSD：在 `/etc/fstab` 加上
+
+  ```
+  tmpfs  /var/lib/emfor  tmpfs  rw,size=64m,mode=0755,uid=<emfor 的 uid>  0 0
+  ```
+
+  uid 填 `id -u emfor` 印出的數字，讓每次開機後目錄都屬於 `emfor`。
+
+不要把 store 放在 systemd 的 `RuntimeDirectory=`（`/run/emfor`）：daemon 每次停止時它都會刪掉整個目錄，連重啟 daemon 都會清空歷史，執行中的應用程式也會停在已刪除的檔案上。
+
+這已在 Debian 容器中、`/var/lib/emfor` 掛上 tmpfs 的情況下驗證過：一個服務的 store 佔 32 KiB，`emfor status` 讀得到，重啟 daemon 後歷史仍在。上面的 systemd 與 FreeBSD 設定尚未在實機上跑過。
 
 ## 誰能使用 store
 

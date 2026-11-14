@@ -216,13 +216,59 @@ state history (`emfor status --history`) is kept across restarts.
 
 After a power loss the store may be damaged. The daemon then logs a
 warning, moves it to `<store>.corrupt`, and starts with a new store;
-running applications follow the new file by themselves. Set `sync = true`
-to flush every commit, at the risk described above.
+running applications follow the new file by themselves. The only thing
+lost is the state history: the last 20 state changes of each backend
+that `emfor status --history` shows. Every state change is also in the
+daemon's log (`changed from healthy to unhealthy` and the like), so look
+there for what happened before the crash. Set `sync = true` to flush
+every commit, at the risk described above.
 
 Commits run on their own thread, so a slow disk does not delay DNS
 answers, metrics or checks. Watch `emfor_store_used_bytes` against
 `map_size`: when the store is full, commits fail and clients soon see a
 stale store.
+
+### Keeping the store in memory
+
+Since nothing in the store has to outlive a reboot, it can live on a
+tmpfs. Commits, about one a second, then never reach a disk, a stalled
+disk cannot delay them even with `sync = true`, and a power loss leaves
+no damaged file behind: the daemon simply starts with a new store. The
+cost is the state history, which is then lost at every reboot, not only
+after a crash (a restart of the daemon alone keeps it).
+
+Mount the tmpfs on `/var/lib/emfor` itself, so that neither `[store]
+path` nor the clients' default (`EMFOR_STORE`) changes. Make it at least
+as large as `[store] map_size` (`64MiB` by default); only the pages in
+use take memory, a few tens of KiB for a few services.
+
+- systemd: add to `/etc/fstab`
+
+  ```
+  tmpfs  /var/lib/emfor  tmpfs  size=64m,mode=0755,nosuid,nodev,noexec  0 0
+  ```
+
+  and, with `systemctl edit emfor`, `RequiresMountsFor=/var/lib/emfor`
+  under `[Unit]`, so the daemon starts only once it is mounted.
+  `StateDirectory=emfor` gives the directory to the `emfor` user at
+  every start.
+- FreeBSD: add to `/etc/fstab`
+
+  ```
+  tmpfs  /var/lib/emfor  tmpfs  rw,size=64m,mode=0755,uid=<uid of emfor>  0 0
+  ```
+
+  with the number `id -u emfor` prints, so the directory belongs to
+  `emfor` after every boot.
+
+Do not use systemd's `RuntimeDirectory=` (`/run/emfor`) for the store: it
+deletes the directory whenever the daemon stops, which loses the history
+at every restart and leaves running applications on a deleted file.
+
+This was checked in a Debian container with a tmpfs on `/var/lib/emfor`:
+the store takes 32 KiB for one service, `emfor status` reads it, and the
+history survives a restart of the daemon. The systemd and FreeBSD
+settings above have not been run on a host.
 
 ## Who can use the store
 
