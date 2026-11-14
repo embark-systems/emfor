@@ -206,6 +206,39 @@ fn option_checks() {
 }
 
 #[test]
+fn ca_file_is_parsed_again_only_when_it_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let ca = dir.path().join("ca.pem");
+    std::fs::write(&ca, pki("a.test").ca_pem).unwrap();
+    let first = roots_from_file(&ca).unwrap();
+    assert!(
+        Arc::ptr_eq(&first, &roots_from_file(&ca).unwrap()),
+        "an unchanged ca_file is not parsed again"
+    );
+    // Another CA, plus a comment so the size differs whatever the clock's
+    // resolution.
+    let other = format!("# rotated\n{}", pki("b.test").ca_pem);
+    std::fs::write(&ca, &other).unwrap();
+    let second = roots_from_file(&ca).unwrap();
+    assert!(!Arc::ptr_eq(&first, &second), "a rewritten ca_file is read");
+    assert_eq!(
+        trusted_certificates(&settings(Some(&ca), None, true)).unwrap(),
+        load_certificates(other.as_bytes())
+    );
+    // Replaced by rename, as certificate tools do.
+    let next = dir.path().join("next.pem");
+    std::fs::write(&next, pki("c.test").ca_pem).unwrap();
+    std::fs::rename(&next, &ca).unwrap();
+    assert!(!Arc::ptr_eq(&second, &roots_from_file(&ca).unwrap()));
+    // A removed file is an error again, not the remembered certificates.
+    std::fs::remove_file(&ca).unwrap();
+    assert!(matches!(
+        roots_from_file(&ca),
+        Err(TlsFailure { local: true, .. })
+    ));
+}
+
+#[test]
 fn local_errors() {
     assert!(is_local_io_error(&io::Error::from_raw_os_error(
         libc::EMFILE
@@ -213,6 +246,16 @@ fn local_errors() {
     assert!(!is_local_io_error(&io::Error::from_raw_os_error(
         libc::ECONNREFUSED
     )));
+    // Spec health-checking "TCP checker": no route, or this host's firewall,
+    // is `down`: the host's applications cannot reach the backend either.
+    for errno in [
+        libc::ENETUNREACH,
+        libc::EHOSTUNREACH,
+        libc::EPERM,
+        libc::EACCES,
+    ] {
+        assert!(!is_local_io_error(&io::Error::from_raw_os_error(errno)));
+    }
 }
 
 #[tokio::test]

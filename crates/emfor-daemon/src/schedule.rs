@@ -74,23 +74,31 @@ pub fn first_delay(interval: Duration, rng: &mut impl RngExt) -> Duration {
     fast_interval(interval).mul_f64(rng.random_range(0.0..1.0))
 }
 
-/// Wait after a check, given the state it left the backend in: the fast
-/// pace while the state is unknown and the check said something about the
-/// backend (`up` or `down`); otherwise `interval ± jitter`. An `error` is a
-/// local problem (a plugin not running yet), which checking faster would not
-/// fix.
-pub fn wait_after(
+/// Whether the wait after a check, given the state it left the backend in,
+/// is the fast one ([`fast_interval`]) rather than `interval ± jitter`: while
+/// the state is unknown and the check said something about the backend
+/// (`up` or `down`), for at most `rise + fall` waits in a row. An `error` is
+/// a local problem (a plugin not running yet), which checking faster would
+/// not fix. The cap stops results that never reach `rise` or `fall` (up,
+/// down, down, up, ... with rise 2 and fall 3) from keeping the fast pace
+/// for good; any sequence that does reach one gets there within `rise +
+/// fall` checks. `fast_waits` counts the fast waits and starts over once
+/// the state is known.
+pub fn take_fast_wait(
     state: HealthState,
     result: &CheckResult,
-    interval: Duration,
-    jitter: f64,
-    rng: &mut impl RngExt,
-) -> Duration {
-    if state == HealthState::Unknown && !matches!(result, CheckResult::Error(_)) {
-        fast_interval(interval)
-    } else {
-        next_wait(interval, jitter, rng)
+    s: &Settings,
+    fast_waits: &mut u32,
+) -> bool {
+    if state != HealthState::Unknown {
+        *fast_waits = 0;
+        return false;
     }
+    if matches!(result, CheckResult::Error(_)) || *fast_waits >= s.rise.saturating_add(s.fall) {
+        return false;
+    }
+    *fast_waits += 1;
+    true
 }
 
 /// Wait between the end of one check and the start of the next:
@@ -114,7 +122,8 @@ pub fn starts_fast_run(
 ) -> bool {
     state == HealthState::Healthy
         && !in_run
-        && last_run_end.is_none_or(|end| now.duration_since(end) > s.interval * s.fall)
+        && last_run_end
+            .is_none_or(|end| now.duration_since(end) > s.interval.saturating_mul(s.fall))
 }
 
 /// Every this many check times a daemon that is not an assigned checker of
@@ -180,15 +189,13 @@ fn combine(
     p: &PeerHooks,
     service: &Arc<str>,
     backend: &str,
+    digest: &str,
     own: CheckResult,
     interval: Duration,
 ) -> (CheckResult, bool, bool) {
-    // A service the peer task does not know yet has no digest: no kept
-    // result matches, so the own result stands.
-    let digest = p.targets.digest(service).unwrap_or_default();
     let c = p
         .quorum
-        .combine(service, backend, &digest, &own, Instant::now());
+        .combine(service, backend, digest, &own, Instant::now());
     let outcome = match &own {
         CheckResult::Up => Some(Outcome::Up),
         CheckResult::Down(r) => Some(Outcome::Down(r.clone())),
@@ -200,6 +207,7 @@ fn combine(
         // The peer task is gone only while the daemon stops.
         let _ = p.out.send(PeerOut::Result(BackendResult {
             service: service.clone(),
+            digest: digest.to_string(),
             backend: backend.to_string(),
             outcome,
             interval,
@@ -226,8 +234,13 @@ pub fn spawn_backend(
     peers: PeerLink,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let mut settings = settings;
+        // False once the settings sender is gone (the task is being stopped).
+        let mut settings_open = true;
         let mut rng = StdRng::from_rng(&mut rand::rng());
         let mut health = BackendHealth::new();
+        // Fast waits in a row while the state is unknown (see `take_fast_wait`).
+        let mut fast_waits: u32 = 0;
         let mut latency_us: Option<u64> = None;
         // Checks left in the current fast recheck run (0: no run).
         let mut fast_left: u32 = 0;
@@ -239,12 +252,19 @@ pub fn spawn_backend(
         let first = first_delay(settings.borrow().interval, &mut rng);
         tokio::time::sleep(first).await;
         loop {
-            let s = *settings.borrow();
+            let mut s = *settings.borrow_and_update();
             // A service with `peers = false` behaves as without `[peers]`.
             let hooks = peers.peers.as_ref().filter(|_| s.peers);
+            // The digest of the definition this round's check runs with,
+            // taken with `s`: a reload during the check must not label its
+            // result with the new one. A service the peer task does not
+            // know yet has none: no kept result matches, so the own
+            // result stands, and nothing is sent.
+            let digest = hooks
+                .and_then(|p| p.targets.digest(&service))
+                .unwrap_or_default();
             let step = match hooks {
                 Some(p) => {
-                    let digest = p.targets.digest(&service).unwrap_or_default();
                     let votes = p
                         .quorum
                         .votes(&service, &backend.id, &digest, Instant::now());
@@ -276,7 +296,7 @@ pub fn spawn_backend(
                     // One-time setup (an HTTP client) happens here, outside
                     // the timed part, so it does not inflate the first
                     // latency sample.
-                    checker.prepare(backend.addr);
+                    checker.prepare(backend.addr).await;
                     let started = Instant::now();
                     let own = run_check(checker.as_ref(), req).await;
                     let sample_us =
@@ -284,7 +304,7 @@ pub fn spawn_backend(
                     last_own_up = Some(matches!(own, CheckResult::Up));
                     decided_in_row = 0;
                     let (result, local_failure, applies) = match hooks {
-                        Some(p) => combine(p, &service, &backend.id, own, s.interval),
+                        Some(p) => combine(p, &service, &backend.id, &digest, own, s.interval),
                         None => (own, false, true),
                     };
                     (result, Some(sample_us), true, local_failure, applies)
@@ -373,23 +393,54 @@ pub fn spawn_backend(
                 // The peer task is gone only while the daemon stops.
                 let _ = p.out.send(PeerOut::Down(BackendDown {
                     service: service.clone(),
+                    digest: digest.clone(),
                     backend: backend.id.clone(),
                     reason: update.reason.clone().unwrap_or_default(),
                 }));
             }
-            if applies && updates.send(WriterMsg::Update(update)).is_err() {
+            // A check that does not apply still ran, and its result went to
+            // the other members: it is counted like any other check.
+            let msg = if applies {
+                WriterMsg::Update(update)
+            } else {
+                WriterMsg::Checked {
+                    service: service.clone(),
+                    generation,
+                    backend_id: backend.id.clone(),
+                    outcome: update.outcome,
+                }
+            };
+            if updates.send(msg).is_err() {
                 return; // writer gone: daemon is shutting down
             }
-            let wait = if fast_left > 0 {
-                fast_interval(s.interval)
-            } else {
-                wait_after(health.state, &result, s.interval, s.jitter, &mut rng)
+            let fast = fast_left > 0 || take_fast_wait(health.state, &result, &s, &mut fast_waits);
+            let wait = |s: &Settings, rng: &mut StdRng| {
+                if fast {
+                    fast_interval(s.interval)
+                } else {
+                    next_wait(s.interval, s.jitter, rng)
+                }
             };
-            let sleep = tokio::time::sleep(wait);
+            let ended = Instant::now();
+            let sleep = tokio::time::sleep_until(ended + wait(&s, &mut rng));
             tokio::pin!(sleep);
             loop {
                 tokio::select! {
                     _ = &mut sleep => break,
+                    // A reload that changes the timing applies to this wait
+                    // too: the next check is due the new wait after this one
+                    // ended (at once when that is past).
+                    changed = settings.changed(), if settings_open => {
+                        if changed.is_err() {
+                            settings_open = false;
+                            continue;
+                        }
+                        let new = *settings.borrow_and_update();
+                        if (new.interval, new.jitter) != (s.interval, s.jitter) {
+                            s = new;
+                            sleep.as_mut().reset(ended + wait(&s, &mut rng));
+                        }
+                    }
                     _ = peers.recheck.notified() => {
                         let Some(report) = peers.recheck.take() else { continue };
                         let s = *settings.borrow();
@@ -427,6 +478,25 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// Fast waits stop after `rise + fall` in a row while unknown, and the
+    /// count starts over once the state is known.
+    #[test]
+    fn fast_waits_are_capped_while_unknown() {
+        use HealthState::*;
+        let s = Settings::default(); // rise 2, fall 3
+        let down = CheckResult::Down("refused".into());
+        let mut n = 0;
+        let fast: Vec<bool> = (0..7)
+            .map(|_| take_fast_wait(Unknown, &down, &s, &mut n))
+            .collect();
+        assert_eq!(fast, [true, true, true, true, true, false, false]);
+        assert!(!take_fast_wait(Healthy, &CheckResult::Up, &s, &mut n));
+        assert!(
+            take_fast_wait(Unknown, &down, &s, &mut n),
+            "count started over"
+        );
+    }
+
     /// Spec "Check scheduling with jitter and no overlap", example table.
     #[test]
     fn wait_after_a_check() {
@@ -436,6 +506,18 @@ mod tests {
         let up = CheckResult::Up;
         let down = CheckResult::Down("refused".into());
         let error = CheckResult::Error("plugin p unavailable".into());
+        let wait_after = |state, result, interval, rng: &mut StdRng| {
+            let s = Settings {
+                interval,
+                jitter: 0.1,
+                ..Settings::default()
+            };
+            if take_fast_wait(state, result, &s, &mut 0) {
+                fast_interval(interval)
+            } else {
+                next_wait(interval, s.jitter, rng)
+            }
+        };
         for (interval, state, result, want) in [
             (ms(2000), Unknown, &up, Some(ms(200))),
             (ms(2000), Unknown, &down, Some(ms(200))),
@@ -445,7 +527,7 @@ mod tests {
             (ms(100), Unknown, &up, Some(ms(100))),
         ] {
             for _ in 0..100 {
-                let w = wait_after(state, result, interval, 0.1, &mut rng);
+                let w = wait_after(state, result, interval, &mut rng);
                 match want {
                     Some(fast) => assert_eq!(w, fast, "{state} {result:?}"),
                     None => assert!(
@@ -660,6 +742,97 @@ mod tests {
         assert_eq!(gap, Duration::from_millis(3001));
     }
 
+    /// Spec "Check scheduling with jitter and no overlap": a reload that
+    /// shortens `interval` applies to the wait already under way.
+    #[tokio::test(start_paused = true)]
+    async fn new_interval_cuts_the_current_wait_short() {
+        let chk = recording(Duration::from_millis(1), CheckResult::Up);
+        let s1 = Settings {
+            interval: Duration::from_secs(600),
+            jitter: 0.0,
+            ..Settings::default()
+        };
+        let (stx, srx) = watch::channel(s1);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let h = spawn_backend(
+            "a".into(),
+            backend(),
+            chk.clone(),
+            0,
+            srx,
+            tx,
+            PeerLink::default(),
+        );
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(chk.starts.lock().unwrap().len(), 2, "healthy, waiting 600s");
+        let reloaded = Instant::now();
+        stx.send(Settings {
+            interval: Duration::from_secs(2),
+            ..s1
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        h.abort();
+        let starts = chk.starts.lock().unwrap().clone();
+        assert_eq!(starts.len(), 4, "{starts:?}");
+        // The last check ended more than 2s before the reload: at once.
+        assert_eq!(starts[2], reloaded);
+        assert_eq!(starts[3] - starts[2], Duration::from_millis(2001));
+    }
+
+    /// Checker giving up, down, down, up, down, down and so on: with rise 2
+    /// and fall 3 neither count is ever reached.
+    #[derive(Debug, Default)]
+    struct Alternating {
+        n: AtomicUsize,
+    }
+
+    impl Checker for Alternating {
+        fn check(&self, _: CheckRequest) -> BoxFuture<'_, CheckResult> {
+            Box::pin(async move {
+                if self.n.fetch_add(1, Ordering::SeqCst).is_multiple_of(3) {
+                    CheckResult::Up
+                } else {
+                    CheckResult::Down("refused".into())
+                }
+            })
+        }
+    }
+
+    /// Spec "Check scheduling with jitter and no overlap": the fast pace
+    /// while unknown lasts `rise + fall` waits at most.
+    #[tokio::test(start_paused = true)]
+    async fn fast_checks_while_unknown_are_capped() {
+        let chk = Arc::new(Alternating::default());
+        let settings = Settings {
+            interval: Duration::from_secs(2),
+            jitter: 0.0,
+            ..Settings::default()
+        };
+        let (_stx, srx) = watch::channel(settings);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let h = spawn_backend(
+            "a".into(),
+            backend(),
+            chk.clone(),
+            0,
+            srx,
+            tx,
+            PeerLink::default(),
+        );
+        // First check at d < 200ms, five checks 200ms apart (rise + fall =
+        // 5 fast waits), the sixth at d + 1s, then one every 2s: the 13th
+        // at d + 15s.
+        tokio::time::sleep(Duration::from_millis(15_500)).await;
+        h.abort();
+        let mut states = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            states.push(update(u).state);
+        }
+        assert!(states.iter().all(|s| *s == HealthState::Unknown));
+        assert_eq!(chk.n.load(Ordering::SeqCst), 13);
+    }
+
     /// Spec peer-group "whether a received down message starts a fast
     /// recheck run" (interval 2s, fall 3: cooldown 6s).
     #[test]
@@ -858,6 +1031,49 @@ mod tests {
         chk.error.store(true, Ordering::SeqCst);
         let (_updates, out) = with_votes(7, &[], chk).await;
         assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// Checker whose check is interrupted by a reload that gives service
+    /// `a` another digest (as a changed `timeout` does).
+    #[derive(Debug)]
+    struct ReloadDuringCheck(crate::peers::Targets);
+
+    impl Checker for ReloadDuringCheck {
+        fn check(&self, _: CheckRequest) -> BoxFuture<'_, CheckResult> {
+            Box::pin(async move {
+                self.0.replace(std::collections::HashMap::from([(
+                    "a".to_string(),
+                    crate::peers::ServiceTargets {
+                        digest: "e".repeat(32),
+                        backends: std::collections::HashMap::new(),
+                    },
+                )]));
+                CheckResult::Up
+            })
+        }
+    }
+
+    /// A result carries the digest of the definition its check ran with,
+    /// not the one a reload during the check brought.
+    #[tokio::test(start_paused = true)]
+    async fn result_carries_the_digest_its_check_ran_with() {
+        let (otx, mut orx) = mpsc::unbounded_channel();
+        let h = hooks(otx, &member(7).to_string());
+        h.quorum.set_live((5..=9).map(member));
+        let chk = Arc::new(ReloadDuringCheck(h.targets.clone()));
+        let (_stx, srx) = watch::channel(Settings::default());
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let link = PeerLink {
+            recheck: Arc::new(Recheck::default()),
+            peers: Some(h),
+        };
+        let task = spawn_backend("a".into(), backend(), chk, 0, srx, tx, link);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        task.abort();
+        let Ok(PeerOut::Result(r)) = orx.try_recv() else {
+            panic!("an assigned checker sends its result");
+        };
+        assert_eq!(r.digest, DIGEST);
     }
 
     fn votes(has_checkers: bool, assigned: bool, kept: &[Outcome]) -> Votes {
@@ -1373,11 +1589,22 @@ mod tests {
         record_only_once(&h, [refused(), refused(), Outcome::Up]);
         let deadline = Instant::now() + Duration::from_secs(6);
         let mut seen = Vec::new();
+        let mut not_applied = Vec::new();
         while let Ok(Some(m)) = tokio::time::timeout_at(deadline, rx.recv()).await {
-            seen.push(update(m));
+            match m {
+                WriterMsg::Checked { outcome, .. } => not_applied.push(outcome),
+                m => seen.push(update(m)),
+            }
         }
         let own_checks = chk.starts.lock().unwrap().len();
         task.abort();
+        // The own checks that only repeated counted votes changed nothing,
+        // but they ran: each is still counted.
+        assert!(!not_applied.is_empty(), "{seen:?}");
+        assert!(
+            not_applied.iter().all(|o| *o == CheckOutcome::Up),
+            "{not_applied:?}"
+        );
         assert!(
             seen.iter().all(|u| u.state == HealthState::Healthy),
             "{seen:?}"

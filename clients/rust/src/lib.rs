@@ -27,7 +27,8 @@ mod store;
 #[cfg(feature = "capi")]
 pub mod capi;
 
-use std::sync::{Arc, PoisonError, RwLock};
+use std::ptr;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use client::Client;
 
@@ -88,34 +89,47 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// The process's client and the pid that created it.
-/// Read-locked by every lookup, so lookups on many threads do not queue.
-static GLOBAL: RwLock<Option<(u32, Arc<Client>)>> = RwLock::new(None);
+/// A process's client and the pid that created it.
+struct Global {
+    pid: u32,
+    client: Client,
+}
+
+/// The process's client: null before the first lookup, and the parent's
+/// after a fork until the child's first lookup. Not a lock: a child forked
+/// while another thread of the parent held it could never take it. A value
+/// stored here is never freed, so a reference to it stays valid: a client
+/// inherited across fork must not be closed (LMDB forbids it), and one
+/// replaced by `testing::use_store` may still be in use.
+static GLOBAL: AtomicPtr<Global> = AtomicPtr::new(ptr::null_mut());
 
 /// The client for this process, created on first use and again after a fork.
-fn global() -> Arc<Client> {
+fn global() -> &'static Client {
     let pid = std::process::id();
-    if let Some((p, c)) = GLOBAL
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .as_ref()
-        && *p == pid
-    {
-        return c.clone();
+    loop {
+        let current = GLOBAL.load(Ordering::Acquire);
+        // SAFETY: a non-null value comes from `Box::into_raw` below (or in
+        // `testing::use_store`) and is never freed.
+        if let Some(g) = unsafe { current.as_ref() }
+            && g.pid == pid
+        {
+            return &g.client;
+        }
+        let new = Box::into_raw(Box::new(Global {
+            pid,
+            client: Client::from_env(),
+        }));
+        match GLOBAL.compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire) {
+            // The value replaced, if any, is the parent's: left alone.
+            // SAFETY: just stored, never freed.
+            Ok(_) => return unsafe { &(*new).client },
+            Err(_) => {
+                // Another thread stored its client first: use that one.
+                // SAFETY: `new` was never shared.
+                drop(unsafe { Box::from_raw(new) });
+            }
+        }
     }
-    let mut g = GLOBAL.write().unwrap_or_else(PoisonError::into_inner);
-    if let Some((p, c)) = g.as_ref()
-        && *p == pid
-    {
-        return c.clone(); // another thread created it meanwhile
-    }
-    if let Some((_, inherited)) = g.take() {
-        // Inherited across fork: LMDB forbids using or closing it here.
-        std::mem::forget(inherited);
-    }
-    let c = Arc::new(Client::from_env());
-    *g = Some((pid, c.clone()));
-    c
 }
 
 /// Look up one backend of service `name` and return its address, `ip:port`
@@ -161,16 +175,18 @@ pub mod testing {
 
     /// Make the process's client (used by [`crate::lookup`] and the C API)
     /// read `path` with `max_staleness` (parsed like `EMFOR_MAX_STALENESS`),
-    /// replacing the one from the environment.
+    /// replacing the one from the environment. The replaced client is never
+    /// freed (a lookup may still use it).
     pub fn use_store(path: impl Into<PathBuf>, max_staleness: &str) {
-        let c = crate::client::Client::new(
+        let client = crate::client::Client::new(
             path.into(),
             crate::config::parse_max_staleness(max_staleness),
         );
-        let mut g = crate::GLOBAL
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *g = Some((std::process::id(), std::sync::Arc::new(c)));
+        let g = Box::into_raw(Box::new(crate::Global {
+            pid: std::process::id(),
+            client,
+        }));
+        crate::GLOBAL.store(g, std::sync::atomic::Ordering::Release);
     }
 
     /// Rendezvous hash version 1 of `key` and backend `id`.

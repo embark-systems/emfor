@@ -32,6 +32,7 @@ $(BUILD)/example: example.c $(SHLIB) FORCE | $(BUILD)
 test: all
 	$(EMFOR_FIXTURE) $(abspath tests/fixture.json) 0 $(STORE)
 	sh tests/check_symbols.sh $(SHLIB)
+	sh tests/check_header.sh $(PREFIX)/include/emfor/emfor.h
 	for t in $(TESTS); do $(RUN) $(BUILD)/$$t || exit 1; done
 	$(RUN) $(BUILD)/example api.svc.emfor user-42
 	$(EMFOR_CONFORMANCE) -- $(BUILD)/conformance_lookup

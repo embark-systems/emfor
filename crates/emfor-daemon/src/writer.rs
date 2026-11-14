@@ -2,7 +2,8 @@
 //!
 //! All store writes go through one task fed by one channel, so layout changes
 //! (start, reload) and check results are applied in the order they were sent.
-//! A health state change is committed immediately; `checked_at` / `reason` /
+//! A health state change is committed immediately, together with every
+//! other update already waiting in the channel; `checked_at` / `reason` /
 //! `latency_us` / `pool` changes and the heartbeat are committed once per
 //! second. For `fastest` services the writer recomputes `pool` on every
 //! update and layout change, so the store and the live state agree. A failed commit is
@@ -31,7 +32,7 @@ use crate::config::Backend;
 use crate::live::BackendCounters;
 use crate::live::{LiveService, LiveState};
 use crate::schedule::{BackendUpdate, unix_ms};
-use crate::state::fast_pool;
+use crate::state::{Transition, fast_pool};
 use crate::store::{Store, delete_prefix};
 
 /// One store operation.
@@ -104,6 +105,15 @@ impl Sink for Arc<Store> {
     }
 }
 
+/// Most queued updates applied into one commit after a state change, so a
+/// burst of transitions (a network split) costs one commit and not one
+/// each, while the writer still looks at other messages now and then.
+const MAX_BATCH: usize = 1024;
+
+/// Reason of the history entry when a backend's check task was started
+/// again and the backend went back to `unknown`.
+pub const RESTART_REASON: &str = "check task restarted";
+
 /// Heartbeats between checks for reader slots left by dead processes:
 /// about once a minute at the 1-second heartbeat. A failed commit checks
 /// at once, since a full store is what those slots lead to.
@@ -138,8 +148,25 @@ pub enum WriterMsg {
         site: Option<String>,
         services: Vec<ServiceLayout>,
     },
+    /// A check that ran but does not apply (see
+    /// [`crate::quorum::Combined::applies`]): only its outcome is counted,
+    /// as `emfor_backend_checks_total`; the record does not change.
+    Checked {
+        service: Arc<str>,
+        generation: u64,
+        backend_id: String,
+        outcome: crate::schedule::CheckOutcome,
+    },
     /// New value of `meta/peers`, written with the next commit.
     PeerState(String),
+    /// The check task of a backend stopped and was started again from
+    /// `unknown`; the store follows, with a transition when the backend's
+    /// state was another one.
+    Restarted {
+        service: Arc<str>,
+        generation: u64,
+        backend_id: String,
+    },
     /// Flush, write `meta/heartbeat = "0"`, and stop.
     Shutdown(oneshot::Sender<()>),
     /// Answered once every earlier message is handled (and committed, when
@@ -256,21 +283,52 @@ fn spawn_inner<S: Sink>(
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             tokio::select! {
-                msg = rx.recv() => match msg {
-                    Some(WriterMsg::Update(u)) => w.update(u).await,
-                    Some(WriterMsg::SetLayout { fresh_start, site, services }) => w.set_layout(fresh_start, site, services).await,
-                    Some(WriterMsg::PeerState(json)) => w.peer_state(json),
-                    Some(WriterMsg::Shutdown(done)) => {
-                        w.shutdown().await;
-                        let _ = done.send(());
-                        return;
+                msg = rx.recv() => {
+                    let Some(msg) = msg else {
+                        return; // every sender dropped
+                    };
+                    let mut next = Some(msg);
+                    while let Some(msg) = next.take() {
+                        match msg {
+                            WriterMsg::Update(u) => {
+                                // Take every update already queued before
+                                // committing; any other message is handled
+                                // after that commit, in order.
+                                let mut commit = w.update(u);
+                                for _ in 1..MAX_BATCH {
+                                    match rx.try_recv() {
+                                        Ok(WriterMsg::Update(u)) => commit |= w.update(u),
+                                        Ok(other) => {
+                                            next = Some(other);
+                                            break;
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                                if commit {
+                                    w.flush(Vec::new()).await;
+                                }
+                            }
+                            WriterMsg::Restarted { service, generation, backend_id } => {
+                                w.restarted(&service, generation, &backend_id).await;
+                            }
+                            WriterMsg::Checked { service, generation, backend_id, outcome } => {
+                                w.checked(&service, generation, &backend_id, outcome);
+                            }
+                            WriterMsg::SetLayout { fresh_start, site, services } => w.set_layout(fresh_start, site, services).await,
+                            WriterMsg::PeerState(json) => w.peer_state(json),
+                            WriterMsg::Shutdown(done) => {
+                                w.shutdown().await;
+                                let _ = done.send(());
+                                return;
+                            }
+                            #[cfg(test)]
+                            WriterMsg::Barrier(done) => {
+                                let _ = done.send(());
+                            }
+                        }
                     }
-                    #[cfg(test)]
-                    Some(WriterMsg::Barrier(done)) => {
-                        let _ = done.send(());
-                    }
-                    None => return,
-                },
+                }
                 _ = ticker.tick() => w.heartbeat().await,
             }
         }
@@ -278,16 +336,19 @@ fn spawn_inner<S: Sink>(
 }
 
 impl<S: Sink> Writer<S> {
-    async fn update(&mut self, u: BackendUpdate) {
+    /// Apply one check result to the records and the live state. Returns
+    /// whether it changed a health state, which is committed at once.
+    fn update(&mut self, u: BackendUpdate) -> bool {
         if self.generations.get(&u.service) != Some(&u.generation) {
-            return; // from a task replaced by a reload
+            return false; // from a task replaced by a reload
         }
         let Some(rec) = self.records.get_mut(&u.service) else {
-            return;
+            return false;
         };
-        let Some(b) = rec.backends.iter_mut().find(|b| b.id == u.backend_id) else {
-            return;
+        let Some(index) = rec.backends.iter().position(|b| b.id == u.backend_id) else {
+            return false;
         };
+        let b = &mut rec.backends[index];
         b.state = u.state;
         b.checked_at = Some(u.checked_at);
         b.reason = u.reason;
@@ -304,22 +365,80 @@ impl<S: Sink> Writer<S> {
         rec.refresh_all_down();
         refresh_pool(rec);
         self.live
-            .update_backend(rec, &u.backend_id, u.outcome, u.transition);
+            .update_backend(rec, index, Some(u.outcome), u.transition);
         self.dirty.insert(u.service.clone());
-        if let Some(t) = u.transition {
-            let entry = HistoryEntry {
-                at: u.checked_at,
-                from: t.from,
-                to: t.to,
-                reason,
-            };
-            self.histories
-                .entry(u.service.clone())
-                .or_default()
-                .push(&u.backend_id, entry);
-            self.hist_dirty.insert(u.service.clone());
-            self.flush(Vec::new()).await;
+        let Some(t) = u.transition else {
+            return false;
+        };
+        let entry = HistoryEntry {
+            at: u.checked_at,
+            from: t.from,
+            to: t.to,
+            reason,
+        };
+        self.histories
+            .entry(u.service.clone())
+            .or_default()
+            .push(&u.backend_id, entry);
+        self.hist_dirty.insert(u.service.clone());
+        true
+    }
+
+    /// Count the outcome of a check that does not apply.
+    fn checked(
+        &self,
+        service: &Arc<str>,
+        generation: u64,
+        backend_id: &str,
+        outcome: crate::schedule::CheckOutcome,
+    ) {
+        if self.generations.get(service) == Some(&generation) {
+            self.live.count_check(service, backend_id, outcome);
         }
+    }
+
+    /// A backend's check task was started again: the new task starts from
+    /// `unknown` with no latency, so the record does too, and a change of
+    /// state is a transition like any other (history, counter, commit).
+    async fn restarted(&mut self, service: &Arc<str>, generation: u64, backend_id: &str) {
+        if self.generations.get(service) != Some(&generation) {
+            return;
+        }
+        let Some(rec) = self.records.get_mut(service) else {
+            return;
+        };
+        let Some(index) = rec.backends.iter().position(|b| b.id == backend_id) else {
+            return;
+        };
+        let b = &mut rec.backends[index];
+        let from = b.state;
+        if from == HealthState::Unknown {
+            return;
+        }
+        let at = unix_ms();
+        b.state = HealthState::Unknown;
+        b.reason = Some(RESTART_REASON.into());
+        b.latency_us = None;
+        b.recovered_at = None;
+        rec.refresh_all_down();
+        refresh_pool(rec);
+        let transition = Transition {
+            from,
+            to: HealthState::Unknown,
+        };
+        self.live.update_backend(rec, index, None, Some(transition));
+        self.dirty.insert(service.clone());
+        self.histories.entry(service.clone()).or_default().push(
+            backend_id,
+            HistoryEntry {
+                at,
+                from,
+                to: HealthState::Unknown,
+                reason: Some(RESTART_REASON.into()),
+            },
+        );
+        self.hist_dirty.insert(service.clone());
+        self.flush(Vec::new()).await;
     }
 
     /// Queue the new `meta/peers` value and remember it, so a later fresh
@@ -585,7 +704,6 @@ fn fresh_backend(b: &Backend) -> BackendRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::Transition;
     use crate::store::tests::cfg;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1322,6 +1440,75 @@ mod tests {
         );
         let h = history(&store, "api.svc.emfor").unwrap();
         assert_eq!(ats(&h, "10.0.0.12:8080"), [1762905600123]);
+    }
+
+    /// A record left with bytes that are not UTF-8 does not stop the start
+    /// transaction: it is deleted with every other `svc/*` key.
+    #[tokio::test]
+    async fn fresh_start_deletes_records_that_are_not_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        crate::store::tests::put_raw(&store, b"svc/old.svc.emfor", &[0xff, 0xfe]);
+        crate::store::tests::put_raw(&store, b"svc/\xff", b"{}");
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+        })
+        .unwrap();
+        settled(&tx).await;
+        assert!(store.get(KEY_HEARTBEAT).unwrap().is_some());
+        let keys: Vec<String> = store.dump().unwrap().into_keys().collect();
+        assert!(keys.contains(&"svc/a".to_owned()), "{keys:?}");
+        assert!(!keys.iter().any(|k| k.starts_with("svc/old")), "{keys:?}");
+    }
+
+    /// Transitions already queued when the writer takes the first one are
+    /// committed together, with the same result as one commit each.
+    #[tokio::test]
+    async fn queued_transitions_share_one_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let commits = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Recording {
+            inner: store.clone(),
+            commits: commits.clone(),
+        };
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_with_tick(sink, rx, Duration::from_secs(3600));
+        let ids: Vec<String> = (1..=50).map(|i| format!("10.0.0.{i}:80")).collect();
+        let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![layout("a", &id_refs, 0, true)],
+        })
+        .unwrap();
+        settled(&tx).await;
+        let before = commits.lock().unwrap().len();
+        let (u, h, d) = (
+            HealthState::Unknown,
+            HealthState::Healthy,
+            HealthState::Unhealthy,
+        );
+        for (i, id) in ids.iter().enumerate() {
+            tx.send(trans("a", id, u, h, 10 + i as u64, None)).unwrap();
+        }
+        tx.send(trans("a", &ids[0], h, d, 100, Some("refused")))
+            .unwrap();
+        settled(&tx).await;
+        let made = commits.lock().unwrap().len() - before;
+        assert_eq!(made, 1, "one commit for the whole burst");
+        let rec = record(&store, "a");
+        assert_eq!(rec.backends[0].state, d);
+        assert!(rec.backends[1..].iter().all(|b| b.state == h));
+        let hist = history(&store, "a").unwrap();
+        assert_eq!(ats(&hist, &ids[0]), [10, 100]);
+        for (i, id) in ids.iter().enumerate().skip(1) {
+            assert_eq!(ats(&hist, id), [10 + i as u64]);
+        }
     }
 
     #[tokio::test]

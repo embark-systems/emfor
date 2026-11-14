@@ -8,7 +8,7 @@ Defines the DNS server inside the emfor daemon. It answers A and AAAA queries fo
 
 ### Requirement: DNS server enabled by the dns table
 
-The daemon SHALL run the DNS server only when the config has a `[dns]` table. It SHALL listen on UDP and TCP on every address in `[dns] listen` (default `["127.0.0.1:5300"]`). If any address cannot be bound at startup, the daemon SHALL exit with status 1 and an error naming that address.
+The daemon SHALL run the DNS server only when the config has a `[dns]` table. It SHALL listen on UDP and TCP on every address in `[dns] listen` (default `["127.0.0.1:5300"]`). If any address cannot be bound at startup, the daemon SHALL exit with status 1 and an error naming that address. Over TCP the server SHALL serve at most 128 connections at once over all listen addresses and SHALL close any further connection right after accepting it; it SHALL close a connection on which no complete query arrives for 5 seconds. When a UDP or TCP listener stops while the daemon runs, the daemon SHALL log an error naming the address and exit with status 70 after the usual shutdown.
 
 #### Scenario: No dns table
 
@@ -24,6 +24,11 @@ The daemon SHALL run the DNS server only when the config has a `[dns]` table. It
 
 - **WHEN** another process already listens on UDP 127.0.0.1:5300 and the daemon starts with default `[dns]` settings
 - **THEN** the daemon exits with status 1 and its error message contains `127.0.0.1:5300`
+
+#### Scenario: TCP connection limit
+
+- **WHEN** 128 TCP connections to the DNS server are open and a client opens one more
+- **THEN** the server closes the new connection without an answer, and queries on the 128 open connections are still answered
 
 
 <!-- @trace
@@ -78,7 +83,7 @@ code:
 ---
 ### Requirement: Answers for names that are not services
 
-The server SHALL return REFUSED for any name that is neither the zone nor under it. For the zone apex it SHALL return the zone SOA for an SOA query and NOERROR with no answer and the SOA for other types. A name of the form `_<label>._tcp.<service name>`, where `<label>` is one label that starts with `_` and has at least one more character, is an SRV owner name: an SRV query on it SHALL be answered as defined by the requirement "SRV answers", and any other type SHALL return NOERROR with no answer and the SOA. A name `_tcp.<service name>` SHALL return NOERROR with no answer and the SOA for every type. A target name as defined by the requirement "SRV target names" SHALL be answered as defined there. For a name under the zone that is a proper ancestor of a configured service name, the server SHALL return NOERROR with no answer and the SOA. For any other name under the zone it SHALL return NXDOMAIN with the AA flag and the SOA in the authority section. A configured service name SHALL be answered as a service even when it also has the form of an SRV owner name or a target name. Name matching SHALL be case-insensitive and SHALL ignore a trailing dot.
+The server SHALL return REFUSED for any name that is neither the zone nor under it. For the zone apex it SHALL return the zone SOA for an SOA query and NOERROR with no answer and the SOA for other types. A name of the form `_<label>._tcp.<service name>`, where `<label>` is one label that starts with `_` and has at least one more character, is an SRV owner name: an SRV query on it SHALL be answered as defined by the requirement "SRV answers", and any other type SHALL return NOERROR with no answer and the SOA. A name `_tcp.<service name>` SHALL return NOERROR with no answer and the SOA for every type. A target name as defined by the requirement "SRV target names" SHALL be answered as defined there. For a name under the zone that is a proper ancestor of a configured service name, the server SHALL return NOERROR with no answer and the SOA. For any other name under the zone it SHALL return NXDOMAIN with the AA flag and the SOA in the authority section. A configured service name SHALL be answered as a service even when it also has the form of an SRV owner name or a target name. Name matching SHALL be case-insensitive, SHALL ignore a trailing dot, and SHALL compare whole labels: a name whose labels do not end with the zone's labels is outside the zone even when its text form ends with the zone, and a name under the zone with a label that contains a `.` byte SHALL return NXDOMAIN with the AA flag and the SOA.
 
 #### Scenario: Unknown service
 
@@ -95,6 +100,8 @@ The server SHALL return REFUSED for any name that is neither the zone nor under 
 | `b.svc.emfor` | A | NOERROR, no answer, SOA |
 | `c.svc.emfor` | A | NXDOMAIN, SOA |
 | `A.B.SVC.EMFOR.` | A | answered as `a.b.svc.emfor` |
+| `x\.svc.emfor` (labels `x.svc`, `emfor`) | A | REFUSED |
+| `a\.b.svc.emfor` (labels `a.b`, `svc`, `emfor`) | A | NXDOMAIN, SOA |
 
 #### Scenario: SRV-related names
 
@@ -146,12 +153,22 @@ code:
 ---
 ### Requirement: Malformed and unsupported requests
 
-The server SHALL return FORMERR for a query whose question count is not 1 and NOTIMP for any opcode other than QUERY.
+The server SHALL return BADVERS (with an EDNS record of version 0) for a request whose EDNS version is above 0, FORMERR for a query whose question count is not 1, NOTIMP for any opcode other than QUERY, and REFUSED for a question whose class is not IN, since the zone exists in class IN only. Over TCP, as over UDP, a request that cannot be decoded SHALL get FORMERR.
 
 #### Scenario: Unsupported opcode
 
 - **WHEN** a client sends an UPDATE message for `svc.emfor`
 - **THEN** the reply is NOTIMP
+
+#### Scenario: Other class
+
+- **WHEN** a client queries `api.svc.emfor` type A in class CH
+- **THEN** the reply is REFUSED with no answer
+
+#### Scenario: EDNS version 1
+
+- **WHEN** a client queries `api.svc.emfor` type A with EDNS version 1
+- **THEN** the reply has RCODE BADVERS, no answer, and an EDNS record of version 0
 
 
 <!-- @trace
@@ -354,7 +371,7 @@ code:
 ---
 ### Requirement: SRV responses fit the transport
 
-Over UDP the server SHALL keep every response within a size limit equal to the request's EDNS UDP payload size clamped to the range 512 to 1232 bytes, or 512 bytes when the request has no EDNS; over TCP the limit SHALL be 65535 bytes. When the request has EDNS, the response's EDNS UDP payload size SHALL equal that clamped limit. When an SRV response including its additional records exceeds the limit, the server SHALL omit every additional A and AAAA record and SHALL NOT set the TC flag for that reason. When the SRV records alone exceed the limit, the server SHALL send as many SRV records as fit, without additional records, and SHALL set the TC flag.
+Over UDP the server SHALL keep every response within a size limit equal to the request's EDNS UDP payload size clamped to the range 512 to 1232 bytes, or 512 bytes when the request has no EDNS; over TCP the limit SHALL be 65535 bytes. When the request has EDNS, the response's EDNS UDP payload size SHALL equal that clamped limit. When an SRV response including its additional records exceeds the limit, the server SHALL omit every additional A and AAAA record and SHALL NOT set the TC flag for that reason. When the SRV records alone exceed the limit, the server SHALL send as many SRV records as fit, without additional records, and SHALL set the TC flag. The same limit SHALL apply to every other response: when a single answer record, or the question with the SOA in the authority section, exceeds it (possible for names near 255 bytes), the server SHALL leave that record out, keep the EDNS record, and set the TC flag.
 
 #### Scenario: Glue dropped without truncation
 

@@ -193,7 +193,7 @@ tests:
 ---
 ### Requirement: Redis check
 
-The `redis` plugin SHALL connect to the backend, send `AUTH <user> <password>` when `user` is set or `AUTH <password>` when only `password_file` is set, then send `PING`. The result SHALL be `up` when `PING` returns `PONG` and, if `role` is set, the first element of the `ROLE` reply matches it, where `master` matches `master` and `replica` matches `slave`. With `role = "replica"`, the fourth element of the `ROLE` reply (the link state) SHALL be `connected`; any other state SHALL be `down` with reason `replication: link to master is <state>`. With `max_lag` set, the plugin SHALL also send `INFO replication` and the result SHALL be `down` with reason `replication: <N>s behind, max <M>s` when `master_last_io_seconds_ago` is greater than `max_lag`. A failed `AUTH` SHALL be `down` with a reason starting `auth: `.
+The `redis` plugin SHALL connect to the backend, send `AUTH <user> <password>` when `user` is set or `AUTH <password>` when only `password_file` is set, then send `PING`. The result SHALL be `up` when `PING` returns `PONG` and, if `role` is set, the first element of the `ROLE` reply matches it, where `master` matches `master` and `replica` matches `slave`. With `role = "replica"`, the fourth element of the `ROLE` reply (the link state) SHALL be `connected`; any other state SHALL be `down` with reason `replication: link to master is <state>`. With `max_lag` set, the plugin SHALL also send `INFO replication` and the result SHALL be `down` with reason `replication: <N>s behind, max <M>s` when `master_last_io_seconds_ago` is greater than `max_lag`. A failed `AUTH` SHALL be `down` with a reason starting `auth: `. A reply longer than 2 MiB (2097152 bytes) SHALL be `down` with reason `<step>: invalid reply: reply too long`, where `<step>` is `auth` for `AUTH` and `query` otherwise.
 
 #### Scenario: Healthy redis
 
@@ -262,7 +262,7 @@ tests:
 ---
 ### Requirement: MySQL check
 
-The `mysql` plugin SHALL log in as `user` with the password from `password_file` (or no password when it is not set) and run `SELECT 1`. When `role = "primary"` it SHALL also run `SELECT @@global.read_only` and the result SHALL be `down` with reason `role is read-only, want primary` when the value is not 0. When `role = "replica"` it SHALL run `SHOW REPLICA STATUS`, and `SHOW SLAVE STATUS` instead only when the server rejects the first with error 1064. No row SHALL be `down` with reason `role is not a replica, want replica`. The IO thread (`Replica_IO_Running` or `Slave_IO_Running`) not being `Yes` SHALL be `down` with reason `replication: IO thread is <value>`; otherwise the SQL thread (`Replica_SQL_Running` or `Slave_SQL_Running`) not being `Yes` SHALL be `down` with reason `replication: SQL thread is <value>`. Each of these reasons SHALL be followed by `: ` and `Last_IO_Error` or `Last_SQL_Error` respectively when that column is not empty. With `max_lag` set, `Seconds_Behind_Source` or `Seconds_Behind_Master` being NULL SHALL be `down` with reason `replication: lag unknown`, and being greater than `max_lag` SHALL be `down` with reason `replication: <N>s behind, max <M>s`. A rejected login SHALL be `down` with a reason starting `auth: `.
+The `mysql` plugin SHALL log in as `user` with the password from `password_file` (or no password when it is not set) and run `SELECT 1`. When `role = "primary"` it SHALL also run `SELECT @@global.read_only` and the result SHALL be `down` with reason `role is read-only, want primary` when the value is not 0. An answer to either query with no row SHALL be `down` with reason `query: <query> answered no row`, and one that is NULL or not an integer SHALL be `down` with reason `query: <query> answered <value>, want an integer` (`<query>` is `SELECT 1` or `@@global.read_only`, `<value>` the value as SQL, such as `NULL`). When `role = "replica"` it SHALL run `SHOW REPLICA STATUS`, and `SHOW SLAVE STATUS` instead only when the server rejects the first with error 1064. No row SHALL be `down` with reason `role is not a replica, want replica`. The IO thread (`Replica_IO_Running` or `Slave_IO_Running`) not being `Yes` SHALL be `down` with reason `replication: IO thread is <value>`; otherwise the SQL thread (`Replica_SQL_Running` or `Slave_SQL_Running`) not being `Yes` SHALL be `down` with reason `replication: SQL thread is <value>`. Each of these reasons SHALL be followed by `: ` and `Last_IO_Error` or `Last_SQL_Error` respectively when that column is not empty. With `max_lag` set, `Seconds_Behind_Source` or `Seconds_Behind_Master` being NULL SHALL be `down` with reason `replication: lag unknown`, and being greater than `max_lag` SHALL be `down` with reason `replication: <N>s behind, max <M>s`. A rejected login SHALL be `down` with a reason starting `auth: `. With `tls_verify = true` the plugin SHALL skip CA certificates that cannot be used as trust anchors; when none is left the result SHALL be `error` with reason `ca_file: no usable certificate`, or `tls: no usable system CA certificates; set ca_file` when `ca_file` is not set. When a check is cut off by its timeout, the plugin SHALL close the connection within 1 second without reading the rest of the server's answer.
 
 #### Scenario: Primary MySQL
 
@@ -273,6 +273,11 @@ The `mysql` plugin SHALL log in as `user` with the password from `password_file`
 
 - **WHEN** `role = "primary"` and the backend returns 1 for `@@global.read_only`
 - **THEN** the check result is `down` with reason `role is read-only, want primary`
+
+#### Scenario: NULL answer
+
+- **WHEN** the backend answers NULL to `SELECT 1`
+- **THEN** the check result is `down` with reason `query: SELECT 1 answered NULL, want an integer`
 
 #### Scenario: Replicating replica
 

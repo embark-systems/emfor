@@ -29,9 +29,10 @@ password_file = "/etc/emfor/redis.pass"
 - **Format:** one JSON object per line, UTF-8, ending in `\n`.
 - **Direction:** emfor writes requests to the plugin's **stdin**. The plugin writes answers to its **stdout**.
 - **stdout carries protocol lines only.** Flush after every line.
-- **stderr is free-form.** emfor logs each line at `info` as `plugin <name>: <line>`.
+- **stderr is free-form.** emfor logs each line at `info` as `plugin <name>: <line>`, up to 100 lines at once and 10 lines a second after that; lines over the limit are dropped and counted in one `warn` line `plugin <name>: suppressed <n> stderr lines …`, logged with the next line that is logged or when the plugin exits. Invalid stdout lines are logged at `warn` under the same limit, counted separately.
 - **Message type:** every object has a `type` field.
 - **Shutdown:** when stdin reaches end of file, exit. emfor closes stdin to stop a plugin, and kills it if it is still running 2 seconds later.
+- **Process group:** emfor starts each plugin in a process group of its own. Whenever the plugin exits, is stopped or is killed, emfor kills (`SIGKILL`) every process left in that group, so processes the plugin started do not outlive it. A process the plugin moves to another process group or session is not killed.
 
 ## Messages
 
@@ -92,7 +93,7 @@ Answer with the same `id`, a `result`, and an optional `reason`:
 | `error` | The plugin could not check, for example because of a local problem. This does not count against the backend. |
 
 Rules:
-- A `down` or `error` without `reason` is recorded with reason `no reason given`. emfor keeps at most 512 characters of a reason; plugins built on the `emfor-plugin` crate cut a longer one to its first 512 characters followed by `…` before sending it, so a backend's long error text never makes the answer line longer than 65536 bytes.
+- A `down` or `error` without `reason` is recorded with reason `no reason given`. emfor keeps at most 512 characters of a reason; plugins built on the `emfor-plugin` crate cut a longer one to its first 512 characters followed by `…` before sending it, so a backend's long error text never makes the answer line longer than 65536 bytes. The crate also answers a check whose code panics `error` with reason `check panicked: <message>`, so the request still gets an answer and the plugin keeps running.
 - Any other `result` value is recorded as `error` with reason `invalid plugin response`.
 - **`timeout_ms`** is the service `timeout` minus `min(100ms, timeout / 10)`. For example, 1s gives 900 and 200ms gives 180.
   - Finish within `timeout_ms`, and answer `down` (for example `"reason":"timeout"`) if the backend is too slow.

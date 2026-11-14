@@ -45,7 +45,7 @@ sync = false
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `path` | `/var/lib/emfor/state.mdb` | The store file. Clients look here unless `EMFOR_STORE` says otherwise. |
-| `map_size` | `"64MiB"` | Largest size the store can grow to; at least `1MiB`. Commits fail with `MDB_MAP_FULL` when it is reached. |
+| `map_size` | `"64MiB"` | Largest size the store can grow to; at least `1MiB`, rounded up to a multiple of `64KiB` (LMDB needs a multiple of the page size). Commits fail with `MDB_MAP_FULL` when it is reached. |
 | `file_mode` | `"0644"` | Mode the store file is created with. Applications need to read it. |
 | `lock_file_mode` | `"0666"` | Mode of `<path>-lock`. Applications need to write it. See [who can use the store](08-operations.md#who-can-use-the-store) before keeping the default. |
 | `sync` | `false` | `true` flushes every commit to disk. See [the store on disk](08-operations.md#the-store-on-disk). |
@@ -121,6 +121,7 @@ secret_file = "/etc/emfor/peers.key"
 | `listen` | required | This daemon's UDP address in the group, one of `members`. A specific address, not `0.0.0.0` or `::`; other members check that messages come from it. 5302 is the usual port. |
 | `members` | required | Every member's `listen`, this daemon included: 2 to 64 addresses, no repeats, all IPv4 or all IPv6 like `listen`. The same list can go on every host of the site. |
 | `secret_file` | required | Absolute path to the shared secret that authenticates and encrypts every message: at least 32 bytes after one trailing line feed is removed, not readable by other users (`chmod 600` or `640`). |
+| `previous_secret_file` | none | Optional. Absolute path to the secret `secret_file` held before its last change, with the same conditions. Read only at start, so that a daemon restarted during a secret change keeps signing with and accepting the previous secret as if it had not restarted (see below). |
 | `encrypt` | `true` | `true` sends every message encrypted (`EMP2`: ChaCha20-Poly1305 with a key derived from the secret); `false` sends them only signed (`EMP1`: HMAC-SHA256), so backend names, addresses and reasons can be read on the network. Both are accepted either way; with `true` the daemon logs a warning, once a minute per member, for each member that still sends `EMP1`. |
 
 Members only share reports for a service when its check is defined the
@@ -130,8 +131,29 @@ settings (`interval`, `rise`, `fall`, the backend list) may differ.
 The secret file is read again every second. To change the secret, write the
 new one on every host within a minute of each other: after its own file
 changed, a host still signs with the previous secret for 60 seconds and
-accepts it for 120 seconds, so no message is dropped meanwhile. Messages more than 5 seconds off the
-receiver's clock are dropped, so keep the hosts' clocks in sync (NTP).
+accepts it for 120 seconds, so no message is dropped meanwhile. If the file
+changes again within those 60 seconds (say, to fix a wrong secret), the
+host keeps signing with the secret it signed with before, for 60 seconds
+after the latest change.
+
+The previous secret is kept only in memory. A daemon restarted during a
+change knows only the new secret: members whose file has not changed yet
+drop its messages (`auth`), and it theirs, until their files change. To
+restart safely during a change, keep the old secret in a second file and
+name it in `previous_secret_file`, for example:
+
+```sh
+cp -p /etc/emfor/peers.key /etc/emfor/peers.key.old  # keeps the mode
+cat new.key > /etc/emfor/peers.key  # the same new secret on every host; keeps the mode
+```
+
+A daemon that starts within 120 seconds of the change to `secret_file`
+(by the file's modification time) then signs with the old secret until 60
+seconds after that change and accepts it until 120 seconds after it. Later
+starts ignore `previous_secret_file`, so it can stay in the config.
+
+Messages more than 5 seconds off the receiver's clock are dropped, so keep
+the hosts' clocks in sync (NTP).
 
 Encryption is new in this release. Members running 0.3.0 send and accept
 only `EMP1` and drop encrypted messages (counted as `malformed`), so to
@@ -161,8 +183,8 @@ slow_start = "0s"
 
 | Key | Rule | Meaning |
 | --- | --- | --- |
-| `interval` | at least `100ms` | Time from the end of one check of a backend to the start of the next. |
-| `timeout` | above 0, at most `interval` | How long one check may take. |
+| `interval` | `100ms` to `24h` | Time from the end of one check of a backend to the start of the next. |
+| `timeout` | at least `10ms`, at most `interval` | How long one check may take. A plugin gets it in whole milliseconds, less a small margin. |
 | `rise` | at least 1 | Consecutive passes before a backend is healthy. |
 | `fall` | at least 1 | Consecutive failures before a backend is unhealthy. |
 | `jitter` | `0%` to `50%` | Random spread of `interval`, so checks do not line up. |
@@ -265,7 +287,7 @@ error and keeps running the old config.
 | --- | --- |
 | Services and backends added or removed | Applied; new backends start `unknown`. |
 | `check` or `check_options` of a service | Applied; its backends start over from `unknown`. |
-| `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, `peers` | Applied; backends keep their state. |
+| `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, `peers` | Applied; backends keep their state. A new `interval` or `jitter` also applies to the wait already under way: the next check is due the new wait after the last one ended, at once when that is past. |
 | `balance`, `weight`, `site` (top level and backends), `backup`, `dns_ttl`, `slow_start` | Applied; backends keep their state, and a backend in slow start keeps its recovery time. |
 | `[dns] zone`, `[dns] ttl` | Applied. |
 | `[log] level` | Applied (unless `RUST_LOG` is set). |
@@ -273,5 +295,5 @@ error and keeps running the old config.
 | Anything in `[store]` | Rejected; needs a restart. |
 | `[dns] listen`, adding or removing `[dns]` | Rejected (`dns listen settings require restart`). |
 | `[metrics] listen`, adding or removing `[metrics]` | Rejected (`metrics listen settings require restart`). |
-| `[peers] members`, `[peers] secret_file`, `[peers] encrypt` | Applied; added members start as not live. |
+| `[peers] members`, `[peers] secret_file`, `[peers] encrypt` | Applied; added members start as not live. `previous_secret_file` is checked, but read only at start. |
 | `[peers] listen`, adding or removing `[peers]` | Rejected (`peers listen settings require restart`). |

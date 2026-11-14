@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use nix::sys::signal::{Signal, killpg};
+use nix::unistd::Pid;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
@@ -34,6 +36,11 @@ pub const LINE_LIMIT: usize = 65536;
 const STDERR_LINE_CHARS: usize = 1000;
 /// How long to keep routing answers the plugin wrote just before it exited.
 const EXIT_DRAIN: Duration = Duration::from_millis(100);
+/// Lines of one stream (stderr, or invalid stdout lines) of one plugin
+/// process logged in a burst before the rate limit applies.
+pub const LOG_BURST: u32 = 100;
+/// Lines of one stream logged per second once the burst is used up.
+pub const LOG_PER_SECOND: u32 = 10;
 /// Requests in a row whose callers gave up waiting, with no answer to any
 /// request in between, after which a running plugin counts as stuck and is
 /// restarted.
@@ -274,6 +281,108 @@ impl Drop for PendingGuard {
     }
 }
 
+/// Rate limit for the lines one stream of a plugin gets logged: a token
+/// bucket holding [`LOG_BURST`] lines, refilled at [`LOG_PER_SECOND`].
+/// Lines over the limit are counted and reported in one summary line.
+struct LogLimit {
+    tokens: f64,
+    refilled: Instant,
+    suppressed: u64,
+}
+
+impl LogLimit {
+    fn new() -> LogLimit {
+        LogLimit {
+            tokens: f64::from(LOG_BURST),
+            refilled: Instant::now(),
+            suppressed: 0,
+        }
+    }
+
+    /// Whether one more line may be logged now; counts it as suppressed
+    /// when not.
+    fn admit(&mut self) -> bool {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.refilled).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * f64::from(LOG_PER_SECOND)).min(f64::from(LOG_BURST));
+        self.refilled = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            self.suppressed += 1;
+            false
+        }
+    }
+
+    /// Log, at `warn`, how many `what` lines were suppressed since the last
+    /// summary, if any.
+    fn summarize(&mut self, name: &str, what: &str) {
+        let n = std::mem::take(&mut self.suppressed);
+        if n > 0 {
+            tracing::warn!(
+                plugin = %name,
+                "plugin {name}: suppressed {n} {what} lines (more than {LOG_BURST} at once or {LOG_PER_SECOND} a second)"
+            );
+        }
+    }
+}
+
+/// Log the plugin's stderr lines at `info`, rate limited, until end of file.
+async fn log_stderr<R: AsyncBufRead + Unpin>(name: &str, mut stderr: R) {
+    let mut limit = LogLimit::new();
+    loop {
+        let line = match read_line_limited(&mut stderr, LINE_LIMIT).await {
+            Ok(LineRead::Line(line)) => line,
+            Ok(LineRead::TooLong(start)) => {
+                if skip_line(&mut stderr).await.is_err() {
+                    break;
+                }
+                start
+            }
+            Ok(LineRead::Eof) | Err(_) => break,
+        };
+        if limit.admit() {
+            limit.summarize(name, "stderr");
+            tracing::info!(plugin = %name, "plugin {}: {}", name, cut(&line, STDERR_LINE_CHARS));
+        }
+    }
+    limit.summarize(name, "stderr");
+}
+
+/// Kill every process left in the plugin's process group `pid` (the plugin
+/// is its leader). Called before the plugin is reaped, or right after it was:
+/// afterwards the group id may be reused by an unrelated process, so it is
+/// never signalled again later.
+fn kill_group(pid: u32) {
+    // 0 is "no pid known" and would mean the daemon's own group; 1 is init.
+    match i32::try_from(pid) {
+        Ok(p) if p > 1 => {
+            let _ = killpg(Pid::from_raw(p), Signal::SIGKILL);
+        }
+        _ => {}
+    }
+}
+
+/// Kills the plugin's process group when a start fails after the process
+/// was spawned. Declared after the child, so it runs before the child is
+/// dropped (and killed and reaped).
+struct GroupGuard(Option<u32>);
+
+impl GroupGuard {
+    fn disarm(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0.take() {
+            kill_group(pid);
+        }
+    }
+}
+
 fn cut(s: &str, chars: usize) -> String {
     s.chars().take(chars).collect()
 }
@@ -289,12 +398,16 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Its own process group, so that stopping the plugin also stops
+        // the processes it started.
+        .process_group(0)
         .kill_on_drop(true);
     crate::child::inherit_stdio_only(&mut cmd);
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("plugin {name}: cannot run {program}: {e}"))?;
     let pid = child.id().unwrap_or(0);
+    let group = GroupGuard(Some(pid));
     let (Some(mut stdin), Some(stdout), Some(stderr)) =
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
     else {
@@ -304,22 +417,7 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
     };
 
     let log_name = name.to_string();
-    tokio::spawn(async move {
-        let mut stderr = BufReader::new(stderr);
-        loop {
-            let line = match read_line_limited(&mut stderr, LINE_LIMIT).await {
-                Ok(LineRead::Line(line)) => line,
-                Ok(LineRead::TooLong(start)) => {
-                    if skip_line(&mut stderr).await.is_err() {
-                        break;
-                    }
-                    start
-                }
-                Ok(LineRead::Eof) | Err(_) => break,
-            };
-            tracing::info!(plugin = %log_name, "plugin {}: {}", log_name, cut(&line, STDERR_LINE_CHARS));
-        }
-    });
+    tokio::spawn(async move { log_stderr(&log_name, BufReader::new(stderr)).await });
 
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     tokio::spawn(async move {
@@ -391,9 +489,10 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
     let router_pending = pending.clone();
     let router_name = name.to_string();
     let router = tokio::spawn(async move {
+        let mut limit = LogLimit::new();
         loop {
             match read_line_limited(&mut stdout, LINE_LIMIT).await {
-                Ok(LineRead::Line(line)) => route(&router_name, &router_pending, &line),
+                Ok(LineRead::Line(line)) => route(&router_name, &router_pending, &mut limit, &line),
                 Ok(LineRead::TooLong(_)) => {
                     // Stop reading: the supervisor sees stdout end, stops the
                     // plugin and restarts it.
@@ -406,8 +505,10 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
                 Ok(LineRead::Eof) | Err(_) => break,
             }
         }
+        limit.summarize(&router_name, "invalid stdout");
         lock(&router_pending).close();
     });
+    group.disarm();
     Ok(Process {
         child,
         conn: Conn { tx, pending, pid },
@@ -499,15 +600,19 @@ pub fn fuzz_line(line: &str) {
     let pending: Pending = Arc::default();
     let (tx, _rx) = oneshot::channel();
     lock(&pending).map.insert(1, tx);
-    route("fuzz", &pending, line);
+    route("fuzz", &pending, &mut LogLimit::new(), line);
 }
 
-/// Deliver one stdout line to the request waiting for it.
-fn route(name: &str, pending: &Pending, line: &str) {
+/// Deliver one stdout line to the request waiting for it. Invalid lines are
+/// logged within `limit`.
+fn route(name: &str, pending: &Pending, limit: &mut LogLimit, line: &str) {
     let answer = match serde_json::from_str::<Response>(line) {
         Ok(a) => a,
         Err(e) => {
-            tracing::warn!(plugin = %name, "plugin {name}: ignoring invalid line {:?}: {e}", cut(line, 200));
+            if limit.admit() {
+                limit.summarize(name, "invalid stdout");
+                tracing::warn!(plugin = %name, "plugin {name}: ignoring invalid line {:?}: {e}", cut(line, 200));
+            }
             return;
         }
     };
@@ -554,15 +659,11 @@ async fn supervise(shared: Arc<Shared>, mut process: Process, mut stop: watch::R
             _ = stop.changed() => Event::Stop,
         };
         shared.set_conn(None);
+        let pid = process.conn.pid;
         match event {
             Event::Stop => {
                 drop(process.conn); // closes stdin once the writer drains
-                if tokio::time::timeout(STOP_GRACE, process.child.wait())
-                    .await
-                    .is_err()
-                {
-                    let _ = process.child.kill().await;
-                }
+                finish(&mut process.child, pid).await;
                 return;
             }
             Event::Stalled => {
@@ -570,16 +671,21 @@ async fn supervise(shared: Arc<Shared>, mut process: Process, mut stop: watch::R
                     plugin = %name,
                     "plugin {name} stopped answering: {STALL_UNANSWERED} requests in a row got no answer"
                 );
+                kill_group(pid);
                 let _ = process.child.start_kill();
                 let status = process.child.wait().await;
                 log_exit(&name, status);
             }
             Event::StdoutClosed => {
+                kill_group(pid);
                 let _ = process.child.start_kill();
                 let status = process.child.wait().await;
                 log_exit(&name, status);
             }
             Event::Exited(status) => {
+                // What the plugin started may outlive it; it was reaped just
+                // now, so its group id is still safe to signal.
+                kill_group(pid);
                 // Answers written right before exiting may still be in the
                 // pipe; let the router deliver them before failing the rest.
                 let _ = tokio::time::timeout(EXIT_DRAIN, &mut process.router).await;
@@ -607,11 +713,23 @@ async fn supervise(shared: Arc<Shared>, mut process: Process, mut stop: watch::R
         };
         if *stop.borrow() {
             // Asked to stop while starting: stop the new process too.
+            let pid = process.conn.pid;
             drop(process.conn);
-            let _ = tokio::time::timeout(STOP_GRACE, process.child.wait()).await;
+            finish(&mut process.child, pid).await;
             return;
         }
         shared.set_conn(Some(process.conn.clone()));
+    }
+}
+
+/// Wait up to [`STOP_GRACE`] for a plugin whose stdin was closed to exit,
+/// then kill what is left of its process group, and the plugin if it is
+/// still running.
+async fn finish(child: &mut Child, pid: u32) {
+    let exited = tokio::time::timeout(STOP_GRACE, child.wait()).await.is_ok();
+    kill_group(pid);
+    if !exited {
+        let _ = child.kill().await;
     }
 }
 
@@ -668,6 +786,81 @@ mod tests {
         assert_eq!(restart_delay(3), Duration::from_secs(4));
         assert_eq!(restart_delay(6), Duration::from_secs(30));
         assert_eq!(restart_delay(1000), Duration::from_secs(30));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn log_limit_allows_a_burst_then_a_rate() {
+        let mut l = LogLimit::new();
+        for i in 0..LOG_BURST {
+            assert!(l.admit(), "line {i} of the burst");
+        }
+        assert!(!l.admit());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        for i in 0..LOG_PER_SECOND {
+            assert!(l.admit(), "line {i} after a second");
+        }
+        assert!(!l.admit());
+        assert_eq!(l.suppressed, 2);
+        // A long pause refills no more than the burst.
+        tokio::time::advance(Duration::from_secs(3600)).await;
+        for _ in 0..LOG_BURST {
+            assert!(l.admit());
+        }
+        assert!(!l.admit());
+    }
+
+    /// Spec checker-plugins "Plugin log lines are rate limited".
+    #[tokio::test(start_paused = true)]
+    #[tracing_test::traced_test]
+    async fn stderr_lines_are_rate_limited() {
+        let input = "noise\n".repeat(1000);
+        log_stderr("p", input.as_bytes()).await;
+        logs_assert(|lines: &[&str]| {
+            let logged = lines
+                .iter()
+                .filter(|l| l.contains("plugin p: noise"))
+                .count();
+            if logged != LOG_BURST as usize {
+                return Err(format!("{logged} stderr lines logged"));
+            }
+            match lines
+                .iter()
+                .filter(|l| l.contains("plugin p: suppressed 900 stderr lines"))
+                .count()
+            {
+                1 => Ok(()),
+                n => Err(format!("{n} summary lines")),
+            }
+        });
+    }
+
+    #[tokio::test(start_paused = true)]
+    #[tracing_test::traced_test]
+    async fn invalid_stdout_lines_are_rate_limited() {
+        let pending: Pending = Arc::default();
+        let mut limit = LogLimit::new();
+        for _ in 0..1000 {
+            route("p", &pending, &mut limit, "garbage");
+        }
+        tokio::time::advance(Duration::from_secs(1)).await;
+        route("p", &pending, &mut limit, "garbage");
+        logs_assert(|lines: &[&str]| {
+            let logged = lines
+                .iter()
+                .filter(|l| l.contains("plugin p: ignoring invalid line"))
+                .count();
+            if logged != LOG_BURST as usize + 1 {
+                return Err(format!("{logged} invalid lines logged"));
+            }
+            match lines
+                .iter()
+                .filter(|l| l.contains("plugin p: suppressed 900 invalid stdout lines"))
+                .count()
+            {
+                1 => Ok(()),
+                n => Err(format!("{n} summary lines")),
+            }
+        });
     }
 
     #[test]

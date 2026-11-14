@@ -15,6 +15,16 @@
             {"id": "10.0.0.11:8080", "ip": "10.0.0.11", "port": 8080, "state": "healthy", "checked_at": 1, "reason": null},
             {"id": "10.0.0.12:8080", "ip": "10.0.0.12", "port": 8080, "state": "healthy", "checked_at": 1, "reason": null}
           ]
+        },
+        {
+          "name": "sticky.svc.emfor",
+          "on_all_down": "closed",
+          "balance": "sticky",
+          "all_down": false,
+          "backends": [
+            {"id": "10.0.0.11:8080", "ip": "10.0.0.11", "port": 8080, "state": "healthy", "checked_at": 1, "reason": null},
+            {"id": "10.0.0.12:8080", "ip": "10.0.0.12", "port": 8080, "state": "healthy", "checked_at": 1, "reason": null}
+          ]
         }
       ]
     },

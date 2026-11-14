@@ -11,9 +11,11 @@
 //! with `EMFOR_STORE` and `EMFOR_MAX_STALENESS` set for the case. The program
 //! does `count` lookups (the length of `expect_all_of`, the sum of
 //! `expect_counts`, or 1) in one process and prints one line per lookup:
-//! `OK <address>` or `ERR <CODE> <message>`. A run that takes longer than the
-//! timeout (default 10 s) is killed and fails. Exits 1 if any lookup fails its
-//! expectation, 2 on a usage or setup error.
+//! `OK <address>` or `ERR <CODE> <message>`; an error's message must not be
+//! empty. Each run gets a store written just before it, so a `fresh`
+//! heartbeat stays fresh for the case's staleness limit from its start. A run
+//! that takes longer than the timeout (default 10 s) is killed and fails.
+//! Exits 1 if any lookup fails its expectation, 2 on a usage or setup error.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -28,8 +30,41 @@ const DATA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/conformance
 struct Run<'a> {
     program: &'a [String],
     timeout: Duration,
+    /// Where the stores are written, one per run.
+    dir: PathBuf,
     lookups: usize,
     failures: Vec<String>,
+}
+
+/// The store a lookup reads: a case's `store` object (`null`: no file) and
+/// its staleness limit.
+struct Store<'a> {
+    json: &'a Value,
+    max_ms: u64,
+    /// `EMFOR_MAX_STALENESS` for the program.
+    staleness: String,
+}
+
+impl Store<'_> {
+    /// Write the store to a new file in `dir`, its heartbeat relative to
+    /// now; with no store, only return the path where none exists.
+    fn write(&self, dir: &Path, n: usize) -> Result<PathBuf, String> {
+        let path = dir.join(format!("store-{n}.mdb"));
+        if !self.json.is_null() {
+            emfor_fixture::write_store(self.json, self.max_ms, emfor_fixture::now_ms(), &path)?;
+        }
+        Ok(path)
+    }
+
+    fn fresh(&self) -> bool {
+        !self.json.is_null()
+            && self
+                .json
+                .get("heartbeat")
+                .and_then(Value::as_str)
+                .unwrap_or("fresh")
+                == "fresh"
+    }
 }
 
 /// One answer line from the lookup program. The message is shown in
@@ -37,13 +72,38 @@ struct Run<'a> {
 #[derive(Debug)]
 enum Answer {
     Ok(String),
-    Err(String, #[allow(dead_code)] String),
+    Err(String, String),
 }
 
 impl Run<'_> {
-    /// Run the program for one lookup entry and check its answers.
-    fn check(&mut self, what: &str, store: &Path, staleness: &str, lookup: &Value) {
+    /// Run the program for one lookup entry, on a store written just
+    /// before, and check its answers. Errs on a setup error.
+    fn check(&mut self, what: &str, store: &Store, lookup: &Value) -> Result<(), String> {
         self.lookups += 1;
+        let path = store
+            .write(&self.dir, self.lookups)
+            .map_err(|e| format!("{what}: {e}"))?;
+        let written = Instant::now();
+        let failed_before = self.failures.len();
+        self.check_on(what, &path, &store.staleness, lookup);
+        // A fresh store turns stale after the staleness limit: a failure
+        // then may only mean that the program was slow.
+        let took = written.elapsed();
+        if store.fresh()
+            && took > Duration::from_millis(store.max_ms)
+            && self.failures.len() > failed_before
+            && let Some(f) = self.failures.last_mut()
+        {
+            f.push_str(&format!(
+                " (the run took {took:?}, longer than the store's staleness limit of {} ms: \
+                 its heartbeat was stale by the end; rerun on a less loaded host)",
+                store.max_ms
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_on(&mut self, what: &str, store: &Path, staleness: &str, lookup: &Value) {
         let name = lookup["name"].as_str().unwrap_or_default();
         let key = lookup
             .get("affinity_key")
@@ -68,6 +128,9 @@ impl Run<'_> {
             }
         } else if let Some(want) = lookup.get("expect_error").and_then(Value::as_str) {
             match &answers[..] {
+                [Answer::Err(code, msg)] if code == want && msg.trim().is_empty() => {
+                    Some(format!("error {want} has no message"))
+                }
                 [Answer::Err(code, _)] if code == want => None,
                 other => Some(format!("want error {want}, got {other:?}")),
             }
@@ -232,31 +295,31 @@ fn run(args: &[String]) -> Result<bool, String> {
         .get(i + 1..)
         .filter(|p| !p.is_empty())
         .ok_or("missing -- <program...>")?;
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let mut r = Run {
         program,
         timeout,
+        dir: dir.path().to_path_buf(),
         lookups: 0,
         failures: Vec::new(),
     };
-    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
 
     let cases_json = read_json(&cases)?;
     let list = cases_json.as_array().ok_or("cases.json is not a list")?;
-    for (n, case) in list.iter().enumerate() {
+    for case in list {
         let what = format!("case {:?}", case["case"].as_str().unwrap_or("?"));
-        let store = dir.path().join(format!("case-{n}.mdb"));
         let max_ms = case["max_staleness_ms"].as_u64().unwrap_or(3000);
-        if !case["store"].is_null() {
-            emfor_fixture::write_store(&case["store"], max_ms, emfor_fixture::now_ms(), &store)
-                .map_err(|e| format!("{what}: {e}"))?;
-        }
-        let staleness = match case.get("max_staleness").and_then(Value::as_str) {
-            Some(raw) => raw.to_string(),
-            None => format!("{max_ms}ms"),
+        let store = Store {
+            json: &case["store"],
+            max_ms,
+            staleness: match case.get("max_staleness").and_then(Value::as_str) {
+                Some(raw) => raw.to_string(),
+                None => format!("{max_ms}ms"),
+            },
         };
         for lookup in case["lookups"].as_array().into_iter().flatten() {
             check_counts(&what, lookup)?;
-            r.check(&what, &store, &staleness, lookup);
+            r.check(&what, &store, lookup)?;
         }
     }
 
@@ -264,29 +327,25 @@ fn run(args: &[String]) -> Result<bool, String> {
     let picks = v["picks"]
         .as_array()
         .ok_or("sticky vectors have no picks")?;
-    let services: Vec<Value> = picks
-        .iter()
-        .enumerate()
-        .map(|(n, p)| {
-            let backends: Vec<Value> = p["ids"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .map(backend)
-                .collect();
-            json!({"name": format!("pick-{n}.svc.emfor"), "on_all_down": "closed",
-                   "balance": "sticky", "all_down": false, "backends": backends})
-        })
-        .collect();
-    let store = dir.path().join("picks.mdb");
-    let picks_store =
-        json!({"schema_version": "1", "heartbeat": "fresh", "raw": {}, "services": services});
-    emfor_fixture::write_store(&picks_store, 60_000, emfor_fixture::now_ms(), &store)?;
     for (n, p) in picks.iter().enumerate() {
-        let lookup = json!({"name": format!("pick-{n}.svc.emfor"), "affinity_key": p["key"],
-                            "expect": p["expect"]});
-        r.check("sticky pick", &store, "60s", &lookup);
+        let backends: Vec<Value> = p["ids"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(backend)
+            .collect();
+        let name = format!("pick-{n}.svc.emfor");
+        let json = json!({"schema_version": "1", "heartbeat": "fresh", "raw": {}, "services": [
+            {"name": name, "on_all_down": "closed", "balance": "sticky", "all_down": false,
+             "backends": backends}]});
+        let store = Store {
+            json: &json,
+            max_ms: 60_000,
+            staleness: "60s".into(),
+        };
+        let lookup = json!({"name": name, "affinity_key": p["key"], "expect": p["expect"]});
+        r.check("sticky pick", &store, &lookup)?;
     }
 
     for f in &r.failures {

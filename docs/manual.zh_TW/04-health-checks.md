@@ -15,7 +15,7 @@
 
 ## tcp
 
-沒有選項時，backend 接受連線即為 `up`；emfor 隨即關閉連線。連線被拒絕或無法到達則為 `down`。
+沒有選項時，backend 接受連線即為 `up`；emfor 隨即關閉連線。連線被拒絕或無法到達則為 `down`；本機沒有通往 backend 的路由、或本機防火牆擋下連線時也是 `down`，因為本機的應用程式同樣連不到這個 backend。只有本機資源不足（開啟的檔案、緩衝區、記憶體、本機 port）才是 `error`。
 
 | 選項 | 型別 | 預設值 | 意義 |
 | --- | --- | --- | --- |
@@ -53,7 +53,7 @@ check_options = { tls = true, server_name = "imap.internal", expect = "* OK" }
 | --- | --- | --- | --- |
 | `scheme` | `"http"` 或 `"https"` | `"http"` | 協定。 |
 | `path` | 以 `/` 開頭的字串 | `"/"` | 請求路徑。 |
-| `host_header` | 字串 | 無 | 要送出的 `Host` header。 |
+| `host_header` | 字串 | 無 | 要送出的 `Host` header：主機名稱或 IP 位址，可加 `:port`，IPv6 要加中括號（`api.internal`、`api.internal:8443`、`[2001:db8::1]`）。連線仍然連到 backend；用 `https` 時，主機名稱也是 TLS 的 server name。 |
 | `expect_status` | 非空清單 | `["200-399"]` | 視為 `up` 的狀態碼：單一狀態碼（`200` 或 `"200"`）或含頭尾的範圍（`"200-299"`），都必須在 100–599 之間。 |
 | `tls_verify` | 布林 | `true` | 用於 `https`：`false` 接受任何憑證。 |
 | `expect_body` | 字串 | 無 | 回應內容必須含有這段位元組（區分大小寫，最多讀 65536 位元組）。最長 16384 位元組。 |
@@ -127,7 +127,7 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 
 `emfor check-config` 與每次 reload 都會啟動 plugin，讓它們驗證每個服務的 `check_options`，所以錯誤會在設定套用前就被發現。
 
-plugin 結束時，等待中的檢查變成 `error`（`plugin exited`），daemon 在 1 秒、2 秒、4 秒……最多 30 秒後重新啟動它；在那之前它的檢查都是 `error`（`plugin <name> unavailable`）。error 不改變 backend 狀態，所以當掉的 plugin 不會讓 backend 變成 down。plugin 寫到 stderr 的每一行都以 `info` 記錄。
+plugin 結束時，等待中的檢查變成 `error`（`plugin exited`），daemon 在 1 秒、2 秒、4 秒……最多 30 秒後重新啟動它；在那之前它的檢查都是 `error`（`plugin <name> unavailable`）。當掉的 plugin 不會讓 backend 變成 down：`error` 不算檢查失敗。但一個 backend 只收到 error 的時間超過 `fall × interval` 時會回到 `unknown`（見[第 1 章](01-concepts.md)），所以一直當掉的 plugin 會讓它的 backend 變成 `unknown`，而不是維持 `healthy`。以 `emfor-plugin` crate 寫的 plugin 中，panic 的檢查會回答 `error`，reason 為 `check panicked: <message>`，plugin 繼續執行。plugin 寫到 stderr 的每一行都以 `info` 記錄，一次最多 100 行，之後每秒最多 10 行；log 會寫出丟掉了幾行。每個 plugin 在自己的 process group 中執行：plugin 結束或被停止時，它啟動的行程也會一起被終止。
 
 要自己寫 plugin，見 [docs/plugins/protocol-v1.md](../plugins/protocol-v1.md)；`emfor-plugin` crate 為 Rust 實作了這個協定。
 
@@ -136,7 +136,7 @@ plugin 結束時，等待中的檢查變成 `error`（`plugin exited`），daemo
 每個 backend 依自己的時程檢查，而且同一個 backend 不會同時有兩個檢查：
 
 - 啟動或 reload 後的第一次檢查，在 `min(interval, 200ms)` 內的隨機時刻開始。
-- backend 處於 `unknown` 且檢查結果為 `up` 或 `down` 時，下一次檢查在上一次結束後 `min(interval, 200ms)` 開始。以預設值（`rise = 2`），約半秒內就能確定 backend 狀態。
+- backend 處於 `unknown` 且檢查結果為 `up` 或 `down` 時，下一次檢查在上一次結束後 `min(interval, 200ms)` 開始。以預設值（`rise = 2`），約半秒內就能確定 backend 狀態。這個快速節奏最多持續 `rise + fall` 次：結果一直變來變去、兩個計數都到不了門檻的 backend 會維持 `unknown`，之後改為每 `interval` 檢查一次。
 - 其他情況下，下一次檢查在上一次結束後 `interval` 開始，並隨機前後偏移最多 `jitter`（預設 10%）。
 
 因為 interval 從檢查結束時算起，慢的 backend 不會比每 `interval` 一次更頻繁地被檢查。

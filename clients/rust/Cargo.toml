@@ -25,6 +25,8 @@ serde_json.workspace = true
 
 [dev-dependencies]
 emfor-fixture = { path = "../../tools/emfor-fixture" }
+# Grows a store as the daemon would (tests/map_resized.rs).
+heed = "0.22"
 libc = "0.2"
 serde_json.workspace = true
 tempfile = "3.27.0"

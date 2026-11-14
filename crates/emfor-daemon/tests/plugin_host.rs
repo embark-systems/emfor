@@ -371,3 +371,108 @@ async fn validation_timeout_is_sticky() {
     assert_eq!(second, first);
     host.stop().await;
 }
+
+// Processes a plugin starts are stopped with it.
+
+/// Command for a plugin that first starts `sleep 600` in the background,
+/// writing its pid to `pidfile`, then runs the test plugin.
+fn command_with_child(pidfile: &std::path::Path) -> Vec<String> {
+    vec![
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "sleep 600 </dev/null >/dev/null 2>&1 & echo $! > '{}'; exec '{PLUGIN}'",
+            pidfile.display()
+        ),
+    ]
+}
+
+fn read_pid(pidfile: &std::path::Path) -> i32 {
+    std::fs::read_to_string(pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+/// Whether `pid` is running. An orphan nobody reaps (in a container whose
+/// init does not reap) stays a zombie, which counts as gone.
+#[cfg(target_os = "linux")]
+fn running(pid: i32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => !stat
+            .rsplit_once(')')
+            .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z')),
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn running(pid: i32) -> bool {
+    alive(pid as u32)
+}
+
+async fn wait_gone(pid: i32) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while running(pid) {
+        assert!(
+            Instant::now() < deadline,
+            "child {pid} of the plugin still running"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn stop_kills_what_the_plugin_started() {
+    let dir = tempfile::tempdir().unwrap();
+    let pidfile = dir.path().join("child.pid");
+    let host = PluginHost::start("fake", &command_with_child(&pidfile))
+        .await
+        .unwrap();
+    let child = read_pid(&pidfile);
+    assert!(running(child));
+    host.stop().await;
+    wait_gone(child).await;
+}
+
+#[tokio::test]
+async fn restart_after_stall_kills_what_the_plugin_started() {
+    let dir = tempfile::tempdir().unwrap();
+    let pidfile = dir.path().join("child.pid");
+    let host = PluginHost::start("fake", &command_with_child(&pidfile))
+        .await
+        .unwrap();
+    let first_pid = host.pid().unwrap();
+    let child = read_pid(&pidfile);
+    for _ in 0..3 {
+        let r = tokio::time::timeout(Duration::from_millis(100), host.call(check("hang"))).await;
+        assert!(r.is_err());
+    }
+    wait_gone(child).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while host.pid().is_none_or(|p| p == first_pid) {
+        assert!(Instant::now() < deadline, "stuck plugin not restarted");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let second = read_pid(&pidfile);
+    assert_ne!(second, child);
+    host.stop().await;
+    wait_gone(second).await;
+}
+
+#[tokio::test]
+async fn crash_kills_what_the_plugin_started() {
+    let dir = tempfile::tempdir().unwrap();
+    let pidfile = dir.path().join("child.pid");
+    let host = PluginHost::start("fake", &command_with_child(&pidfile))
+        .await
+        .unwrap();
+    let child = read_pid(&pidfile);
+    assert_eq!(
+        host.call(check("crash")).await.unwrap_err(),
+        CallError::Exited
+    );
+    wait_gone(child).await;
+    host.stop().await;
+}

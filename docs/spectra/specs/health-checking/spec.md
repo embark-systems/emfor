@@ -23,7 +23,7 @@ Every check SHALL produce exactly one result: `up` (the backend passed), `down` 
 ---
 ### Requirement: TCP checker
 
-The `tcp` checker SHALL connect to the backend address. A refused or unreachable connection SHALL be `down`. A local failure to create the socket (such as too many open files) SHALL be `error`.
+The `tcp` checker SHALL connect to the backend address. A refused or unreachable connection SHALL be `down`. A local failure to create the socket (such as too many open files) SHALL be `error`. A connection that fails because this host has no route to the backend's network (`ENETUNREACH`, `EHOSTUNREACH`) or because this host's firewall blocks it (`EPERM`, `EACCES`) SHALL be `down`, not `error`: the applications on this host cannot reach that backend either, so it must not be chosen. Only running out of a resource of this host (`EMFILE`, `ENFILE`, `ENOBUFS`, `ENOMEM`, `EADDRNOTAVAIL`) SHALL make a connection failure `error`; every checker and plugin that connects to a backend SHALL classify connection errors this way.
 
 The `tcp` checker SHALL accept these optional `check_options` keys and no others:
 
@@ -36,7 +36,7 @@ The `tcp` checker SHALL accept these optional `check_options` keys and no others
 
 Validation SHALL fail when `send` or `expect` is not a string, when `send` is set without `expect` (error on `expect`: `required when send is set`), when `expect` is empty, or when `expect` is longer than 16384 bytes; when `tls` or `tls_verify` is not a boolean (`must be a boolean`); when `server_name` is not a valid host name or IP address (`not a valid host name or IP address`); when `ca_file` is not an absolute path (`not an absolute path`), does not exist (`file not found`) or holds no PEM certificate (`no certificate found`); and when `tls_verify`, `server_name` or `ca_file` is set without `tls = true` (`requires tls = true`). An empty `send` with an `expect` SHALL behave as `expect` alone.
 
-With `tls = true`, a failed TLS handshake or certificate verification SHALL be `down` with a reason starting `tls: `. The handshake SHALL get at most 90% of the time left before the service's `timeout`; when the backend has not completed it by then, the result SHALL be `down` with reason `tls: no answer to the TLS handshake (does the port speak TLS?)`. When the backend closes or resets the connection before the handshake is done, the result SHALL be `down` with reason `tls: connection closed during the TLS handshake (does the server have a certificate?)`. When less than 100 ms would be left for the handshake, the service's `timeout` SHALL apply instead. When `ca_file` cannot be read during a check, or the host has no system CA certificates and `ca_file` is not set, the result SHALL be `error` with a reason starting `ca_file: ` or `tls: ` respectively.
+With `tls = true`, a failed TLS handshake or certificate verification SHALL be `down` with a reason starting `tls: `. The handshake SHALL get at most 90% of the time left before the service's `timeout`; when the backend has not completed it by then, the result SHALL be `down` with reason `tls: no answer to the TLS handshake (does the port speak TLS?)`. When the backend closes or resets the connection before the handshake is done, the result SHALL be `down` with reason `tls: connection closed during the TLS handshake (does the server have a certificate?)`. When less than 100 ms would be left for the handshake, the service's `timeout` SHALL apply instead. When `ca_file` cannot be read during a check, or the host has no system CA certificates and `ca_file` is not set, the result SHALL be `error` with a reason starting `ca_file: ` or `tls: ` respectively. A `ca_file` that was replaced or rewritten (another inode, size, modification or change time) SHALL take effect at the next check without a reload; an unchanged one MAY be kept parsed instead of being read again on every check.
 
 Without `expect`, a completed connection (with `tls = true`, a completed handshake) SHALL be `up` and the connection SHALL be closed immediately (with `tls = true`, after sending a TLS close_notify). With `expect`, the checker SHALL write `send` when set, then read from the connection and keep the received bytes, up to 16384 bytes. It SHALL answer `up` and close the connection as soon as the received bytes contain `expect`, including when `expect` spans several reads. It SHALL answer `down` with reason `expect: got "<excerpt>"` when the backend closes the connection, or 16384 bytes have been received, without `expect` appearing. The excerpt SHALL be the first 64 received bytes, escaped so that printable ASCII other than `\`, `'` and `"` stays as is; tab, carriage return and line feed become `\t`, `\r` and `\n`; `\`, `'` and `"` are preceded by `\`; and every other byte becomes `\x` followed by two lowercase hex digits. A failure while writing SHALL be `down` with a reason starting `send: `; a failure while reading, other than the backend closing the connection, SHALL be `down` with a reason starting `expect: `. A check that has not finished within the service's `timeout` SHALL be `down` with reason `timeout`, as for every checker.
 
@@ -208,7 +208,7 @@ tests:
 ---
 ### Requirement: HTTP checker
 
-The `http` checker SHALL send one `GET` request per check to the backend IP and port using `scheme` (`http` or `https`, default `http`) and `path` (default `/`), with the `Host` header set to `host_header` when configured. It SHALL NOT follow redirects. The result SHALL be `up` when the response status matches any entry of `expect_status` (default `["200-399"]`; each entry is a status code or an inclusive `lo-hi` range) and `down` otherwise, with the status code in the reason. For `https`, certificate verification SHALL be on unless `tls_verify = false`. When `expect_body` is set (a string of 1 to 16384 bytes), a response whose status matches SHALL also be read, up to 65536 bytes and stopping as soon as `expect_body` is found as a case-sensitive byte substring; the result SHALL be `up` only when it is found, and otherwise `down` with reason `expect_body: got "<first 64 bytes of the body, escaped>"`. A failure while reading the body SHALL be `down` with a reason starting `body: `. Without `expect_body`, the checker SHALL NOT read the body.
+The `http` checker SHALL send one `GET` request per check to the backend IP and port using `scheme` (`http` or `https`, default `http`) and `path` (default `/`), with the `Host` header set to `host_header` when configured. `host_header` SHALL be an IPv4 address, an IPv6 address in brackets, or a host name that a URL holds unchanged as its host (ignoring ASCII case), each with an optional `:port` of 1 to 5 digits up to 65535; anything else SHALL fail validation with `must be a host with an optional port, such as "api.internal" or "api.internal:8443"`. With a host name, the request URL SHALL use that name and the connection SHALL still go to the backend IP and port, so that with `https` the name is the TLS server name. It SHALL NOT follow redirects. The result SHALL be `up` when the response status matches any entry of `expect_status` (default `["200-399"]`; each entry is a status code or an inclusive `lo-hi` range) and `down` otherwise, with the status code in the reason. For `https`, certificate verification SHALL be on unless `tls_verify = false`. When `expect_body` is set (a string of 1 to 16384 bytes), a response whose status matches SHALL also be read, up to 65536 bytes and stopping as soon as `expect_body` is found as a case-sensitive byte substring; the result SHALL be `up` only when it is found, and otherwise `down` with reason `expect_body: got "<first 64 bytes of the body, escaped>"`. A failure while reading the body SHALL be `down` with a reason starting `body: `. Without `expect_body`, the checker SHALL NOT read the body.
 
 #### Scenario: Status inside expected range
 
@@ -234,6 +234,19 @@ The `http` checker SHALL send one `GET` request per check to the backend IP and 
 
 - **WHEN** a service sets `host_header = "api.internal"`
 - **THEN** each check request carries `Host: api.internal`
+
+##### Example: host_header validation
+
+| `host_header` | Validation |
+| --- | --- |
+| `api.internal` | ok |
+| `api.internal:8443` | ok |
+| `[2001:db8::1]:8080` | ok |
+| `10.0.0.1` | ok |
+| `api internal` | error |
+| `api.internal/` | error |
+| `http://api.internal` | error |
+| `2001:db8::1` | error (IPv6 needs brackets) |
 
 #### Scenario: Body must contain expect_body
 
@@ -302,7 +315,7 @@ tests:
 ---
 ### Requirement: Check scheduling with jitter and no overlap
 
-The daemon SHALL check every backend of every service repeatedly; in a peer group a daemon that is not an assigned checker of a backend SHALL instead decide some scheduled check times from the assigned checkers' votes without checking (spec peer-group, "Split checks"), and such a check time SHALL follow the same timing rules as a check whose result is the applied result. Let `fast` be the smaller of `interval` and 200ms. The first check of a backend SHALL start after a random delay in `[0, fast)`. When a check finishes and the backend's health state is `unknown` and that check's result was `up` or `down`, the next check SHALL start `fast` after the previous check finishes, without jitter. Otherwise each following check SHALL start after the previous check finishes plus `interval` adjusted by a uniformly random offset within `±jitter` of `interval`. When a fast recheck run starts because a peer reported the backend down (spec peer-group), the next check SHALL start at once, or right after the check in progress finishes; each following check of that run SHALL start `fast` after the previous one finishes, without jitter, until a check result is `up`, the backend becomes `unhealthy`, or the run has made `fall` checks, after which the rules above apply again. Two checks of the same backend SHALL NOT run at the same time.
+The daemon SHALL check every backend of every service repeatedly; in a peer group a daemon that is not an assigned checker of a backend SHALL instead decide some scheduled check times from the assigned checkers' votes without checking (spec peer-group, "Split checks"), and such a check time SHALL follow the same timing rules as a check whose result is the applied result. Let `fast` be the smaller of `interval` and 200ms. The first check of a backend SHALL start after a random delay in `[0, fast)`. When a check finishes and the backend's health state is `unknown` and that check's result was `up` or `down`, the next check SHALL start `fast` after the previous check finishes, without jitter, for at most `rise + fall` such waits in a row; the count SHALL start over when the state becomes `healthy` or `unhealthy`. Otherwise each following check SHALL start after the previous check finishes plus `interval` adjusted by a uniformly random offset within `±jitter` of `interval`. When a reload changes `interval` or `jitter` while a backend waits for its next check, the next check SHALL start the wait computed with the new values after the previous check finished, or at once when that time has passed. When a fast recheck run starts because a peer reported the backend down (spec peer-group), the next check SHALL start at once, or right after the check in progress finishes; each following check of that run SHALL start `fast` after the previous one finishes, without jitter, until a check result is `up`, the backend becomes `unhealthy`, or the run has made `fall` checks, after which the rules above apply again. Two checks of the same backend SHALL NOT run at the same time.
 
 #### Scenario: Spacing between checks
 
@@ -313,6 +326,16 @@ The daemon SHALL check every backend of every service repeatedly; in a peer grou
 
 - **WHEN** a `healthy` backend has `interval = "1s"` and `jitter = "0%"`
 - **THEN** the gap between the end of one check and the start of the next is 1s
+
+#### Scenario: Fast checks stop after rise + fall
+
+- **WHEN** a backend with `interval = "2s"`, `rise = 2`, `fall = 3` and `jitter = "0%"` keeps returning up, down, down, up, down, down and so on
+- **THEN** it stays `unknown`, the first five waits are 200ms, and every later wait is 2s
+
+#### Scenario: Reload shortens the wait under way
+
+- **WHEN** a `healthy` backend with `interval = "10m"` finished a check 5s ago and a reload sets `interval = "2s"`
+- **THEN** the next check starts at once, and the one after it 2s ± jitter after that one finishes
 
 #### Scenario: Fast checks until the state is known
 
@@ -361,7 +384,7 @@ tests:
 ---
 ### Requirement: Health state machine with rise and fall
 
-Each backend SHALL have a health state of `unknown`, `healthy`, or `unhealthy`, a consecutive-success counter, and a consecutive-failure counter, all starting at `unknown`, 0, 0 when the daemon starts. An `up` result SHALL increment the success counter and reset the failure counter; reaching `rise` SHALL set the state to `healthy`. A `down` result SHALL increment the failure counter and reset the success counter; reaching `fall` SHALL set the state to `unhealthy`. An `error` result SHALL change neither counter nor the state, except that when a backend has received only `error` results for longer than `fall × interval`, its state SHALL become `unknown` and both counters SHALL reset to 0. In a daemon with `[peers]`, the result of a check, as used by this requirement and by every other requirement of this spec (scheduling, fast recheck runs, logging, latency and counters), SHALL be the combined result of that check defined in spec peer-group ("Region verdict and combined result"); without `[peers]` it SHALL be the result the checker returned.
+Each backend SHALL have a health state of `unknown`, `healthy`, or `unhealthy`, a consecutive-success counter, and a consecutive-failure counter, all starting at `unknown`, 0, 0 when the daemon starts. An `up` result SHALL increment the success counter and reset the failure counter; reaching `rise` SHALL set the state to `healthy`. A `down` result SHALL increment the failure counter and reset the success counter; reaching `fall` SHALL set the state to `unhealthy`. An `error` result SHALL change neither counter nor the state, except that when a backend has received only `error` results for longer than `fall × interval`, its state SHALL become `unknown` and both counters SHALL reset to 0. When a backend's check task stops (a bug) and the daemon starts it again, the backend SHALL start again from `unknown` with both counters at 0 and no latency; when its state was another one, this SHALL be a transition like any other, committed at once, counted, and recorded in the history with reason `check task restarted`. In a daemon with `[peers]`, the result of a check, as used by this requirement and by every other requirement of this spec (scheduling, fast recheck runs, logging, latency and counters), SHALL be the combined result of that check defined in spec peer-group ("Region verdict and combined result"); without `[peers]` it SHALL be the result the checker returned.
 
 #### Scenario: Backend becomes healthy
 

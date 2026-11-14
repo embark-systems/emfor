@@ -27,8 +27,9 @@ use crate::writer::{self, WriterMsg};
 pub const EXIT_OK: u8 = 0;
 /// Exit status when the store cannot be opened or is locked by another daemon.
 pub const EXIT_STARTUP: u8 = 1;
-/// Exit status when the state writer stops while the daemon runs (a bug):
-/// `EX_SOFTWARE`, which service managers restart, unlike 1 and 2.
+/// Exit status when the state writer or a DNS listener stops while the
+/// daemon runs: `EX_SOFTWARE`, which service managers restart, unlike 1
+/// and 2.
 pub const EXIT_INTERNAL: u8 = 70;
 /// Exit status for an invalid config, and for a command line without a
 /// subcommand.
@@ -218,7 +219,8 @@ fn log_config_errors(path: &Path, errors: &[ConfigError]) {
 }
 
 /// Backend state history left by earlier runs, by service name. A value that
-/// does not parse is logged and loaded as empty, so the writer deletes it.
+/// does not parse (or is not UTF-8) is logged and loaded as empty, so the
+/// writer deletes it; the other services' history still loads.
 /// When the keys cannot be read at all, none is loaded and the writer
 /// leaves them as they are.
 fn load_history(store: &Store) -> BTreeMap<String, ServiceHistory> {
@@ -232,10 +234,17 @@ fn load_history(store: &Store) -> BTreeMap<String, ServiceHistory> {
     stored
         .into_iter()
         .map(|(key, value)| {
-            let h = serde_json::from_str(&value).unwrap_or_else(|e| {
-                tracing::warn!("discarding {key}: {e}");
-                ServiceHistory::default()
-            });
+            let h = match value.as_deref().map(serde_json::from_str) {
+                Some(Ok(h)) => h,
+                Some(Err(e)) => {
+                    tracing::warn!("discarding {key}: {e}");
+                    ServiceHistory::default()
+                }
+                None => {
+                    tracing::warn!("discarding {key}: not UTF-8");
+                    ServiceHistory::default()
+                }
+            };
             (key[HIST_KEY_PREFIX.len()..].to_owned(), h)
         })
         .collect()
@@ -373,6 +382,7 @@ async fn run(
         config.store.path.display()
     );
     let mut current = config;
+    let mut exit = EXIT_OK;
     // Check tasks that stopped (only a panic does that) are started again.
     let mut watchdog = tokio::time::interval(Duration::from_secs(1));
     watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -390,6 +400,18 @@ async fn run(
                 tracing::error!("state writer {why}; exiting");
                 supervisor.stop();
                 return ExitCode::from(EXIT_INTERNAL);
+            }
+            why = async {
+                match dns_server.as_mut() {
+                    Some(s) => s.ended().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                // DNS would stay silent while the rest runs: exit, after the
+                // usual shutdown, and let the service manager restart it.
+                tracing::error!("{why}; exiting");
+                exit = EXIT_INTERNAL;
+                break;
             }
             _ = watchdog.tick() => {
                 supervisor.restart_finished();
@@ -449,17 +471,15 @@ async fn run(
     }
 
     tracing::info!("shutting down");
-    if let Some(mut server) = dns_server
-        && let Err(e) = server.shutdown_gracefully().await
-    {
-        tracing::debug!("DNS server shutdown: {e}");
+    if let Some(server) = dns_server {
+        server.shutdown().await;
     }
     supervisor.stop();
     let (done_tx, done_rx) = oneshot::channel();
     let _ = tx.send(WriterMsg::Shutdown(done_tx));
     let _ = done_rx.await;
     let _ = writer.await;
-    ExitCode::from(EXIT_OK)
+    ExitCode::from(exit)
 }
 
 /// `[dns] listen` and `[metrics] listen` as written to `meta/dns_listen` and
@@ -614,6 +634,27 @@ mod tests {
         let config =
             config::parse(&text, &Registry::builtin()).unwrap_or_else(|e| panic!("errors: {e:?}"));
         port_warnings(&config)
+    }
+
+    /// State-store "Backend state history": one value or key that is not
+    /// UTF-8 is discarded on its own; the other services keep their
+    /// history, and the bad value is loaded empty so the writer deletes it.
+    #[test]
+    fn history_loads_around_bytes_that_are_not_utf8() {
+        use crate::store::tests::{cfg, put_raw};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&cfg(dir.path())).unwrap();
+        let good = r#"{"backends":{"10.0.0.1:80":[{"at":1,"from":"healthy","to":"unhealthy","reason":null}]}}"#;
+        put_raw(&store, b"hist/a.svc.emfor", good.as_bytes());
+        put_raw(&store, b"hist/b.svc.emfor", &[0xff, 0xfe]);
+        put_raw(&store, b"hist/\xff", good.as_bytes());
+        let loaded = load_history(&store);
+        assert_eq!(
+            loaded.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["a.svc.emfor", "b.svc.emfor"]
+        );
+        assert_eq!(loaded["a.svc.emfor"].backends["10.0.0.1:80"].len(), 1);
+        assert!(loaded["b.svc.emfor"].is_empty());
     }
 
     /// State-store "DNS listen addresses in the store" and "Metrics listen

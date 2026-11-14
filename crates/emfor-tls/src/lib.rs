@@ -78,6 +78,11 @@ impl TlsFailure {
 
 /// Whether an I/O error comes from this host running out of something
 /// rather than from the backend.
+///
+/// No route to the backend (`ENETUNREACH`, `EHOSTUNREACH`) and a connection
+/// this host's firewall blocks (`EPERM`, `EACCES`) are deliberately not
+/// local: the applications on this host cannot reach the backend either, so
+/// it is `down` for them (spec health-checking, "TCP checker").
 pub fn is_local_io_error(e: &io::Error) -> bool {
     matches!(
         e.raw_os_error(),
@@ -175,8 +180,9 @@ fn provider() -> Arc<CryptoProvider> {
 /// The rustls client configuration for one check: trust `ca_file`, or the
 /// system's CA certificates, or anything when `tls_verify = false`.
 ///
-/// `ca_file` is read on every call, so a replaced file takes effect without
-/// a reload. An unreadable `ca_file` or a host without CA certificates is a
+/// `ca_file` is parsed again whenever it changed since the last call (its
+/// inode, size, modification or change time), so a replaced file takes
+/// effect without a reload; an unchanged one costs one `stat`. An unreadable `ca_file` or a host without CA certificates is a
 /// local failure.
 pub fn client_config(tls: &TlsSettings) -> Result<Arc<ClientConfig>, TlsFailure> {
     client_config_with_client(tls, None)
@@ -201,7 +207,7 @@ pub fn client_config_with_client(
             .with_custom_certificate_verifier(Arc::new(AcceptAnyCertificate(provider)))
     } else {
         let roots = match &tls.ca_file {
-            Some(path) => Arc::new(roots_from_file(path)?),
+            Some(path) => roots_from_file(path)?,
             None => system_roots()?,
         };
         builder.with_root_certificates(roots)
@@ -294,22 +300,85 @@ fn read_client_certificate(client: &ClientCertificate) -> Result<ClientAuth, Tls
 }
 
 fn read_ca_file(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsFailure> {
-    let bytes =
-        std::fs::read(path).map_err(|e| TlsFailure::local(format!("ca_file: {}", e.kind())))?;
+    Ok(ca_file(path)?.certs.clone())
+}
+
+fn roots_from_file(path: &Path) -> Result<Arc<RootCertStore>, TlsFailure> {
+    match &ca_file(path)?.roots {
+        Some(roots) => Ok(Arc::clone(roots)),
+        None => Err(TlsFailure::local("ca_file: no usable certificate")),
+    }
+}
+
+/// What identifies one version of a file: a replaced file (new inode), a
+/// rewritten one (new size, modification or change time) gets a new stamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+impl FileStamp {
+    fn of(meta: &std::fs::Metadata) -> FileStamp {
+        use std::os::unix::fs::MetadataExt;
+        FileStamp {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            len: meta.len(),
+            mtime: (meta.mtime(), meta.mtime_nsec()),
+            ctime: (meta.ctime(), meta.ctime_nsec()),
+        }
+    }
+}
+
+/// A `ca_file` as read and parsed once.
+struct CaFile {
+    stamp: FileStamp,
+    certs: Vec<CertificateDer<'static>>,
+    /// `None` when no certificate in it is usable as a trust anchor.
+    roots: Option<Arc<RootCertStore>>,
+}
+
+/// The certificates of `path`, parsed again only when the file changed
+/// since it was last read (see [`FileStamp`]): a check costs one `stat`, and
+/// a replaced file still takes effect at the next check. Failures are not
+/// remembered, so a fixed file is read at the next check too.
+fn ca_file(path: &Path) -> Result<Arc<CaFile>, TlsFailure> {
+    static CACHE: OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, Arc<CaFile>>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    let unreadable = |e: io::Error| TlsFailure::local(format!("ca_file: {}", e.kind()));
+    // Stamped before reading: a change during the read gets a new stamp,
+    // so it is read again at the next check.
+    let stamp = FileStamp::of(&std::fs::metadata(path).map_err(unreadable)?);
+    if let Some(cached) = cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(path)
+        .filter(|c| c.stamp == stamp)
+    {
+        return Ok(Arc::clone(cached));
+    }
+    let bytes = std::fs::read(path).map_err(unreadable)?;
     let certs = load_certificates(&bytes);
     if certs.is_empty() {
         return Err(TlsFailure::local("ca_file: no certificate found"));
     }
-    Ok(certs)
-}
-
-fn roots_from_file(path: &Path) -> Result<RootCertStore, TlsFailure> {
     let mut roots = RootCertStore::empty();
-    let (added, _) = roots.add_parsable_certificates(read_ca_file(path)?);
-    if added == 0 {
-        return Err(TlsFailure::local("ca_file: no usable certificate"));
-    }
-    Ok(roots)
+    let (added, _) = roots.add_parsable_certificates(certs.iter().cloned());
+    let parsed = Arc::new(CaFile {
+        stamp,
+        certs,
+        roots: (added > 0).then(|| Arc::new(roots)),
+    });
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(path.to_path_buf(), Arc::clone(&parsed));
+    Ok(parsed)
 }
 
 /// Load the system's CA certificates into the per-process cache, so the

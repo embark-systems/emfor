@@ -28,11 +28,11 @@ except emfor.Error as e:
 ## Finding libemfor
 
 At import, the package loads the library from the path in `EMFOR_LIBRARY`
-if it is set, and otherwise looks for `emfor` through
-`ctypes.util.find_library` and the names libemfor is installed under:
-`libemfor.so.0.3`, `libemfor.so`, `libemfor.0.3.dylib` and `libemfor.dylib`
-for release 0.3.x (the versioned names follow `emfor.__version__`). If that
-fails, the import raises `ImportError`. On Linux,
+if it is set, and otherwise tries, in order: the names of this release's
+library, `libemfor.so.0.4` and `libemfor.0.4.dylib` for release 0.4.x (they
+follow `emfor.__version__`); what `ctypes.util.find_library("emfor")` finds,
+which may be another release's; and `libemfor.so` and `libemfor.dylib`. If
+none loads, the import raises `ImportError`. On Linux,
 `find_library` only knows libraries in the `ldconfig` cache, so set
 `EMFOR_LIBRARY` for a library outside the standard directories.
 

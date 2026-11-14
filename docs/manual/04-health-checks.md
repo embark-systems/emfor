@@ -21,7 +21,10 @@ answer in time gives `error`, because the plugin, not the backend, is late.
 
 Without options, a backend is `up` when it accepts a connection; emfor
 closes the connection at once. A refused or unreachable connection is
-`down`.
+`down`, also when this host has no route to the backend or its own
+firewall blocks the connection: the applications on this host could not
+reach the backend either. Only a shortage on this host (open files,
+buffers, memory, local ports) makes it `error`.
 
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -65,7 +68,7 @@ followed.
 | --- | --- | --- | --- |
 | `scheme` | `"http"` or `"https"` | `"http"` | Protocol. |
 | `path` | string starting with `/` | `"/"` | Request path. |
-| `host_header` | string | none | `Host` header to send. |
+| `host_header` | string | none | `Host` header to send: a host name or IP address with an optional `:port`, IPv6 in brackets (`api.internal`, `api.internal:8443`, `[2001:db8::1]`). The connection still goes to the backend; with `https` a host name is also the TLS server name. |
 | `expect_status` | non-empty list | `["200-399"]` | Status codes that count as `up`: codes (`200` or `"200"`) or inclusive ranges (`"200-299"`), all within 100–599. |
 | `tls_verify` | boolean | `true` | For `https`: `false` accepts any certificate. |
 | `expect_body` | string | none | Bytes that must appear, case-sensitively, in the body (read up to 65536 bytes). At most 16384 bytes. |
@@ -180,9 +183,18 @@ config is applied.
 
 When a plugin exits, its pending checks become `error` (`plugin exited`),
 and the daemon restarts it after 1 s, then 2 s, 4 s … up to 30 s; until
-then its checks are `error` (`plugin <name> unavailable`). Errors do not
-change backend states, so a crashing plugin does not take backends down.
-Lines a plugin writes to stderr are logged at `info`.
+then its checks are `error` (`plugin <name> unavailable`). A crashing
+plugin never marks backends down: an `error` does not count as a failed
+check. But a backend whose checks have given nothing but errors for longer
+than `fall × interval` goes back to `unknown` (see
+[chapter 1](01-concepts.md)), so a plugin that keeps crashing leaves its
+backends `unknown` rather than `healthy`. A check that panics in a plugin
+built on the `emfor-plugin` crate is answered `error` with reason
+`check panicked: <message>`, and the plugin keeps running.
+Lines a plugin writes to stderr are logged at `info`, at most 100 at once
+and 10 a second after that; the log says how many were dropped. Each
+plugin runs in a process group of its own: when it exits or is stopped,
+the processes it started are killed too.
 
 To write your own plugin, see
 [docs/plugins/protocol-v1.md](../plugins/protocol-v1.md); the `emfor-plugin`
@@ -198,6 +210,9 @@ once:
 - While the backend is `unknown` and checks return `up` or `down`, the next
   check follows `min(interval, 200ms)` after the previous one ends. With
   the defaults (`rise = 2`), backends are known within about half a second.
+  This fast pace lasts `rise + fall` checks at most: a backend whose
+  results keep changing so that neither count is reached stays `unknown`
+  and is then checked every `interval`.
 - Otherwise the next check starts `interval` after the previous one ends,
   shifted at random by up to `jitter` (10% by default) either way.
 

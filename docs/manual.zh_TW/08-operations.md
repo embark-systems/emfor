@@ -51,7 +51,9 @@ api.svc.emfor  round-robin  on_all_down=open
 | --- | --- |
 | 0 | daemon 正在執行，且顯示的每個服務都有健康的 backend。 |
 | 1 | daemon 為 stale 或 stopped，或顯示的某個服務為 `ALL DOWN`。 |
-| 2 | 無法讀取設定檔或 store、store 格式版本不同，或 `--service` 指定的服務不存在。 |
+| 2 | 無法讀取設定檔或 store、store 格式版本不同、`--service` 指定的服務不存在，或無法寫出輸出。 |
+
+pipe 提早關閉（`emfor status | head -1`）不會改變結束代碼。store 檔案被換掉時（例如 daemon 啟動時替換損壞的 store），`--watch` 會重新開啟 store。
 
 單一不健康的 backend 不影響結束代碼，所以 `emfor status`（或 `emfor status --service <name>`）可以直接作為 cron 或 Nagios 類系統的監控檢查。更多內容見 [docs/deploy/daemon.md](../deploy/daemon.md#emfor-status)。
 
@@ -134,7 +136,7 @@ daemon 把 log 寫到 stderr：systemd 下進 journal，FreeBSD rc.d script 下�
 | 0 | 正常停止（`SIGTERM` / `SIGINT`） | — |
 | 1 | 無法啟動：listen 位址已被使用、無法開啟 store，或另一個 emfor 持有這個 store（`<store>.writer`） | 沒用；先排除原因 |
 | 2 | 設定無效，或沒有給指令 | 沒用；修正設定 |
-| 70 | state writer 停止了（程式錯誤） | 有用；systemd unit 會重新啟動它 |
+| 70 | state writer 或 DNS listener 在執行中停止了 | 有用；systemd unit 會重新啟動它 |
 
 ## 磁碟上的 store
 

@@ -8,7 +8,7 @@ Defines the local LMDB file through which emfor publishes health state to reader
 
 ### Requirement: LMDB file layout
 
-The daemon SHALL store state in an LMDB environment opened with `MDB_NOSUBDIR` at `[store] path` (default `/var/lib/emfor/state.mdb`), producing one data file and one lock file named `<path>-lock`. It SHALL use only the unnamed default database. Keys and values SHALL be UTF-8 strings. The data file SHALL be created with `[store] file_mode` (default `0644`) and the lock file with `[store] lock_file_mode` (default `0666`). The map size SHALL be `[store] map_size` (default `64MiB`). `[store] sync` SHALL be a boolean, default `false`: with `false` the environment SHALL be opened with `MDB_NOSYNC`, so a commit does not wait for the disk; with `true` it SHALL be opened without `MDB_NOSYNC`, so every commit is flushed to disk before it completes. Commits SHALL run outside the async worker threads, so a slow disk does not stall the DNS server, the metrics endpoint or the checks.
+The daemon SHALL store state in an LMDB environment opened with `MDB_NOSUBDIR` at `[store] path` (default `/var/lib/emfor/state.mdb`), producing one data file and one lock file named `<path>-lock`. It SHALL use only the unnamed default database. Keys and values SHALL be UTF-8 strings. The data file SHALL be created with `[store] file_mode` (default `0644`) and the lock file with `[store] lock_file_mode` (default `0666`). The map size SHALL be `[store] map_size` (default `64MiB`), rounded up by config validation to a multiple of 64KiB so that it is a multiple of the system page size, as LMDB requires. `[store] sync` SHALL be a boolean, default `false`: with `false` the environment SHALL be opened with `MDB_NOSYNC`, so a commit does not wait for the disk; with `true` it SHALL be opened without `MDB_NOSYNC`, so every commit is flushed to disk before it completes. Commits SHALL run outside the async worker threads, so a slow disk does not stall the DNS server, the metrics endpoint or the checks.
 
 #### Scenario: Files created on first start
 
@@ -98,7 +98,7 @@ tests:
 ---
 ### Requirement: Heartbeat and timely state updates
 
-The daemon SHALL update `meta/heartbeat` at least once per second while running. A change of any backend's health state SHALL be committed to the store immediately, without waiting for the next heartbeat. Changes to `checked_at` or `reason` alone SHALL be committed no later than the next heartbeat.
+The daemon SHALL update `meta/heartbeat` at least once per second while running. A change of any backend's health state SHALL be committed to the store immediately, without waiting for the next heartbeat; check results already waiting to be written at that moment (up to 1024) SHALL be applied first and committed in the same transaction, so a burst of changes costs one commit and not one each. Changes to `checked_at` or `reason` alone SHALL be committed no later than the next heartbeat.
 
 #### Scenario: Heartbeat advances
 
@@ -141,7 +141,7 @@ tests:
 ---
 ### Requirement: Fresh state on every start
 
-On startup the daemon SHALL write `meta/schema_version` and `meta/started_at`, delete every existing `svc/*` key, and write a record for every configured service with every backend `unknown`, `checked_at` null, and `reason` null, before running any check. Backend state from a previous run SHALL NOT be reused. The backend state history under `hist/*` is the one exception: it SHALL be kept and pruned as described in "Backend state history".
+On startup the daemon SHALL write `meta/schema_version` and `meta/started_at`, delete every existing `svc/*` key (including keys and values that are not UTF-8), and write a record for every configured service with every backend `unknown`, `checked_at` null, and `reason` null, before running any check. Backend state from a previous run SHALL NOT be reused. The backend state history under `hist/*` is the one exception: it SHALL be kept and pruned as described in "Backend state history".
 
 #### Scenario: Old state discarded
 
@@ -337,7 +337,7 @@ tests:
 ---
 ### Requirement: Check latency
 
-For every backend, regardless of the service's `balance`, the daemon SHALL time each check with a monotonic clock from the start of the check to its result. For an `up` result it SHALL set the backend's latency to the measured duration in whole microseconds when the backend has no latency, and otherwise to `round(0.05 * sample + 0.95 * previous)`, computed as `(sample + 19 * previous + 10) / 20` in integer arithmetic. A `down` or `error` result SHALL NOT change the latency. When the backend's state changes to `unhealthy`, its latency SHALL become empty. The latency SHALL be empty when the daemon starts and when a backend is added or reset to `unknown` on reload, and SHALL be kept on reload whenever the backend keeps its state. The daemon SHALL log each up check's raw duration at `debug` level with the service and backend. A change of latency or of `pool` alone SHALL be committed to the store no later than the next heartbeat; a health state change SHALL be committed immediately together with the `pool` recomputed for it. The DNS server and the store SHALL use the same latency and pool values.
+For every backend, regardless of the service's `balance`, the daemon SHALL time each check with a monotonic clock from the start of the check to its result. For an `up` result it SHALL set the backend's latency to the measured duration in whole microseconds when the backend has no latency, and otherwise to `round(0.05 * sample + 0.95 * previous)`, computed as `(sample + 19 * previous + 10) / 20` in integer arithmetic. A `down` or `error` result SHALL NOT change the latency. When the backend's state changes to `unhealthy`, its latency SHALL become empty. The latency SHALL be empty when the daemon starts, when a backend is added or reset to `unknown` on reload, and when its check task is started again, and SHALL be kept on reload whenever the backend keeps its state. The daemon SHALL log each up check's raw duration at `debug` level with the service and backend. A change of latency or of `pool` alone SHALL be committed to the store no later than the next heartbeat; a health state change SHALL be committed immediately together with the `pool` recomputed for it. The DNS server and the store SHALL use the same latency and pool values.
 
 #### Scenario: Latency after up checks
 
@@ -404,7 +404,7 @@ The daemon SHALL keep, for every configured service, a key `hist/<service name>`
 
 Only transitions produced by a check result SHALL be recorded; resetting backends to `unknown` on start or because `check` or `check_options` changed SHALL NOT add entries. The `hist/` key SHALL be written in the same transaction as the `svc/` record that carries the transition, and a failed commit SHALL be retried at the next heartbeat with the history as it is in memory at that time.
 
-History SHALL survive a daemon restart. On start the daemon SHALL read every existing `hist/*` key, drop the keys of services that are not configured and the entries of backends that are not configured, and write the result in the same transaction that writes the fresh `svc/*` records. A `hist/` value that does not parse SHALL be logged as a warning and discarded. After a successful reload the daemon SHALL delete `hist/<name>` of each removed service and drop the entries of each removed backend. `meta/schema_version` SHALL stay `1`; readers that do not know `hist/` keys ignore them.
+History SHALL survive a daemon restart. On start the daemon SHALL read every existing `hist/*` key, drop the keys of services that are not configured and the entries of backends that are not configured, and write the result in the same transaction that writes the fresh `svc/*` records. A `hist/` value that does not parse or is not UTF-8 SHALL be logged as a warning and discarded on its own, without keeping the other services' history from loading; a `hist/` key that is not UTF-8 SHALL be logged as a warning and ignored. After a successful reload the daemon SHALL delete `hist/<name>` of each removed service and drop the entries of each removed backend. The `hist/` keys SHALL NOT change `meta/schema_version`; readers that do not know `hist/` keys ignore them.
 
 #### Scenario: Transition recorded with its record
 
@@ -454,7 +454,7 @@ tests:
 ---
 ### Requirement: Metrics listen addresses in the store
 
-When the config has a `[metrics]` table, the daemon SHALL write `meta/metrics_listen` on startup, in the same transaction that writes `meta/started_at`: a JSON array of strings holding the `[metrics] listen` addresses in config order, IPv4 as `<ip>:<port>` and IPv6 as `[<ip>]:<port>`. When the config has no `[metrics]` table, the daemon SHALL delete `meta/metrics_listen` in that transaction. A reload SHALL NOT change the key, because `[metrics] listen` cannot change without a restart. Clients and the DNS server SHALL NOT read the key, and `meta/schema_version` SHALL stay `1`.
+When the config has a `[metrics]` table, the daemon SHALL write `meta/metrics_listen` on startup, in the same transaction that writes `meta/started_at`: a JSON array of strings holding the `[metrics] listen` addresses in config order, IPv4 as `<ip>:<port>` and IPv6 as `[<ip>]:<port>`. When the config has no `[metrics]` table, the daemon SHALL delete `meta/metrics_listen` in that transaction. A reload SHALL NOT change the key, because `[metrics] listen` cannot change without a restart. Clients and the DNS server SHALL NOT read the key, and the key SHALL NOT change `meta/schema_version`.
 
 #### Scenario: Metrics table written at start
 
@@ -482,7 +482,7 @@ tests:
 ---
 ### Requirement: DNS listen addresses in the store
 
-When the config has a `[dns]` table, the daemon SHALL write `meta/dns_listen` on startup, in the same transaction that writes `meta/started_at`: a JSON array of strings holding the `[dns] listen` addresses in config order, IPv4 as `<ip>:<port>` and IPv6 as `[<ip>]:<port>`. When the config has no `[dns]` table, the daemon SHALL delete `meta/dns_listen` in that transaction. A reload SHALL NOT change the key, because `[dns] listen` cannot change without a restart. Clients and the DNS server SHALL NOT read the key, and `meta/schema_version` SHALL stay `1`.
+When the config has a `[dns]` table, the daemon SHALL write `meta/dns_listen` on startup, in the same transaction that writes `meta/started_at`: a JSON array of strings holding the `[dns] listen` addresses in config order, IPv4 as `<ip>:<port>` and IPv6 as `[<ip>]:<port>`. When the config has no `[dns]` table, the daemon SHALL delete `meta/dns_listen` in that transaction. A reload SHALL NOT change the key, because `[dns] listen` cannot change without a restart. Clients and the DNS server SHALL NOT read the key, and the key SHALL NOT change `meta/schema_version`.
 
 #### Scenario: DNS table written at start
 
@@ -554,7 +554,7 @@ When the config has a `[peers]` table, the daemon SHALL keep the key `meta/peers
 - `disagreements`: an array of `{"service":<name>,"backend":<id>,"down":<d>,"fresh":<f>}` for every current disagreement (spec peer-group), ordered by service name and then backend id.
 - `services_off`: an array of the names of this daemon's services whose effective `peers` setting is `false` (spec peer-group, "Services left out of the peer group"), in byte order of the name.
 
-Members SHALL be written as in the config (IPv6 as `[addr]:port`). On startup the daemon SHALL write the key in the same transaction that writes `meta/started_at`, with every member `live` false, `digest_mismatch` and `disagreements` empty, and `services_off` from the config; when the config has no `[peers]` table it SHALL delete the key in that transaction. While running, the daemon SHALL compare the content with the last one handed to the writer once per second and, when it changed, write the new content in the next commit. A failed commit SHALL be retried like any other key. Clients and the DNS server SHALL NOT read the key, and `meta/schema_version` SHALL stay `1`.
+Members SHALL be written as in the config (IPv6 as `[addr]:port`). On startup the daemon SHALL write the key in the same transaction that writes `meta/started_at`, with every member `live` false, `digest_mismatch` and `disagreements` empty, and `services_off` from the config; when the config has no `[peers]` table it SHALL delete the key in that transaction. While running, the daemon SHALL compare the content with the last one handed to the writer once per second and, when it changed, write the new content in the next commit. A failed commit SHALL be retried like any other key. Clients and the DNS server SHALL NOT read the key, and the key SHALL NOT change `meta/schema_version`.
 
 #### Scenario: Peer state written at start
 

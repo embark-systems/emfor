@@ -117,6 +117,11 @@ Each failure SHALL carry a human-readable message naming the cause. Each languag
 - **WHEN** a lookup fails with `UNAVAILABLE` because the store file does not exist, and the daemon then creates the store
 - **THEN** the next lookup in the same process opens the store and returns an address
 
+#### Scenario: Unopenable store is retried after a pause
+
+- **WHEN** a lookup fails with `UNAVAILABLE` because the store file exists but cannot be opened, and the file is then replaced by a valid store
+- **THEN** lookups in the same process within 1 second of the failed open fail with the same error without opening the file, and the first lookup after that opens the store and returns an address
+
 
 <!-- @trace
 source: emfor-backup-backends
@@ -652,12 +657,22 @@ tests:
 ---
 ### Requirement: Clients are safe across threads and fork
 
-The client SHALL open the store read-only once per process and reuse it for later lookups. When a lookup finds the store stale, or fails with an error other than `ALL_DOWN` from a fresh store, the client SHALL check whether the file at the store path is now a different file (device and inode) than the open one, at most once every 100 ms in a process; a missing file SHALL NOT count as a different file. When it is different, the client SHALL switch to it once no lookup in the process uses the open store, and repeat the lookup once. When the lock file (`<path>-lock`) is also a different file or missing, the client SHALL open the new store before closing the open one and SHALL keep using the open one when the new one cannot be opened; when the lock file is the same, it SHALL close the open store first, since LMDB allows one environment per lock file in a process. Lookups from several threads at once SHALL each return a valid result. When a lookup runs in a process whose pid differs from the pid that opened the store (after `fork`), the client SHALL discard the inherited handle without closing it, open the store again, re-read the environment variables, and reset the round-robin counters. Each lookup SHALL end its read transaction before returning.
+The client SHALL open the store read-only once per process and reuse it for later lookups. When a lookup finds the store stale, or fails with an error other than `ALL_DOWN` from a fresh store, the client SHALL check whether the file at the store path is now a different file (device and inode) than the open one, at most once every 100 ms in a process; a missing file SHALL NOT count as a different file. When it is different, the client SHALL switch to it once no lookup in the process uses the open store, and repeat the lookup once. When the lock file (`<path>-lock`) is also a different file or missing, the client SHALL open the new store before closing the open one and SHALL keep using the open one when the new one cannot be opened; when the lock file is the same, it SHALL close the open store first, since LMDB allows one environment per lock file in a process. Lookups from several threads at once SHALL each return a valid result. When a lookup runs in a process whose pid differs from the pid that opened the store (after `fork`), the client SHALL discard the inherited handle without closing it, open the store again, re-read the environment variables, and reset the round-robin counters; no lock that another thread of the parent held at the fork SHALL keep the child's lookup waiting. Each lookup SHALL end its read transaction before returning. When the store has grown past the size the client mapped it with (the daemon was restarted with a larger `map_size`), the client SHALL map it with the new size once no lookup in the process uses it, and read again. When the store file exists but cannot be opened, the client SHALL try to open it again at most once a second, and SHALL fail lookups in between with the error of the last attempt; a missing store file SHALL be tried on every lookup.
 
 #### Scenario: Lookup after fork
 
 - **WHEN** a process performs a successful lookup, forks, and the child performs a lookup of the same service
 - **THEN** the child's lookup returns a valid address of that service, and the parent's next lookup also returns one
+
+#### Scenario: Fork while other threads look up
+
+- **WHEN** a process has 4 threads looking up a service in a loop, and another thread forks 300 times while they run
+- **THEN** each child's lookup of that service returns within 5 seconds
+
+#### Scenario: Store grown past the client's map size
+
+- **WHEN** a client has looked up a service in a store mapped with 4 MiB, and another process then opens the store with a 16 MiB map and grows it past 4 MiB
+- **THEN** the client's next lookups of that service return an address
 
 #### Scenario: Store replaced while the client runs
 
@@ -770,7 +785,7 @@ The C library `libemfor` SHALL be built from the Rust client crate in the daemon
 | --- | --- | --- |
 | address written to `out` | `EMFOR_OK` (0) | `OK` |
 | store cannot be opened | `EMFOR_UNAVAILABLE` (1) | `UNAVAILABLE` |
-| `meta/schema_version` = `2` | `EMFOR_INCOMPATIBLE` (2) | `INCOMPATIBLE` |
+| `meta/schema_version` = `3` | `EMFOR_INCOMPATIBLE` (2) | `INCOMPATIBLE` |
 | no such service | `EMFOR_NOT_FOUND` (3) | `NOT_FOUND` |
 | closed service, all down | `EMFOR_ALL_DOWN` (4) | `ALL_DOWN` |
 | `name` is NULL, or `out_len` is 8 for `10.0.0.11:8080` | `EMFOR_INVALID_ARGUMENT` (5) | `INVALID_ARGUMENT` |
@@ -833,7 +848,7 @@ tests:
 ---
 ### Requirement: Shared conformance data defines the contract
 
-The repository SHALL contain conformance data under `tests/conformance/v1/`: `cases.json`, a list of cases each giving store contents and lookups with their expected address, expected set of addresses, expected count per address, or expected error code; and `sticky-v1.json`, the rendezvous hash and pick vectors. A fixture tool SHALL write a case's store contents to an LMDB file in the daemon's format. Every client interface (the Rust API, the C API, and the Go, Python, Perl and PHP wrappers) SHALL have a test runner that executes every case and every pick vector, and SHALL pass all of them; the Rust runner SHALL also check every hash vector, which no other interface exposes. The wrappers and the C library SHALL be checked by one shared driver, `emfor-conformance`, which writes each case's store and runs a small lookup program of the interface under test once per lookup, with `EMFOR_STORE` and `EMFOR_MAX_STALENESS` set for that case. A lookup with an expected count per address (`expect_counts`) SHALL run the sum of the counts as lookups in one process and SHALL pass only when every address appears exactly its count and no other result appears.
+The repository SHALL contain conformance data under `tests/conformance/v1/`: `cases.json`, a list of cases each giving store contents and lookups with their expected address, expected set of addresses, expected count per address, or expected error code; and `sticky-v1.json`, the rendezvous hash and pick vectors. A fixture tool SHALL write a case's store contents to an LMDB file in the daemon's format. Every client interface (the Rust API, the C API, and the Go, Python, Perl and PHP wrappers) SHALL have a test runner that executes every case and every pick vector, and SHALL pass all of them; the Rust runner SHALL also check every hash vector, which no other interface exposes. The wrappers and the C library SHALL be checked by one shared driver, `emfor-conformance`, which writes the case's store anew just before each run of a small lookup program of the interface under test, once per lookup, with `EMFOR_STORE` and `EMFOR_MAX_STALENESS` set for that case. An expected error SHALL pass only with a non-empty message. A lookup with an expected count per address (`expect_counts`) SHALL run the sum of the counts as lookups in one process and SHALL pass only when every address appears exactly its count and no other result appears.
 
 #### Scenario: Client passes the shared cases
 
@@ -854,6 +869,16 @@ The repository SHALL contain conformance data under `tests/conformance/v1/`: `ca
 
 - **WHEN** a lookup expects `{"10.0.0.11:8080": 3, "10.0.0.12:8080": 1}` and the lookup program prints `10.0.0.11:8080` twice and `10.0.0.12:8080` twice
 - **THEN** the driver reports that lookup as a failure
+
+#### Scenario: Driver detects an error without a message
+
+- **WHEN** a lookup expects `UNAVAILABLE` and the lookup program prints `ERR UNAVAILABLE` with no message
+- **THEN** the driver reports that lookup as a failure
+
+#### Scenario: Slow lookups do not turn a fresh store stale
+
+- **WHEN** a case with a `fresh` heartbeat and a 500 ms staleness limit has 4 lookups, and each run of the lookup program takes 200 ms
+- **THEN** every run reads a heartbeat less than 500 ms old
 
 ##### Example: lookup program protocol
 

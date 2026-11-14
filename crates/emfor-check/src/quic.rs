@@ -45,6 +45,11 @@ const STATUS_ERROR: &str = "must be a status code from 100 to 599 or a range lo-
 
 /// The most body bytes read for `expect_body`.
 const MAX_BODY_READ: usize = 65536;
+/// The largest response header section accepted
+/// (SETTINGS_MAX_FIELD_SECTION_SIZE, RFC 9114 section 4.2.2): as much as
+/// the body read, and far more than a health endpoint sends. h3's default
+/// is unlimited.
+const MAX_FIELD_SECTION: u64 = 65536;
 /// How much of the body a failed `expect_body` reason shows.
 const EXCERPT: usize = 64;
 /// The TLS alert `no_application_protocol` (RFC 7301).
@@ -362,16 +367,19 @@ fn http3_error(e: impl std::fmt::Display) -> CheckOutcome {
 /// The HTTP/3 `GET` on `connection`, judged by `expect_status` and
 /// `expect_body`; then the connection is closed with `H3_NO_ERROR`.
 async fn request(connection: quinn::Connection, http3: &Http3, authority: &str) -> CheckOutcome {
-    let (outcome, control, _send) =
-        match h3::client::new(h3_quinn::Connection::new(connection.clone())).await {
-            Ok((mut driver, mut send)) => {
-                // The connection's control streams run beside the request.
-                let control = tokio::spawn(async move { driver.wait_idle().await });
-                let outcome = exchange(&mut send, http3, authority).await;
-                (outcome, Some(control), Some(send))
-            }
-            Err(e) => (http3_error(e), None, None),
-        };
+    let (outcome, control, _send) = match h3::client::builder()
+        .max_field_section_size(MAX_FIELD_SECTION)
+        .build(h3_quinn::Connection::new(connection.clone()))
+        .await
+    {
+        Ok((mut driver, mut send)) => {
+            // The connection's control streams run beside the request.
+            let control = tokio::spawn(async move { driver.wait_idle().await });
+            let outcome = exchange(&mut send, http3, authority).await;
+            (outcome, Some(control), Some(send))
+        }
+        Err(e) => (http3_error(e), None, None),
+    };
     // An HTTP/3 or body failure caused by the connection ending (the peer
     // closed it, a reset, an idle timeout) reads as that connection error,
     // which comes first in the order of reasons. A close by h3 itself is
@@ -1026,6 +1034,17 @@ mod tests {
             o["http3"] = json!(true);
             assert_eq!(s.check(o), want, "{extra}");
         }
+    }
+
+    #[test]
+    fn http3_response_headers_are_limited() {
+        let big: &'static str = Box::leak("x".repeat(MAX_FIELD_SECTION as usize).into_boxed_str());
+        let s = server(Serve::Http(200, Some(("x-big", big)), ""));
+        let got = s.check(json!({"http3": true}));
+        assert!(
+            matches!(&got, CheckOutcome::Down(r) if r.starts_with("query: HTTP/3: ")),
+            "{got:?}"
+        );
     }
 
     #[test]

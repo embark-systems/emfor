@@ -125,6 +125,8 @@ pub struct Failure(pub String);
 pub struct Reader {
     env: Env<WithoutTls>,
     db: Database<Str, Str>,
+    /// Device and inode of the store file when it was opened.
+    file: (u64, u64),
 }
 
 impl Reader {
@@ -136,13 +138,13 @@ impl Reader {
         // LMDB would create `<path>-lock` even when the data file is missing,
         // and a lock file owned by another user can keep the daemon from
         // starting; check first, like the clients.
-        match std::fs::metadata(path) {
-            Ok(_) => {}
+        let file = match std::fs::metadata(path) {
+            Ok(m) => file_id(&m),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(failed(&"no such file"));
             }
             Err(e) => return Err(failed(&e)),
-        }
+        };
         // SAFETY: opened read-only; only the daemon writes the file and
         // nothing truncates it.
         let env = unsafe {
@@ -158,7 +160,14 @@ impl Reader {
             .map_err(|e| failed(&e))?
             .ok_or_else(|| failed(&"no database"))?;
         rtxn.commit().map_err(|e| failed(&e))?;
-        Ok(Reader { env, db })
+        Ok(Reader { env, db, file })
+    }
+
+    /// True when `path` is no longer the file this reader opened: it was
+    /// replaced (the daemon replaces a damaged store) or removed. Reading
+    /// on would show the old file for good.
+    pub fn replaced(&self, path: &Path) -> bool {
+        std::fs::metadata(path).map_or(true, |m| file_id(&m) != self.file)
     }
 
     /// Read the meta keys and every service record in one transaction.
@@ -217,6 +226,11 @@ impl Reader {
             history,
         })
     }
+}
+
+fn file_id(m: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (m.dev(), m.ino())
 }
 
 /// Keep only the service named `name` (case and one trailing dot ignored).
@@ -998,10 +1012,22 @@ pub fn main(config_path: &Path, args: &StatusArgs) -> ExitCode {
         };
         lines.iter().try_for_each(|l| writeln!(out, "{l}"))
     };
-    if written.is_err() {
-        return ExitCode::from(EXIT_FAILURE);
+    ExitCode::from(exit_after_write(written, exit_status(&snap, now)))
+}
+
+/// Exit status once the output is written (`status` when it was). The
+/// reader closing the pipe early (`emfor status | head -1`) is not a
+/// failure: the status is still the one the output describes. Any other
+/// write error is reported and exits 2.
+fn exit_after_write(written: std::io::Result<()>, status: u8) -> u8 {
+    match written {
+        Ok(()) => status,
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => status,
+        Err(e) => {
+            eprintln!("cannot write the output: {e}");
+            EXIT_FAILURE
+        }
     }
-    ExitCode::from(exit_status(&snap, now))
 }
 
 /// Give the terminal back: line wrapping on, cursor shown, main screen,
@@ -1174,6 +1200,11 @@ fn read_frame(
     style: Style,
 ) -> (Vec<String>, Vec<String>) {
     let now = unix_ms();
+    if reader.as_ref().is_ok_and(|r| r.replaced(&store.path)) {
+        // Closed before opening again: heed refuses a second open of
+        // the same path.
+        *reader = Err(Failure(String::new()));
+    }
     if reader.is_err() {
         *reader = Reader::open(store);
     }
@@ -2421,5 +2452,65 @@ mod tests {
         assert_eq!(key_action(&released), None);
         let repeated = KeyEvent::new_with_kind(KeyCode::Down, none, KeyEventKind::Repeat);
         assert_eq!(key_action(&repeated), Some(Action::LineDown));
+    }
+
+    /// `emfor status | head -1`: the reader closing the pipe early is not a
+    /// failure; the exit status is the one the output describes. Other
+    /// write errors exit 2.
+    #[test]
+    fn exit_status_after_writing() {
+        use std::io::{Error, ErrorKind};
+        for status in [0, EXIT_PROBLEM] {
+            assert_eq!(exit_after_write(Ok(()), status), status);
+            let epipe = Err(Error::from(ErrorKind::BrokenPipe));
+            assert_eq!(exit_after_write(epipe, status), status);
+            let full = Err(Error::other("No space left on device"));
+            assert_eq!(exit_after_write(full, status), EXIT_FAILURE);
+        }
+    }
+
+    /// Spec "Status watch mode": a store file replaced while `--watch` runs
+    /// (the daemon replaces a damaged one at start) is read from the next
+    /// refresh on, not the old file.
+    #[test]
+    fn watch_reopens_a_replaced_store() {
+        let write = |dir: &Path, name: &str| {
+            let cfg = crate::store::tests::cfg(dir);
+            let store = crate::store::Store::open(&cfg).unwrap();
+            let mut rec = api();
+            rec.name = name.into();
+            let rec = serde_json::to_string(&rec).unwrap();
+            store
+                .write(|txn, db| {
+                    db.put(txn, KEY_SCHEMA_VERSION, "1")?;
+                    db.put(txn, KEY_HEARTBEAT, "1")?;
+                    db.put(txn, &format!("svc/{name}"), &rec)?;
+                    Ok(())
+                })
+                .unwrap();
+            cfg
+        };
+        let (dir, other) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let cfg = write(dir.path(), "old.svc.emfor");
+        let mut reader = Err(Failure(String::new()));
+        let mut state = Watch::default();
+        let mut frame = || {
+            let (_, content) = read_frame(&cfg, None, &mut reader, &mut state, Style::default());
+            content.join("\n")
+        };
+        let f = frame();
+        assert!(f.contains("old.svc.emfor"), "{f}");
+        // As the daemon does: the old file moved aside, its lock file
+        // removed, a new file in its place.
+        let new = write(other.path(), "new.svc.emfor");
+        std::fs::rename(&cfg.path, dir.path().join("state.mdb.corrupt")).unwrap();
+        std::fs::remove_file(crate::store::lock_file_path(&cfg.path)).unwrap();
+        std::fs::rename(&new.path, &cfg.path).unwrap();
+        let f = frame();
+        assert!(f.contains("new.svc.emfor"), "{f}");
+        // Removed: an error, not the old file.
+        std::fs::remove_file(&cfg.path).unwrap();
+        let f = frame();
+        assert!(f.contains("error: cannot open store"), "{f}");
     }
 }

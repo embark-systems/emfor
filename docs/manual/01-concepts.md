@@ -128,8 +128,10 @@ authenticated UDP messages:
 A report never changes a backend's state by itself. What does is the
 **majority vote**: with at least three live members (this one included),
 every backend has three **assigned checkers**, chosen from the live members
-by hashing the service, the backend and each member's address, so every
-member picks the same three. After each of its own checks an assigned
+by hashing the service, the backend and each member's address, so members
+that see the same live members pick the same three. For a few seconds after
+a member starts, stops or becomes unreachable, members may disagree on who
+is live and so on the three. After each of its own checks an assigned
 checker sends its result (`up` or `down`) to the others. After each of its
 own checks, every member counts the results of that backend's assigned
 checkers that are recent (from the last three of the sender's intervals)

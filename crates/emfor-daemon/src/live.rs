@@ -178,25 +178,53 @@ impl LiveState {
         v.ready = true;
     }
 
-    /// Store `record` after one check of `backend`, counting its outcome
-    /// and transition under the same lock.
+    /// Take over what one change of backend `index` of `record` touched (that
+    /// backend, `all_down` and `pool`), counting the check's outcome (when
+    /// it was a check) and the transition under the same lock. Only those
+    /// parts are copied: copying the whole record on every check would cost
+    /// time in the number of backends, all of it holding the lock that DNS
+    /// answers wait on.
     pub(crate) fn update_backend(
         &self,
         record: &ServiceRecord,
-        backend: &str,
-        outcome: CheckOutcome,
+        index: usize,
+        outcome: Option<CheckOutcome>,
         transition: Option<Transition>,
     ) {
+        let Some(backend) = record.backends.get(index) else {
+            return;
+        };
         let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
         if let Some(s) = v.services.get_mut(&record.name) {
-            s.record = record.clone();
+            let live = &mut s.record;
+            match live.backends.get_mut(index) {
+                Some(b) if b.id == backend.id => b.clone_from(backend),
+                // The writer and the live view take the same layout, so
+                // this does not happen; copy all rather than go astray.
+                _ => live.clone_from(record),
+            }
+            live.all_down = record.all_down;
+            if live.pool != record.pool {
+                live.pool.clone_from(&record.pool);
+            }
         }
-        let key = (record.name.clone(), backend.to_owned());
+        let key = (record.name.clone(), backend.id.clone());
         if let Some(c) = v.counters.get_mut(&key) {
-            c.checks[BackendCounters::outcome_index(outcome)] += 1;
+            if let Some(outcome) = outcome {
+                c.checks[BackendCounters::outcome_index(outcome)] += 1;
+            }
             if let Some(t) = transition {
                 c.transitions[BackendCounters::state_index(t.to)] += 1;
             }
+        }
+    }
+
+    /// Count the outcome of a check that changed nothing else.
+    pub(crate) fn count_check(&self, service: &Arc<str>, backend_id: &str, outcome: CheckOutcome) {
+        let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
+        let key = (service.to_string(), backend_id.to_owned());
+        if let Some(c) = v.counters.get_mut(&key) {
+            c.checks[BackendCounters::outcome_index(outcome)] += 1;
         }
     }
 
@@ -246,6 +274,52 @@ mod tests {
             backends: vec![],
         };
         (name.to_string(), LiveService::new(record, None))
+    }
+
+    /// One backend's change reaches the live record, with `all_down` and
+    /// `pool`; the other backends are left as they are.
+    #[test]
+    fn update_backend_copies_the_changed_parts() {
+        use emfor_format::BackendRecord;
+        let backend = |id: &str| BackendRecord {
+            id: id.into(),
+            ip: "10.0.0.1".into(),
+            port: 80,
+            weight: 1,
+            site: None,
+            backup: false,
+            state: HealthState::Unknown,
+            checked_at: None,
+            reason: None,
+            latency_us: None,
+            recovered_at: None,
+        };
+        let live = LiveState::default();
+        let (name, mut s) = svc("a");
+        s.record.balance = Balance::Fastest;
+        s.record.backends = vec![backend("x"), backend("y")];
+        let mut record = s.record.clone();
+        live.replace([(name, s)].into_iter().collect(), None);
+        record.backends[1].state = HealthState::Healthy;
+        record.backends[1].latency_us = Some(5);
+        record.backends[0].reason = Some("not taken over".into());
+        record.all_down = false;
+        record.pool = Some(vec!["y".into()]);
+        let t = Transition {
+            from: HealthState::Unknown,
+            to: HealthState::Healthy,
+        };
+        live.update_backend(&record, 1, Some(CheckOutcome::Up), Some(t));
+        live.update_backend(&record, 1, None, None);
+        let v = live.read();
+        let r = &v.services["a"].record;
+        assert_eq!(r.backends[1], record.backends[1]);
+        assert_eq!(r.backends[0].reason, None);
+        assert!(!r.all_down);
+        assert_eq!(r.pool.as_deref(), Some(&["y".to_owned()][..]));
+        let c = v.counters[&("a".to_owned(), "y".to_owned())];
+        assert_eq!(c.checks, [1, 0, 0]);
+        assert_eq!(c.transitions, [0, 1, 0]);
     }
 
     #[test]

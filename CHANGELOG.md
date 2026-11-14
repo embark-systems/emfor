@@ -13,6 +13,64 @@
   logs that the plugin stopped answering, kills it and restarts it with
   the usual backoff. A plugin that answers within `timeout_ms` is never
   affected (see [Plugin protocol](docs/plugins/protocol-v1.md#rules)).
+- A single key or value in the store that is not UTF-8 no longer blocks
+  the daemon. Under `svc/` it made every commit fail from start-up on,
+  so clients saw a stale store for good; under `hist/` it kept every
+  service's history from loading. Such entries are now deleted, or
+  discarded with a warning, on their own.
+- `http` `host_header` must be a host with an optional port
+  (`api.internal`, `api.internal:8443`, `[2001:db8::1]`). Values with
+  spaces, a path or a scheme passed `check-config` but made every check
+  down, or silently checked whatever host the name resolved to instead
+  of the backend.
+- State changes already queued when one is written are committed in the
+  same transaction, so a burst of changes (a network split) costs one
+  commit, not one per backend.
+- A reload that changes `interval` or `jitter` applies to the wait
+  already under way. Before, going from `10m` to `2s` took up to 11
+  minutes to apply.
+- The 200ms checks while a backend is `unknown` stop after `rise + fall`
+  in a row; results that never reach either count no longer check about
+  5 times a second for good.
+- `interval` is at most `24h` and `timeout` at least `10ms`. Larger
+  intervals could panic the check task (with a huge `fall`), and a 1ms
+  timeout gave plugins 0ms.
+- `[store] map_size` is rounded up to a multiple of 64KiB. A size LMDB
+  refuses (such as `"1048577"`) passed `check-config` and then stopped
+  the daemon from starting.
+- A check task that is restarted after a bug now records the backend's
+  move to `unknown` as a transition (reason `check task restarted`);
+  before, the stored state changed silently.
+- The DNS server's view of a service is updated per backend instead of
+  copying the whole service on every check.
+- DNS over TCP serves at most 128 connections at once and closes a
+  connection with no query for 5 seconds, so clients can no longer use
+  up the daemon's file descriptors.
+- If a DNS listener stops while the daemon runs, the daemon logs it and
+  exits with status 70, so the service manager restarts it; before, DNS
+  went silent.
+- DNS answers BADVERS to EDNS versions above 0 and REFUSED to classes
+  other than IN; before, a CH query got IN records.
+- DNS compares names label by label: a label containing a `.` byte no
+  longer puts a name outside the zone inside it.
+- Over UDP, a reply whose single record or SOA does not fit (names near
+  255 bytes) is truncated by emfor itself and keeps its EDNS record.
+- Plugins run in a process group of their own. When a plugin exits, is
+  stopped, or is killed because it stopped answering, the processes it
+  started are killed too; before, they could outlive it.
+- A plugin's stderr lines and invalid stdout lines are rate limited: up
+  to 100 at once, then 10 a second each. The log notes how many lines
+  were dropped, so a plugin writing in a loop can no longer fill the
+  log.
+- A `ca_file` is parsed again only when it changes (inode, size or
+  times), not on every check. A replaced file still takes effect at the
+  next check.
+- http clients for checks (one per backend with a domain `host_header`)
+  are built off the async worker threads, because building one reads the
+  system CA store. The peer `secret_file` is read off them too.
+- Documented: a connection that fails because this host has no route to
+  the backend, or its own firewall blocks it, is `down`, not `error`.
+  That has always been the behaviour.
 
 ### Peers
 
@@ -23,9 +81,32 @@
   `fall` up to about 90 times and marked a backend down that the checkers
   themselves still saw healthy. Now each result counts at one check time;
   a check time decided by votes alone needs a new vote, and an own check
-  that only repeats counted `down` votes while it passes changes nothing.
-  With equal intervals the results arrive once per check time and nothing
-  changes (see [spec peer-group](docs/spectra/specs/peer-group/spec.md)).
+  that only repeats counted `down` votes while it passes changes nothing
+  but is still counted in `emfor_backend_checks_total`. With equal
+  intervals most check times get new results, so little changes (see
+  [spec peer-group](docs/spectra/specs/peer-group/spec.md)).
+- New optional `[peers] previous_secret_file`: the secret `secret_file`
+  held before its last change. A daemon restarted within 120 seconds of
+  that change keeps signing with and accepting the old secret as if it
+  had not restarted. Before, members whose file had not changed yet
+  rejected it as `auth` until they changed. See
+  [`[peers]`](docs/manual/03-configuration.md#peers).
+- A second change of `secret_file` within 60 seconds of the first no
+  longer signs for a minute with the intermediate secret, which members
+  whose file had not changed did not know. The daemon keeps signing with
+  the earlier one, and accepts every secret replaced in the last 120
+  seconds.
+- Peer messages that arrive out of order are accepted once, instead of
+  being dropped as `replay`. An `EMP1` message whose tag does not match
+  now counts as `auth` even when its payload is not JSON: the tag is
+  checked before the payload is parsed. A message of a kind this version
+  does not know is accepted (for liveness) even when it reuses a known
+  field name with another type.
+- A flood of datagrams from many source addresses no longer suppresses
+  the warnings about real members' dropped messages.
+- A `result` or `down` sent after a reload that changed `check`,
+  `check_options` or `timeout` during the check now carries the check
+  definition digest the check ran with, not the new one.
 
 ### emfor-check
 
@@ -44,6 +125,58 @@
   provisional response, holding a worker thread at full CPU, with no
   timeout to end it. Such a response is now `down` with
   `query: response longer than 65536 bytes`.
+- A check that panics is answered `error` with `check panicked:
+  <message>` (emfor-plugin crate). Until now it sent no answer, so the
+  daemon waited out the timeout.
+- `mysql`: a NULL or non-integer answer to `SELECT 1` or
+  `@@global.read_only` is down with `query: <query> answered <value>,
+  want an integer`. Until now the check panicked and the backend ended
+  up `unknown`.
+- `mysql`: a check cut off by its timeout closes its connection within 1
+  s. mysql_async's cleanup task waited with no limit for a server that
+  stalled mid-result, leaking a task and a socket at every check.
+- `mysql`: a CA certificate that cannot be used as a root is skipped, as
+  in the other plugins, instead of failing every TLS handshake.
+- `redis`: a reply over 2 MiB is down with `query: invalid reply: reply
+  too long`, and a partly received reply is parsed again only after a
+  line feed arrives.
+- `mongodb`: a `hello` reply nesting documents more than 100 deep is
+  down with `query: malformed reply`. A reply of about 8000 levels
+  overflowed the stack and aborted the plugin.
+- `mongodb`: validation refuses a `password_file` whose password is not
+  printable ASCII. Until then such a service was `error` at every check.
+- `quic`: HTTP/3 response headers are limited to 65536 bytes (h3 allowed
+  any size).
+
+### emfor status
+
+- `emfor status | head -1` keeps the normal exit status instead of
+  exiting 2 silently; other output write errors are printed.
+- `--watch` opens the store again when the file is replaced, instead of
+  showing the old file as stale forever.
+
+### Clients
+
+- A running application keeps reading the store after the daemon is
+  restarted with a larger `[store] map_size` and the store grows past
+  the old size. Before, every lookup failed with `UNAVAILABLE`
+  (`MDB_MAP_RESIZED`) until the application restarted.
+- A child forked while other threads of the parent were looking up no
+  longer hangs in its first lookup.
+- A store file that exists but cannot be opened is tried again at most
+  once a second; lookups in between fail with the same `UNAVAILABLE`
+  error. A missing store is still tried on every lookup.
+- `emfor.h` no longer defines the internal macros `REPLACE_CHECK_MS` and
+  `MAX_STICKY_WEIGHT`.
+- Python: the library file named for this release (`libemfor.so.0.4`,
+  `libemfor.0.4.dylib`) is tried before what `ctypes.util.find_library`
+  finds, which may be another release's.
+- C API: `emfor_lookup` called from a thread-local destructor during
+  thread exit returns a status instead of aborting the process.
+
+### Deployment
+
+- The example systemd unit sets `LimitNOFILE=65536`.
 
 ### Development
 
@@ -52,6 +185,10 @@
   the layout `tests/plugins/run.sh` uses for MariaDB. They pass on MySQL
   8.0 and 8.4, so the 0.4.0 known limit that the plugin was checked only
   against MariaDB no longer holds for those versions.
+- `emfor-conformance` writes a new store just before each run of the
+  lookup program, so slow runs earlier in a case cannot make a `fresh`
+  store stale. A failure in a run longer than the staleness limit says
+  so. An expected error now needs a non-empty message.
 
 ## 0.4.0 — 2026-11-14
 

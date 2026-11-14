@@ -99,7 +99,8 @@ again in a child after `fork`:
 
 `emfor_lookup` is safe from many threads at once. Round-robin turns are
 counted per process, starting at a random backend. It also works in a child
-after `fork`, including when the parent looked up before forking.
+after `fork`, including when the parent looked up before forking or other
+threads of the parent were looking up at the moment of the fork.
 
 Applications follow a store file that is replaced while they run: the
 daemon moved a damaged store aside at start, or the file was deleted and the
@@ -110,6 +111,12 @@ looks up again. No restart is needed. It checks at most once every 100 ms in
 a process (one `stat`), so a replacement is followed within about 100 ms and
 lookups in a stopped daemon's store stay fast. If the new file cannot be
 opened yet, lookups keep using the old one.
+
+A store the daemon grows past the size the library mapped it with (after a
+restart with a larger `map_size`) is mapped again with the new size. A
+store file that exists but cannot be opened is tried again at most once a
+second, and lookups in between fail with the same `EMFOR_UNAVAILABLE`
+error; a missing one is tried on every lookup.
 
 Do not delete the lock file (`<store>-lock`) alone, and start the daemon
 before applications that run as root or as the daemon's user. If the lock

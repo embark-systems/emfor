@@ -53,7 +53,7 @@ The daemon and a plugin SHALL exchange one JSON object per line, UTF-8, daemon t
 ---
 ### Requirement: Plugin check results
 
-A plugin answer SHALL become the check result given by its `result` and `reason`; a `down` or `error` answer without `reason` SHALL use reason `no reason given`. An answer with any other `result` value SHALL make the check `error` with reason `invalid plugin response`. A stdout line that is not valid JSON or has an unknown `type` SHALL be logged at `warn` and ignored. An answer whose `id` matches no pending request SHALL be ignored. Each line the plugin writes to stderr SHALL be logged at `info` with the plugin name. A plugin built on the `emfor-plugin` crate SHALL send at most the first 512 characters of a reason, followed by `…` when the reason was longer, so the answer line stays within the 65536-byte line limit whatever text a backend returns; the daemon's reason normalization (spec health-checking) keeps no more than that.
+A plugin answer SHALL become the check result given by its `result` and `reason`; a `down` or `error` answer without `reason` SHALL use reason `no reason given`. An answer with any other `result` value SHALL make the check `error` with reason `invalid plugin response`. A stdout line that is not valid JSON or has an unknown `type` SHALL be logged at `warn` and ignored. An answer whose `id` matches no pending request SHALL be ignored. Each line the plugin writes to stderr SHALL be logged at `info` with the plugin name. Stderr lines and invalid stdout lines SHALL each be rate limited per plugin process: up to 100 lines in a burst, refilled at 10 lines a second. A line over the limit SHALL NOT be logged; the number of such lines SHALL be logged at `warn` as `plugin <name>: suppressed <n> stderr lines` (or `invalid stdout lines`) right before the next line of that stream that is logged, and when the stream ends. (100 lines leave room for a startup message or a stack trace; 10 a second keeps an occasional line per check, while a plugin writing in a loop cannot fill the log.) A plugin built on the `emfor-plugin` crate SHALL send at most the first 512 characters of a reason, followed by `…` when the reason was longer, so the answer line stays within the 65536-byte line limit whatever text a backend returns; the daemon's reason normalization (spec health-checking) keeps no more than that. Such a plugin SHALL answer a check whose code panics `error` with reason `check panicked: <message>` (or `check panicked` when the panic carries no text), and SHALL keep serving other requests.
 
 #### Scenario: Plugin reports down
 
@@ -64,6 +64,11 @@ A plugin answer SHALL become the check result given by its `result` and `reason`
 
 - **WHEN** a plugin writes `connection pool exhausted` to stderr
 - **THEN** the daemon log has an `info` line containing the plugin name and `connection pool exhausted`
+
+#### Scenario: Plugin log lines are rate limited
+
+- **WHEN** plugin `p` writes 1000 lines to stderr at once and then exits
+- **THEN** the daemon logs the first 100 of them and one `warn` line `plugin p: suppressed 900 stderr lines`
 
 ---
 ### Requirement: Plugin process supervision
@@ -146,12 +151,17 @@ tests:
 ---
 ### Requirement: Plugins on reload
 
-On `SIGHUP` reload, a plugin whose `command` is unchanged SHALL keep its running process. A plugin that is new or whose `command` changed SHALL be started before the new config is validated. If the reload is applied, plugins that were removed or replaced SHALL be stopped, and services whose plugin `command` changed SHALL restart their backends from `unknown`. If the reload is rejected, only the plugin processes started for that reload SHALL be stopped, and the previous plugins and checks SHALL keep running unchanged. If a kept plugin is not running when the reload is validated (it is waiting to restart), a service whose plugin and `check_options` are the same as in the applied config SHALL be accepted without a `validate` request, and any other `check_options` for that plugin SHALL be a config error at `services."<service>".check_options` with message `plugin <name> unavailable`. Stopping a plugin SHALL close its stdin and SHALL kill it if it has not exited within 2 seconds. On daemon shutdown every plugin SHALL be stopped.
+On `SIGHUP` reload, a plugin whose `command` is unchanged SHALL keep its running process. A plugin that is new or whose `command` changed SHALL be started before the new config is validated. If the reload is applied, plugins that were removed or replaced SHALL be stopped, and services whose plugin `command` changed SHALL restart their backends from `unknown`. If the reload is rejected, only the plugin processes started for that reload SHALL be stopped, and the previous plugins and checks SHALL keep running unchanged. If a kept plugin is not running when the reload is validated (it is waiting to restart), a service whose plugin and `check_options` are the same as in the applied config SHALL be accepted without a `validate` request, and any other `check_options` for that plugin SHALL be a config error at `services."<service>".check_options` with message `plugin <name> unavailable`. Stopping a plugin SHALL close its stdin and SHALL kill it if it has not exited within 2 seconds. On daemon shutdown every plugin SHALL be stopped. Each plugin SHALL be started in a process group of its own, and whenever a plugin process exits, is stopped or is killed (including when it stopped answering), the daemon SHALL kill every process left in that group.
 
 #### Scenario: Unchanged plugin survives reload
 
 - **WHEN** a reload changes only a service's `interval` and the service uses plugin `redis`
 - **THEN** the `redis` plugin process keeps the same process id
+
+#### Scenario: Processes a plugin started are stopped with it
+
+- **WHEN** plugin `p` started a background process and is then stopped, crashes, or is killed because it stopped answering
+- **THEN** that background process is killed too
 
 #### Scenario: Reload while a plugin is restarting
 

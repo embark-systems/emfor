@@ -2,10 +2,10 @@
 
 use std::path::PathBuf;
 
-pub const DEFAULT_STORE: &str = "/var/lib/emfor/state.mdb";
-pub const DEFAULT_MAX_STALENESS_MS: u64 = 3000;
-pub const ENV_STORE: &str = "EMFOR_STORE";
-pub const ENV_MAX_STALENESS: &str = "EMFOR_MAX_STALENESS";
+pub(crate) const DEFAULT_STORE: &str = "/var/lib/emfor/state.mdb";
+pub(crate) const DEFAULT_MAX_STALENESS_MS: u64 = 3000;
+pub(crate) const ENV_STORE: &str = "EMFOR_STORE";
+pub(crate) const ENV_MAX_STALENESS: &str = "EMFOR_MAX_STALENESS";
 
 /// Store path and maximum staleness from the environment. An invalid
 /// staleness is kept as an error so every lookup reports it.

@@ -40,7 +40,7 @@ sync = false
 | Key | 預設值 | 意義 |
 | --- | --- | --- |
 | `path` | `/var/lib/emfor/state.mdb` | store 檔案。client 也找這裡，除非 `EMFOR_STORE` 另有指定。 |
-| `map_size` | `"64MiB"` | store 能成長到的最大大小；至少 `1MiB`。達到上限時 commit 會以 `MDB_MAP_FULL` 失敗。 |
+| `map_size` | `"64MiB"` | store 能成長到的最大大小；至少 `1MiB`，並無條件進位到 `64KiB` 的倍數（LMDB 要求是 page size 的倍數）。達到上限時 commit 會以 `MDB_MAP_FULL` 失敗。 |
 | `file_mode` | `"0644"` | 建立 store 檔案時的權限。應用程式需要能讀取。 |
 | `lock_file_mode` | `"0666"` | `<path>-lock` 的權限。應用程式需要能寫入。保留預設值前請先看[誰能使用 store](08-operations.md#誰能使用-store)。 |
 | `sync` | `false` | `true` 會在每次 commit 時寫入磁碟。見[磁碟上的 store](08-operations.md#磁碟上的-store)。 |
@@ -89,11 +89,23 @@ secret_file = "/etc/emfor/peers.key"
 | `listen` | 必填 | 這個 daemon 在群組中的 UDP 位址，必須是 `members` 之一。要寫具體位址，不能是 `0.0.0.0` 或 `::`；其他成員會檢查訊息是否來自這個位址。慣用的 port 是 5302。 |
 | `members` | 必填 | 每個成員的 `listen`，包含這個 daemon 自己：2 到 64 個位址，不可重複，和 `listen` 一樣全是 IPv4 或全是 IPv6。同一個機房的每台主機可以用同一份清單。 |
 | `secret_file` | 必填 | 共用密鑰的絕對路徑，用來驗證並加密每則訊息：去掉一個結尾換行後至少 32 bytes，其他使用者不能讀取（`chmod 600` 或 `640`）。 |
+| `previous_secret_file` | 無 | 選用。`secret_file` 上次改變前那把密鑰的絕對路徑，條件與 `secret_file` 相同。只在啟動時讀取，讓更換密鑰期間重新啟動的 daemon 仍像沒有重新啟動一樣，用舊密鑰簽署並接受它（見下文）。 |
 | `encrypt` | `true` | `true` 時每則訊息都加密送出（`EMP2`：ChaCha20-Poly1305，金鑰由密鑰導出）；`false` 時只簽署（`EMP1`：HMAC-SHA256），網路上看得到 backend 名稱、位址與原因。兩種格式都一律接受；`true` 時，對仍送 `EMP1` 的每個成員，daemon 每分鐘記一行警告。 |
 
 只有當某個服務在兩邊的檢查定義相同時，成員之間才會分享該服務的回報：相同的 `check`、`check_options` 與 `timeout`。其他設定（`interval`、`rise`、`fall`、backend 清單）可以不同。
 
-密鑰檔每秒重新讀取一次。要更換密鑰時，在一分鐘內把新密鑰寫到每台主機：主機自己的檔案改變後，仍用舊密鑰簽署 60 秒、接受舊密鑰 120 秒，所以期間不會丟失訊息。和接收端時鐘相差超過 5 秒的訊息會被丟棄，所以要讓主機時鐘保持同步（NTP）。
+密鑰檔每秒重新讀取一次。要更換密鑰時，在一分鐘內把新密鑰寫到每台主機：主機自己的檔案改變後，仍用舊密鑰簽署 60 秒、接受舊密鑰 120 秒，所以期間不會丟失訊息。如果檔案在這 60 秒內又改了一次（例如修正寫錯的密鑰），主機會繼續用先前簽署所用的那把密鑰，簽到最後一次改變後 60 秒。
+
+舊密鑰只保存在記憶體中。更換密鑰期間重新啟動的 daemon 只知道新密鑰：檔案還沒改的成員會丟棄它的訊息（`auth`），它也會丟棄那些成員的訊息，直到那些成員的檔案改變為止。若要在更換期間安全地重新啟動，把舊密鑰留在另一個檔案，並用 `previous_secret_file` 指向它，例如：
+
+```sh
+cp -p /etc/emfor/peers.key /etc/emfor/peers.key.old  # 保留權限
+cat new.key > /etc/emfor/peers.key  # 每台主機寫入同一把新密鑰；權限不變
+```
+
+這樣，在 `secret_file` 改變後 120 秒內（依檔案的修改時間）啟動的 daemon，會用舊密鑰簽署到該次改變後 60 秒，並接受舊密鑰到該次改變後 120 秒。之後的啟動會忽略 `previous_secret_file`，所以它可以一直留在設定裡。
+
+和接收端時鐘相差超過 5 秒的訊息會被丟棄，所以要讓主機時鐘保持同步（NTP）。
 
 加密是這個版本新增的。0.3.0 的成員只送、只收 `EMP1`，會丟棄加密的訊息（算在 `malformed`），所以升級群組時，每台主機升級時先設 `encrypt = false`；所有成員都升級後，刪掉這一行（或設 `encrypt = true`），再讓每個 daemon reload。加密沒有前向保密：日後取得密鑰的人可以讀出先前錄下的訊息。請照上面的方式定期更換密鑰，並讓密鑰檔只有 daemon 能讀。
 
@@ -116,8 +128,8 @@ slow_start = "0s"
 
 | Key | 規則 | 意義 |
 | --- | --- | --- |
-| `interval` | 至少 `100ms` | 一個 backend 的一次檢查結束到下一次開始的時間。 |
-| `timeout` | 大於 0，不超過 `interval` | 一次檢查可以花多久。 |
+| `interval` | `100ms` 到 `24h` | 一個 backend 的一次檢查結束到下一次開始的時間。 |
+| `timeout` | 至少 `10ms`，不超過 `interval` | 一次檢查可以花多久。plugin 收到的是整數毫秒，並扣掉一小段餘裕。 |
 | `rise` | 至少 1 | 連續通過幾次後 backend 變成 healthy。 |
 | `fall` | 至少 1 | 連續失敗幾次後 backend 變成 unhealthy。 |
 | `jitter` | `0%` 到 `50%` | `interval` 的隨機浮動，讓檢查不會擠在同一時刻。 |
@@ -205,7 +217,7 @@ services."api.svc.emfor".timeout: timeout must not exceed interval
 | --- | --- |
 | 新增或移除服務與 backend | 套用；新的 backend 從 `unknown` 開始。 |
 | 服務的 `check` 或 `check_options` | 套用；它的 backend 從 `unknown` 重新開始。 |
-| `interval`、`timeout`、`rise`、`fall`、`jitter`、`on_all_down`、`peers` | 套用；backend 保留原狀態。 |
+| `interval`、`timeout`、`rise`、`fall`、`jitter`、`on_all_down`、`peers` | 套用；backend 保留原狀態。新的 `interval` 或 `jitter` 也套用到正在進行的等待：下一次檢查改在上一次結束後經過新的等待時間時開始，若那個時間已經過了就立刻開始。 |
 | `balance`、`weight`、`site`（最上層與 backend）、`backup`、`dns_ttl`、`slow_start` | 套用；backend 保留狀態，正在慢啟動的 backend 保留它的恢復時間。 |
 | `[dns] zone`、`[dns] ttl` | 套用。 |
 | `[log] level` | 套用（除非設定了 `RUST_LOG`）。 |
@@ -213,5 +225,5 @@ services."api.svc.emfor".timeout: timeout must not exceed interval
 | `[store]` 中的任何設定 | 拒絕；需要重新啟動。 |
 | `[dns] listen`、新增或移除 `[dns]` | 拒絕（`dns listen settings require restart`）。 |
 | `[metrics] listen`、新增或移除 `[metrics]` | 拒絕（`metrics listen settings require restart`）。 |
-| `[peers] members`、`[peers] secret_file`、`[peers] encrypt` | 套用；新加入的成員從不存活開始。 |
+| `[peers] members`、`[peers] secret_file`、`[peers] encrypt` | 套用；新加入的成員從不存活開始。`previous_secret_file` 會檢查，但只在啟動時讀取。 |
 | `[peers] listen`、新增或移除 `[peers]` | 拒絕（`peers listen settings require restart`）。 |

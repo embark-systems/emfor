@@ -35,6 +35,11 @@ Restart=on-failure
 RestartSec=2s
 RestartPreventExitStatus=1 2
 
+# Checks, plugins and DNS and metrics connections all use file descriptors;
+# systemd's default soft limit is 1024. DNS over TCP serves at most 128
+# connections at once.
+LimitNOFILE=65536
+
 # /var/lib/emfor, owned by the emfor user, for the default [store] path.
 # Mode 0755 so applications using an emfor client can reach the store; the
 # store files themselves get [store] file_mode and lock_file_mode. Do not

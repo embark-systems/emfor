@@ -78,10 +78,13 @@ pub struct ValidateError {
 }
 
 /// `timeout_ms` sent with a check: the service timeout minus a margin of
-/// `min(100ms, timeout / 10)`, so the plugin can answer `down` in time.
+/// `min(100ms, timeout / 10)`, so the plugin can answer `down` in time; at
+/// least 1, since a plugin given 0 would time out before it starts.
 pub fn timeout_ms(timeout: Duration) -> u64 {
     let margin = (timeout / 10).min(Duration::from_millis(100));
-    (timeout - margin).as_millis() as u64
+    u64::try_from((timeout - margin).as_millis())
+        .unwrap_or(u64::MAX)
+        .max(1)
 }
 
 /// Convert `check_options` to JSON. TOML datetimes become RFC 3339 strings.
@@ -140,6 +143,9 @@ mod tests {
         assert_eq!(timeout_ms(Duration::from_secs(1)), 900);
         assert_eq!(timeout_ms(Duration::from_secs(5)), 4900);
         assert_eq!(timeout_ms(Duration::from_millis(200)), 180);
+        // The shortest timeout the config allows still leaves the plugin time.
+        assert_eq!(timeout_ms(Duration::from_millis(10)), 9);
+        assert_eq!(timeout_ms(Duration::from_millis(1)), 1);
     }
 
     #[test]

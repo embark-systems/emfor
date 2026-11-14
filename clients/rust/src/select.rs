@@ -76,7 +76,7 @@ pub fn rendezvous_hash(key: &str, id: &str) -> u32 {
 
 /// The largest weight the daemon accepts, and the most virtual nodes a
 /// candidate gets in [`rendezvous_score`].
-pub const MAX_STICKY_WEIGHT: u32 = 100;
+pub(crate) const MAX_STICKY_WEIGHT: u32 = 100;
 
 /// Weighted rendezvous score of backend `id` with `weight` for `key`: the
 /// largest of `h_0 .. h_(weight-1)`, where `h_0` is the first 4 bytes of
@@ -390,6 +390,18 @@ mod tests {
             pick(Balance::Sticky, &without(0), Some("user-7"), None, never),
             API[2]
         );
+    }
+
+    /// The key is hashed as its UTF-8 bytes: "café" picks API[1] of the
+    /// first two, and the double-encoded "cafÃ©" API[0]. clients/perl/t/emfor.t
+    /// expects these picks.
+    #[test]
+    fn non_ascii_key_pick() {
+        let two = [(API[0], 1), (API[1], 1)];
+        assert_eq!(rendezvous_hash("café", API[0]), 3148372924);
+        assert_eq!(rendezvous_hash("café", API[1]), 4131976985);
+        assert_eq!(rendezvous_index("café", two.iter().copied()), 1);
+        assert_eq!(rendezvous_index("cafÃ©", two.iter().copied()), 0);
     }
 
     /// Spec client-lookup Example "weighted hash vectors".

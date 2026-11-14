@@ -66,7 +66,8 @@ per process, starting at a random backend, so separate processes do not
 coordinate.
 
 `lookup` also works in a child after `fork`, including when the parent
-looked up before forking: the child opens the store again.
+looked up before forking or other threads of the parent were looking up at
+the moment of the fork: the child opens the store again.
 
 Each lookup holds an LMDB reader slot only for the read itself
 (`MDB_NOTLS`), so many threads and processes share the daemon's reader table
@@ -82,6 +83,12 @@ looks up again. No restart is needed. It checks at most once every 100 ms in
 a process (one `stat`), so a replacement is followed within about 100 ms and
 lookups in a stopped daemon's store stay fast. If the new file cannot be
 opened yet, lookups keep using the old one.
+
+A store the daemon grows past the size the client mapped it with (after a
+restart with a larger `map_size`) is mapped again with the new size. A
+store file that exists but cannot be opened is tried again at most once a
+second, and lookups in between fail with the same `UNAVAILABLE` error; a
+missing one is tried on every lookup.
 
 Do not delete the lock file (`<store>-lock`) alone, and start the daemon
 before applications that run as root or as the daemon's user. If the lock

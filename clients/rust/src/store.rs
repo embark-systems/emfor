@@ -77,6 +77,34 @@ pub struct Snapshot {
     pub site: Option<String>,
 }
 
+/// Why [`Env::snapshot`] failed.
+pub enum SnapshotError {
+    /// The daemon grew the store past this environment's map size
+    /// (`MDB_MAP_RESIZED`): call [`Env::adopt_map_size`], then read again.
+    MapResized,
+    Failed(Error),
+}
+
+impl From<Error> for SnapshotError {
+    fn from(e: Error) -> Self {
+        SnapshotError::Failed(e)
+    }
+}
+
+impl SnapshotError {
+    /// The error a lookup reports for this failure on the store at `path`.
+    pub fn into_error(self, path: &Path) -> Error {
+        match self {
+            SnapshotError::MapResized => unavailable(format!(
+                "cannot read store {}: {}",
+                path.display(),
+                strerror(ffi::MDB_MAP_RESIZED)
+            )),
+            SnapshotError::Failed(e) => e,
+        }
+    }
+}
+
 /// Aborts a read transaction when dropped.
 struct Txn(*mut ffi::MDB_txn);
 
@@ -177,19 +205,44 @@ impl Env {
         }
     }
 
+    /// Map the store with the size the daemon now uses, after a read failed
+    /// with [`SnapshotError::MapResized`] (the daemon was restarted with a
+    /// larger `map_size` and the store grew past the old one). Takes
+    /// `&mut self` because LMDB allows this only while no transaction of
+    /// this environment is active.
+    pub fn adopt_map_size(&mut self) -> Result<(), Error> {
+        // SAFETY: the environment is open, and `&mut self` means no read
+        // transaction is active (they live only inside `snapshot`). Size 0
+        // takes the size from the store's newest meta page, and never less
+        // than the file's last page.
+        let rc = unsafe { ffi::mdb_env_set_mapsize(self.env, 0) };
+        if rc != 0 {
+            return Err(unavailable(format!(
+                "cannot map store {} with its new size: {}",
+                self.path.display(),
+                strerror(rc)
+            )));
+        }
+        Ok(())
+    }
+
     /// Read schema version, heartbeat and one service record in a single
     /// read transaction, which ends before this returns.
-    pub fn snapshot(&self, record_key: &str) -> Result<Snapshot, Error> {
+    pub fn snapshot(&self, record_key: &str) -> Result<Snapshot, SnapshotError> {
         let mut txn = ptr::null_mut();
         // SAFETY: the environment is open; the guard ends the transaction.
         let rc =
             unsafe { ffi::mdb_txn_begin(self.env, ptr::null_mut(), ffi::MDB_RDONLY, &mut txn) };
+        if rc == ffi::MDB_MAP_RESIZED {
+            return Err(SnapshotError::MapResized);
+        }
         if rc != 0 {
             return Err(unavailable(format!(
                 "cannot read store {}: {}",
                 self.path.display(),
                 strerror(rc)
-            )));
+            ))
+            .into());
         }
         let txn = Txn(txn);
         Ok(Snapshot {

@@ -21,13 +21,19 @@ import os
 __version__ = "0.4.0"
 
 
-def _library_names(version):
-    """File names libemfor is installed under, newest-ABI first. cargo-c
+def _library_names(version, found=None):
+    """Names to load libemfor by, in order: the file names of this release's
+    ABI, then ``found`` (from ctypes.util.find_library, which may name
+    another release's library), then the unversioned names. cargo-c
     versions the shared library by major version, or by major.minor while
     the major is 0: libemfor.so.0.1 and libemfor.0.1.dylib for 0.1.x."""
     major, minor = version.split(".")[:2]
     abi = major if major != "0" else "%s.%s" % (major, minor)
-    return ["libemfor.so." + abi, "libemfor.so", "libemfor.%s.dylib" % abi, "libemfor.dylib"]
+    names = ["libemfor.so." + abi, "libemfor.%s.dylib" % abi]
+    for name in [found, "libemfor.so", "libemfor.dylib"]:
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 __all__ = [
@@ -88,11 +94,7 @@ def _load():
             return ctypes.CDLL(path)
         except OSError as e:
             raise ImportError("cannot load libemfor from EMFOR_LIBRARY=%r: %s" % (path, e)) from None
-    names = []
-    found = ctypes.util.find_library("emfor")
-    if found:
-        names.append(found)
-    names += _library_names(__version__)
+    names = _library_names(__version__, ctypes.util.find_library("emfor"))
     for name in names:
         try:
             return ctypes.CDLL(name)

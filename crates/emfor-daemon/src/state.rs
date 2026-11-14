@@ -75,7 +75,7 @@ impl BackendHealth {
             }
             CheckResult::Error(_) => {
                 let since = *self.error_since.get_or_insert(now);
-                if now.duration_since(since) > t.interval * t.fall {
+                if now.duration_since(since) > t.interval.saturating_mul(t.fall) {
                     self.state = HealthState::Unknown;
                     self.successes = 0;
                     self.failures = 0;
@@ -240,6 +240,23 @@ mod tests {
             })
         );
         assert_eq!((h.successes, h.failures), (0, 0));
+    }
+
+    /// `fall × interval` too long for a `Duration` saturates instead of
+    /// panicking: the errors never last longer.
+    #[test]
+    fn huge_error_window_does_not_overflow() {
+        let t = Thresholds {
+            rise: 1,
+            fall: u32::MAX,
+            interval: Duration::from_secs(200 * 365 * 86400),
+        };
+        let mut h = BackendHealth::new();
+        h.apply(&CheckResult::Up, Instant::now(), t);
+        let err = CheckResult::Error("e".into());
+        assert_eq!(h.apply(&err, Instant::now(), t), None);
+        assert_eq!(h.apply(&err, Instant::now(), t), None);
+        assert_eq!(h.state, Healthy);
     }
 
     #[tokio::test(start_paused = true)]

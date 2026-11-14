@@ -2,18 +2,27 @@
 //! health state. All behavior is in the pure function [`answer`]; the
 //! hickory-server adapter only decodes and encodes.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
-use hickory_proto::op::{Edns, MessageType, Metadata, OpCode, ResponseCode};
+use futures::StreamExt;
+use hickory_proto::op::{Edns, Header, MessageType, Metadata, OpCode, ResponseCode};
 use hickory_proto::rr::rdata::{A, AAAA, SOA, SRV};
-use hickory_proto::rr::{Name, RData, Record, RecordType};
-use hickory_proto::serialize::binary::BinEncoder;
-use hickory_server::net::runtime::Time;
+use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType};
+use hickory_proto::serialize::binary::{BinDecodable, BinDecoder, BinEncoder};
+use hickory_server::net::runtime::iocompat::AsyncIoTokioAsStd;
+use hickory_server::net::runtime::{Time, TokioTime};
+use hickory_server::net::tcp::TcpStream;
 use hickory_server::net::xfer::Protocol;
-use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
+use hickory_server::server::{
+    Request, RequestHandler, ResponseHandle, ResponseHandler, ResponseInfo, TimeoutStream,
+};
 use hickory_server::zone_handler::{MessageResponseBuilder, Queries};
-use tokio::sync::watch;
+use tokio::net::TcpListener;
+use tokio::sync::{Semaphore, watch};
+use tokio::task::JoinSet;
 
 use crate::config::in_zone;
 use crate::live::{LiveService, LiveState, LiveView};
@@ -151,22 +160,35 @@ fn srv_reply(
     r
 }
 
-/// Compute the reply to one request.
+/// Compute the reply to one request. `edns_version` is the version of the
+/// request's OPT record, if it has one.
 pub fn answer(
     op_code: OpCode,
-    questions: &[(Name, RecordType)],
+    edns_version: Option<u8>,
+    questions: &[(Name, RecordType, DNSClass)],
     view: &LiveView,
     settings: &DnsSettings,
 ) -> Reply {
+    // RFC 6891 6.1.3: only EDNS version 0 is implemented.
+    if edns_version.is_some_and(|v| v > 0) {
+        return Reply::error(ResponseCode::BADVERS);
+    }
     if op_code != OpCode::Query {
         return Reply::error(ResponseCode::NotImp);
     }
-    let [(qname, qtype)] = questions else {
+    let [(qname, qtype, class)] = questions else {
         return Reply::error(ResponseCode::FormErr);
     };
+    // The zone exists in class IN only; any other class is refused like a
+    // name outside the zone.
+    if *class != DNSClass::IN {
+        return Reply::error(ResponseCode::Refused);
+    }
     let (qtype, name) = (*qtype, normalize(qname));
     let zone = settings.zone.as_str();
-    if !in_zone(&name, zone) {
+    // Label by label: in text form a `.` byte inside a label looks like a
+    // label separator.
+    if !fqdn(zone).zone_of(qname) {
         return Reply::error(ResponseCode::Refused);
     }
     if !view.ready {
@@ -176,6 +198,13 @@ pub fn answer(
     }
     let soa = soa_record(settings);
     let nodata = |soa: Record| Reply::authoritative(ResponseCode::NoError, Vec::new(), Some(soa));
+    // Configured names have labels of [a-z0-9-] (and `_` for SRV owners): a
+    // label holding a `.` byte names none of them, nor an ancestor of one.
+    // The checks below work on the text form, where it would look like two
+    // labels.
+    if qname.iter().any(|label| label.contains(&b'.')) {
+        return Reply::authoritative(ResponseCode::NXDomain, Vec::new(), Some(soa));
+    }
 
     if name == zone && qtype == RecordType::SOA {
         return Reply::authoritative(ResponseCode::NoError, vec![soa], None);
@@ -257,17 +286,17 @@ pub fn udp_limit(edns_payload: Option<u16>) -> u16 {
 }
 
 /// Make the response fit `limit` bytes: first drop every additional record
-/// (missing glue never sets TC), then drop answers from the end until it
-/// fits. Returns true when answers were dropped, so the caller sets TC.
+/// (missing glue never sets TC), then drop answers from the end, and last
+/// the SOA in the authority section, until it fits. Returns true when
+/// answers or the SOA were dropped, so the caller sets TC.
 /// Encodes the response the way hickory-server does (same encoder, same
 /// sections). Trimming answers here, not in hickory, keeps room for the
 /// OPT record, which hickory leaves out when it cuts answers itself.
+/// Even a single record can be too big: hickory does not compress names
+/// against the question, so a name near 255 bytes, in the question and
+/// again as the owner of an answer (or a zone that long, as the owner of
+/// the SOA), goes over 512 bytes.
 pub fn fit_response(reply: &mut Reply, queries: &Queries, edns: Option<&Edns>, limit: u16) -> bool {
-    // One answer and no additional records (A, AAAA, SOA, negative and
-    // error replies) is always far below 512 bytes: skip the extra encode.
-    if reply.additionals.is_empty() && reply.answers.len() <= 1 {
-        return false;
-    }
     let limit = usize::from(limit);
     if encoded_len(reply, queries, edns) <= limit {
         return false;
@@ -276,8 +305,8 @@ pub fn fit_response(reply: &mut Reply, queries: &Queries, edns: Option<&Edns>, l
     if encoded_len(reply, queries, edns) <= limit {
         return false;
     }
-    // Largest prefix of the answers that fits, by binary search: `lo` fits
-    // (zero answers always does), `hi` does not.
+    // Largest prefix of the answers that fits, by binary search: `hi` does
+    // not fit, `lo` fits unless it is zero.
     let all = std::mem::take(&mut reply.answers);
     let (mut lo, mut hi) = (0, all.len());
     while hi - lo > 1 {
@@ -290,6 +319,10 @@ pub fn fit_response(reply: &mut Reply, queries: &Queries, edns: Option<&Edns>, l
         }
     }
     reply.answers = all[..lo].to_vec();
+    if lo == 0 && encoded_len(reply, queries, edns) > limit {
+        // Header, question (at most 259 bytes) and OPT always fit 512.
+        reply.soa = None;
+    }
     true
 }
 
@@ -318,6 +351,7 @@ fn encoded_len(reply: &Reply, queries: &Queries, edns: Option<&Edns>) -> usize {
 }
 
 /// hickory-server adapter around [`answer`].
+#[derive(Clone)]
 pub struct Handler {
     live: LiveState,
     settings: watch::Receiver<DnsSettings>,
@@ -336,16 +370,26 @@ impl RequestHandler for Handler {
         request: &Request,
         mut response_handle: R,
     ) -> ResponseInfo {
-        let questions: Vec<(Name, RecordType)> = request
+        let questions: Vec<(Name, RecordType, DNSClass)> = request
             .queries
             .queries()
             .iter()
-            .map(|q| (q.original().name().clone(), q.query_type()))
+            .map(|q| {
+                let q = q.original();
+                (q.name().clone(), q.query_type(), q.query_class())
+            })
             .collect();
         let mut reply = {
             let settings = self.settings.borrow().clone();
             let view = self.live.read();
-            answer(request.metadata.op_code, &questions, &view, &settings)
+            let edns_version = request.edns.as_ref().map(Edns::version);
+            answer(
+                request.metadata.op_code,
+                edns_version,
+                &questions,
+                &view,
+                &settings,
+            )
         };
         let udp = udp_limit(request.edns.as_ref().map(|e| e.max_payload()));
         // hickory-server uses the response's EDNS size as the UDP limit.
@@ -390,23 +434,202 @@ impl RequestHandler for Handler {
     }
 }
 
+/// DNS-over-TCP connections served at once, over every listen address;
+/// more are closed right after accept, so that clients cannot use up the
+/// daemon's file descriptors (checks need them too).
+pub const MAX_TCP_CONNECTIONS: usize = 128;
+/// A TCP connection is closed when no complete request arrives for this
+/// long, also when the client does not read its responses.
+const TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Responses queued per TCP connection while the client is slow to read.
+const TCP_RESPONSE_QUEUE: usize = 64;
+
+/// The running DNS server. UDP is served by hickory-server, one server per
+/// socket so that the end of any one is seen; TCP by [`tcp_listener`],
+/// which limits the number of connections. Dropping it stops every
+/// listener.
+pub struct DnsServer {
+    udp: Vec<(SocketAddr, hickory_server::Server<Handler>)>,
+    tcp: JoinSet<()>,
+    tcp_addrs: HashMap<tokio::task::Id, SocketAddr>,
+}
+
+impl DnsServer {
+    /// Wait until a listener stops and describe it. hickory ends a UDP
+    /// listener on a socket error it cannot recover from (for example
+    /// `ConnectionAborted`); a TCP listener ends only by a panic. Pending
+    /// otherwise. Cancel-safe.
+    pub async fn ended(&mut self) -> String {
+        let DnsServer {
+            udp,
+            tcp,
+            tcp_addrs,
+        } = self;
+        let udp_end = async {
+            if udp.is_empty() {
+                return std::future::pending::<String>().await;
+            }
+            let (result, i, _) = futures::future::select_all(
+                udp.iter_mut().map(|(_, s)| Box::pin(s.block_until_done())),
+            )
+            .await;
+            let addr = udp[i].0;
+            match result {
+                Ok(()) => format!("DNS listener on {addr} (udp) stopped"),
+                Err(e) => format!("DNS listener on {addr} (udp) stopped: {e}"),
+            }
+        };
+        let tcp_end = async {
+            let (id, how) = match tcp.join_next_with_id().await {
+                None => return std::future::pending::<String>().await,
+                Some(Ok((id, ()))) => (id, "stopped"),
+                Some(Err(e)) => (e.id(), if e.is_panic() { "panicked" } else { "stopped" }),
+            };
+            match tcp_addrs.get(&id) {
+                Some(addr) => format!("DNS listener on {addr} (tcp) {how}"),
+                None => format!("DNS listener (tcp) {how}"),
+            }
+        };
+        tokio::select! {
+            m = udp_end => m,
+            m = tcp_end => m,
+        }
+    }
+
+    /// Stop every listener; open TCP connections are closed.
+    pub async fn shutdown(mut self) {
+        self.tcp.shutdown().await;
+        for (addr, mut server) in self.udp {
+            if let Err(e) = server.shutdown_gracefully().await {
+                tracing::debug!("DNS server on {addr} (udp) shutdown: {e}");
+            }
+        }
+    }
+}
+
 /// Bind every listen address (UDP and TCP) and start serving. Errors name the address.
-pub async fn serve(
+pub async fn serve(listen: &[SocketAddr], handler: Handler) -> Result<DnsServer, String> {
+    serve_with(listen, handler, TCP_IDLE_TIMEOUT).await
+}
+
+async fn serve_with(
     listen: &[SocketAddr],
     handler: Handler,
-) -> Result<hickory_server::Server<Handler>, String> {
-    let mut server = hickory_server::Server::new(handler);
+    idle: Duration,
+) -> Result<DnsServer, String> {
+    let mut sockets = Vec::with_capacity(listen.len());
     for addr in listen {
         let udp = tokio::net::UdpSocket::bind(addr)
             .await
             .map_err(|e| format!("cannot listen on {addr} (udp): {e}"))?;
-        let tcp = tokio::net::TcpListener::bind(addr)
+        let tcp = TcpListener::bind(addr)
             .await
             .map_err(|e| format!("cannot listen on {addr} (tcp): {e}"))?;
-        server.register_socket(udp);
-        server.register_listener(tcp, Duration::from_secs(5), 64);
+        // The bound addresses differ from `addr` only for port 0 (tests).
+        let local = |r: std::io::Result<SocketAddr>| r.unwrap_or(*addr);
+        sockets.push((local(udp.local_addr()), udp, local(tcp.local_addr()), tcp));
+    }
+    let permits = Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS));
+    let mut server = DnsServer {
+        udp: Vec::with_capacity(sockets.len()),
+        tcp: JoinSet::new(),
+        tcp_addrs: HashMap::new(),
+    };
+    for (udp_addr, udp, tcp_addr, tcp) in sockets {
+        let mut s = hickory_server::Server::new(handler.clone());
+        s.register_socket(udp);
+        server.udp.push((udp_addr, s));
+        let task = server
+            .tcp
+            .spawn(tcp_listener(tcp, handler.clone(), permits.clone(), idle));
+        server.tcp_addrs.insert(task.id(), tcp_addr);
     }
     Ok(server)
+}
+
+/// Accept DNS-over-TCP connections while a permit is free; close the
+/// others at once. Never ends: accept errors (out of file descriptors and
+/// the like) are waited out. The connections end with the listener.
+async fn tcp_listener(
+    listener: TcpListener,
+    handler: Handler,
+    permits: Arc<Semaphore>,
+    idle: Duration,
+) {
+    let mut connections = JoinSet::new();
+    loop {
+        let accepted = listener.accept().await;
+        while connections.try_join_next().is_some() {}
+        let (stream, src) = match accepted {
+            Ok(a) => a,
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionAborted => continue,
+            Err(e) => {
+                tracing::debug!("DNS TCP accept: {e}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
+        let Ok(permit) = permits.clone().try_acquire_owned() else {
+            tracing::debug!(
+                "DNS TCP connection from {src} closed: {MAX_TCP_CONNECTIONS} connections open"
+            );
+            continue; // dropping the stream closes it
+        };
+        let handler = handler.clone();
+        connections.spawn(async move {
+            tcp_connection(stream, src, &handler, idle).await;
+            drop(permit);
+        });
+    }
+}
+
+/// Answer the requests on one TCP connection until the client closes it or
+/// sends nothing for `idle`. As in hickory-server: a message whose header
+/// cannot be read and a response message are ignored, a request that does
+/// not decode gets FORMERR.
+async fn tcp_connection(
+    stream: tokio::net::TcpStream,
+    src: SocketAddr,
+    handler: &Handler,
+    idle: Duration,
+) {
+    let (stream, stream_handle) =
+        TcpStream::from_stream_with_buffer_size(AsyncIoTokioAsStd(stream), src, TCP_RESPONSE_QUEUE);
+    let mut requests = TimeoutStream::new(stream, idle);
+    while let Some(message) = requests.next().await {
+        let bytes = match message {
+            Ok(m) => m.into_parts().0,
+            Err(e) => {
+                tracing::debug!("DNS TCP connection from {src}: {e}");
+                return;
+            }
+        };
+        let mut respond = ResponseHandle::new(src, stream_handle.clone(), Protocol::Tcp);
+        let Ok(header) = Header::read(&mut BinDecoder::new(&bytes)) else {
+            continue;
+        };
+        if header.metadata.message_type == MessageType::Response {
+            continue;
+        }
+        match Request::from_bytes(bytes, src, Protocol::Tcp) {
+            Ok(request) => {
+                handler
+                    .handle_request::<_, TokioTime>(&request, respond)
+                    .await;
+            }
+            Err(e) => {
+                tracing::debug!("undecodable DNS request from {src}: {e}");
+                let Ok(queries) = Queries::read(&mut BinDecoder::new(&[]), 0) else {
+                    continue; // reading no question cannot fail
+                };
+                let response = MessageResponseBuilder::new(&queries, None)
+                    .error_msg(&header.metadata, ResponseCode::FormErr);
+                if let Err(e) = respond.send_response(response).await {
+                    tracing::debug!("cannot send DNS response: {e}");
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -477,8 +700,8 @@ mod tests {
     }
 
     fn ask(v: &LiveView, name: &str, t: RecordType) -> Reply {
-        let q = [(Name::from_ascii(name).unwrap(), t)];
-        answer(OpCode::Query, &q, v, &settings())
+        let q = [(Name::from_ascii(name).unwrap(), t, DNSClass::IN)];
+        answer(OpCode::Query, None, &q, v, &settings())
     }
 
     /// rcode, answer rdata as text, has SOA in authority.
@@ -597,10 +820,14 @@ mod tests {
             Balance::RoundRobin,
             None,
         )]);
-        let q = [(Name::from_ascii("api.svc.emfor").unwrap(), RecordType::A)];
+        let q = [(
+            Name::from_ascii("api.svc.emfor").unwrap(),
+            RecordType::A,
+            DNSClass::IN,
+        )];
         let picks: Vec<String> = (0..4)
             .map(|_| {
-                answer(OpCode::Query, &q, &rr, &settings()).answers[0]
+                answer(OpCode::Query, None, &q, &rr, &settings()).answers[0]
                     .data
                     .to_string()
             })
@@ -619,7 +846,7 @@ mod tests {
         )]);
         for _ in 0..3 {
             assert_eq!(
-                answer(OpCode::Query, &q, &fo, &settings()).answers[0]
+                answer(OpCode::Query, None, &q, &fo, &settings()).answers[0]
                     .data
                     .to_string(),
                 "10.0.0.2"
@@ -792,17 +1019,21 @@ mod tests {
     fn malformed_and_unsupported() {
         let v = LiveView::default();
         let s = settings();
-        let q = (Name::from_ascii("svc.emfor").unwrap(), RecordType::SOA);
+        let q = (
+            Name::from_ascii("svc.emfor").unwrap(),
+            RecordType::SOA,
+            DNSClass::IN,
+        );
         assert_eq!(
-            answer(OpCode::Update, std::slice::from_ref(&q), &v, &s).rcode,
+            answer(OpCode::Update, None, std::slice::from_ref(&q), &v, &s).rcode,
             ResponseCode::NotImp
         );
         assert_eq!(
-            answer(OpCode::Query, &[], &v, &s).rcode,
+            answer(OpCode::Query, None, &[], &v, &s).rcode,
             ResponseCode::FormErr
         );
         assert_eq!(
-            answer(OpCode::Query, &[q.clone(), q], &v, &s).rcode,
+            answer(OpCode::Query, None, &[q.clone(), q], &v, &s).rcode,
             ResponseCode::FormErr
         );
     }
@@ -1188,17 +1419,20 @@ mod tests {
     }
 
     /// Serve `v` on ephemeral UDP and TCP ports of 127.0.0.1.
-    async fn live_server(v: LiveView) -> (hickory_server::Server<Handler>, SocketAddr, SocketAddr) {
+    async fn live_server(v: LiveView) -> (DnsServer, SocketAddr, SocketAddr) {
+        live_server_with(v, TCP_IDLE_TIMEOUT).await
+    }
+
+    async fn live_server_with(v: LiveView, idle: Duration) -> (DnsServer, SocketAddr, SocketAddr) {
         let live = LiveState::default();
         live.replace(v.services, v.site);
         let (_tx, rx) = watch::channel(settings());
         std::mem::forget(_tx);
-        let mut server = hickory_server::Server::new(Handler::new(live, rx));
-        let udp = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let (ua, ta) = (udp.local_addr().unwrap(), tcp.local_addr().unwrap());
-        server.register_socket(udp);
-        server.register_listener(tcp, Duration::from_secs(5), 64);
+        let listen = ["127.0.0.1:0".parse().unwrap()];
+        let server = serve_with(&listen, Handler::new(live, rx), idle)
+            .await
+            .unwrap();
+        let (ua, ta) = (server.udp[0].0, *server.tcp_addrs.values().next().unwrap());
         (server, ua, ta)
     }
 
@@ -1304,5 +1538,296 @@ mod tests {
         );
         // A and AAAA on the service name are unaffected.
         assert_eq!(ask(&v, &name, RecordType::A).rcode, ResponseCode::NoError);
+    }
+
+    /// A query for `name` with class `class`, and EDNS `(payload, version)`.
+    fn query_bytes(name: &str, t: RecordType, class: DNSClass, edns: Option<(u16, u8)>) -> Vec<u8> {
+        let mut m = Message::query();
+        m.metadata.id = 9;
+        let mut q = Query::query(Name::from_ascii(name).unwrap(), t);
+        q.set_query_class(class);
+        m.add_query(q);
+        if let Some((size, version)) = edns {
+            let mut e = Edns::new();
+            e.set_max_payload(size);
+            e.set_version(version);
+            m.set_edns(e);
+        }
+        m.to_vec().unwrap()
+    }
+
+    fn api_view() -> LiveView {
+        view(vec![service(
+            "api.svc.emfor",
+            &[("10.0.0.11", Healthy)],
+            OnAllDown::Open,
+            Balance::RoundRobin,
+            None,
+        )])
+    }
+
+    /// Only class IN has a zone: CH, HS and the rest are REFUSED, like a
+    /// name outside the zone.
+    #[tokio::test]
+    async fn class_other_than_in_is_refused() {
+        let (_s, udp, _) = live_server(api_view()).await;
+        let q = query_bytes("api.svc.emfor.", RecordType::A, DNSClass::IN, None);
+        let (_, m) = over_udp(udp, &q).await;
+        assert_eq!(m.metadata.response_code, ResponseCode::NoError);
+        assert_eq!(m.answers.len(), 1);
+        for class in [DNSClass::CH, DNSClass::HS, DNSClass::NONE, DNSClass::ANY] {
+            let q = query_bytes("api.svc.emfor.", RecordType::A, class, None);
+            let (_, m) = over_udp(udp, &q).await;
+            assert_eq!(m.metadata.response_code, ResponseCode::Refused, "{class}");
+            assert!(m.answers.is_empty(), "{class}");
+            assert!(!m.metadata.authoritative, "{class}");
+        }
+    }
+
+    /// RFC 6891 6.1.3: an EDNS version above 0 gets BADVERS with an OPT
+    /// record of version 0 and no answer.
+    #[tokio::test]
+    async fn edns_version_above_zero_is_badvers() {
+        let (_s, udp, tcp) = live_server(api_view()).await;
+        let q = query_bytes(
+            "api.svc.emfor.",
+            RecordType::A,
+            DNSClass::IN,
+            Some((1232, 1)),
+        );
+        let (_, m) = over_udp(udp, &q).await;
+        // 16 is BADVERS; hickory decodes it as BADSIG, which shares it.
+        assert_eq!(u16::from(m.metadata.response_code), 16, "BADVERS");
+        assert!(m.answers.is_empty());
+        assert_eq!(m.edns.as_ref().map(Edns::version), Some(0));
+        let m = over_tcp(tcp, &q).await;
+        assert_eq!(u16::from(m.metadata.response_code), 16, "BADVERS");
+        // Version 0 is answered.
+        let q = query_bytes(
+            "api.svc.emfor.",
+            RecordType::A,
+            DNSClass::IN,
+            Some((1232, 0)),
+        );
+        let (_, m) = over_udp(udp, &q).await;
+        assert_eq!(m.metadata.response_code, ResponseCode::NoError);
+        assert_eq!(m.answers.len(), 1);
+    }
+
+    /// Names are compared label by label: a label holding a `.` byte does
+    /// not make a name part of the zone, and inside the zone it never
+    /// matches a service, an SRV owner or a target name.
+    #[test]
+    fn label_with_a_dot_byte() {
+        let v = view(vec![srv_service(
+            "api.svc.emfor",
+            &[("10.0.0.11:8080", Healthy)],
+            OnAllDown::Open,
+            Balance::RoundRobin,
+            None,
+        )]);
+        let nx = (ResponseCode::NXDomain, Vec::<String>::new(), true);
+        let refused = (ResponseCode::Refused, Vec::<String>::new(), false);
+        let rows: &[(&str, RecordType, Summary)] = &[
+            // Labels `x.svc` and `emfor`: under `emfor`, not `svc.emfor`.
+            ("x\\.svc.emfor", RecordType::A, refused.clone()),
+            ("svc\\.emfor", RecordType::A, refused.clone()),
+            // One label `_http._tcp` under the service.
+            ("_http\\._tcp.api.svc.emfor", RecordType::SRV, nx.clone()),
+            // One label `10-0-0-11.api` under the zone.
+            ("10-0-0-11\\.api.svc.emfor", RecordType::A, nx.clone()),
+            ("api\\.svc.emfor.svc.emfor", RecordType::A, nx.clone()),
+        ];
+        for (name, t, want) in rows {
+            assert_eq!(&summary(&ask(&v, name, *t)), want, "{name} {t}");
+        }
+    }
+
+    /// A service name of 252 characters: one A record does not fit in 512
+    /// bytes, because hickory does not compress the owner name against the
+    /// question. `fit_response` trims it (and keeps the OPT record).
+    #[test]
+    fn one_answer_can_overflow_512() {
+        let name = format!(
+            "{}.{}.{}.{}.svc.emfor",
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(50)
+        );
+        assert_eq!(name.len(), 252);
+        let v = view(vec![service(
+            &name,
+            &[("10.0.0.11", Healthy)],
+            OnAllDown::Open,
+            Balance::RoundRobin,
+            None,
+        )]);
+        let queries = |t| {
+            use hickory_proto::serialize::binary::{BinDecoder, BinEncodable};
+            let q = Query::query(Name::from_ascii(format!("{name}.")).unwrap(), t);
+            let bytes = q.to_bytes().unwrap();
+            Queries::read(&mut BinDecoder::new(&bytes), 1).unwrap()
+        };
+        let mut e = Edns::new();
+        e.set_max_payload(512);
+        let mut r = ask(&v, &name, RecordType::A);
+        assert_eq!(r.answers.len(), 1);
+        assert!(encoded_len(&r, &queries(RecordType::A), Some(&e)) > 512);
+        assert!(fit_response(&mut r, &queries(RecordType::A), Some(&e), 512));
+        assert!(r.answers.is_empty());
+        assert!(encoded_len(&r, &queries(RecordType::A), Some(&e)) <= 512);
+        // NODATA: question and SOA fit.
+        let mut r = ask(&v, &name, RecordType::TXT);
+        assert!(!fit_response(&mut r, &queries(RecordType::TXT), None, 512));
+        assert!(r.soa.is_some());
+    }
+
+    /// The longest zone: question and SOA alone exceed 512 bytes, so the
+    /// SOA is left out and TC set.
+    #[test]
+    fn soa_dropped_when_it_does_not_fit() {
+        let zone = crate::config::tests::long_zone(crate::config::MAX_ZONE_LEN);
+        let s = DnsSettings {
+            zone: zone.clone(),
+            ..settings()
+        };
+        let q = [(
+            Name::from_ascii(&zone).unwrap(),
+            RecordType::TXT,
+            DNSClass::IN,
+        )];
+        let ready = LiveView {
+            ready: true,
+            ..LiveView::default()
+        };
+        let mut r = answer(OpCode::Query, None, &q, &ready, &s);
+        assert!(r.soa.is_some());
+        let queries = {
+            use hickory_proto::serialize::binary::{BinDecoder, BinEncodable};
+            let q = Query::query(
+                Name::from_ascii(format!("{zone}.")).unwrap(),
+                RecordType::TXT,
+            );
+            let bytes = q.to_bytes().unwrap();
+            Queries::read(&mut BinDecoder::new(&bytes), 1).unwrap()
+        };
+        assert!(fit_response(&mut r, &queries, None, 512));
+        assert!(r.soa.is_none());
+        assert!(encoded_len(&r, &queries, None) <= 512);
+    }
+
+    /// Open `n` TCP connections to `addr` and let the server accept them.
+    async fn connections(addr: SocketAddr, n: usize) -> Vec<tokio::net::TcpStream> {
+        let mut v = Vec::with_capacity(n);
+        for _ in 0..n {
+            v.push(tokio::net::TcpStream::connect(addr).await.unwrap());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        v
+    }
+
+    /// True when the server closes `s` (EOF or reset) within two seconds.
+    async fn closed_by_server(s: &mut tokio::net::TcpStream) -> bool {
+        use tokio::io::AsyncReadExt;
+        let mut b = [0u8; 1];
+        matches!(
+            tokio::time::timeout(Duration::from_secs(2), s.read(&mut b)).await,
+            Ok(Ok(0) | Err(_))
+        )
+    }
+
+    /// One query over an open connection.
+    async fn ask_on(s: &mut tokio::net::TcpStream, query: &[u8]) -> Message {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut framed = (query.len() as u16).to_be_bytes().to_vec();
+        framed.extend_from_slice(query);
+        s.write_all(&framed).await.unwrap();
+        let mut len = [0u8; 2];
+        tokio::time::timeout(Duration::from_secs(5), s.read_exact(&mut len))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut buf = vec![0u8; usize::from(u16::from_be_bytes(len))];
+        s.read_exact(&mut buf).await.unwrap();
+        Message::from_vec(&buf).unwrap()
+    }
+
+    /// More than MAX_TCP_CONNECTIONS at once: the extra one is closed right
+    /// away, the open ones still answer, and once they close new ones are
+    /// served again.
+    #[tokio::test]
+    async fn tcp_connection_limit() {
+        let (_s, _, tcp) = live_server(api_view()).await;
+        let mut open = connections(tcp, MAX_TCP_CONNECTIONS).await;
+        let mut extra = tokio::net::TcpStream::connect(tcp).await.unwrap();
+        assert!(
+            closed_by_server(&mut extra).await,
+            "extra connection kept open"
+        );
+        let q = query_bytes("api.svc.emfor.", RecordType::A, DNSClass::IN, None);
+        for s in [0, MAX_TCP_CONNECTIONS - 1] {
+            let m = ask_on(&mut open[s], &q).await;
+            assert_eq!(m.answers.len(), 1, "connection {s}");
+        }
+        drop(open);
+        for _ in 0..50 {
+            let mut s = tokio::net::TcpStream::connect(tcp).await.unwrap();
+            if !closed_by_server(&mut s).await {
+                assert_eq!(ask_on(&mut s, &q).await.answers.len(), 1);
+                return;
+            }
+        }
+        panic!("no connection served after the others closed");
+    }
+
+    /// A connection that sends nothing for the idle timeout is closed; one
+    /// that keeps asking is not.
+    #[tokio::test]
+    async fn tcp_idle_connection_closed() {
+        let idle = Duration::from_millis(300);
+        let (_s, _, tcp) = live_server_with(api_view(), idle).await;
+        let q = query_bytes("api.svc.emfor.", RecordType::A, DNSClass::IN, None);
+        let mut busy = tokio::net::TcpStream::connect(tcp).await.unwrap();
+        let mut quiet = tokio::net::TcpStream::connect(tcp).await.unwrap();
+        for _ in 0..4 {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            assert_eq!(ask_on(&mut busy, &q).await.answers.len(), 1);
+        }
+        assert!(closed_by_server(&mut quiet).await);
+    }
+
+    /// Requests that do not decode get FORMERR over TCP, as over UDP; the
+    /// connection stays usable.
+    #[tokio::test]
+    async fn tcp_undecodable_request_is_formerr() {
+        let (_s, _, tcp) = live_server(api_view()).await;
+        let mut s = tokio::net::TcpStream::connect(tcp).await.unwrap();
+        let mut bad = query_bytes("api.svc.emfor.", RecordType::A, DNSClass::IN, None);
+        bad.truncate(bad.len() - 2);
+        let m = ask_on(&mut s, &bad).await;
+        assert_eq!(m.metadata.response_code, ResponseCode::FormErr);
+        assert_eq!(m.metadata.id, 9);
+        let q = query_bytes("api.svc.emfor.", RecordType::A, DNSClass::IN, None);
+        assert_eq!(ask_on(&mut s, &q).await.answers.len(), 1);
+    }
+
+    /// `ended` completes when a listener stops, naming it, and stays
+    /// pending while they run.
+    #[tokio::test]
+    async fn ended_reports_a_stopped_listener() {
+        let (mut s, udp, tcp) = live_server(api_view()).await;
+        let wait = tokio::time::timeout(Duration::from_millis(200), s.ended()).await;
+        assert!(wait.is_err(), "ended while running");
+        s.tcp.abort_all();
+        let why = tokio::time::timeout(Duration::from_secs(2), s.ended())
+            .await
+            .unwrap();
+        assert_eq!(why, format!("DNS listener on {tcp} (tcp) stopped"));
+        s.udp[0].1.shutdown_token().cancel();
+        let why = tokio::time::timeout(Duration::from_secs(2), s.ended())
+            .await
+            .unwrap();
+        assert_eq!(why, format!("DNS listener on {udp} (udp) stopped"));
     }
 }

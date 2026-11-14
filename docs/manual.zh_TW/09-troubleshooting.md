@@ -49,12 +49,14 @@
 | `password_file: `、`ca_file: ` | daemon 的使用者無法讀取該檔案。 |
 | `exit code N`（exec，N 不是 1 或 2） | script 以預期外的方式失敗。 |
 
+`emfor status --history` 裡 reason 為 `check task restarted`、變成 `unknown` 的紀錄不是檢查結果：該 backend 的檢查 task 因為 bug 停止後被重新啟動，log 中會有一行 `check task of backend ... stopped` 的錯誤。請附上那一行回報。
+
 ## DNS 無法解析
 
 | 症狀 | 原因 | 處理 |
 | --- | --- | --- |
 | `dig @127.0.0.1 -p 5300` 沒有回應 | 沒有 `[dns]` table，或 listen 位址不同。 | 看 `emfor status`（daemon 那一行會顯示 `dns ...`）。 |
-| `REFUSED` | 名稱在 zone 之外。 | 把服務命名在 zone 之下，或修改 `zone`。 |
+| `REFUSED` | 名稱在 zone 之外，或查詢的 class 不是 `IN`（`dig ... CH`）。 | 把服務命名在 zone 之下，或修改 `zone`；以 class `IN` 查詢。 |
 | `NXDOMAIN` | 沒有這個名稱的服務。 | 檢查名稱。 |
 | `SERVFAIL` | 沒有健康的 backend 且 `on_all_down = "closed"`；或會驗證的 unbound 沒有設定 `domain-insecure`。 | 見[某個服務 ALL DOWN](#某個服務-all-down)；修正 unbound 設定。 |
 | 直接查詢可以，`getent hosts` 不行 | 主機的 resolver 沒有轉送這個 zone。 | 照[第 7 章](07-dns.md#從主機的-resolver-轉送)設定。 |
@@ -75,4 +77,8 @@
 
 ## reload 沒有生效
 
-reload 是全有或全無。在 log 中找 `reload rejected` 與錯誤訊息，或執行 `emfor check-config`。`[store]`、`[dns] listen` 與 `[metrics] listen` 的變更一定要重新啟動。
+reload 是全有或全無。在 log 中找 `reload rejected` 與錯誤訊息，或執行 `emfor check-config`。`[store]`、`[dns] listen`、`[metrics] listen` 與 `[peers] listen` 的變更一定要重新啟動。
+
+## 重新啟動後成員互相丟棄訊息
+
+daemon 剛重新啟動後，`emfor_peer_messages_rejected_total{reason="auth"}` 上升，`emfor_peer_up` 有一段時間變成 0：表示當時正在更換密鑰，而重新啟動的 daemon 只知道新密鑰。等每個成員的 `secret_file` 都換成新密鑰後就會停止。設定 `[peers] previous_secret_file` 可以避免（見 [`[peers]`](03-configuration.md#peers)）。其他原因見[聯防群組](08-operations.md#聯防群組)。

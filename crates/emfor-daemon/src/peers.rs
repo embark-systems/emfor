@@ -166,7 +166,7 @@ impl Secret {
 }
 
 /// The JSON payload as sent.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 struct Wire {
     from: String,
     site: String,
@@ -326,7 +326,8 @@ fn parse_tag(s: &str) -> Option<u32> {
 }
 
 /// Parse an `EMP1` datagram without checking its tag; `None` when it is
-/// malformed.
+/// malformed. For tests and fuzzing: a receiver checks the tag first.
+#[cfg(any(test, fuzzing))]
 fn decode(data: &[u8]) -> Option<Message> {
     if data.len() < HEADER_LEN || data.len() > MAX_DATAGRAM || &data[..4] != MAGIC {
         return None;
@@ -334,36 +335,77 @@ fn decode(data: &[u8]) -> Option<Message> {
     parse_payload(&data[HEADER_LEN..])
 }
 
+/// The JSON payload as received: the common fields with their types, and
+/// the fields of the known kinds as any JSON value, checked only for the
+/// kind that uses them, so that a newer kind may give one of these names
+/// another type.
+#[derive(Deserialize)]
+struct WireIn {
+    from: String,
+    site: String,
+    boot: String,
+    seq: u64,
+    ts: u64,
+    kind: String,
+    #[serde(default)]
+    service: Option<serde_json::Value>,
+    #[serde(default)]
+    digest: Option<serde_json::Value>,
+    #[serde(default)]
+    backend: Option<serde_json::Value>,
+    #[serde(default)]
+    reason: Option<serde_json::Value>,
+    #[serde(default)]
+    outcome: Option<serde_json::Value>,
+    #[serde(default)]
+    interval_ms: Option<serde_json::Value>,
+    #[serde(default)]
+    off: Option<serde_json::Value>,
+}
+
+/// A string field of a known kind; `None` when absent or not a string.
+fn string(v: Option<serde_json::Value>) -> Option<String> {
+    match v? {
+        serde_json::Value::String(s) => Some(s),
+        _ => None,
+    }
+}
+
 /// Parse a JSON payload; `None` when it is malformed.
 fn parse_payload(payload: &[u8]) -> Option<Message> {
-    let wire: Wire = serde_json::from_slice(payload).ok()?;
+    let wire: WireIn = serde_json::from_slice(payload).ok()?;
     if wire.boot.len() != 16 || !wire.boot.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let kind = match wire.kind.as_str() {
         "heartbeat" => Kind::Heartbeat(match wire.off {
             None => Vec::new(),
-            Some(off) => off
+            Some(serde_json::Value::Array(off)) => off
                 .iter()
-                .map(|s| parse_tag(s))
+                .map(|v| v.as_str().and_then(parse_tag))
                 .collect::<Option<Vec<u32>>>()?,
+            Some(_) => return None,
         }),
         "down" => Kind::Down(Down {
-            service: wire.service?,
-            digest: wire.digest?,
-            backend: wire.backend?,
-            reason: wire.reason?,
+            service: string(wire.service)?,
+            digest: string(wire.digest)?,
+            backend: string(wire.backend)?,
+            reason: string(wire.reason)?,
         }),
         "result" => Kind::Result(ResultMsg {
-            service: wire.service?,
-            digest: wire.digest?,
-            backend: wire.backend?,
-            outcome: match wire.outcome?.as_str() {
+            service: string(wire.service)?,
+            digest: string(wire.digest)?,
+            backend: string(wire.backend)?,
+            outcome: match string(wire.outcome)?.as_str() {
                 "up" => Outcome::Up,
-                "down" => Outcome::Down(wire.reason?),
+                "down" => Outcome::Down(string(wire.reason)?),
                 _ => return None,
             },
-            interval_ms: wire.interval_ms.filter(|ms| *ms > 0)?,
+            interval_ms: wire
+                .interval_ms
+                .as_ref()
+                .and_then(serde_json::Value::as_u64)
+                .filter(|ms| *ms > 0)?,
         }),
         other => Kind::Unknown(other.to_string()),
     };
@@ -464,13 +506,18 @@ impl Reject {
     }
 }
 
-/// The current secret and the one it replaced: messages are signed with the
-/// replaced one for [`SIGN_PREVIOUS_FOR`] and it is accepted for
+/// The current secret and the ones it replaced: messages are signed with
+/// the replaced one for [`SIGN_PREVIOUS_FOR`] and it is accepted for
 /// [`ACCEPT_PREVIOUS_FOR`] after the change.
 #[derive(Debug, Clone)]
 pub struct Keys {
     current: Secret,
+    /// The secret signed with until [`SIGN_PREVIOUS_FOR`] after the time
+    /// given, and accepted until [`ACCEPT_PREVIOUS_FOR`] after it.
     previous: Option<(Secret, Instant)>,
+    /// Other secrets replaced, with when: each is accepted until
+    /// [`ACCEPT_PREVIOUS_FOR`] after it was replaced.
+    replaced: Vec<(Secret, Instant)>,
 }
 
 impl Keys {
@@ -478,7 +525,34 @@ impl Keys {
         Keys {
             current: Secret::new(current),
             previous: None,
+            replaced: Vec::new(),
         }
+    }
+
+    /// The secrets at start (spec peer-group "Peer secret reload"): when
+    /// `previous` (from `previous_secret_file`) differs from `current` and
+    /// the current secret's file changed `changed_ago` before `now`, less
+    /// than [`ACCEPT_PREVIOUS_FOR`] ago, `previous` is used as if the
+    /// daemon had been running when the file changed: signed with until
+    /// [`SIGN_PREVIOUS_FOR`] after the change, accepted until
+    /// [`ACCEPT_PREVIOUS_FOR`] after it. Otherwise only `current` is used.
+    pub fn resumed(
+        current: Vec<u8>,
+        previous: Option<Vec<u8>>,
+        changed_ago: Duration,
+        now: Instant,
+    ) -> Keys {
+        let mut keys = Keys::new(current);
+        if let Some(previous) = previous
+            && previous != keys.current.raw
+            && changed_ago < ACCEPT_PREVIOUS_FOR
+        {
+            // An Instant cannot go back before the clock's origin (shortly
+            // after the host booted); the change then counts as now.
+            let at = now.checked_sub(changed_ago).unwrap_or(now);
+            keys.previous = Some((Secret::new(previous), at));
+        }
+        keys
     }
 
     /// The newest secret read from the file.
@@ -495,25 +569,42 @@ impl Keys {
     }
 
     /// Make `new` the current secret. Returns false when it is the current
-    /// one already.
+    /// one already. While messages are still signed with an earlier secret
+    /// (within [`SIGN_PREVIOUS_FOR`] of the last change), they stay signed
+    /// with it, now for [`SIGN_PREVIOUS_FOR`] after this change: the
+    /// secret this change replaces was never signed with, so members whose
+    /// file has not changed yet do not know it.
     pub fn rotate(&mut self, new: Vec<u8>, now: Instant) -> bool {
         if new == self.current.raw {
             return false;
         }
         let old = std::mem::replace(&mut self.current, Secret::new(new));
-        self.previous = Some((old, now));
+        self.replaced
+            .retain(|(_, at)| now.duration_since(*at) < ACCEPT_PREVIOUS_FOR);
+        match &mut self.previous {
+            Some((_, at)) if now.duration_since(*at) < SIGN_PREVIOUS_FOR => {
+                *at = now;
+                self.replaced.push((old, now));
+            }
+            previous => {
+                if let Some(earlier) = previous.replace((old, now))
+                    && now.duration_since(earlier.1) < ACCEPT_PREVIOUS_FOR
+                {
+                    self.replaced.push(earlier);
+                }
+            }
+        }
         true
     }
 
     /// The secrets a received message may use at `now`: the current one,
-    /// and the replaced one for [`ACCEPT_PREVIOUS_FOR`].
+    /// and each replaced one for [`ACCEPT_PREVIOUS_FOR`].
     fn accepted(&self, now: Instant) -> impl Iterator<Item = &Secret> {
-        std::iter::once(&self.current).chain(
-            self.previous
-                .as_ref()
-                .filter(|(_, at)| now.duration_since(*at) < ACCEPT_PREVIOUS_FOR)
-                .map(|(k, _)| k),
-        )
+        let recent =
+            move |(_, at): &&(Secret, Instant)| now.duration_since(*at) < ACCEPT_PREVIOUS_FOR;
+        std::iter::once(&self.current)
+            .chain(self.previous.iter().filter(recent).map(|(k, _)| k))
+            .chain(self.replaced.iter().filter(recent).map(|(k, _)| k))
     }
 
     /// Constant-time check of `tag` over `MAGIC` and `payload`.
@@ -619,11 +710,77 @@ impl PeerStats {
     }
 }
 
+/// How many of a sender's latest `seq` numbers are remembered, so that a
+/// message overtaken on the network is still accepted once.
+const REPLAY_WINDOW: u64 = 64;
+
+/// Replay state of one sender: its latest `boot`, the highest `seq`
+/// accepted with it, the highest `ts`, and which of the
+/// [`REPLAY_WINDOW`] numbers up to that `seq` were accepted (bit `i`:
+/// `seq - i`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Last {
+    boot: u64,
+    seq: u64,
+    ts: u64,
+    window: u64,
+}
+
+impl Last {
+    /// Whether `msg` is not a replay: with the same `boot`, a `seq` above
+    /// the highest, or within the window and not accepted yet; with
+    /// another `boot` (the sender restarted), a later `ts`.
+    fn admits(&self, msg: &Message) -> bool {
+        if msg.boot != self.boot {
+            return msg.ts > self.ts;
+        }
+        if msg.seq > self.seq {
+            return true;
+        }
+        let back = self.seq - msg.seq;
+        back < REPLAY_WINDOW && self.window & (1 << back) == 0
+    }
+
+    /// The state after accepting `msg`, which [`Last::admits`] allowed.
+    fn after(last: Option<Last>, msg: &Message) -> Last {
+        match last {
+            Some(l) if l.boot == msg.boot => {
+                if msg.seq > l.seq {
+                    let shift = msg.seq - l.seq;
+                    let window = if shift >= REPLAY_WINDOW {
+                        0
+                    } else {
+                        l.window << shift
+                    };
+                    Last {
+                        boot: l.boot,
+                        seq: msg.seq,
+                        ts: l.ts.max(msg.ts),
+                        window: window | 1,
+                    }
+                } else {
+                    Last {
+                        ts: l.ts.max(msg.ts),
+                        window: l.window | 1 << (l.seq - msg.seq),
+                        ..l
+                    }
+                }
+            }
+            _ => Last {
+                boot: msg.boot,
+                seq: msg.seq,
+                ts: msg.ts,
+                window: 1,
+            },
+        }
+    }
+}
+
 /// What we know about one other member.
 #[derive(Debug, Default)]
 struct PeerState {
-    /// `(boot, seq, ts)` of the last accepted message.
-    last: Option<(u64, u64, u64)>,
+    /// Replay state, from the messages accepted so far.
+    last: Option<Last>,
     seen: Option<Instant>,
     live: bool,
 }
@@ -651,14 +808,22 @@ pub struct Group {
 /// [`WARN_EVERY`], and `warned` has room. Records `now` for `key` when it is.
 /// Entries older than [`WARN_EVERY`] are dropped once `warned` holds
 /// [`MAX_WARN_ENTRIES`], so a flood of sources cannot grow it further.
-fn should_warn<K: Hash + Eq>(warned: &mut HashMap<K, Instant>, key: K, now: Instant) -> bool {
+/// A `member` key (from a configured member's address, at most
+/// [`crate::config::MAX_MEMBERS`] × 6 of them) always has room, so such a
+/// flood cannot hide the warnings about real members.
+fn should_warn<K: Hash + Eq>(
+    warned: &mut HashMap<K, Instant>,
+    key: K,
+    member: bool,
+    now: Instant,
+) -> bool {
     if warned.len() >= MAX_WARN_ENTRIES {
         warned.retain(|_, at| now.duration_since(*at) < WARN_EVERY);
     }
     let recent = warned
         .get(&key)
         .is_some_and(|at| now.duration_since(*at) < WARN_EVERY);
-    if recent || warned.len() >= MAX_WARN_ENTRIES {
+    if recent || (!member && warned.len() >= MAX_WARN_ENTRIES) {
         return false;
     }
     warned.insert(key, now);
@@ -760,7 +925,7 @@ impl Group {
                     self.warn_plaintext(src, now);
                 }
                 if let Some(p) = self.peers.get_mut(&msg.from) {
-                    p.last = Some((msg.boot, msg.seq, msg.ts));
+                    p.last = Some(Last::after(p.last, &msg));
                     p.seen = Some(now);
                     if !p.live {
                         p.live = true;
@@ -787,13 +952,18 @@ impl Group {
     ) -> Result<(Message, Format), Reject> {
         let (msg, format) = match data.get(..4) {
             Some(m) if m == MAGIC => {
-                let msg = decode(data).ok_or(Reject::Malformed)?;
+                if !(HEADER_LEN..=MAX_DATAGRAM).contains(&data.len()) {
+                    return Err(Reject::Malformed);
+                }
+                // The tag first: unauthenticated bytes never reach the JSON
+                // parser, and a forged datagram counts as `auth`.
                 if !self
                     .keys
                     .verifies(&data[HEADER_LEN..], &data[MAGIC.len()..HEADER_LEN], now)
                 {
                     return Err(Reject::Auth);
                 }
+                let msg = parse_payload(&data[HEADER_LEN..]).ok_or(Reject::Malformed)?;
                 (msg, Format::Plain)
             }
             Some(m) if m == MAGIC_V2 => {
@@ -815,15 +985,10 @@ impl Group {
         if now_ms.abs_diff(msg.ts) > MAX_SKEW_MS {
             return Err(Reject::Stale);
         }
-        if let Some((boot, seq, ts)) = self.peers.get(&msg.from).and_then(|p| p.last) {
-            let newer = if msg.boot == boot {
-                msg.seq > seq
-            } else {
-                msg.ts > ts
-            };
-            if !newer {
-                return Err(Reject::Replay);
-            }
+        if let Some(last) = self.peers.get(&msg.from).and_then(|p| p.last)
+            && !last.admits(&msg)
+        {
+            return Err(Reject::Replay);
         }
         Ok((msg, format))
     }
@@ -831,7 +996,8 @@ impl Group {
     /// Warn, at most once per [`WARN_EVERY`] for each source, that a member
     /// still sends `EMP1` while this daemon encrypts.
     fn warn_plaintext(&mut self, src: SocketAddr, now: Instant) {
-        if should_warn(&mut self.plain_warned, src, now) {
+        // Only accepted messages get here, so `src` is a member.
+        if should_warn(&mut self.plain_warned, src, true, now) {
             tracing::warn!(
                 peer = %src,
                 "peer {src} sends plaintext messages (EMP1); set encrypt = true there"
@@ -840,7 +1006,8 @@ impl Group {
     }
 
     fn warn_rejected(&mut self, src: SocketAddr, r: Reject, now: Instant) {
-        if should_warn(&mut self.warned, (src, r), now) {
+        let member = self.members.contains(&src);
+        if should_warn(&mut self.warned, (src, r), member, now) {
             tracing::warn!(
                 source = %src,
                 reason = r.as_str(),
@@ -983,6 +1150,8 @@ impl Targets {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendDown {
     pub service: Arc<str>,
+    /// The check definition digest the failing check ran with.
+    pub digest: String,
     pub backend: String,
     pub reason: String,
 }
@@ -992,6 +1161,8 @@ pub struct BackendDown {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendResult {
     pub service: Arc<str>,
+    /// The check definition digest the check ran with.
+    pub digest: String,
     pub backend: String,
     pub outcome: Outcome,
     pub interval: Duration,
@@ -1079,15 +1250,46 @@ pub async fn start(
         .await
         .map_err(|e| format!("cannot bind peer address {}: {e}", config.listen))?;
     let key = read_secret(&config.secret_file).map_err(|e| format!("peers.secret_file: {e}"))?;
+    let keys = start_keys(config, key, Instant::now())?;
     Ok(start_on(
         socket,
         config,
         site,
-        key,
+        keys,
         targets,
         writer,
         services_off,
     ))
+}
+
+/// The secrets at start: `current`, read from `secret_file`, and with
+/// `previous_secret_file` the secret it replaced, as [`Keys::resumed`]
+/// decides from when `secret_file` was last modified.
+fn start_keys(config: &PeersConfig, current: Vec<u8>, now: Instant) -> Result<Keys, String> {
+    let Some(path) = &config.previous_secret_file else {
+        return Ok(Keys::new(current));
+    };
+    let previous = read_secret(path).map_err(|e| format!("peers.previous_secret_file: {e}"))?;
+    let changed = std::fs::metadata(&config.secret_file)
+        .and_then(|m| m.modified())
+        .map_err(|e| {
+            format!(
+                "peers.secret_file: cannot read the modification time of {}: {e}",
+                config.secret_file.display()
+            )
+        })?;
+    // A modification time ahead of the clock counts as now.
+    let changed_ago = changed.elapsed().unwrap_or(Duration::ZERO);
+    let keys = Keys::resumed(current, Some(previous), changed_ago, now);
+    if keys.previous.is_some() {
+        tracing::info!(
+            "peer secret file changed {}s ago; messages are signed with the previous secret (previous_secret_file) until {}s and it is accepted until {}s after that change",
+            changed_ago.as_secs(),
+            SIGN_PREVIOUS_FOR.as_secs(),
+            ACCEPT_PREVIOUS_FOR.as_secs()
+        );
+    }
+    Ok(keys)
 }
 
 /// Start the peer task on a bound socket. `services_off` are the services
@@ -1096,7 +1298,7 @@ pub fn start_on(
     socket: UdpSocket,
     config: &PeersConfig,
     site: &str,
-    key: Vec<u8>,
+    keys: Keys,
     targets: Targets,
     writer: Option<mpsc::UnboundedSender<WriterMsg>>,
     services_off: Vec<String>,
@@ -1109,7 +1311,7 @@ pub fn start_on(
         config.listen,
         site.to_string(),
         config.members.clone(),
-        Keys::new(key),
+        keys,
         boot,
         stats.clone(),
     );
@@ -1147,10 +1349,32 @@ pub fn start_on(
     }
 }
 
-/// Re-read the secret: a changed valid one becomes current; a missing or
-/// invalid one keeps the last valid secret, warning at most once a minute.
-fn refresh_secret(group: &mut Group, path: &Path, warned: &mut Option<Instant>, now: Instant) {
-    match read_secret(path) {
+/// Re-read the secret file, off the async workers (it is read every
+/// second, and a slow file system must not hold up a worker thread), and
+/// apply it as [`apply_secret`] does.
+async fn refresh_secret(
+    group: &mut Group,
+    path: &Path,
+    warned: &mut Option<Instant>,
+    now: Instant,
+) {
+    let path = path.to_path_buf();
+    let read = tokio::task::spawn_blocking(move || read_secret(&path))
+        .await
+        .unwrap_or_else(|e| Err(format!("cannot read the secret file: {e}")));
+    apply_secret(group, read, warned, now);
+}
+
+/// Apply a secret just read: a changed valid one becomes current; a missing
+/// or invalid one keeps the last valid secret, warning at most once a
+/// minute.
+fn apply_secret(
+    group: &mut Group,
+    read: Result<Vec<u8>, String>,
+    warned: &mut Option<Instant>,
+    now: Instant,
+) {
+    match read {
         Ok(k) => {
             if group.keys.rotate(k, now) {
                 tracing::info!(
@@ -1274,7 +1498,7 @@ async fn run(
             },
             _ = tick.tick() => {
                 let now = Instant::now();
-                refresh_secret(&mut group, &secret_file, &mut secret_warned, now);
+                refresh_secret(&mut group, &secret_file, &mut secret_warned, now).await;
                 group.check_liveness(now);
                 quorum.set_live(group.live_members());
                 group
@@ -1290,18 +1514,21 @@ async fn run(
                 send_all(&socket, &group.others(), &data).await;
             }
             Some(ev) = out.recv() => {
-                let service = match &ev {
-                    PeerOut::Down(d) => d.service.clone(),
-                    PeerOut::Result(r) => r.service.clone(),
+                let (service, digest) = match &ev {
+                    PeerOut::Down(d) => (&d.service, &d.digest),
+                    PeerOut::Result(r) => (&r.service, &r.digest),
                 };
-                let Some(digest) = targets.digest(&service) else {
+                // The digest is the one the check ran with, stamped by the
+                // backend task: a reload since then must not relabel it.
+                // No digest: the service was not known here yet.
+                if digest.is_empty() || targets.digest(service).is_none() {
                     continue; // service removed meanwhile
-                };
+                }
                 let (kind, counter) = match ev {
                     PeerOut::Down(d) => (
                         Kind::Down(Down {
-                            service: service.to_string(),
-                            digest,
+                            service: d.service.to_string(),
+                            digest: d.digest,
                             backend: d.backend,
                             reason: d.reason,
                         }),
@@ -1309,8 +1536,8 @@ async fn run(
                     ),
                     PeerOut::Result(r) => (
                         Kind::Result(ResultMsg {
-                            service: service.to_string(),
-                            digest,
+                            service: r.service.to_string(),
+                            digest: r.digest,
                             backend: r.backend,
                             outcome: r.outcome,
                             interval_ms: u64::try_from(r.interval.as_millis())
@@ -1337,7 +1564,7 @@ async fn run(
                 group.set_encrypt(s.encrypt);
                 if s.secret_file != secret_file {
                     secret_file = s.secret_file;
-                    refresh_secret(&mut group, &secret_file, &mut secret_warned, Instant::now());
+                    refresh_secret(&mut group, &secret_file, &mut secret_warned, Instant::now()).await;
                 }
             }
         }
@@ -2089,25 +2316,110 @@ mod tests {
         assert!(Keys::new(new).open(&mine, start).is_some());
     }
 
+    /// Spec peer-group "Restart during a secret change": with
+    /// `previous_secret_file`, a daemon restarted 30 seconds after its
+    /// file changed signs and accepts as if it had not restarted, so a
+    /// member whose file has not changed yet keeps accepting it.
+    #[test]
+    fn previous_secret_file_survives_a_restart() {
+        let new = vec![9u8; 32];
+        let (_d, new_path) = secret_file(&new, 0o600);
+        let (_d2, old_path) = secret_file(KEY, 0o600);
+        let changed = |ago: u64| {
+            std::fs::File::options()
+                .write(true)
+                .open(&new_path)
+                .expect("the temporary secret file can be opened")
+                .set_modified(std::time::SystemTime::now() - Duration::from_secs(ago))
+                .expect("the temporary secret file's time can be set");
+        };
+        let conf = |previous: Option<PathBuf>| PeersConfig {
+            listen: addr(ME),
+            members: vec![addr(ME), addr(B)],
+            secret_file: new_path.clone(),
+            previous_secret_file: previous,
+            encrypt: true,
+        };
+        let now = Instant::now();
+        let at = |s| now + Duration::from_secs(s);
+        changed(30);
+        let keys = start_keys(&conf(Some(old_path.clone())), new.clone(), now)
+            .expect("both secret files are valid");
+        // A restarted with the new secret, B not changed yet: both ways.
+        let t = 1_763_000_000_000u64;
+        let mut a = Group::new(
+            addr(ME),
+            "dc1".into(),
+            vec![addr(ME), addr(B)],
+            keys.clone(),
+            1,
+            Arc::new(PeerStats::default()),
+        );
+        let from_b = encode(&msg(B, 1, 1, t, Kind::Heartbeat(Vec::new())), KEY);
+        assert!(a.accept(&from_b, addr(B), t, now).is_ok(), "B to A");
+        let from_a = a.encode(Kind::Heartbeat(Vec::new()), t, now);
+        let to_b = Group::new(
+            addr(B),
+            "dc1".into(),
+            vec![addr(ME), addr(B)],
+            Keys::new(KEY.to_vec()),
+            2,
+            Arc::new(PeerStats::default()),
+        )
+        .accept(&from_a, addr(ME), t, now)
+        .map(|_| ());
+        assert_eq!(to_b, Ok(()), "A to B");
+        // Signed with the old secret until 60s after the change, accepted
+        // until 120s after it.
+        assert_eq!(keys.signing(at(29)).raw(), KEY);
+        assert_eq!(keys.signing(at(30)).raw(), &new[..]);
+        assert!(keys.accepted(at(89)).any(|k| k.raw() == KEY));
+        assert!(!keys.accepted(at(90)).any(|k| k.raw() == KEY));
+        // A change long ago, or no previous_secret_file: the new one only.
+        changed(200);
+        let keys = start_keys(&conf(Some(old_path)), new.clone(), now)
+            .expect("both secret files are valid");
+        assert_eq!(keys.accepted(now).count(), 1);
+        changed(30);
+        let keys = start_keys(&conf(None), new.clone(), now).expect("no previous file to read");
+        assert_eq!(keys.accepted(now).count(), 1);
+        assert_eq!(keys.signing(now).raw(), &new[..]);
+    }
+
     #[test]
     fn secret_file_reload() {
         let start = Instant::now();
         let (_d, path) = secret_file(&[1u8; 40], 0o600);
         let mut g = group(start);
         let mut warned = None;
-        refresh_secret(&mut g, &path, &mut warned, start);
+        apply_secret(&mut g, read_secret(&path), &mut warned, start);
         assert_eq!(g.keys.current(), &[1u8; 40]);
         std::fs::remove_file(&path).expect("the temporary secret file can be removed");
-        refresh_secret(&mut g, &path, &mut warned, start + Duration::from_secs(1));
+        apply_secret(
+            &mut g,
+            read_secret(&path),
+            &mut warned,
+            start + Duration::from_secs(1),
+        );
         assert_eq!(g.keys.current(), &[1u8; 40], "keeps the last valid secret");
         assert_eq!(warned, Some(start + Duration::from_secs(1)));
-        refresh_secret(&mut g, &path, &mut warned, start + Duration::from_secs(30));
+        apply_secret(
+            &mut g,
+            read_secret(&path),
+            &mut warned,
+            start + Duration::from_secs(30),
+        );
         assert_eq!(
             warned,
             Some(start + Duration::from_secs(1)),
             "one warning a minute"
         );
-        refresh_secret(&mut g, &path, &mut warned, start + Duration::from_secs(61));
+        apply_secret(
+            &mut g,
+            read_secret(&path),
+            &mut warned,
+            start + Duration::from_secs(61),
+        );
         assert_eq!(warned, Some(start + Duration::from_secs(61)));
     }
 
@@ -2130,6 +2442,163 @@ mod tests {
             }
         });
         assert_eq!(g.stats.rejected(Reject::Malformed), 4);
+    }
+
+    /// Spec peer-group "acceptance checks": the `EMP1` tag is checked
+    /// before the payload is parsed, so a wrong tag on a payload that is not
+    /// JSON counts as `auth`, and a right tag on one counts as `malformed`.
+    #[test]
+    fn emp1_tag_is_checked_before_the_payload() {
+        let now = Instant::now();
+        let mut bad_tag = MAGIC.to_vec();
+        bad_tag.extend_from_slice(&[0u8; TAG_LEN]);
+        bad_tag.extend_from_slice(b"not json at all");
+        let mut g = group(now);
+        assert_eq!(
+            g.accept(&bad_tag, addr(B), 0, now).map(|_| ()),
+            Err(Reject::Auth)
+        );
+        assert_eq!(g.stats.rejected(Reject::Auth), 1);
+        assert_eq!(g.stats.rejected(Reject::Malformed), 0);
+        let mut g = group(now);
+        assert_eq!(
+            g.accept(&raw("not json at all"), addr(B), 0, now)
+                .map(|_| ()),
+            Err(Reject::Malformed)
+        );
+        // Exactly the header: signed empty payload, malformed; 35 bytes:
+        // too short.
+        let mut g = group(now);
+        assert_eq!(
+            g.accept(&raw(""), addr(B), 0, now).map(|_| ()),
+            Err(Reject::Malformed)
+        );
+        assert_eq!(
+            g.accept(&raw("")[..HEADER_LEN - 1], addr(B), 0, now)
+                .map(|_| ()),
+            Err(Reject::Malformed)
+        );
+        assert_eq!(g.stats.rejected(Reject::Auth), 0);
+    }
+
+    /// Spec peer-group "Secret changed twice": a second change while the
+    /// daemon still signs with the first secret keeps signing with the
+    /// first one, for 60 seconds after the second change, and every
+    /// secret replaced in the last 120 seconds is accepted.
+    #[test]
+    fn second_rotation_keeps_signing_with_the_first_secret() {
+        let start = Instant::now();
+        let at = |s| start + Duration::from_secs(s);
+        let (k1, k2) = (vec![8u8; 32], vec![9u8; 32]);
+        let mut keys = Keys::new(KEY.to_vec());
+        assert!(keys.rotate(k1.clone(), at(0)));
+        assert!(keys.rotate(k2.clone(), at(30)));
+        assert_eq!(keys.current(), &k2[..]);
+        for s in [31, 89] {
+            assert_eq!(keys.signing(at(s)).raw(), KEY, "{s}s");
+        }
+        assert_eq!(keys.signing(at(90)).raw(), &k2[..]);
+        let accepted = |keys: &Keys, s| {
+            keys.accepted(at(s))
+                .map(|k| k.raw().to_vec())
+                .collect::<Vec<_>>()
+        };
+        for want in [KEY.to_vec(), k1.clone(), k2.clone()] {
+            assert!(accepted(&keys, 119).contains(&want), "{want:?} at 119s");
+        }
+        // Both replaced secrets are accepted until 120s after the second
+        // change.
+        assert_eq!(
+            accepted(&keys, 149),
+            vec![k2.clone(), KEY.to_vec(), k1.clone()]
+        );
+        assert_eq!(accepted(&keys, 150), vec![k2.clone()]);
+        // A change after signing switched: the secret signed with last
+        // is the one kept.
+        let mut keys = Keys::new(KEY.to_vec());
+        keys.rotate(k1.clone(), at(0));
+        keys.rotate(k2.clone(), at(70));
+        assert_eq!(keys.signing(at(71)).raw(), &k1[..]);
+        assert!(accepted(&keys, 110).contains(&KEY.to_vec()));
+        assert!(!accepted(&keys, 121).contains(&KEY.to_vec()));
+    }
+
+    /// Spec peer-group: dropped messages are logged once a minute per
+    /// source and reason; a flood from many other source addresses does
+    /// not use up the room kept for members.
+    #[test]
+    #[tracing_test::traced_test]
+    fn flood_of_sources_does_not_hide_member_warnings() {
+        let now = Instant::now();
+        let mut g = group(now);
+        for port in 0..MAX_WARN_ENTRIES as u16 + 10 {
+            let src = SocketAddr::from(([10, 0, 0, 99], 10_000 + port));
+            let _ = g.accept(b"short", src, 0, now);
+        }
+        assert_eq!(
+            g.accept(
+                &encode(&msg(B, 1, 1, 0, Kind::Heartbeat(Vec::new())), &[8u8; 32]),
+                addr(B),
+                0,
+                now
+            )
+            .map(|_| ()),
+            Err(Reject::Auth)
+        );
+        logs_assert(|lines: &[&str]| {
+            let member = format!("dropped peer message from {B} (auth)");
+            match lines.iter().filter(|l| l.contains(&member)).count() {
+                1 => Ok(()),
+                n => Err(format!("{n} warnings for the member")),
+            }
+        });
+    }
+
+    /// Spec peer-group "Messages arrive out of order": a message with a
+    /// lower `seq` than the last accepted one of the same `boot` is
+    /// accepted once while it is among the 64 latest.
+    #[test]
+    fn reordered_messages_are_accepted_once() {
+        let now = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let hb = |seq| encode(&msg(B, 1, seq, t, Kind::Heartbeat(Vec::new())), KEY);
+        let mut g = group(now);
+        let mut send = |seq| g.accept(&hb(seq), addr(B), t, now).map(|_| ());
+        assert_eq!(send(3), Ok(()));
+        assert_eq!(send(1), Ok(()), "arrives after 3");
+        assert_eq!(send(1), Err(Reject::Replay));
+        assert_eq!(send(3), Err(Reject::Replay));
+        assert_eq!(send(2), Ok(()));
+        assert_eq!(send(70), Ok(()));
+        assert_eq!(send(6), Err(Reject::Replay), "64 behind");
+        assert_eq!(send(7), Ok(()), "63 behind");
+        assert_eq!(send(7), Err(Reject::Replay));
+        assert_eq!(send(200), Ok(()));
+        assert_eq!(send(70), Err(Reject::Replay));
+        assert_eq!(send(199), Ok(()));
+    }
+
+    /// Spec peer-group: fields of a kind the receiver does not know are
+    /// not checked, even when a known kind uses the same name.
+    #[test]
+    fn unknown_kind_fields_are_not_checked() {
+        let now = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let json = format!(
+            r#"{{"from":"{B}","site":"dc1","boot":"0000000000000001","seq":1,"ts":{t},"kind":"assign","service":42,"off":"x","interval_ms":"soon"}}"#
+        );
+        let mut g = group(now);
+        assert_eq!(
+            g.accept(&raw(&json), addr(B), t, now).map(|m| m.kind),
+            Ok(Kind::Unknown("assign".into()))
+        );
+        // A known kind still checks them.
+        let json = json.replace("assign", "heartbeat");
+        let mut g = group(now);
+        assert_eq!(
+            g.accept(&raw(&json), addr(B), t, now).map(|_| ()),
+            Err(Reject::Malformed)
+        );
     }
 
     #[test]
@@ -2211,13 +2680,14 @@ mod tests {
             listen: me,
             members: vec![a, b],
             secret_file: path.clone(),
+            previous_secret_file: None,
             encrypt: true,
         };
         let ha = start_on(
             sa,
             &conf(a),
             "dc1",
-            vec![3u8; 32],
+            Keys::new(vec![3u8; 32]),
             targets_a,
             None,
             Vec::new(),
@@ -2226,7 +2696,7 @@ mod tests {
             sb,
             &conf(b),
             "dc1",
-            vec![3u8; 32],
+            Keys::new(vec![3u8; 32]),
             targets_b,
             None,
             Vec::new(),
@@ -2266,6 +2736,7 @@ mod tests {
                 listen: ha.listen,
                 members: vec![ha.listen, b, c],
                 secret_file: path,
+                previous_secret_file: None,
                 encrypt: true,
             },
             "dc1",
@@ -2307,6 +2778,7 @@ mod tests {
                 listen: hb.listen,
                 members: vec![a, hb.listen],
                 secret_file: path.clone(),
+                previous_secret_file: None,
                 encrypt: true,
             },
             "dc1",
@@ -2317,10 +2789,11 @@ mod tests {
                 listen: a,
                 members: vec![a, hb.listen],
                 secret_file: path,
+                previous_secret_file: None,
                 encrypt: true,
             },
             "dc1",
-            vec![3u8; 32],
+            Keys::new(vec![3u8; 32]),
             ta,
             None,
             Vec::new(),
@@ -2328,6 +2801,7 @@ mod tests {
         ha.out
             .send(PeerOut::Down(BackendDown {
                 service: "api.svc.emfor".into(),
+                digest: DIGEST.into(),
                 backend: "10.0.0.11:8080".into(),
                 reason: "refused".into(),
             }))
@@ -2363,6 +2837,7 @@ mod tests {
             ha.out
                 .send(PeerOut::Result(BackendResult {
                     service: service.into(),
+                    digest: DIGEST.into(),
                     backend: "10.0.0.11:8080".into(),
                     outcome: Outcome::Down("refused".into()),
                     interval: Duration::from_secs(2),
@@ -2400,6 +2875,7 @@ mod tests {
         ha.out
             .send(PeerOut::Down(BackendDown {
                 service: "api.svc.emfor".into(),
+                digest: "f".repeat(32),
                 backend: "10.0.0.11:8080".into(),
                 reason: "refused".into(),
             }))
@@ -2422,6 +2898,7 @@ mod tests {
         ha.out
             .send(PeerOut::Result(BackendResult {
                 service: "api.svc.emfor".into(),
+                digest: DIGEST.into(),
                 backend: "10.0.0.11:8080".into(),
                 outcome: Outcome::Up,
                 interval: Duration::from_secs(2),

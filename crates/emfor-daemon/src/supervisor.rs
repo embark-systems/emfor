@@ -142,7 +142,9 @@ impl Supervisor {
     /// Start again every check task that ended on its own. A task only ends
     /// by a panic while the daemon runs (or when the writer is gone, at
     /// shutdown), and without this its backend would keep its last state
-    /// for good. The new task starts from `unknown`. A task that keeps
+    /// for good. The new task starts from `unknown`, and so does the
+    /// backend in the store, with a transition in its history (reason
+    /// `check task restarted`) when it was in another state. A task that keeps
     /// stopping is started again after 1s, 2s, 4s and so on, up to 60s, so
     /// a checker that always panics does not fill the log; the wait starts
     /// over once a task ran 5 minutes. Returns how many were restarted.
@@ -174,6 +176,13 @@ impl Supervisor {
                     count + 1,
                     next.as_secs()
                 );
+                // Before the new task's first update: the store goes back
+                // to `unknown` with the task, as a recorded transition.
+                let _ = self.writer.send(WriterMsg::Restarted {
+                    service: name.clone(),
+                    generation: r.generation,
+                    backend_id: b.id.clone(),
+                });
                 let recheck = r.rechecks.entry(b.id.clone()).or_default().clone();
                 *t = spawn_backend(
                     name.clone(),
@@ -477,6 +486,70 @@ mod tests {
         .await;
         assert_eq!(sup.restart_finished(), 0, "running tasks are left alone");
         assert!(checker.0.load(Ordering::SeqCst) >= 2);
+    }
+
+    /// A restarted check task starts from `unknown`, and the store says so
+    /// with a transition in the history, not a silent change.
+    #[tokio::test]
+    async fn restart_from_unknown_is_a_recorded_transition() {
+        use crate::checker::{CheckRequest, CheckResult, Checker};
+        use emfor_format::{ServiceHistory, hist_key};
+        use futures::future::BoxFuture;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        /// `up`, then a panic, then `up` again.
+        #[derive(Debug, Default)]
+        struct PanicsSecond(AtomicU32);
+        impl Checker for PanicsSecond {
+            fn check(&self, _: CheckRequest) -> BoxFuture<'_, CheckResult> {
+                Box::pin(async move {
+                    if self.0.fetch_add(1, Ordering::SeqCst) == 1 {
+                        panic!("checker bug");
+                    }
+                    CheckResult::Up
+                })
+            }
+        }
+
+        let h = harness();
+        let mut config = conf(
+            "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"127.0.0.1:1\"]\ninterval = \"200ms\"\ntimeout = \"100ms\"\nrise = 1\njitter = \"0%\"\n",
+        );
+        config.services[0].checker = Arc::new(PanicsSecond::default());
+        let mut sup = Supervisor::start(&config, h.tx.clone());
+        let finished = |sup: &Supervisor| {
+            let r = sup.services.values().next().unwrap();
+            r.tasks.values().next().unwrap().is_finished()
+        };
+        wait_for("task ended by the panic", || finished(&sup)).await;
+        assert_eq!(states(&h.store, "api.svc.emfor"), [HealthState::Healthy]);
+        assert_eq!(sup.restart_finished(), 1);
+        let moves = |store: &Store| -> Vec<(HealthState, HealthState, Option<String>)> {
+            store
+                .get(&hist_key("api.svc.emfor"))
+                .unwrap()
+                .map(|j| serde_json::from_str::<ServiceHistory>(&j).unwrap())
+                .map(|h| {
+                    h.backends["127.0.0.1:1"]
+                        .iter()
+                        .map(|e| (e.from, e.to, e.reason.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        use HealthState::{Healthy, Unknown};
+        wait_for("healthy again after the restart", || {
+            moves(&h.store).len() == 3
+        })
+        .await;
+        assert_eq!(
+            moves(&h.store),
+            [
+                (Unknown, Healthy, None),
+                (Healthy, Unknown, Some("check task restarted".into())),
+                (Unknown, Healthy, None),
+            ]
+        );
     }
 
     #[test]

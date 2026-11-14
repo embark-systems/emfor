@@ -26,7 +26,11 @@ ttl = "1s"                    # default
 ```
 
 An empty `[dns]` table uses the defaults. The server listens on UDP and
-TCP. If an address cannot be bound, the daemon exits with status 1.
+TCP. If an address cannot be bound, the daemon exits with status 1. At
+most 128 TCP connections are served at once (more are closed right away),
+and a TCP connection that sends no query for 5 seconds is closed. If a
+listener stops while the daemon runs, the daemon exits with status 70 and
+the service manager restarts it.
 
 Only services named under the zone are answered. At start and on reload
 the daemon logs a warning for each service outside the zone, and for each
@@ -50,7 +54,8 @@ drill -p 5300 api.svc.emfor @127.0.0.1           # FreeBSD
 | SRV for a service, or `_<anything>._tcp.<service>` | One SRV record per candidate, addresses in the additional section. |
 | Other types for a service | `NOERROR` with no records. |
 | A name under the zone that is no service | `NXDOMAIN`. |
-| A name outside the zone | `REFUSED`. |
+| A name outside the zone, or a class other than `IN` | `REFUSED`. |
+| EDNS version above 0 | `BADVERS`. |
 
 The TTL is the service's `dns_ttl`, or `[dns] ttl` (1 second by default).
 The zone has a synthesized SOA whose negative-caching TTL is also
@@ -95,7 +100,9 @@ the service name, which emfor resolves whatever the backend's health:
 Over UDP a reply stays within the size the client advertises with EDNS (at
 most 1232 bytes), or 512 bytes without EDNS. When the addresses do not fit,
 they are left out; when even the SRV records do not fit, the reply is
-truncated (TC) and the resolver retries over TCP.
+truncated (TC) and the resolver retries over TCP. A name close to the
+255-byte limit can make even a single A record or the SOA too big for 512
+bytes; that reply is truncated too.
 
 ## Forwarding from the host resolver
 

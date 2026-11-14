@@ -167,6 +167,10 @@ pub struct PeersConfig {
     /// Every member, this daemon included, in config order.
     pub members: Vec<SocketAddr>,
     pub secret_file: PathBuf,
+    /// `previous_secret_file`: the secret `secret_file` held before its last
+    /// change, used at start when that change is recent (see
+    /// [`crate::peers::Keys::resumed`]).
+    pub previous_secret_file: Option<PathBuf>,
     /// `encrypt`: send `EMP2` (encrypted) rather than `EMP1` messages.
     pub encrypt: bool,
 }
@@ -810,7 +814,17 @@ impl Validator {
     fn peers(&mut self, root: &toml::Table) -> Option<PeersConfig> {
         let t = self.table(root, "peers")?;
         let before = self.errors.len();
-        self.unknown_keys(t, "peers", &["listen", "members", "secret_file", "encrypt"]);
+        self.unknown_keys(
+            t,
+            "peers",
+            &[
+                "listen",
+                "members",
+                "secret_file",
+                "previous_secret_file",
+                "encrypt",
+            ],
+        );
         let encrypt = match t.get("encrypt") {
             None => true,
             Some(toml::Value::Boolean(b)) => *b,
@@ -899,6 +913,16 @@ impl Validator {
                 }
             }
         };
+        let previous_secret_file = match self.string(t, "peers", "previous_secret_file") {
+            None => None,
+            Some(s) => {
+                let path = PathBuf::from(s);
+                if let Err(m) = read_secret(&path) {
+                    self.err("peers.previous_secret_file", m);
+                }
+                Some(path)
+            }
+        };
         if self.errors.len() != before {
             return None;
         }
@@ -906,6 +930,7 @@ impl Validator {
             listen: listen?,
             members,
             secret_file: secret_file?,
+            previous_secret_file,
             encrypt,
         })
     }
@@ -970,7 +995,12 @@ impl Validator {
         }
         if let Some(s) = self.string(t, "store", "map_size") {
             match parse_size(s) {
-                Some(n) if n >= 1024 * 1024 => store.map_size = n,
+                // LMDB refuses a size that is not a multiple of the page
+                // size; every common page size (4, 16, 64KiB) divides 64KiB.
+                Some(n) if n >= 1024 * 1024 => match n.checked_next_multiple_of(MAP_SIZE_UNIT) {
+                    Some(n) => store.map_size = n,
+                    None => self.err("store.map_size", "too large"),
+                },
                 Some(_) => self.err("store.map_size", "must be at least 1MiB"),
                 None => self.err("store.map_size", "invalid size, use e.g. \"64MiB\""),
             }
@@ -1044,16 +1074,15 @@ impl Validator {
         if let Some(d) = self.duration(t, parent, "interval") {
             if d < Duration::from_millis(100) {
                 self.err(key_path(parent, "interval"), "interval below 100ms");
+            } else if d > MAX_INTERVAL {
+                self.err(key_path(parent, "interval"), "interval above 24h");
             } else {
                 p.interval = Some(d);
             }
         }
         if let Some(d) = self.duration(t, parent, "timeout") {
-            if d.is_zero() {
-                self.err(
-                    key_path(parent, "timeout"),
-                    "timeout must be greater than zero",
-                );
+            if d < MIN_TIMEOUT {
+                self.err(key_path(parent, "timeout"), "timeout below 10ms");
             } else {
                 p.timeout = Some(d);
             }
@@ -1316,6 +1345,18 @@ impl Validator {
     }
 }
 
+/// `[store] map_size` is rounded up to a multiple of this.
+const MAP_SIZE_UNIT: usize = 64 * 1024;
+
+/// Longest `interval`. A backend checked less than once a day is not
+/// monitored in any useful sense, and the bound keeps `fall × interval`
+/// (the error window) far from the limits of `Duration` and `Instant`.
+const MAX_INTERVAL: Duration = Duration::from_secs(24 * 3600);
+
+/// Shortest `timeout`. Plugins get the timeout in whole milliseconds minus
+/// a margin, and no network check is meaningful in less.
+const MIN_TIMEOUT: Duration = Duration::from_millis(10);
+
 /// Parse `"64MiB"`, `"512KiB"`, `"1GiB"`, or a plain byte count.
 fn parse_size(s: &str) -> Option<usize> {
     let s = s.trim();
@@ -1440,7 +1481,19 @@ backends = ["10.0.0.1:80"]
             vec!["127.0.0.1:5303".parse::<SocketAddr>().unwrap()]
         );
         assert_eq!(p.secret_file, key);
+        assert_eq!(p.previous_secret_file, None);
         assert_eq!(parse_ok(SVC).peers, None);
+        let (_d2, old) = secret_file(&[b'o'; 64], 0o600);
+        let c = parse_ok(&peers_conf(
+            "site = \"dc1\"\n",
+            &format!(
+                "{LISTEN_MEMBERS}previous_secret_file = \"{}\"\n",
+                old.display()
+            ),
+            &key,
+        ));
+        let p = c.peers.expect("[peers] is parsed");
+        assert_eq!(p.previous_secret_file, Some(old));
     }
 
     /// Spec peer-group "peer config validation" and the service-config rows.
@@ -1527,6 +1580,18 @@ backends = ["10.0.0.1:80"]
             (
                 peers_conf(site, &format!("listen = \"10.0.0.5:5302\"\n{m2}"), &open),
                 "peers.secret_file",
+                "must not be readable by other users",
+            ),
+            (
+                peers_conf(
+                    site,
+                    &format!(
+                        "listen = \"10.0.0.5:5302\"\n{m2}previous_secret_file = \"{}\"\n",
+                        open.display()
+                    ),
+                    &key,
+                ),
+                "peers.previous_secret_file",
                 "must not be readable by other users",
             ),
             (
@@ -1860,6 +1925,14 @@ slow_start = "0s"
                 Some("interval below 100ms"),
             ),
             ("interval = \"1s\"\ntimeout = \"1s\"\n", None),
+            ("interval = \"24h\"\n", None),
+            ("interval = \"25h\"\n", Some("interval above 24h")),
+            (
+                "interval = \"200years\"\nfall = 4294967295\n",
+                Some("interval above 24h"),
+            ),
+            ("timeout = \"10ms\"\n", None),
+            ("timeout = \"9ms\"\n", Some("timeout below 10ms")),
             (
                 "interval = \"1s\"\ntimeout = \"2s\"\n",
                 Some("timeout must not exceed interval"),
@@ -1997,6 +2070,27 @@ slow_start = "0s"
             "{SVC}\n[services.\"api.svc.emfor\".check_options]\npath = \"/\"\n"
         ));
         assert_eq!(e[0].path, "services.\"api.svc.emfor\".check_options.path");
+    }
+
+    /// LMDB refuses a map size that is not a multiple of the page size, so
+    /// the config rounds it up to a multiple of 64KiB, which every common
+    /// page size divides.
+    #[test]
+    fn map_size_rounded_up_to_64kib() {
+        for (given, want) in [
+            ("\"1MiB\"", 1 << 20),
+            ("\"1048577\"", (1 << 20) + (64 << 10)),
+            ("\"1500KiB\"", 1536 << 10),
+        ] {
+            let c = parse_ok(&format!("[store]\nmap_size = {given}\n{SVC}"));
+            assert_eq!(c.store.map_size, want, "{given}");
+            let dir = tempfile::tempdir().unwrap();
+            let store = StoreConfig {
+                path: dir.path().join("state.mdb"),
+                ..c.store
+            };
+            crate::store::Store::open(&store).unwrap_or_else(|e| panic!("{given}: {e}"));
+        }
     }
 
     #[test]

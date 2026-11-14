@@ -6,18 +6,20 @@ use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::time::{Duration, Instant};
 
 use emfor_format::{READABLE_SCHEMA_VERSIONS, ServiceRecord, readable_schema, service_key};
 
 use crate::select::{candidates, is_stale, normalize, pick_at, pool_candidates};
-use crate::store::{Env, Snapshot};
+use crate::store::{Env, Snapshot, SnapshotError};
 use crate::{Error, ErrorCode};
 
 pub struct Client {
     path: PathBuf,
     max_staleness_ms: Result<u64, String>,
-    /// `None` until an open succeeds; a failed open is retried next lookup.
+    /// `None` until an open succeeds; a failed open is retried by a later
+    /// lookup (see [`OPEN_RETRY`]).
     /// Lookups hold the read lock for their read transaction, so a reopen
     /// (write lock) closes the old environment only when none uses it, and
     /// before it opens the new one: LMDB must not have two environments on
@@ -30,6 +32,11 @@ pub struct Client {
     /// time between two checks ([`REPLACE_CHECK_MS`]).
     last_replace_check: AtomicU64,
     replace_check_ms: u64,
+    /// The last failed open of a store file that exists, and when it
+    /// failed: until [`OPEN_RETRY`] has passed, lookups fail with its error
+    /// without opening the file again.
+    open_failure: Mutex<Option<(Instant, Error)>>,
+    open_retry: Duration,
     /// Random per client: each service's counter starts at a random value.
     seed: RandomState,
 }
@@ -37,7 +44,18 @@ pub struct Client {
 /// Least time between two checks for a replaced store file. A check costs
 /// a `stat`, and a lookup that finds the store stale or fails would
 /// otherwise pay it every time, just when applications retry the most.
-pub const REPLACE_CHECK_MS: u64 = 100;
+pub(crate) const REPLACE_CHECK_MS: u64 = 100;
+
+/// Least time between two attempts to open a store file that exists but
+/// could not be opened (another LMDB format, no permission, not a store).
+/// An attempt maps the file and sets up its lock file under the client's
+/// write lock, which stops every other lookup of the process meanwhile; a
+/// cause like these needs an operator, so trying once a second is enough,
+/// and a store the daemon is still creating is read at most a second later
+/// (less than the default `EMFOR_MAX_STALENESS`). A missing file is tried
+/// on every lookup: that costs one `stat`, and the daemon may create it at
+/// any moment.
+pub(crate) const OPEN_RETRY: Duration = Duration::from_secs(1);
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -54,6 +72,8 @@ impl Client {
             counters: RwLock::new(HashMap::new()),
             last_replace_check: AtomicU64::new(0),
             replace_check_ms: REPLACE_CHECK_MS,
+            open_failure: Mutex::new(None),
+            open_retry: OPEN_RETRY,
             seed: RandomState::new(),
         }
     }
@@ -68,17 +88,61 @@ impl Client {
         {
             let slot = self.env.read().unwrap_or_else(PoisonError::into_inner);
             if let Some(env) = slot.as_ref() {
-                return env.snapshot(key);
+                match env.snapshot(key) {
+                    // Adopting the new size needs the write lock.
+                    Err(SnapshotError::MapResized) => {}
+                    r => return r.map_err(|e| e.into_error(&self.path)),
+                }
+            } else {
+                self.check_open_failure()?;
             }
         }
+        // The write lock waits until no lookup has a read transaction open.
         let mut slot = self.env.write().unwrap_or_else(PoisonError::into_inner);
-        let env = match slot.take() {
+        let mut env = match slot.take() {
             Some(env) => env, // another thread opened it meanwhile
-            None => Env::open(&self.path)?,
+            None => self.open()?,
         };
-        let snapshot = env.snapshot(key);
+        let snapshot = match env.snapshot(key) {
+            Err(SnapshotError::MapResized) => env
+                .adopt_map_size()
+                .map_err(SnapshotError::Failed)
+                .and_then(|()| env.snapshot(key)),
+            r => r,
+        };
         *slot = Some(env);
-        snapshot
+        snapshot.map_err(|e| e.into_error(&self.path))
+    }
+
+    /// The error of the last failed open while [`OPEN_RETRY`] has not
+    /// passed since.
+    fn check_open_failure(&self) -> Result<(), Error> {
+        match &*self
+            .open_failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+        {
+            Some((at, e)) if at.elapsed() < self.open_retry => Err(e.clone()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Open the store, unless an open failed less than [`OPEN_RETRY`] ago.
+    /// Called with the write lock of `env` held.
+    fn open(&self) -> Result<Env, Error> {
+        self.check_open_failure()?;
+        let r = Env::open(&self.path);
+        let mut failure = self
+            .open_failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *failure = match &r {
+            // A missing file (or one that cannot be looked at) cost only a
+            // `stat`: no pause.
+            Err(e) if self.path.exists() => Some((Instant::now(), e.clone())),
+            _ => None,
+        };
+        r
     }
 
     /// When the store path now holds another file, switch to it, so a
@@ -603,6 +667,49 @@ mod tests {
             "{e}"
         );
         assert!(e.message.contains(&path_text), "{e}");
+    }
+
+    /// A store file that cannot be opened is tried again only after
+    /// `open_retry`: lookups meanwhile fail with the same error.
+    #[test]
+    fn unopenable_store_is_retried_after_a_pause() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.mdb");
+        std::fs::write(&path, vec![0x5a; 16384]).unwrap();
+        let mut c = Client::new(path.clone(), Ok(3000));
+        // Long enough that a slow host cannot reach it while the store is
+        // written below; set to zero afterwards instead of sleeping.
+        c.open_retry = Duration::from_secs(600);
+        let first = c.lookup("api.svc.emfor", None).unwrap_err();
+        assert_eq!(first.code, ErrorCode::Unavailable, "{first}");
+        // Now a store, but the pause has not passed.
+        std::fs::remove_file(&path).unwrap();
+        let _ = std::fs::remove_file(dir.path().join("state.mdb-lock"));
+        write(
+            dir.path(),
+            serde_json::json!({"schema_version": "1", "services": [svc("api.svc.emfor", serde_json::json!({}))]}),
+        );
+        assert_eq!(
+            c.lookup("api.svc.emfor", None).unwrap_err(),
+            first,
+            "opened again within the pause"
+        );
+        // The pause is over: the next lookup opens the store.
+        c.open_retry = Duration::ZERO;
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
+    }
+
+    /// A missing store has no pause: it is opened as soon as it exists.
+    #[test]
+    fn missing_store_is_retried_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Client::new(dir.path().join("state.mdb"), Ok(3000));
+        assert_eq!(code(&c, "api.svc.emfor"), ErrorCode::Unavailable);
+        write(
+            dir.path(),
+            serde_json::json!({"schema_version": "1", "services": [svc("api.svc.emfor", serde_json::json!({}))]}),
+        );
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
     }
 
     /// Spec "Unhealthy backend is never returned": four lookups skip the

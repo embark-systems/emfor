@@ -108,10 +108,19 @@ class LoadTest(unittest.TestCase):
     def test_library_names_follow_the_release(self):
         names = emfor._library_names
         self.assertEqual(
-            names("0.1.1"), ["libemfor.so.0.1", "libemfor.so", "libemfor.0.1.dylib", "libemfor.dylib"]
+            names("0.1.1"), ["libemfor.so.0.1", "libemfor.0.1.dylib", "libemfor.so", "libemfor.dylib"]
         )
         self.assertEqual(names("0.2.0")[0], "libemfor.so.0.2")
-        self.assertEqual(names("1.4.2")[:3], ["libemfor.so.1", "libemfor.so", "libemfor.1.dylib"])
+        self.assertEqual(names("1.4.2")[:3], ["libemfor.so.1", "libemfor.1.dylib", "libemfor.so"])
+
+    def test_release_names_come_before_find_library(self):
+        # find_library may name another release's libemfor.
+        self.assertEqual(
+            emfor._library_names("0.1.1", "libemfor.so.0.0"),
+            ["libemfor.so.0.1", "libemfor.0.1.dylib", "libemfor.so.0.0", "libemfor.so", "libemfor.dylib"],
+        )
+        self.assertEqual(emfor._library_names("0.1.1", "libemfor.so.0.1")[:3],
+                         ["libemfor.so.0.1", "libemfor.0.1.dylib", "libemfor.so"])
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "LD_LIBRARY_PATH lookup is Linux-only")
     def test_finds_the_runtime_library_alone(self):

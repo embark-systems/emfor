@@ -101,7 +101,10 @@ pub trait Checker: Send + Sync + fmt::Debug {
     /// check, so one-time setup is not counted in the check's latency.
     /// Called before every check; must be cheap once the resources exist.
     /// Errors are left for the check itself to report.
-    fn prepare(&self, _target: SocketAddr) {}
+    fn prepare(&self, _target: SocketAddr) -> BoxFuture<'_, ()> {
+        // A zero-sized future: boxing it does not allocate.
+        Box::pin(std::future::ready(()))
+    }
 
     /// Release per-backend resources. Called when a reload removes `target`
     /// from a service whose checker is kept.

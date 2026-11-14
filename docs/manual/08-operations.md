@@ -63,7 +63,11 @@ it.
 | --- | --- |
 | 0 | The daemon is running and every shown service has a healthy backend. |
 | 1 | The daemon is stale or stopped, or a shown service is `ALL DOWN`. |
-| 2 | The config or store cannot be read, the store has another format version, or `--service` names no service. |
+| 2 | The config or store cannot be read, the store has another format version, `--service` names no service, or the output cannot be written. |
+
+A pipe closed early (`emfor status | head -1`) does not change the exit
+status. `--watch` opens the store again when the file is replaced (as the
+daemon does with a damaged store at start).
 
 One unhealthy backend does not change the status, so `emfor status` (or
 `emfor status --service <name>`) works as a monitoring check from cron or
@@ -203,7 +207,7 @@ only when stderr is a terminal and `NO_COLOR` is not set.
 | 0 | Clean stop (`SIGTERM` / `SIGINT`) | — |
 | 1 | Cannot start: a listen address is in use, the store cannot be opened, or another emfor holds the store (`<store>.writer`) | No; fix the cause |
 | 2 | Invalid config, or no command given | No; fix the config |
-| 70 | The state writer stopped (a bug) | Yes; the systemd unit restarts it |
+| 70 | The state writer or a DNS listener stopped while running | Yes; the systemd unit restarts it |
 
 ## The store on disk
 

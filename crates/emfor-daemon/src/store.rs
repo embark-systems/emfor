@@ -1,16 +1,20 @@
 //! LMDB state store: file layout, writer lock, and low-level access.
 //!
-//! Layout (format version 1, see `emfor_format`): one data file opened with
+//! Layout (format version 2, see `emfor_format`): one data file opened with
 //! `MDB_NOSUBDIR` plus `<path>-lock`, the unnamed default database only, UTF-8
 //! keys and values. A separate `<path>.writer` file is `flock`ed so that only
 //! one daemon writes a given store.
+//!
+//! Only what the daemon itself just wrote is read as `Str`. Scans and
+//! deletions of a whole prefix work on bytes, so one key or value that is
+//! not UTF-8 (from a damaged page or another writer) affects only itself.
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions, Permissions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use heed::types::{Bytes, Str};
+use heed::types::{Bytes, DecodeIgnore, Str};
 use heed::{Database, Env, EnvFlags, EnvOpenOptions, RwTxn, WithoutTls};
 use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg};
@@ -164,13 +168,22 @@ impl Store {
         Ok(self.db.get(&rtxn, key)?.map(str::to_string))
     }
 
-    /// Every key starting with `prefix` and its value, from one read transaction.
-    pub fn prefix(&self, prefix: &str) -> heed::Result<BTreeMap<String, String>> {
+    /// Every key starting with `prefix` and its value, from one read
+    /// transaction. A value that is not UTF-8 is `None`, for the caller to
+    /// discard; a key that is not UTF-8 is logged and left out, since no
+    /// caller could name it.
+    pub fn prefix(&self, prefix: &str) -> heed::Result<BTreeMap<String, Option<String>>> {
         let rtxn = self.env.read_txn()?;
+        let raw = self.db.remap_types::<Bytes, Bytes>();
         let mut out = BTreeMap::new();
-        for item in self.db.prefix_iter(&rtxn, prefix)? {
+        for item in raw.prefix_iter(&rtxn, prefix.as_bytes())? {
             let (k, v) = item?;
-            out.insert(k.to_string(), v.to_string());
+            let Ok(k) = std::str::from_utf8(k) else {
+                tracing::warn!("ignoring store key {} that is not UTF-8", k.escape_ascii());
+                continue;
+            };
+            let v = std::str::from_utf8(v).ok().map(str::to_owned);
+            out.insert(k.to_owned(), v);
         }
         Ok(out)
     }
@@ -210,9 +223,10 @@ fn open_env(cfg: &StoreConfig) -> heed::Result<(Env<WithoutTls>, Database<Str, S
         let db = env
             .open_database::<Str, Str>(&rtxn, None)?
             .expect("LMDB always has the unnamed default database, so opening it returns Some");
-        // As raw bytes: only LMDB's own structure is checked here. A value
-        // that is not UTF-8 is left to whoever reads it (`load_history`
-        // discards it with a warning; `svc/*` is rewritten at start).
+        // As raw bytes: only LMDB's own structure is checked here. A key or
+        // value that is not UTF-8 is left to whoever reads it
+        // (`load_history` discards it with a warning; `svc/*` is deleted
+        // and rewritten at start, see `delete_prefix`).
         for item in db.remap_types::<Bytes, Bytes>().iter(&rtxn)? {
             item?;
         }
@@ -247,9 +261,11 @@ fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
     Ok(corrupt)
 }
 
-/// Delete every key starting with `prefix`.
+/// Delete every key starting with `prefix`, whether or not its key and
+/// value are UTF-8: neither is decoded.
 pub fn delete_prefix(txn: &mut RwTxn, db: &Database<Str, Str>, prefix: &str) -> heed::Result<()> {
-    let mut iter = db.prefix_iter_mut(txn, prefix)?;
+    let raw = db.remap_types::<Bytes, DecodeIgnore>();
+    let mut iter = raw.prefix_iter_mut(txn, prefix.as_bytes())?;
     while let Some(item) = iter.next() {
         item?;
         // SAFETY: no reference into the database is held across this call.
@@ -286,7 +302,10 @@ pub(crate) mod tests {
         let got = store.prefix("hist/").unwrap();
         assert_eq!(
             got.into_iter().collect::<Vec<_>>(),
-            [("hist/a".into(), "1".into()), ("hist/b".into(), "2".into())]
+            [
+                ("hist/a".into(), Some("1".into())),
+                ("hist/b".into(), Some("2".into()))
+            ]
         );
     }
 
@@ -494,6 +513,33 @@ pub(crate) mod tests {
             err.to_string()
                 .contains(&format!("{}.writer", c.path.display())),
             "{err}"
+        );
+    }
+
+    /// Write `value` under `key` as raw bytes, as a damaged or foreign
+    /// writer might have.
+    pub(crate) fn put_raw(store: &Store, key: &[u8], value: &[u8]) {
+        let raw = store.db.remap_types::<Bytes, Bytes>();
+        let mut txn = store.env.write_txn().unwrap();
+        raw.put(&mut txn, key, value).unwrap();
+        txn.commit().unwrap();
+    }
+
+    /// A key or value that is not UTF-8 is deleted like any other.
+    #[test]
+    fn delete_prefix_removes_keys_and_values_that_are_not_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&cfg(dir.path())).unwrap();
+        put_raw(&store, b"svc/a", &[0xff, 0xfe]);
+        put_raw(&store, b"svc/\xff", b"1");
+        put_raw(&store, b"svc/b", b"2");
+        put_raw(&store, b"meta/x", b"3");
+        store
+            .write(|txn, db| delete_prefix(txn, db, "svc/"))
+            .unwrap();
+        assert_eq!(
+            store.dump().unwrap().into_iter().collect::<Vec<_>>(),
+            vec![("meta/x".into(), "3".into())]
         );
     }
 

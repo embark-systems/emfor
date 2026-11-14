@@ -91,6 +91,8 @@ What the unit does for you:
   after status 1 or 2, which a retry does not fix
   ([exit codes](08-operations.md#exit-codes)).
 - Logs go to the journal: `journalctl -u emfor`.
+- `LimitNOFILE=65536` raises the open-file limit from systemd's default
+  1024; checks, plugins and DNS and metrics connections all use files.
 - The file system is read-only except `/var/lib/emfor`. A `[store] path`
   elsewhere needs `ReadWritePaths=`; DNS on port 53 needs
   `CAP_NET_BIND_SERVICE` (see [docs/deploy/daemon.md](../deploy/daemon.md#running-under-systemd)).

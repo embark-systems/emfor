@@ -97,8 +97,8 @@ tests:
 
 The daemon SHALL reject a config that violates any of these rules and SHALL report every violation, each prefixed with its TOML path:
 
-- `interval` at least 100ms; `timeout` greater than zero and not greater than `interval` (equal is allowed, because checks of one backend run one after another and cannot overlap); `rise` at least 1; `fall` at least 1; `jitter` from 0% to 50%; `on_all_down` is `open` or `closed`; `balance` is `round-robin`, `sticky`, `failover`, `weighted`, `locality`, or `fastest`; `dns_ttl` is a whole number of seconds from 0s to 3600s; `peers` is a boolean.
-- `backends` is non-empty; every entry is a string or a table; a string, and a table's `addr`, is `IPv4:port` or `[IPv6]:port` with port 1–65535; a table has `addr` and no keys other than `addr`, `weight`, `site`; `weight` is an integer from 1 to 100; no `addr` repeats within a service.
+- `interval` from 100ms to 24h; `timeout` at least 10ms and not greater than `interval` (equal is allowed, because checks of one backend run one after another and cannot overlap); `rise` at least 1; `fall` at least 1; `jitter` from 0% to 50%; `on_all_down` is `open` or `closed`; `balance` is `round-robin`, `sticky`, `failover`, `weighted`, `locality`, or `fastest`; `dns_ttl` is a whole number of seconds from 0s to 3600s; `peers` is a boolean.
+- `backends` is non-empty; every entry is a string or a table; a string, and a table's `addr`, is `IPv4:port` or `[IPv6]:port` with port 1–65535; a table has `addr` and no keys other than `addr`, `weight`, `site`, `backup`; `weight` is an integer from 1 to 100; no `addr` repeats within a service.
 - The top-level `site` and every backend `site` are, after ASCII lowercasing, 1 to 63 characters of `[a-z0-9-]` that do not start or end with `-`.
 - `check` names a registered checker and `check_options` passes that checker's validation.
 - `[dns] listen` is a non-empty array of `IPv4:port` or `[IPv6]:port` with port 1–65535 and no repeats; `[dns] zone` follows the service name rules after the same normalization and is at most 242 characters, so that the SOA name `hostmaster.<zone>` fits in 253; `[dns] ttl` is a whole number of seconds from 0s to 3600s.
@@ -116,6 +116,8 @@ The daemon SHALL reject a config that violates any of these rules and SHALL repo
 | Setting | Value | Result |
 | --- | --- | --- |
 | `interval` | `"50ms"` | error: interval below 100ms |
+| `interval` | `"25h"` | error: interval above 24h |
+| `timeout` | `"9ms"` | error: timeout below 10ms |
 | `interval` / `timeout` | `"1s"` / `"1s"` | ok |
 | `interval` / `timeout` | `"1s"` / `"2s"` | error: timeout must not exceed interval |
 | `jitter` | `"60%"` | error: jitter above 50% |

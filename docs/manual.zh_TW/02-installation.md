@@ -73,6 +73,7 @@ emfor status
 - `systemctl reload emfor` 會先執行 `emfor check-config`，設定有效時才送出 SIGHUP。
 - daemon 當掉後會被重新啟動，包括結束代碼 70；但結束代碼 1 或 2 不會，因為重試也無法解決（[結束代碼](08-operations.md#結束代碼)）。
 - log 送進 journal：`journalctl -u emfor`。
+- `LimitNOFILE=65536` 把開檔上限從 systemd 預設的 1024 調高；檢查、plugin、DNS 與 metrics 連線都會用到檔案。
 - 除了 `/var/lib/emfor`，檔案系統都是唯讀。`[store] path` 放在別處時需要 `ReadWritePaths=`；DNS 用 53 port 時需要 `CAP_NET_BIND_SERVICE`（見 [docs/deploy/daemon.md](../deploy/daemon.md#running-under-systemd)）。
 
 建置時不要設定 `EMFOR_PREFIX`（或設為 `/usr`），這樣 `emfor status` 與 `emfor check-config` 不用 `--config` 也能找到 `/etc/emfor/emfor.toml`。

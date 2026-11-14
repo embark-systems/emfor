@@ -135,15 +135,23 @@ Each client's README covers installing it and its exact API:
   its slot taken until the daemon frees it, about once a minute.
 - After `fork`, the child opens the store again on its first lookup; this
   works also when the parent looked up before forking (php-fpm, preforking
-  servers).
+  servers), and when other threads of the parent were looking up at the
+  moment of the fork.
 - Round-robin counters are per process.
 
-## When the store file is replaced
+## When the store file is replaced or grows
 
 If the store file is replaced while applications run (the daemon moved a
 damaged store aside, or someone deleted it and the daemon created a new
 one), clients notice within about 100 ms and switch to the new file; no
-application restart is needed.
+application restart is needed. The same holds when the daemon is restarted
+with a larger `[store] map_size` and the store grows past the old size.
+
+A store file that exists but cannot be opened (another LMDB format, no
+permission, not a store) is tried again at most once a second; lookups in
+between fail with the same `UNAVAILABLE` error. A missing store file is
+tried on every lookup, so applications started before the daemon find the
+store as soon as it exists.
 
 Do not delete the lock file (`<store>-lock`) alone. Start the daemon
 before applications that run as root or as the daemon's user: if the lock

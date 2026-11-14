@@ -62,12 +62,17 @@ only errors for `fall × interval` returns to `unknown`. Typical reasons:
 | `password_file: `, `ca_file: ` | The file cannot be read by the daemon's user. |
 | `exit code N` (exec, N not 1 or 2) | The script failed in an unexpected way. |
 
+A change to `unknown` with reason `check task restarted` in
+`emfor status --history` is not a check result: the backend's check task
+stopped on a bug and was started again, and the log has an error line
+`check task of backend ... stopped`. Please report it with that line.
+
 ## DNS does not resolve
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `dig @127.0.0.1 -p 5300` gets no answer | No `[dns]` table, or another listen address. | Check `emfor status` (the daemon line shows `dns ...`). |
-| `REFUSED` | The name is outside the zone. | Name the service under the zone, or change `zone`. |
+| `REFUSED` | The name is outside the zone, or the query class is not `IN` (`dig ... CH`). | Name the service under the zone, or change `zone`; query class `IN`. |
 | `NXDOMAIN` | No service of that name. | Check the name. |
 | `SERVFAIL` | No healthy backend and `on_all_down = "closed"`; or a validating unbound without `domain-insecure`. | See [ALL DOWN](#a-service-is-all-down); fix the unbound config. |
 | Direct query works, `getent hosts` does not | The host resolver does not forward the zone. | Follow [chapter 7](07-dns.md#forwarding-from-the-host-resolver). |
@@ -97,5 +102,15 @@ fix the file's owner and mode (`chown emfor`, `chmod` to
 ## A reload did not take effect
 
 A reload is all or nothing. Look for `reload rejected` and the error lines
-in the log, or run `emfor check-config`. `[store]`, `[dns] listen` and
-`[metrics] listen` changes always need a restart.
+in the log, or run `emfor check-config`. `[store]`, `[dns] listen`,
+`[metrics] listen` and `[peers] listen` changes always need a restart.
+
+## Peers drop each other's messages after a restart
+
+`emfor_peer_messages_rejected_total{reason="auth"}` rises and
+`emfor_peer_up` drops to 0 for a while right after a daemon restarted: the
+peer secret was being changed, and the restarted daemon knows only the new
+one. It stops once every member's `secret_file` holds the new secret. Set
+`[peers] previous_secret_file` to avoid it (see
+[`[peers]`](03-configuration.md#peers)). For other reasons see
+[Peer groups](08-operations.md#peer-groups).

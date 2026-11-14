@@ -21,7 +21,7 @@ zone = "svc.emfor"            # default
 ttl = "1s"                    # default
 ```
 
-空的 `[dns]` table 使用預設值。server 同時聽 UDP 與 TCP。有位址無法 bind 時，daemon 以結束代碼 1 結束。
+空的 `[dns]` table 使用預設值。server 同時聽 UDP 與 TCP。有位址無法 bind 時，daemon 以結束代碼 1 結束。TCP 同時最多服務 128 條連線（超過的會立即關閉），5 秒內沒有送出查詢的 TCP 連線會被關閉。daemon 執行中若有 listener 停止，daemon 會以結束代碼 70 結束，由 service manager 重新啟動。
 
 只有名稱在 zone 之下的服務會被回答。啟動與 reload 時，daemon 會為每個在 zone 之外的服務記錄一則警告，也會為每個 backend 使用不同 port 的服務記錄一則警告（A 與 AAAA 回答不帶 port；這類服務請用 SRV 或 client 函式庫）。
 
@@ -42,7 +42,8 @@ drill -p 5300 api.svc.emfor @127.0.0.1           # FreeBSD
 | 服務或 `_<任意>._tcp.<服務>` 的 SRV | 每個候選一筆 SRV 記錄，位址放在 additional section。 |
 | 服務的其他類型 | `NOERROR`，沒有記錄。 |
 | zone 之下、但不是服務的名稱 | `NXDOMAIN`。 |
-| zone 之外的名稱 | `REFUSED`。 |
+| zone 之外的名稱，或 class 不是 `IN` | `REFUSED`。 |
+| EDNS 版本大於 0 | `BADVERS`。 |
 
 TTL 是服務的 `dns_ttl`，否則為 `[dns] ttl`（預設 1 秒）。zone 有一筆合成的 SOA，其負向快取 TTL 也是 `[dns] ttl`。
 
@@ -65,7 +66,7 @@ SRV 回答帶有每個 backend 的 port，並列出所有候選，選法與 A、
 - `10.0.0.11` → `10-0-0-11.api.svc.emfor`
 - `2001:db8::11` → `2001-0db8-0000-0000-0000-0000-0000-0011.api.svc.emfor`
 
-透過 UDP 時，回應大小不超過 client 以 EDNS 宣告的大小（最多 1232 位元組），沒有 EDNS 時為 512 位元組。位址放不下時就省略位址；連 SRV 記錄都放不下時，回應會被截斷（TC），resolver 會改用 TCP 重試。
+透過 UDP 時，回應大小不超過 client 以 EDNS 宣告的大小（最多 1232 位元組），沒有 EDNS 時為 512 位元組。位址放不下時就省略位址；連 SRV 記錄都放不下時，回應會被截斷（TC），resolver 會改用 TCP 重試。名稱長度接近 255 位元組上限時，連單一 A 記錄或 SOA 都可能超過 512 位元組，這種回應同樣會被截斷。
 
 ## 從主機的 resolver 轉送
 

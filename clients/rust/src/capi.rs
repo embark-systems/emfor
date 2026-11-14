@@ -33,10 +33,17 @@ thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
 }
 
+/// Never panics, so it may run outside `catch_unwind`: in a thread-local
+/// destructor that runs after `LAST_ERROR`'s, the message is dropped
+/// (`emfor_last_error` then returns `"internal error"`).
 fn set_last_error(msg: &str) {
     // Every NUL byte is replaced, so this never falls back to the empty string.
     let c = CString::new(msg.replace('\0', " ")).unwrap_or_default();
-    LAST_ERROR.with(|e| *e.borrow_mut() = c);
+    let _ = LAST_ERROR.try_with(|e| {
+        if let Ok(mut e) = e.try_borrow_mut() {
+            *e = c;
+        }
+    });
 }
 
 fn status_of(code: ErrorCode) -> emfor_status {

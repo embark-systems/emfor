@@ -29,6 +29,9 @@ const MAX_BODY_READ: usize = 65536;
 /// Body bytes quoted in the reason when `expect_body` is not found.
 const EXCERPT: usize = 64;
 
+const HOST_HEADER_RULE: &str =
+    "must be a host with an optional port, such as \"api.internal\" or \"api.internal:8443\"";
+
 pub struct HttpFactory;
 
 /// Inclusive status range.
@@ -89,16 +92,13 @@ fn parse_options(options: &toml::Table) -> Result<HttpOptions, Vec<OptionError>>
 
     let host_header = match options.get("host_header") {
         None => None,
-        Some(toml::Value::String(h))
-            if !h.is_empty() && reqwest::header::HeaderValue::from_str(h).is_ok() =>
-        {
-            Some(h.clone())
+        Some(toml::Value::String(h)) if valid_host_header(h) => Some(h.clone()),
+        Some(toml::Value::String(_)) => {
+            errors.push(OptionError::new("host_header", HOST_HEADER_RULE));
+            None
         }
         Some(_) => {
-            errors.push(OptionError::new(
-                "host_header",
-                "must be a non-empty header-safe string",
-            ));
+            errors.push(OptionError::new("host_header", "must be a string"));
             None
         }
     };
@@ -221,7 +221,7 @@ impl HttpChecker {
         h.parse::<IpAddr>().is_err().then_some(h)
     }
 
-    fn client_for(&self, target: SocketAddr) -> Result<reqwest::Client, reqwest::Error> {
+    async fn client_for(&self, target: SocketAddr) -> Result<reqwest::Client, String> {
         let name = self.host_name();
         let key = name.map(|_| target);
         if let Some(c) = self
@@ -232,8 +232,10 @@ impl HttpChecker {
         {
             return Ok(c.clone());
         }
-        // Built without the lock: building loads the TLS roots, and every
-        // backend's first check would wait on it otherwise.
+        // Built without the lock, and off the async workers: building reads
+        // and parses the system's CA certificates (rustls-platform-verifier
+        // on Linux and FreeBSD), and with a domain `host_header` that
+        // happens once per backend.
         let mut b = reqwest::Client::builder()
             .redirect(Policy::none())
             .no_proxy()
@@ -242,7 +244,11 @@ impl HttpChecker {
         if let Some(name) = name {
             b = b.resolve(name, target);
         }
-        let c = b.build()?;
+        let c = match tokio::task::spawn_blocking(move || b.build()).await {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => return Err(e.to_string()),
+            Err(e) => return Err(e.to_string()),
+        };
         Ok(self
             .clients
             .lock()
@@ -271,6 +277,50 @@ impl HttpChecker {
     }
 }
 
+/// Whether `h` is a valid `host_header`: an IPv4 address, an IPv6 address
+/// in brackets, or a domain name, each with an optional `:port`. A domain
+/// must come out of the request URL that [`HttpChecker::url`] builds as the
+/// same host, which is also the name [`HttpChecker::client_for`] resolves to
+/// the backend; otherwise the check would reach whatever that URL's host
+/// resolves to, or fail every time.
+fn valid_host_header(h: &str) -> bool {
+    if reqwest::header::HeaderValue::from_str(h).is_err() {
+        return false;
+    }
+    let (host, port) = match h.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((ip, after)) if ip.parse::<std::net::Ipv6Addr>().is_ok() => match after {
+                "" => return true,
+                _ => return after.strip_prefix(':').is_some_and(valid_port),
+            },
+            _ => return false,
+        },
+        None => match h.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (h, None),
+        },
+    };
+    if port.is_some_and(|p| !valid_port(p)) {
+        return false;
+    }
+    if host.parse::<std::net::Ipv4Addr>().is_ok() {
+        return true;
+    }
+    // As a domain: the URL must hold it as its host, unchanged but for case
+    // (which both the URL and the resolver override ignore).
+    reqwest::Url::parse(&format!("http://{host}:1/")).is_ok_and(|u| {
+        u.domain()
+            .is_some_and(|d| d.eq_ignore_ascii_case(host) && u.port() == Some(1))
+            && u.path() == "/"
+            && u.username().is_empty()
+    })
+}
+
+/// A port: 1 to 5 digits, at most 65535.
+fn valid_port(p: &str) -> bool {
+    !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok()
+}
+
 /// `host_header` without any `:port` suffix or IPv6 brackets.
 fn host_only(h: &str) -> &str {
     if let Some(rest) = h.strip_prefix('[') {
@@ -286,7 +336,7 @@ impl Checker for HttpChecker {
     fn check(&self, req: CheckRequest) -> BoxFuture<'_, CheckResult> {
         let target = req.target;
         Box::pin(async move {
-            let client = match self.client_for(target) {
+            let client = match self.client_for(target).await {
                 Ok(c) => c,
                 Err(e) => return CheckResult::Error(format!("cannot build http client: {e}")),
             };
@@ -311,9 +361,11 @@ impl Checker for HttpChecker {
         })
     }
 
-    fn prepare(&self, target: SocketAddr) {
-        // A build error is reported by the check that follows.
-        let _ = self.client_for(target);
+    fn prepare(&self, target: SocketAddr) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            // A build error is reported by the check that follows.
+            let _ = self.client_for(target).await;
+        })
     }
 
     fn forget(&self, target: SocketAddr) {
@@ -332,8 +384,9 @@ async fn body_contains(mut resp: reqwest::Response, want: &[u8]) -> CheckResult 
         match resp.chunk().await {
             Ok(Some(chunk)) => {
                 let room = MAX_BODY_READ - got.len();
+                let before = got.len();
                 got.extend_from_slice(&chunk[..chunk.len().min(room)]);
-                if contains(&got, want) {
+                if found_in_new(&got, before, want) {
                     return CheckResult::Up;
                 }
                 if got.len() == MAX_BODY_READ {
@@ -351,8 +404,13 @@ async fn body_contains(mut resp: reqwest::Response, want: &[u8]) -> CheckResult 
     CheckResult::Down(format!("expect_body: got \"{}\"", excerpt.escape_ascii()))
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| w == needle)
+/// Whether `want` is in `got`, given that it was not in `got[..before]`:
+/// only the bytes from `before` on and the `want.len() - 1` bytes ahead of
+/// them are searched, so a long body read in many chunks is not scanned
+/// again and again.
+fn found_in_new(got: &[u8], before: usize, want: &[u8]) -> bool {
+    let from = before.saturating_sub(want.len().saturating_sub(1));
+    got[from..].windows(want.len()).any(|w| w == want)
 }
 
 fn has_local_io_error(e: &(dyn std::error::Error + 'static)) -> bool {
@@ -516,8 +574,8 @@ path = "/healthz""#,
         let (a, _ra) = server(200).await;
         let (b, _rb) = server(200).await;
         let c = http_checker("host_header = \"10.0.0.1\"");
-        c.prepare(a);
-        c.prepare(b);
+        c.prepare(a).await;
+        c.prepare(b).await;
         assert_eq!(c.clients.lock().unwrap().len(), 1, "one shared client");
         assert_eq!(c.check(req(a)).await, CheckResult::Up);
         assert_eq!(c.check(req(b)).await, CheckResult::Up);
@@ -531,8 +589,8 @@ path = "/healthz""#,
         let (a, _ra) = server(200).await;
         let (b, _rb) = server(200).await;
         let c = http_checker("host_header = \"api.example\"");
-        c.prepare(a);
-        c.prepare(b);
+        c.prepare(a).await;
+        c.prepare(b).await;
         assert_eq!(c.clients.lock().unwrap().len(), 2, "one per backend");
         assert_eq!(c.check(req(a)).await, CheckResult::Up);
         assert_eq!(c.clients.lock().unwrap().len(), 2, "check reuses it");
@@ -642,6 +700,12 @@ tls_verify = "yes""#)
                 CheckResult::Up,
             ),
             (
+                r#"expect_body = "needle""#,
+                200,
+                vec![vec![b'a'; 5000], b"xxnee".to_vec(), b"dlexx".to_vec()],
+                CheckResult::Up,
+            ),
+            (
                 r#"expect_body = "ok""#,
                 200,
                 vec![long],
@@ -682,6 +746,74 @@ tls_verify = "yes""#)
             bad("expect_body = 200"),
             vec![OptionError::new("expect_body", "must be a string")]
         );
+    }
+
+    /// `host_header` is a host with an optional port; anything else would
+    /// either fail every check or reach a host other than the backend.
+    #[test]
+    fn host_header_must_be_host_and_port() {
+        let validate = |h: &str| {
+            let mut t = toml::Table::new();
+            t.insert("host_header".into(), toml::Value::String(h.into()));
+            HttpFactory.validate(&t).map(|_| ())
+        };
+        for good in [
+            "api.internal",
+            "API.Internal",
+            "api.internal:8443",
+            "api.internal.",
+            "localhost",
+            "10.0.0.1",
+            "10.0.0.1:80",
+            "[2001:db8::1]",
+            "[2001:db8::1]:8080",
+        ] {
+            assert_eq!(validate(good), Ok(()), "{good}");
+        }
+        for bad in [
+            "",
+            "api internal",
+            "api.internal/",
+            "api.internal/x",
+            "http://api.internal",
+            "user@api.internal",
+            "api.internal:",
+            "api.internal:x",
+            "api.internal:70000",
+            "api.internal:+80",
+            "api.internal?x",
+            "api.internal#x",
+            "2001:db8::1",
+            "[2001:db8::1",
+            "[2001:db8::1]x",
+            "[api.internal]",
+            "1.2",
+            ":80",
+        ] {
+            let e = validate(bad).unwrap_err();
+            assert_eq!(e.len(), 1, "{bad}: {e:?}");
+            assert_eq!(e[0].key, "host_header", "{bad}");
+            assert!(
+                e[0].message.contains("host with an optional port"),
+                "{bad}: {}",
+                e[0].message
+            );
+        }
+    }
+
+    /// Only the new bytes and the tail before them are searched.
+    #[test]
+    fn body_search_covers_a_match_split_across_chunks() {
+        let want = b"needle";
+        let mut got = b"xxxxxxxxxxnee".to_vec();
+        assert!(!found_in_new(&got, 0, want));
+        let before = got.len();
+        got.extend_from_slice(b"dle");
+        assert!(found_in_new(&got, before, want));
+        // A match wholly in bytes searched before is not looked for again.
+        let got = b"needle....".to_vec();
+        assert!(!found_in_new(&got, got.len(), want));
+        assert!(found_in_new(&got, 0, want));
     }
 
     #[test]

@@ -89,6 +89,8 @@ With `role` set, a backend in another role is down, with a reason such as `role 
 | `redis`, `mysql`, `pgsql` | `replica` | see [Replicas](#replicas) |
 | `mongodb` | `primary`, `secondary` | the `hello` reply, see [MongoDB](#mongodb) |
 
+For `mysql`, an answer to `SELECT 1` or `@@global.read_only` that is NULL or not an integer is down, for example `query: @@global.read_only answered NULL, want an integer`. A redis reply longer than 2 MiB is down with `query: invalid reply: reply too long`.
+
 ### Replicas
 
 `role = "replica"` accepts only a replica that is replicating, so that applications reading from replicas are not sent to one that has stopped receiving changes:
@@ -134,7 +136,7 @@ If the file cannot be read during a check, the check is `error`, which does not 
 
 ### TLS
 
-With `tls = true` (or `starttls = true` for `ldap`), the certificate is checked against `server_name`, or against the backend IP when `server_name` is not set. Backends are listed by IP, and database certificates usually name a host, so set `server_name` unless the certificate has the IP in its subject alternative names. Use `ca_file` for an internal CA. `tls_verify = false` keeps the connection encrypted but accepts any certificate. A server that closes the connection during the handshake is down with `tls: connection closed during the TLS handshake (does the server have a certificate?)`; Active Directory does this on 636, and refuses StartTLS with `52 unavailable`, until a certificate for LDAPS is installed on the domain controller.
+With `tls = true` (or `starttls = true` for `ldap`), the certificate is checked against `server_name`, or against the backend IP when `server_name` is not set. Backends are listed by IP, and database certificates usually name a host, so set `server_name` unless the certificate has the IP in its subject alternative names. Use `ca_file` for an internal CA; certificates in it that cannot serve as a CA are skipped, and a file with none left makes the check `error` with `ca_file: no usable certificate`. `tls_verify = false` keeps the connection encrypted but accepts any certificate. A server that closes the connection during the handshake is down with `tls: connection closed during the TLS handshake (does the server have a certificate?)`; Active Directory does this on 636, and refuses StartTLS with `52 unavailable`, until a certificate for LDAPS is installed on the domain controller.
 
 ### LDAP
 
@@ -404,8 +406,8 @@ Another role is down with `role is <role>, want <role>`, for example `role is se
 
 - Without `user`, the check needs no account: `hello` works before a login, so it suits servers without access control and checks that only want the role. A login says more, because it needs the server to read its user data. Give the check a user with no roles: `db.getSiblingDB("admin").createUser({user: "emfor", pwd: "…", roles: []})`.
 - A rejected login is down with `auth: <codeName>: <errmsg>`, for example `auth: AuthenticationFailed: Authentication failed.`; any other failed command is down with `query: <codeName>: <errmsg>`. A server whose signature does not match the password is down with `auth: server signature does not match`; a SCRAM message with fewer than 4096 iterations, a foreign nonce or a missing field is down with `auth: malformed SCRAM message`, and one asking for more than 1000000 iterations (MongoDB's default is 15000) is down with `auth: server asks for <n> SCRAM iterations, more than 1000000`. The key derivation runs on a separate thread, so the check's timeout still ends a slow login.
-- A reply longer than 65536 bytes is down with `query: reply too large`; one that is not an OP_MSG reply to the command, or whose BSON cannot be read, with `query: malformed reply`.
-- A password with anything but printable ASCII is `error` with `password_file: only printable ASCII passwords are supported`, and nothing is sent: other passwords would need SASLprep.
+- A reply longer than 65536 bytes is down with `query: reply too large`; one that is not an OP_MSG reply to the command, whose BSON cannot be read, or that nests documents more than 100 levels deep, with `query: malformed reply`.
+- Only printable ASCII passwords are supported: other passwords would need SASLprep. Validation (`emfor check-config`, a reload) refuses a `password_file` holding another password with `only printable ASCII passwords are supported`; if the file changes to one later, the check is `error` with `password_file: only printable ASCII passwords are supported`, and nothing is sent.
 - Only SCRAM-SHA-256 is supported: not SCRAM-SHA-1, x.509, LDAP or Kerberos. MongoDB before 4.4 (4.2.10) has no `hello` and is down with `query: CommandNotFound: …`. Replication lag (`max_lag`), connection strings (`mongodb://`) and SRV records are not supported.
 - MongoDB logs every connection and authentication. Use a longer `interval` if that is too much.
 
@@ -480,7 +482,7 @@ Any other key is an error, `tls` included. The result is decided in this order; 
 | The server closes the connection, also during the HTTP/3 request or the body | down: `quic: closed by peer: <code>`, with `: <reason>` when it sends one, for example `quic: closed by peer: 2` for a refused connection; `quic: stateless reset`; another connection error is `quic: ` and the error |
 | The server selected an ALPN that is not in `alpn` (a server that does not follow RFC 9001) | down: `tls: server selected ALPN <value> not in alpn` |
 | `http3 = false` | up |
-| Another HTTP/3 error, such as a reset request stream | down: `query: HTTP/3: <error>` |
+| Another HTTP/3 error, such as a reset request stream or response headers over 65536 bytes | down: `query: HTTP/3: <error>` |
 | A status outside `expect_status` | down: `unexpected status <n>` |
 | A failure reading the body, or `expect_body` not found | down: `body: …`, or `expect_body: got "<first 64 bytes>"` |
 | Otherwise | up |

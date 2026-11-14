@@ -1,7 +1,7 @@
 //! The `mongodb` plugin: `hello` over OP_MSG, an optional SCRAM-SHA-256
 //! login (RFC 7677), and the role from the `hello` reply.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -12,7 +12,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::net::{self, Stream, io_failure};
 use crate::options::{
-    TlsSettings, boolean, check_password_file, file, read_password, string, tls_settings,
+    TlsSettings, boolean, check_password_file, file, read_option_file, read_password, string,
+    tls_settings, trim_newline,
 };
 
 const KEYS: &[&str] = &[
@@ -28,6 +29,11 @@ const KEYS: &[&str] = &[
 
 /// The longest reply read, header included.
 const MAX_REPLY: usize = 65536;
+/// Deepest nesting of documents and arrays below a reply's top-level
+/// document that is decoded. Real replies nest a few levels; a reply of
+/// MAX_REPLY bytes can nest about 8000, which the recursive decoder would
+/// not survive on a 2 MiB thread stack.
+const MAX_NESTING: usize = 100;
 /// OP_MSG.
 const OP_MSG: i32 = 2013;
 /// The OP_MSG flag bit that says a CRC-32C follows the sections.
@@ -94,7 +100,7 @@ pub fn parse(options: &Options, read_files: bool) -> Result<Settings, Vec<Option
         options,
         "password_file",
         read_files,
-        check_password_file,
+        check_mongodb_password_file,
         &mut errors,
     );
     let has_user = options.contains_key("user");
@@ -147,6 +153,22 @@ pub fn parse(options: &Options, read_files: bool) -> Result<Settings, Vec<Option
     })
 }
 
+/// The common password file rules, and a printable ASCII password: the
+/// plugin does not implement SASLprep, which leaves only those unchanged.
+fn check_mongodb_password_file(path: &Path) -> Result<(), String> {
+    check_password_file(path)?;
+    if !is_printable_ascii(trim_newline(&read_option_file(path)?)) {
+        return Err(NON_ASCII_PASSWORD.into());
+    }
+    Ok(())
+}
+
+const NON_ASCII_PASSWORD: &str = "only printable ASCII passwords are supported";
+
+fn is_printable_ascii(s: &[u8]) -> bool {
+    s.iter().all(|b| (0x20..=0x7e).contains(b))
+}
+
 fn is_database_name(s: &str) -> bool {
     (1..=64).contains(&s.len())
         && s.bytes()
@@ -158,13 +180,11 @@ pub async fn check(req: &CheckRequest, settings: &Settings) -> CheckOutcome {
     let login = match &settings.login {
         None => None,
         Some((user, path)) => match read_password(path) {
-            Ok(password) if password.bytes().all(|b| (0x20..=0x7e).contains(&b)) => {
+            Ok(password) if is_printable_ascii(password.as_bytes()) => {
                 Some((user.as_str(), password))
             }
             Ok(_) => {
-                return CheckOutcome::Error(
-                    "password_file: only printable ASCII passwords are supported".into(),
-                );
+                return CheckOutcome::Error(format!("password_file: {NON_ASCII_PASSWORD}"));
             }
             Err(reason) => return CheckOutcome::Error(reason),
         },
@@ -629,6 +649,15 @@ impl Doc {
     /// Decode the document at the start of `bytes`; returns it and its
     /// length.
     fn decode(bytes: &[u8]) -> Option<(Doc, usize)> {
+        Doc::decode_at(bytes, 0)
+    }
+
+    /// Decode a document `depth` levels below the top-level one; `None`
+    /// past [`MAX_NESTING`].
+    fn decode_at(bytes: &[u8], depth: usize) -> Option<(Doc, usize)> {
+        if depth > MAX_NESTING {
+            return None;
+        }
         let len = usize::try_from(i32::from_le_bytes(bytes.get(..4)?.try_into().ok()?)).ok()?;
         if len < 5 || len > bytes.len() || bytes[len - 1] != 0 {
             return None;
@@ -638,7 +667,7 @@ impl Doc {
         while let Some((&kind, tail)) = rest.split_first() {
             let end = tail.iter().position(|&b| b == 0)?;
             let key = String::from_utf8(tail[..end].to_vec()).ok()?;
-            let (value, used) = decode_value(kind, &tail[end + 1..])?;
+            let (value, used) = decode_value(kind, &tail[end + 1..], depth)?;
             doc.fields.push((key, value));
             rest = &tail[end + 1 + used..];
         }
@@ -646,8 +675,9 @@ impl Doc {
     }
 }
 
-/// Decode one value of type `kind`; returns it and the bytes it used.
-fn decode_value(kind: u8, bytes: &[u8]) -> Option<(Bson, usize)> {
+/// Decode one value of type `kind` in a document `depth` levels deep;
+/// returns it and the bytes it used.
+fn decode_value(kind: u8, bytes: &[u8], depth: usize) -> Option<(Bson, usize)> {
     let fixed = |n: usize| (bytes.len() >= n).then_some((Bson::Other, n));
     let i32_at = |at: usize| -> Option<i32> {
         Some(i32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
@@ -670,7 +700,7 @@ fn decode_value(kind: u8, bytes: &[u8]) -> Option<(Bson, usize)> {
             ))
         }
         0x03 | 0x04 => {
-            let (doc, used) = Doc::decode(bytes)?;
+            let (doc, used) = Doc::decode_at(bytes, depth + 1)?;
             let value = if kind == 0x03 {
                 Bson::Document(doc)
             } else {
@@ -825,6 +855,46 @@ mod tests {
         let mut bad = bytes.clone();
         bad[4] = 0x0B;
         assert_eq!(Doc::decode(&bad), None);
+    }
+
+    /// A document with `levels` documents nested below it, each under `a`.
+    fn nested(levels: usize) -> Vec<u8> {
+        let mut doc = Document::new().finish();
+        for _ in 0..levels {
+            let mut outer = Document::new();
+            outer.document("a", &doc);
+            doc = outer.finish();
+        }
+        doc
+    }
+
+    #[test]
+    fn bson_nesting_is_limited() {
+        assert!(Doc::decode(&nested(MAX_NESTING)).is_some());
+        assert_eq!(Doc::decode(&nested(MAX_NESTING + 1)), None);
+    }
+
+    #[test]
+    fn non_ascii_password_is_refused_at_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mongo.pass");
+        let check = |password: &str| {
+            std::fs::write(&path, password).unwrap();
+            let o = options(json!({"user": "emfor", "password_file": path}));
+            match parse(&o, true) {
+                Ok(_) => vec![],
+                Err(e) => e.into_iter().map(|e| (e.key, e.message)).collect(),
+            }
+        };
+        assert_eq!(check("pencil\n"), vec![]);
+        assert_eq!(
+            check("pässword\n"),
+            one(
+                "password_file",
+                "only printable ASCII passwords are supported"
+            )
+        );
+        assert_eq!(check("\n"), one("password_file", "file is empty"));
     }
 
     #[test]
@@ -1140,6 +1210,11 @@ mod tests {
                     m[8..12].copy_from_slice(&id.to_le_bytes());
                     Answer::Raw(m)
                 }),
+                down("query: malformed reply"),
+            ),
+            (
+                "nested 8000 documents deep",
+                Box::new(|_| Answer::Reply(nested(8000))),
                 down("query: malformed reply"),
             ),
             (

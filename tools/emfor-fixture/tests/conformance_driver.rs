@@ -114,3 +114,68 @@ fn bad_counts_are_a_usage_error() {
     );
     assert!(String::from_utf8_lossy(&out.stderr).contains("expect_counts must map"));
 }
+
+/// Run the driver with one case and no pick vectors.
+fn driver_with_case(script: &str, case: serde_json::Value) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let cases = dir.path().join("cases.json");
+    std::fs::write(&cases, serde_json::json!([case]).to_string()).unwrap();
+    let vectors = dir.path().join("sticky.json");
+    std::fs::write(&vectors, r#"{"hashes": [], "picks": []}"#).unwrap();
+    let out = driver_with_args(
+        script,
+        &[
+            "--cases",
+            cases.to_str().unwrap(),
+            "--vectors",
+            vectors.to_str().unwrap(),
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        matches!(out.status.code(), Some(0 | 1)),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    stdout
+}
+
+/// The right code with no message fails: every client must say why.
+#[test]
+fn error_without_message_fails() {
+    let case = serde_json::json!({
+        "case": "missing store", "store": null, "max_staleness_ms": 3000,
+        "lookups": [{"name": "api.svc.emfor", "expect_error": "UNAVAILABLE"}]
+    });
+    let stdout = driver_with_case("echo 'ERR UNAVAILABLE'\n", case.clone());
+    assert!(stdout.contains("1 lookups, 1 failures"), "{stdout}");
+    assert!(stdout.contains("message"), "{stdout}");
+    let stdout = driver_with_case("echo 'ERR UNAVAILABLE no store'\n", case);
+    assert!(stdout.contains("1 lookups, 0 failures"), "{stdout}");
+}
+
+/// Each lookup reads a store whose fresh heartbeat was written just before
+/// it, so slow lookups earlier in a case cannot make it stale. The program
+/// reads the heartbeat from the LMDB file (key and value are stored next to
+/// each other) and answers like a client would.
+#[test]
+fn each_lookup_gets_a_fresh_store() {
+    let script = r#"sleep 0.2
+hb=$(grep -ao 'meta/heartbeat[0-9]*' "$EMFOR_STORE" | head -1 | sed 's/meta.heartbeat//')
+now=$(date +%s%3N)
+if [ $((now - hb)) -lt 500 ]; then echo 'OK 10.0.0.11:8080'; else echo "ERR ALL_DOWN heartbeat $((now - hb)) ms old"; fi
+"#;
+    let backend = serde_json::json!({"id": "10.0.0.11:8080", "ip": "10.0.0.11", "port": 8080,
+        "state": "healthy", "checked_at": 1, "reason": null});
+    let lookup = serde_json::json!({"name": "api.svc.emfor", "expect": "10.0.0.11:8080"});
+    let case = serde_json::json!({
+        "case": "slow program",
+        "store": {"schema_version": "1", "heartbeat": "fresh", "raw": {}, "services": [{
+            "name": "api.svc.emfor", "on_all_down": "closed", "balance": "failover",
+            "all_down": false, "backends": [backend]}]},
+        "max_staleness_ms": 500,
+        "lookups": [lookup.clone(), lookup.clone(), lookup.clone(), lookup]
+    });
+    let stdout = driver_with_case(script, case);
+    assert!(stdout.contains("4 lookups, 0 failures"), "{stdout}");
+}

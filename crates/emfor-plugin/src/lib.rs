@@ -87,6 +87,8 @@ pub trait Plugin: Send + Sync + 'static {
     /// Check a service's `check_options`; an empty list means valid.
     fn validate(&self, options: &Options) -> Vec<OptionError>;
     /// Run one check. Only called with options that passed [`Plugin::validate`].
+    /// [`run`] answers a check that panics `error` with reason
+    /// `check panicked: <message>`.
     fn check(&self, req: CheckRequest) -> impl Future<Output = CheckOutcome> + Send;
 }
 
@@ -291,9 +293,16 @@ async fn read_requests<P: Plugin, R: AsyncBufRead + Unpin>(
                 let plugin = Arc::clone(plugin);
                 let tx = tx.clone();
                 checks.spawn(async move {
-                    let outcome = match tokio::time::timeout(timeout, plugin.check(req)).await {
-                        Ok(outcome) => outcome,
-                        Err(_) => CheckOutcome::Down("timeout".into()),
+                    // The check runs in a task of its own so that a panic
+                    // in it still gets this request an answer.
+                    let mut task = tokio::spawn(async move { plugin.check(req).await });
+                    let outcome = match tokio::time::timeout(timeout, &mut task).await {
+                        Ok(Ok(outcome)) => outcome,
+                        Ok(Err(e)) => CheckOutcome::Error(task_failure(e)),
+                        Err(_) => {
+                            task.abort();
+                            CheckOutcome::Down("timeout".into())
+                        }
                     };
                     send(&tx, &check_response(id, outcome));
                 });
@@ -302,6 +311,23 @@ async fn read_requests<P: Plugin, R: AsyncBufRead + Unpin>(
     };
     while checks.join_next().await.is_some() {}
     outcome
+}
+
+/// The `error` reason for a check task that ended without an outcome:
+/// `check panicked`, followed by the panic message when it is text.
+fn task_failure(e: tokio::task::JoinError) -> String {
+    if !e.is_panic() {
+        return "check was cancelled".into();
+    }
+    let payload = e.into_panic();
+    let message = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
+    match message {
+        Some(m) => format!("check panicked: {m}"),
+        None => "check panicked".into(),
+    }
 }
 
 /// Characters of a reason sent to emfor; the daemon keeps no more than this
@@ -347,7 +373,8 @@ mod tests {
     use tokio::io::{AsyncReadExt, BufReader};
 
     /// Test plugin: `options.sleep_ms` delays the answer; `options.result`
-    /// picks it (`up` by default); `options.bad` fails validation.
+    /// picks it (`up` by default, `panic` panics); `options.bad` fails
+    /// validation.
     struct Fake;
 
     impl Plugin for Fake {
@@ -371,6 +398,7 @@ mod tests {
             match req.options.get("result").and_then(Value::as_str) {
                 Some("down") => CheckOutcome::Down(format!("{}:{} down", req.ip, req.port)),
                 Some("error") => CheckOutcome::Error("broken".into()),
+                Some("panic") => panic!("boom"),
                 _ => CheckOutcome::Up,
             }
         }
@@ -502,6 +530,24 @@ mod tests {
             answers,
             vec![json!({"type":"check","id":9,"result":"down","reason":"timeout"})]
         );
+    }
+
+    #[tokio::test]
+    async fn panicking_check_is_error() {
+        let (answers, result) = exchange(concat!(
+            r#"{"type":"check","id":10,"service":"a","target":{"ip":"10.0.0.1","port":80},"options":{"result":"panic"},"timeout_ms":900}"#,
+            "\n",
+            r#"{"type":"check","id":11,"service":"a","target":{"ip":"10.0.0.1","port":80},"options":{},"timeout_ms":900}"#,
+            "\n",
+        ))
+        .await;
+        result.unwrap();
+        let by_id = |id: u64| answers.iter().find(|a| a["id"] == id).cloned();
+        assert_eq!(
+            by_id(10),
+            Some(json!({"type":"check","id":10,"result":"error","reason":"check panicked: boom"}))
+        );
+        assert_eq!(by_id(11).map(|a| a["result"].clone()), Some(json!("up")));
     }
 
     #[tokio::test]

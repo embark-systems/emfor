@@ -113,12 +113,14 @@ try {
 
 - 可以從多個執行緒同時查詢。
 - 每個行程只開啟 store 一次並重複使用。一次查詢只在讀取期間占用一個 LMDB reader slot。store 共有 1024 個 slot，由主機上所有行程共用；查詢途中被殺掉的行程會留下一個被占用的 slot，直到 daemon 釋放它（大約每分鐘一次）。
-- `fork` 之後，子行程在第一次查詢時重新開啟 store；即使父行程在 fork 前查詢過也沒問題（php-fpm、prefork 型伺服器）。
+- `fork` 之後，子行程在第一次查詢時重新開啟 store；即使父行程在 fork 前查詢過（php-fpm、prefork 型伺服器），或 fork 的當下父行程有其他執行緒正在查詢，也沒問題。
 - round-robin 計數器是每個行程各自一份。
 
-## store 檔案被替換時
+## store 檔案被替換或變大時
 
-如果 store 檔案在應用程式執行期間被替換（daemon 把損毀的 store 移到一旁，或有人刪掉它而 daemon 建立了新的），client 會在大約 100 ms 內察覺並切換到新檔案；不需要重新啟動應用程式。
+如果 store 檔案在應用程式執行期間被替換（daemon 把損毀的 store 移到一旁，或有人刪掉它而 daemon 建立了新的），client 會在大約 100 ms 內察覺並切換到新檔案；不需要重新啟動應用程式。daemon 以較大的 `[store] map_size` 重新啟動、store 長到超過原本的大小時也一樣。
+
+store 檔案存在但開不起來時（LMDB 格式不同、沒有權限、不是 store），client 最多每秒重試一次，期間的查詢都以同一個 `UNAVAILABLE` 錯誤失敗。store 檔案不存在時，每次查詢都會重試，所以比 daemon 先啟動的應用程式在 store 出現後就能讀到。
 
 不要單獨刪除 lock 檔（`<store>-lock`）。請在以 root 或 daemon 使用者身分執行的應用程式之前啟動 daemon：lock 檔不存在時，第一個開啟 store 的行程會建立它，擁有者是該行程的使用者，以另一個使用者執行的 daemon 之後可能無法啟動。
 

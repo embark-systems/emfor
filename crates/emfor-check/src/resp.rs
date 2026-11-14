@@ -8,6 +8,13 @@ const MAX_BULK: usize = 1 << 20;
 const MAX_ARRAY: usize = 4096;
 /// Deepest nesting accepted.
 const MAX_DEPTH: usize = 8;
+/// Largest reply accepted, in bytes (with any bytes read past the previous
+/// reply). It leaves room for one bulk string of MAX_BULK with its framing;
+/// the replies the check asks for (AUTH, PING, ROLE, INFO replication)
+/// stay far below it, while the other limits alone would let MAX_ARRAY
+/// items of MAX_BULK each, nested MAX_DEPTH deep, through. It also bounds
+/// the work of parsing an incomplete reply again after each read.
+const MAX_REPLY: usize = 2 * MAX_BULK;
 
 /// One reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,16 +140,27 @@ impl Reader {
         &mut self,
         conn: &mut R,
     ) -> Result<Reply, ReadError> {
+        // Every reply ends with "\r\n", so a reply that was incomplete can
+        // only be complete after a read that brought a line feed; parse
+        // again only then, not after every read of a long bulk string.
+        let mut may_be_complete = true;
         loop {
-            if let Some((reply, used)) = parse(&self.buf).map_err(ReadError::Protocol)? {
+            if may_be_complete
+                && let Some((reply, used)) = parse(&self.buf).map_err(ReadError::Protocol)?
+            {
                 self.buf.drain(..used);
                 return Ok(reply);
             }
+            if self.buf.len() >= MAX_REPLY {
+                return Err(ReadError::Protocol(ProtocolError("reply too long")));
+            }
             let mut chunk = [0u8; 4096];
-            let n = conn.read(&mut chunk).await.map_err(ReadError::Io)?;
+            let room = chunk.len().min(MAX_REPLY - self.buf.len());
+            let n = conn.read(&mut chunk[..room]).await.map_err(ReadError::Io)?;
             if n == 0 {
                 return Err(ReadError::Closed);
             }
+            may_be_complete = chunk[..n].contains(&b'\n');
             self.buf.extend_from_slice(&chunk[..n]);
         }
     }
@@ -241,5 +259,53 @@ mod tests {
             Reply::Simple("PONG".into())
         );
         assert!(matches!(r.read(&mut input).await, Err(ReadError::Closed)));
+    }
+
+    /// Hands out its bytes one per read.
+    struct OneByte<'a>(&'a [u8]);
+
+    impl AsyncRead for OneByte<'_> {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if let Some((&b, rest)) = self.0.split_first() {
+                buf.put_slice(&[b]);
+                self.0 = rest;
+            }
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn reader_handles_replies_split_anywhere() {
+        let mut input = OneByte(b"*2\r\n$5\r\nslave\r\n$4\r\nab\nc\r\n+OK\r\n");
+        let mut r = Reader::new();
+        assert_eq!(
+            r.read(&mut input).await.unwrap(),
+            Reply::Array(Some(vec![bulk("slave"), bulk("ab\nc")]))
+        );
+        assert_eq!(
+            r.read(&mut input).await.unwrap(),
+            Reply::Simple("OK".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn reader_limits_the_reply_size() {
+        // 4096 bulk strings of 1000 bytes: each part is within its limit,
+        // the reply as a whole is not.
+        let item = format!("$1000\r\n{}\r\n", "x".repeat(1000));
+        let reply = format!("*4096\r\n{}", item.repeat(4096));
+        let mut input = reply.as_bytes();
+        let got = Reader::new().read(&mut input).await;
+        assert!(
+            matches!(
+                got,
+                Err(ReadError::Protocol(ProtocolError("reply too long")))
+            ),
+            "{got:?}"
+        );
     }
 }
