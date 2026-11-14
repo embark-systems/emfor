@@ -237,8 +237,9 @@ no damaged file behind: the daemon simply starts with a new store. The
 cost is the state history, which is then lost at every reboot, not only
 after a crash (a restart of the daemon alone keeps it).
 
-Mount the tmpfs on `/var/lib/emfor` itself, so that neither `[store]
-path` nor the clients' default (`EMFOR_STORE`) changes. Make it at least
+Mount the tmpfs on the store's directory itself (`/var/lib/emfor`, or
+`/var/db/emfor` with the FreeBSD port), so that neither `[store] path`
+nor `EMFOR_STORE` changes. Make it at least
 as large as `[store] map_size` (`64MiB` by default); only the pages in
 use take memory, a few tens of KiB for a few services.
 
@@ -255,7 +256,7 @@ use take memory, a few tens of KiB for a few services.
 - FreeBSD: add to `/etc/fstab`
 
   ```
-  tmpfs  /var/lib/emfor  tmpfs  rw,size=64m,mode=0755,uid=<uid of emfor>  0 0
+  tmpfs  /var/db/emfor  tmpfs  rw,size=64m,mode=0755,uid=<uid of emfor>  0 0
   ```
 
   with the number `id -u emfor` prints, so the directory belongs to
@@ -283,8 +284,9 @@ Otherwise, give your applications a group:
 1. Create a group, for example `emfor-clients`, and add each application
    user to it.
 2. Make it the daemon's group. Under systemd: `systemctl edit emfor`, add
-   `Group=emfor-clients` and set `StateDirectoryMode=0750`. Under FreeBSD:
-   `chgrp emfor-clients /var/lib/emfor && chmod 0750 /var/lib/emfor`.
+   `Group=emfor-clients` and set `StateDirectoryMode=0750`. Under FreeBSD
+   with the port:
+   `chgrp emfor-clients /var/db/emfor && chmod 0750 /var/db/emfor`.
 3. In `[store]`, set `file_mode = "0640"` and `lock_file_mode = "0660"`.
 4. `chgrp emfor-clients` the existing store and lock files, and restart the
    daemon (it sets the modes at every start).

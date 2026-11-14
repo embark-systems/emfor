@@ -96,7 +96,7 @@ emfor status
 
 `service emfor configtest` 檢查設定檔（以 `emfor_user` 身分）；`service emfor reload` 先檢查再送 SIGHUP；`start` 拒絕無效的設定。daemon 的 log 以 tag `emfor` 送進 syslog。
 
-[examples/freebsd/](../../examples/freebsd/) 是一個範例 port（`net-mgmt/emfor`），它建置 `emfor` 與 `emfor-check`、安裝 rc.d script 與範例設定檔，並建立 `emfor` 使用者與 `/var/lib/emfor`。使用前請先讀 script 的註解與 port 的 README。兩者都已在 FreeBSD 15.1-RELEASE（arm64，VM）上跑過，port 用的是 `make stage check-plist install`；尚未用 poudriere、14.x 或 amd64 測試。
+[examples/freebsd/](../../examples/freebsd/) 是一個範例 port（`net-mgmt/emfor`），它建置 `emfor` 與 `emfor-check`、安裝 rc.d script 與範例設定檔，並建立 `emfor` 使用者與 `/var/db/emfor`，它的範例設定檔把 store 放在那裡（應用程式要設定 `EMFOR_STORE=/var/db/emfor/state.mdb`）。使用前請先讀 script 的註解與 port 的 README。兩者都已在 FreeBSD 15.1-RELEASE（arm64，VM）上跑過，port 用的是 `make stage check-plist install`；尚未用 poudriere、14.x 或 amd64 測試。
 
 ## 安裝 client 函式庫
 

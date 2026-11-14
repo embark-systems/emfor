@@ -90,7 +90,7 @@ The lock file holds LMDB's reader table and the lock the daemon takes for each c
 To limit the store to your applications, give them a group of their own and let the daemon create the files with it:
 
 1. Create a group, for example `emfor-clients`, and add each application user to it.
-2. Make it the daemon's group. Under systemd, add `Group=emfor-clients` with `systemctl edit emfor`, and change `StateDirectoryMode=0755` to `0750` there; systemd then gives `/var/lib/emfor` that group. Under FreeBSD, `chgrp emfor-clients /var/lib/emfor` and `chmod 0750 /var/lib/emfor`: new files take the directory's group.
+2. Make it the daemon's group. Under systemd, add `Group=emfor-clients` with `systemctl edit emfor`, and change `StateDirectoryMode=0755` to `0750` there; systemd then gives `/var/lib/emfor` that group. Under FreeBSD, `chgrp emfor-clients` and `chmod 0750` the store's directory (`/var/db/emfor` with the port): new files take the directory's group.
 3. Set `lock_file_mode = "0660"` and `file_mode = "0640"` in `[store]`.
 4. Existing store files keep their group: `chgrp emfor-clients /var/lib/emfor/state.mdb /var/lib/emfor/state.mdb-lock`, then restart the daemon, which sets the modes at every start.
 

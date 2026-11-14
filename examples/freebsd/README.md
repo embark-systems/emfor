@@ -74,12 +74,14 @@ and the build stops at `no matching package named ...`.
 | `${PREFIX}/bin/emfor` | The daemon and `emfor status`. Built with `EMFOR_PREFIX=${PREFIX}`, so its default config is `${PREFIX}/etc/emfor/emfor.toml`. |
 | `${PREFIX}/bin/emfor-check` | The redis, MySQL, PostgreSQL and LDAP checks; point a plugin's `command` at it. |
 | `${PREFIX}/etc/rc.d/emfor` | `files/emfor.in`, installed by `USE_RC_SUBR`. `daemon(8)` restarts `emfor` 2 seconds after it exits. |
-| `${PREFIX}/etc/emfor/emfor.toml.sample` | `examples/emfor.toml`; copied to `emfor.toml` on first install. |
-| `/var/lib/emfor` | The store's directory, owned by `emfor`. |
+| `${PREFIX}/etc/emfor/emfor.toml.sample` | `examples/emfor.toml` with `[store] path = "/var/db/emfor/state.mdb"`; copied to `emfor.toml` on first install. |
+| `/var/db/emfor` | The store's directory, owned by `emfor`. |
 
-The store stays at `/var/lib/emfor/state.mdb` rather than under
-`/var/db`: that is the default of the daemon and of every client
-(`EMFOR_STORE`), so applications on the host find it without a setting.
+The store is in `/var/db/emfor`, where FreeBSD keeps daemon state, not
+in `/var/lib/emfor`, the default of the daemon and of every client. The
+sample config sets the daemon's path; give each application on the host
+`EMFOR_STORE=/var/db/emfor/state.mdb` (or the store path its client
+takes), or it looks in `/var/lib/emfor`.
 
 After installing, edit `${PREFIX}/etc/emfor/emfor.toml`, then:
 
@@ -107,8 +109,8 @@ it from source):
   itself; `libclang` is not needed.
 - `make install`, then `emfor check-config`, `service emfor start` and
   `emfor status` with the sample config: the daemon runs as `emfor`, the
-  store is `/var/lib/emfor/state.mdb`, and its log reaches syslog.
-- `pkg delete emfor` leaves `/var/lib/emfor` while the store is in it.
+  store is `/var/db/emfor/state.mdb`, and its log reaches syslog.
+- `pkg delete emfor` leaves `/var/db/emfor` while the store is in it.
 - **The rc.d script**: `tests/resolver/freebsd.sh` passes (start, reload,
   an invalid config refused, restart after a kill, stop).
 

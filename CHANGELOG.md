@@ -82,8 +82,14 @@ member runs this release, remove the line and reload each daemon.
   median, over 12 failures started at different points of the schedule.
 - FreeBSD: `examples/rc.d/emfor` starts `daemon(8)` with `-f`. Without it,
   `daemon(8)` and emfor kept the terminal or SSH session that ran
-  `service emfor start`, so that session never closed. The example port
-  also lists `/var/lib` in its plist, which `make check-plist` asked for.
+  `service emfor start`, so that session never closed.
+- FreeBSD: the example port puts the store in `/var/db/emfor`, where
+  FreeBSD keeps daemon state, instead of `/var/lib/emfor`: it creates that
+  directory, and its sample config sets `[store] path =
+  "/var/db/emfor/state.mdb"`. The daemon's and the clients' default stay
+  `/var/lib/emfor/state.mdb`, so applications on the host set
+  `EMFOR_STORE`. After updating an installed port, move the store or keep
+  the old `[store] path`; the history is all it holds.
   The rc.d script, the port and the tests have now run on FreeBSD
   15.1-RELEASE (arm64).
 

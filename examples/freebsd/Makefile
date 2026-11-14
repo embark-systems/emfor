@@ -29,19 +29,21 @@ GROUPS=		emfor
 # emfor_user defaulting to emfor (README.md says how to regenerate it).
 USE_RC_SUBR=	emfor
 
-# The store stays at /var/lib/emfor/state.mdb, the default of the daemon and
-# of every client (EMFOR_STORE), so applications need no setting. FreeBSD has
-# no /var/lib, so the package owns it too (removed only when empty).
+# The store goes in /var/db/emfor, where FreeBSD keeps daemon state. The
+# daemon and the clients default to /var/lib/emfor/state.mdb, so the sample
+# config sets [store] path, and applications set EMFOR_STORE (README.md).
 PLIST_FILES=	bin/emfor \
 		bin/emfor-check \
 		"@sample etc/emfor/emfor.toml.sample" \
-		"@dir /var/lib" \
-		"@dir(emfor,emfor,0755) /var/lib/emfor"
+		"@dir(emfor,emfor,0755) /var/db/emfor"
 
-# The sample config comes from the source's examples/.
+# The sample config comes from the source's examples/, with the store path
+# changed to /var/db/emfor.
 post-install:
-	${MKDIR} ${STAGEDIR}${PREFIX}/etc/emfor ${STAGEDIR}/var/lib/emfor
-	${INSTALL_DATA} ${WRKSRC}/examples/emfor.toml \
+	${MKDIR} ${STAGEDIR}${PREFIX}/etc/emfor ${STAGEDIR}/var/db/emfor
+	${SED} -e 's|/var/lib/emfor/|/var/db/emfor/|' \
+		${WRKSRC}/examples/emfor.toml > ${WRKDIR}/emfor.toml.sample
+	${INSTALL_DATA} ${WRKDIR}/emfor.toml.sample \
 		${STAGEDIR}${PREFIX}/etc/emfor/emfor.toml.sample
 
 .include <bsd.port.mk>

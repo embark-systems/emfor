@@ -148,7 +148,7 @@ commit 在自己的執行緒上執行，所以慢的磁碟不會拖慢 DNS 回�
 
 store 裡沒有任何東西需要在重開機後保留，所以可以放在 tmpfs 上。這樣大約每秒一次的 commit 都不會寫到磁碟，就算設定 `sync = true`，磁碟卡住也不會延遲 commit；斷電後也不會留下損壞的檔案，daemon 只會以新的 store 啟動。代價是狀態歷史：每次重開機都會清空，不只是當機時（只重啟 daemon 會保留）。
 
-把 tmpfs 直接掛在 `/var/lib/emfor`，這樣 `[store] path` 和 client 的預設值（`EMFOR_STORE`）都不用改。大小至少要等於 `[store] map_size`（預設 `64MiB`）；只有實際用到的頁面會佔記憶體，幾個服務只需要幾十 KiB。
+把 tmpfs 直接掛在 store 所在的目錄（`/var/lib/emfor`；用 FreeBSD port 時是 `/var/db/emfor`），這樣 `[store] path` 和 `EMFOR_STORE` 都不用改。大小至少要等於 `[store] map_size`（預設 `64MiB`）；只有實際用到的頁面會佔記憶體，幾個服務只需要幾十 KiB。
 
 - systemd：在 `/etc/fstab` 加上
 
@@ -160,7 +160,7 @@ store 裡沒有任何東西需要在重開機後保留，所以可以放在 tmpf
 - FreeBSD：在 `/etc/fstab` 加上
 
   ```
-  tmpfs  /var/lib/emfor  tmpfs  rw,size=64m,mode=0755,uid=<emfor 的 uid>  0 0
+  tmpfs  /var/db/emfor  tmpfs  rw,size=64m,mode=0755,uid=<emfor 的 uid>  0 0
   ```
 
   uid 填 `id -u emfor` 印出的數字，讓每次開機後目錄都屬於 `emfor`。
@@ -174,7 +174,7 @@ store 裡沒有任何東西需要在重開機後保留，所以可以放在 tmpf
 應用程式讀取資料檔，並在 lock 檔 `<store>-lock` 中登記讀取，所以每個應用程式使用者都需要 store 的讀取權限與 lock 檔的寫入權限。預設值（`file_mode = "0644"`、`lock_file_mode = "0666"`）讓每個本機使用者都能這麼做，但也讓任何能寫 lock 檔的本機使用者可以卡住 daemon 的 commit 或干擾查詢。只有在每個本機使用者都可信任的主機上才保留預設值。否則，為你的應用程式建立一個群組：
 
 1. 建立一個群組，例如 `emfor-clients`，把每個應用程式使用者加進去。
-2. 把它設為 daemon 的群組。systemd 下：`systemctl edit emfor`，加上 `Group=emfor-clients` 並設定 `StateDirectoryMode=0750`。FreeBSD 下：`chgrp emfor-clients /var/lib/emfor && chmod 0750 /var/lib/emfor`。
+2. 把它設為 daemon 的群組。systemd 下：`systemctl edit emfor`，加上 `Group=emfor-clients` 並設定 `StateDirectoryMode=0750`。FreeBSD 用 port 時：`chgrp emfor-clients /var/db/emfor && chmod 0750 /var/db/emfor`。
 3. 在 `[store]` 中設定 `file_mode = "0640"` 與 `lock_file_mode = "0660"`。
 4. 對既有的 store 與 lock 檔執行 `chgrp emfor-clients`，然後重新啟動 daemon（它每次啟動都會設定權限）。
 

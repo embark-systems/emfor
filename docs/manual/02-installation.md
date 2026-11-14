@@ -125,7 +125,8 @@ invalid config. The daemon's log goes to syslog with the tag `emfor`.
 [examples/freebsd/](../../examples/freebsd/) is an example port
 (`net-mgmt/emfor`) that builds `emfor` and `emfor-check`, installs the rc.d
 script and a sample config, and creates the `emfor` user and
-`/var/lib/emfor`. Read the comments in the script and the port's README
+`/var/db/emfor`, where its sample config puts the store (applications set
+`EMFOR_STORE=/var/db/emfor/state.mdb`). Read the comments in the script and the port's README
 before using them. Both have been run on FreeBSD 15.1-RELEASE (arm64, in a
 VM), the port with `make stage check-plist install`; not with poudriere,
 on 14.x or on amd64.
