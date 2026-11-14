@@ -2,7 +2,7 @@
 
 [手冊](README.md) · 上一章：[4. 健康檢查](04-health-checks.md) · 下一章：[6. Client 函式庫](06-clients.md)
 
-應用程式查詢一個服務時，client 函式庫先找出**候選**（通常是健康的 backend，依設定檔順序），再由服務的 `balance` 挑出一個。DNS server 回答 A 與 AAAA 查詢時也一樣，差異列在本章最後。
+應用程式查詢一個服務時，client 函式庫先找出**候選**（通常是最近一次檢查通過的健康 backend，依設定檔順序），再由服務的 `balance` 挑出一個。DNS server 回答 A 與 AAAA 查詢時也一樣，差異列在本章最後。
 
 ## balance 方式
 
@@ -59,6 +59,14 @@ daemon 依平滑後的檢查延遲，決定哪些健康的 backend 算快，把�
 ### 不認得的值
 
 client 讀到不認得的 `balance`（由較新的 daemon 寫入）時，使用 `round-robin`。store 中不認得的欄位會被忽略。
+
+## 檢查開始失敗的 backend
+
+backend 要連續失敗 `fall` 次才會轉為不健康；在那之前它仍是健康的，但最近一次檢查失敗，`reason` 有值（`emfor status` 會顯示）。只要還有至少一個最近一次檢查通過的健康 backend，這種正在失敗的 backend 就不列入候選，所以查詢與 DNS 回答在它第一次檢查失敗時就不再選它。全部健康的 backend 都在失敗時，它們全部都是候選，和以前一樣。`down` 與 `error` 結果同樣算數：如果是 checker 本身出問題、所有 backend 一起失敗，結果不會改變。
+
+- client 看到新的 `reason` 最多晚約一秒（daemon 隨 heartbeat 把 `reason` 的變動寫入 store）；DNS server 從 daemon 的記憶體回答，立即生效。
+- 使用 `sticky` 時，正在失敗的 backend 的 key 會改對到其他候選，在它下一次檢查通過後回來。
+- 在 peer group 中，即使 peer 仍判定 backend 為 up，本機自己的檢查失敗也算數（`reason` 以 `local: ` 開頭），所以本機會立即不再選它。
 
 ## 沒有任何 backend 健康時
 

@@ -5,10 +5,17 @@
 
 use crate::{BackendRecord, Balance, HealthState, OnAllDown};
 
-/// The healthy entries of `list` when there are any. Otherwise every entry
-/// when `on_all_down` is `open`, or `None` (all down) when it is `closed`
-/// or `list` is empty. `backend` gives each entry's record; `trust_health`
-/// false (a stale store) counts no backend as healthy.
+/// The entries of `list` that may be chosen, in their order:
+///
+/// 1. the passing ones (`healthy` with no `reason`: the last check was up),
+///    when there are any;
+/// 2. otherwise the healthy ones, failing ones (`healthy` with a `reason`)
+///    included, when there are any;
+/// 3. otherwise every entry when `on_all_down` is `open`, or `None` (all
+///    down) when it is `closed` or `list` is empty.
+///
+/// `backend` gives each entry's record; `trust_health` false (a stale
+/// store) counts no backend as healthy, so `reason` plays no part.
 pub fn healthy_or_all<'a, T: Copy>(
     on_all_down: OnAllDown,
     list: &[T],
@@ -20,6 +27,14 @@ pub fn healthy_or_all<'a, T: Copy>(
         .copied()
         .filter(|&t| trust_health && backend(t).state == HealthState::Healthy)
         .collect();
+    let passing: Vec<T> = healthy
+        .iter()
+        .copied()
+        .filter(|&t| backend(t).reason.is_none())
+        .collect();
+    if !passing.is_empty() {
+        return Some(passing);
+    }
     if !healthy.is_empty() {
         return Some(healthy);
     }
@@ -78,6 +93,30 @@ mod tests {
         let id = |r: &BackendRecord| r.id.clone();
         let ids =
             |v: Option<Vec<&BackendRecord>>| v.map(|v| v.into_iter().map(id).collect::<Vec<_>>());
+        let failing = |id: &str, why: &str| {
+            let mut r = b(id, Healthy, None);
+            r.reason = Some(why.into());
+            r
+        };
+        // client-lookup example "candidates by state, reason and heartbeat"
+        let (pa, fa, fb) = (
+            b("10.0.0.1:80", Healthy, None),
+            failing("10.0.0.1:80", "refused"),
+            failing("10.0.0.2:80", "timeout"),
+        );
+        let (pb, fc) = (
+            b("10.0.0.2:80", Healthy, None),
+            failing("10.0.0.2:80", "refused"),
+        );
+        let mut dc = b("10.0.0.3:80", Unhealthy, None);
+        dc.reason = Some("refused".into());
+        let mut da = b("10.0.0.1:80", Unhealthy, None);
+        da.reason = Some("refused".into());
+        let ub = b("10.0.0.2:80", Unknown, None);
+        let passing_first = [&pa, &fc, &dc];
+        let all_failing = [&fa, &fb, &dc];
+        let none_healthy = [&da, &ub];
+        let mixed = [&fa, &pb];
         let both = [&up, &down];
         let only_down = [&down];
         type Case<'a> = (
@@ -98,13 +137,46 @@ mod tests {
                 Some(vec!["10.0.0.1:80", "10.0.0.2:80"]),
             ),
             (&[], OnAllDown::Open, true, None),
+            (
+                &passing_first,
+                OnAllDown::Closed,
+                true,
+                Some(vec!["10.0.0.1:80"]),
+            ),
+            (
+                &all_failing,
+                OnAllDown::Closed,
+                true,
+                Some(vec!["10.0.0.1:80", "10.0.0.2:80"]),
+            ),
+            (&none_healthy, OnAllDown::Closed, true, None),
+            (
+                &none_healthy,
+                OnAllDown::Open,
+                true,
+                Some(vec!["10.0.0.1:80", "10.0.0.2:80"]),
+            ),
+            (
+                &mixed,
+                OnAllDown::Open,
+                false,
+                Some(vec!["10.0.0.1:80", "10.0.0.2:80"]),
+            ),
+            (&mixed, OnAllDown::Closed, false, None),
         ];
         for (list, mode, trust, want) in cases {
             let got = ids(healthy_or_all(*mode, list, *trust, |r| r));
             let want = want
                 .as_ref()
                 .map(|w| w.iter().map(|s| s.to_string()).collect());
-            assert_eq!(got, want, "{mode:?} trust={trust}");
+            assert_eq!(
+                got,
+                want,
+                "{mode:?} trust={trust} {:?}",
+                list.iter()
+                    .map(|r| (&r.id, r.state, &r.reason))
+                    .collect::<Vec<_>>()
+            );
         }
     }
 

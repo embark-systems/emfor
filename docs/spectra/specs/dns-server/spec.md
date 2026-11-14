@@ -183,7 +183,7 @@ code:
 ---
 ### Requirement: SRV answers
 
-For an SRV query on a service name or on one of its SRV owner names, the server SHALL take as candidates the service's backends of both address families in config order, keeping only healthy backends when at least one backend is healthy. When no backend is healthy, the candidates SHALL be every backend if `on_all_down` is `open`, and the server SHALL return SERVFAIL if it is `closed`. The server SHALL return NOERROR with the AA flag and one SRV record per candidate, whose owner is the query name as received, whose port is the backend's port, whose target is the backend's target name, and whose TTL equals the service's `dns_ttl` when set, otherwise `[dns] ttl`. Priority, weight and record order SHALL follow the service's `balance`:
+For an SRV query on a service name or on one of its SRV owner names, the server SHALL take as candidates the service's backends of both address families in config order, keeping only passing backends (`state` `healthy` and `reason` `null`) when at least one backend is passing, and otherwise only healthy backends, failing ones (`state` `healthy` and `reason` not `null`) included, when at least one backend is healthy. When no backend is healthy, the candidates SHALL be every backend if `on_all_down` is `open`, and the server SHALL return SERVFAIL if it is `closed`. The server SHALL return NOERROR with the AA flag and one SRV record per candidate, whose owner is the query name as received, whose port is the backend's port, whose target is the backend's target name, and whose TTL equals the service's `dns_ttl` when set, otherwise `[dns] ttl`. Priority, weight and record order SHALL follow the service's `balance`:
 
 - `failover`: priority equals the candidate's position among the candidates (0 for the first), weight 1, config order.
 - `weighted`: priority 0, weight equals the backend's `weight`, config order.
@@ -238,6 +238,16 @@ The additional section SHALL contain one A or AAAA record per distinct target na
 - **WHEN** a service has `10.0.0.11:8080` (unhealthy) and `[2001:db8::11]:8080` (healthy) with `on_all_down = "closed"`
 - **THEN** the SRV answer lists only the IPv6 backend
 
+#### Scenario: Failing backend left out
+
+- **WHEN** a `round-robin` service `api.svc.emfor` has backends `10.0.0.11:8080` (healthy, reason `connect: Connection refused`) and `[2001:db8::11]:8080` (healthy, reason `null`), and a client queries SRV
+- **THEN** the SRV answer has one record, with target `2001-0db8-0000-0000-0000-0000-0000-0011.api.svc.emfor.`
+
+#### Scenario: Every healthy backend failing in SRV
+
+- **WHEN** a `failover` service `api.svc.emfor` has backends `10.0.0.11:8080` (unhealthy), `10.0.0.12:8080` (healthy, reason `timeout`), `10.0.0.13:8080` (healthy, reason `timeout`) in config order, and a client queries SRV
+- **THEN** the answer is `0 1 8080 10-0-0-12.api.svc.emfor.` followed by `1 1 8080 10-0-0-13.api.svc.emfor.`
+
 #### Scenario: All down closed
 
 - **WHEN** every backend of a service is unhealthy and `on_all_down = "closed"`
@@ -260,31 +270,19 @@ The additional section SHALL contain one A or AAAA record per distinct target na
 
 
 <!-- @trace
-source: emfor-balance-fastest
-updated: 2026-11-12
+source: emfor-avoid-failing
+updated: 2026-11-14
 code:
-  - crates/emfor-format/src/lib.rs
   - crates/emfor-daemon/src/select.rs
-  - clients/rust/src/select.rs
-  - crates/emfor-daemon/src/dns.rs
-  - clients/c/README.md
-  - crates/emfor-daemon/src/config.rs
-  - examples/emfor.toml
   - docs/deploy/dns-resolver.md
-  - crates/emfor-daemon/src/checker/mod.rs
-  - clients/rust/src/client.rs
-  - .spectra.yaml
+  - docs/manual/07-dns.md
+  - clients/rust/src/select.rs
+  - docs/manual.zh_TW/07-dns.md
+  - docs/manual/05-backend-selection.md
+  - crates/emfor-format/src/rules.rs
   - tests/conformance/v1/cases.json
-  - crates/emfor-daemon/src/state.rs
-  - crates/emfor-daemon/src/checker/http.rs
-  - crates/emfor-daemon/src/schedule.rs
-  - clients/rust/README.md
-  - crates/emfor-daemon/src/live.rs
-  - crates/emfor-daemon/src/writer.rs
-tests:
-  - crates/emfor-daemon/tests/dns.rs
-  - tools/emfor-fixture/tests/conformance_data.rs
-  - crates/emfor-daemon/tests/daemon.rs
+  - docs/manual.zh_TW/05-backend-selection.md
+  - CHANGELOG.md
 -->
 
 ---

@@ -4,6 +4,12 @@
 
 ### Daemon
 
+- Clients and the DNS server leave out a healthy backend whose last
+  check failed (its `reason` is set) while another healthy backend passed
+  its last check, so a backend stops being chosen at its first failed
+  check instead of after `fall` of them. When every healthy backend is
+  failing, all of them are used as before. The store format is
+  unchanged.
 - The `http` check takes `expect_body`: text the response body must
   contain, for health endpoints that answer 200 either way. The body is
   read only when the status matches, up to 64 KiB.

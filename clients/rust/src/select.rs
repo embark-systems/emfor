@@ -226,6 +226,46 @@ mod tests {
         assert_eq!(candidates(&r, false).unwrap_err().code, ErrorCode::AllDown);
     }
 
+    /// A healthy backend whose last check failed (`reason` set) is used
+    /// only when no healthy backend passes; a stale store ignores `reason`.
+    #[test]
+    fn candidates_prefer_passing_backends() {
+        let failing = |id: &str| {
+            let mut b = be(id, Healthy);
+            b.reason = Some("timeout".into());
+            b
+        };
+        let ids = |c: Vec<&BackendRecord>| c.iter().map(|b| b.id.clone()).collect::<Vec<_>>();
+        let r = rec(
+            Balance::Failover,
+            OnAllDown::Closed,
+            vec![failing("10.0.1.5:5432"), be("10.0.1.6:5432", Healthy)],
+        );
+        assert_eq!(ids(candidates(&r, false).unwrap()), ["10.0.1.6:5432"]);
+        let r = rec(
+            Balance::RoundRobin,
+            OnAllDown::Closed,
+            vec![
+                failing("10.0.1.5:5432"),
+                failing("10.0.1.6:5432"),
+                be("10.0.1.7:5432", Unhealthy),
+            ],
+        );
+        assert_eq!(
+            ids(candidates(&r, false).unwrap()),
+            ["10.0.1.5:5432", "10.0.1.6:5432"]
+        );
+        let r = rec(
+            Balance::Failover,
+            OnAllDown::Open,
+            vec![failing("10.0.1.5:5432"), be("10.0.1.6:5432", Healthy)],
+        );
+        assert_eq!(
+            ids(candidates(&r, true).unwrap()),
+            ["10.0.1.5:5432", "10.0.1.6:5432"]
+        );
+    }
+
     #[test]
     fn rendezvous_hash_vectors() {
         for (key, id, want) in [

@@ -166,7 +166,7 @@ A/AAAA answers carry only an address. When the backends of a service listen on d
 
 `_tcp.api.svc.emfor` exists but has no records (NODATA). `_udp` names are not answered (NXDOMAIN).
 
-An SRV answer lists every backend that may be used: the healthy ones, or all of them when none is healthy and `on_all_down = "open"` (`"closed"` answers SERVFAIL). IPv4 and IPv6 backends are listed together. Each record carries the backend's port, and `balance` sets the priority, weight and order:
+An SRV answer lists every backend that may be used: the healthy ones whose last check passed, or every healthy one when all of them are failing (their last check failed but `fall` is not reached yet), or all of them when none is healthy and `on_all_down = "open"` (`"closed"` answers SERVFAIL). IPv4 and IPv6 backends are listed together. Each record carries the backend's port, and `balance` sets the priority, weight and order:
 
 | `balance` | priority | weight | order |
 | --- | --- | --- | --- |

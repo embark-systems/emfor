@@ -3,7 +3,8 @@
 [Manual](README.md) · Previous: [4. Health checks](04-health-checks.md) · Next: [6. Client libraries](06-clients.md)
 
 When an application looks up a service, the client library first finds the
-**candidates** (normally the healthy backends, in config order) and then
+**candidates** (normally the healthy backends whose last check passed, in
+config order) and then
 lets the service's `balance` choose one. The DNS server does the same for
 A and AAAA queries, with a few differences noted below.
 
@@ -84,6 +85,26 @@ backends in and out. When the pool is empty, or the store is stale,
 
 A client that reads a `balance` it does not know (written by a newer
 daemon) uses `round-robin`. Unknown fields in the store are ignored.
+
+## A backend whose checks start failing
+
+A backend turns unhealthy only after `fall` failed checks in a row; until
+then it is still healthy, but its last check failed and its `reason` is
+set (as `emfor status` shows). While at least one healthy backend passed
+its last check, such a failing backend is left out of the candidates, so
+lookups and DNS answers stop choosing it at its first failed check. When
+every healthy backend is failing, all of them are candidates, as before.
+A `down` and an `error` result count alike: if one checker problem hits
+every backend, nothing changes.
+
+- The client sees a new `reason` up to about one second late (the daemon
+  writes `reason` changes to the store with its heartbeat); the DNS server
+  answers from the daemon's memory and sees it at once.
+- With `sticky`, the keys of a failing backend move to the other
+  candidates and come back after its next passed check.
+- In a peer group, this host's own failed check counts even while its
+  peers still find the backend up (the reason starts with `local: `), so
+  this host stops choosing it at once.
 
 ## When no backend is healthy
 

@@ -282,7 +282,7 @@ tests:
 ---
 ### Requirement: Candidates follow health and on_all_down
 
-When the store is fresh, the candidates SHALL be the backends whose `state` is `healthy`, in config order. When no backend is a candidate (all unhealthy, or the store is stale), a service with `on_all_down = "closed"` SHALL fail with `ALL_DOWN`, and a service with `on_all_down = "open"` SHALL use every backend, in config order, as a candidate. The lookup SHALL NOT tell the caller that the result came from an all-down service.
+When the store is fresh, the candidates SHALL be the passing backends, in config order: a backend is passing when its `state` is `healthy` and its `reason` is `null`, and failing when its `state` is `healthy` and its `reason` is not `null`. When the store is fresh and no backend is passing, the candidates SHALL be every `healthy` backend, failing ones included, in config order. When the store is stale, `reason` SHALL NOT affect the candidates. When no backend is a candidate (all unhealthy, or the store is stale), a service with `on_all_down = "closed"` SHALL fail with `ALL_DOWN`, and a service with `on_all_down = "open"` SHALL use every backend, in config order, as a candidate. The lookup SHALL NOT tell the caller that the result came from an all-down service or from a service whose healthy backends are all failing.
 
 #### Scenario: Unhealthy backends are skipped
 
@@ -294,59 +294,47 @@ When the store is fresh, the candidates SHALL be the backends whose `state` is `
 - **WHEN** a fresh failover service with `on_all_down = "open"` lists `10.0.1.5:5432` (`unhealthy`) then `10.0.1.6:5432` (`unknown`)
 - **THEN** the lookup returns `10.0.1.5:5432`
 
+#### Scenario: Failing backend is skipped while another passes
+
+- **WHEN** a fresh failover service lists `10.0.1.5:5432` (`healthy`, reason `connect: Connection refused`) then `10.0.1.6:5432` (`healthy`, reason `null`)
+- **THEN** the lookup returns `10.0.1.6:5432`
+
+#### Scenario: Every healthy backend failing
+
+- **WHEN** a fresh round-robin service with `on_all_down = "closed"` lists `10.0.1.5:5432` (`healthy`, reason `timeout`), `10.0.1.6:5432` (`healthy`, reason `timeout`) and `10.0.1.7:5432` (`unhealthy`)
+- **THEN** consecutive lookups return `10.0.1.5:5432` and `10.0.1.6:5432` and never `10.0.1.7:5432`
+
+#### Scenario: Stale store ignores reason
+
+- **WHEN** a stale failover service with `on_all_down = "open"` lists `10.0.1.5:5432` (`healthy`, reason `timeout`) then `10.0.1.6:5432` (`healthy`, reason `null`)
+- **THEN** the lookup returns `10.0.1.5:5432`
+
+##### Example: candidates by state, reason and heartbeat
+
+| Backends in config order (state, reason) | Heartbeat | `on_all_down` | Candidates |
+| --- | --- | --- | --- |
+| A (healthy, null), B (healthy, "refused"), C (unhealthy, "refused") | fresh | closed | A |
+| A (healthy, "refused"), B (healthy, "timeout"), C (unhealthy, "refused") | fresh | closed | A, B |
+| A (unhealthy, "refused"), B (unknown, null) | fresh | closed | none: `ALL_DOWN` |
+| A (unhealthy, "refused"), B (unknown, null) | fresh | open | A, B |
+| A (healthy, "refused"), B (healthy, null) | stale | open | A, B |
+| A (healthy, "refused"), B (healthy, null) | stale | closed | none: `ALL_DOWN` |
+
 
 <!-- @trace
-source: emfor-clients
-updated: 2026-11-12
+source: emfor-avoid-failing
+updated: 2026-11-14
 code:
-  - clients/c/example.c
-  - clients/rust/src/capi.rs
-  - tests/conformance/v1/sticky-v1.json
-  - clients/rust/src/store.rs
-  - clients/rust/README.md
-  - clients/c/README.md
-  - clients/rust/src/client.rs
-  - clients/rust/examples/lookup.rs
-  - tests/conformance/v1/cases.json
-  - clients/c/Makefile
+  - crates/emfor-daemon/src/select.rs
+  - docs/deploy/dns-resolver.md
+  - docs/manual/07-dns.md
   - clients/rust/src/select.rs
-  - tools/emfor-fixture/Cargo.toml
-  - tools/emfor-fixture/src/lib.rs
-  - tests/conformance/v1/README.md
-  - tests/spike/probe_read.py
-  - tests/spike/RESULTS.md
-  - clients/rust/src/config.rs
-  - tests/spike/probe/Cargo.toml
-  - clients/rust/src/lib.rs
-  - Cargo.toml
-  - tests/spike/probe/cbindgen.toml
-  - tools/emfor-fixture/src/main.rs
-  - clients/rust/cbindgen.toml
-  - tests/spike/probe_read.php
-  - .github/workflows/ci.yml
-  - clients/rust/Cargo.toml
-  - tests/spike/probe_read.c
-  - tests/spike/run.sh
-  - tests/spike/probe/src/lib.rs
-  - tests/spike/check_symbols.sh
-tests:
-  - clients/rust/tests/conformance_capi.rs
-  - clients/rust/tests/fork.rs
-  - clients/rust/tests/lock_format.rs
-  - clients/c/tests/check_symbols.sh
-  - clients/c/tests/test_fork.c
-  - clients/rust/tests/env_default.rs
-  - clients/rust/tests/env_invalid.rs
-  - clients/rust/tests/threads.rs
-  - clients/rust/tests/support/mod.rs
-  - clients/c/tests/test_threads.c
-  - clients/c/tests/common.h
-  - clients/rust/tests/conformance.rs
-  - clients/rust/tests/same_lmdb.rs
-  - clients/c/tests/fixture.json
-  - clients/rust/tests/env_retry.rs
-  - tools/emfor-fixture/tests/conformance_data.rs
-  - clients/c/tests/test_lookup.c
+  - docs/manual.zh_TW/07-dns.md
+  - docs/manual/05-backend-selection.md
+  - crates/emfor-format/src/rules.rs
+  - tests/conformance/v1/cases.json
+  - docs/manual.zh_TW/05-backend-selection.md
+  - CHANGELOG.md
 -->
 
 ---

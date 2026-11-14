@@ -59,8 +59,9 @@ fn parsed(record: &ServiceRecord) -> impl Iterator<Item = (IpAddr, &BackendRecor
         .filter_map(|b| b.ip.parse::<IpAddr>().ok().map(|ip| (ip, b)))
 }
 
-/// The healthy ones of `list` when there are any, else all of them or
-/// `AllDown` by `on_all_down`.
+/// The passing ones of `list` (healthy, last check up) when there are any,
+/// else the healthy ones, else all of them or `AllDown` by `on_all_down`;
+/// see [`rules::healthy_or_all`].
 fn healthy_or_all<'a>(
     record: &ServiceRecord,
     list: Vec<(IpAddr, &'a BackendRecord)>,
@@ -235,6 +236,17 @@ mod tests {
         r
     }
 
+    /// `r` with backend `ip` given `reason` (failing while it is healthy).
+    fn failing(mut r: ServiceRecord, ip: &str, reason: &str) -> ServiceRecord {
+        let b = r
+            .backends
+            .iter_mut()
+            .find(|b| b.ip == ip)
+            .expect("the backend is in the record");
+        b.reason = Some(reason.into());
+        r
+    }
+
     fn ips(list: &[&str]) -> Vec<IpAddr> {
         list.iter().map(|s| s.parse().unwrap()).collect()
     }
@@ -292,6 +304,78 @@ mod tests {
             let want = expected.map(ips);
             assert_eq!(got, want, "{backends:?} {oad:?} {family:?}");
         }
+        // Rows with a failing backend (healthy, with a reason).
+        let r = failing(
+            rec(
+                &[("10.0.0.1", Healthy), ("10.0.0.2", Healthy)],
+                Closed,
+                Balance::RoundRobin,
+            ),
+            "10.0.0.1",
+            "refused",
+        );
+        assert_eq!(candidates(&r, Family::V4), Ok(ips(&["10.0.0.2"])));
+        let r = failing(
+            rec(
+                &[
+                    ("10.0.0.1", Healthy),
+                    ("10.0.0.2", Unhealthy),
+                    ("2001:db8::1", Healthy),
+                ],
+                Closed,
+                Balance::RoundRobin,
+            ),
+            "10.0.0.1",
+            "refused",
+        );
+        assert_eq!(candidates(&r, Family::V4), Ok(ips(&["10.0.0.1"])));
+    }
+
+    /// Spec "Candidate backends per address family", scenario "Failing
+    /// backends are skipped while another passes".
+    #[test]
+    fn failing_backends_are_skipped() {
+        let r = failing(
+            rec(
+                &[("10.0.0.1", Healthy), ("10.0.0.2", Healthy)],
+                OnAllDown::Open,
+                Balance::RoundRobin,
+            ),
+            "10.0.0.1",
+            "connect: Connection refused",
+        );
+        let c = FamilyChoice::default();
+        for _ in 0..4 {
+            assert_eq!(
+                select(&r, Family::V4, &c, None),
+                Selection::Chosen("10.0.0.2".parse().unwrap())
+            );
+        }
+    }
+
+    /// Spec "Candidate backends per address family", scenario "Every
+    /// healthy backend failing".
+    #[test]
+    fn every_healthy_backend_failing() {
+        let r = rec(
+            &[
+                ("10.0.0.1", Healthy),
+                ("10.0.0.2", Healthy),
+                ("10.0.0.3", Unhealthy),
+            ],
+            OnAllDown::Closed,
+            Balance::RoundRobin,
+        );
+        let r = failing(failing(r, "10.0.0.1", "timeout"), "10.0.0.2", "timeout");
+        assert_eq!(
+            candidates(&r, Family::V4),
+            Ok(ips(&["10.0.0.1", "10.0.0.2"]))
+        );
+        let c = FamilyChoice::default();
+        let picks: Vec<_> = (0..4).map(|_| select(&r, Family::V4, &c, None)).collect();
+        let a = Selection::Chosen("10.0.0.1".parse().unwrap());
+        let b = Selection::Chosen("10.0.0.2".parse().unwrap());
+        assert_eq!(picks, [a, b, a, b]);
     }
 
     #[test]
@@ -759,6 +843,46 @@ mod tests {
                 row("10.0.0.11", 8080, 0, 1),
                 row("2001:db8::11", 8080, 0, 1)
             ]
+        );
+    }
+
+    /// Spec "SRV answers", scenario "Failing backend left out".
+    #[test]
+    fn srv_failing_backend_left_out() {
+        let r = srv_rec(
+            &[
+                ("10.0.0.11", 8080, Healthy, 1, None),
+                ("2001:db8::11", 8080, Healthy, 1, None),
+            ],
+            OnAllDown::Open,
+            Balance::RoundRobin,
+        );
+        let r = failing(r, "10.0.0.11", "connect: Connection refused");
+        let n = AtomicU64::new(0);
+        for _ in 0..2 {
+            assert_eq!(
+                srv(&r, &n, None).unwrap(),
+                vec![row("2001:db8::11", 8080, 0, 1)]
+            );
+        }
+    }
+
+    /// Spec "SRV answers", scenario "Every healthy backend failing in SRV".
+    #[test]
+    fn srv_every_healthy_backend_failing() {
+        let r = srv_rec(
+            &[
+                ("10.0.0.11", 8080, Unhealthy, 1, None),
+                ("10.0.0.12", 8080, Healthy, 1, None),
+                ("10.0.0.13", 8080, Healthy, 1, None),
+            ],
+            OnAllDown::Open,
+            Balance::Failover,
+        );
+        let r = failing(failing(r, "10.0.0.12", "timeout"), "10.0.0.13", "timeout");
+        assert_eq!(
+            srv(&r, &AtomicU64::new(0), None).unwrap(),
+            vec![row("10.0.0.12", 8080, 0, 1), row("10.0.0.13", 8080, 1, 1)]
         );
     }
 
