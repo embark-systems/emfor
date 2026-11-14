@@ -115,6 +115,7 @@ impl Checker for ExecChecker {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .process_group(0);
+            crate::child::inherit_stdio_only(&mut cmd);
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
                 Err(e) => return CheckResult::Error(format!("cannot run {program}: {e}")),

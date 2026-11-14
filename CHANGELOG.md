@@ -7,6 +7,9 @@
 - The `http` check takes `expect_body`: text the response body must
   contain, for health endpoints that answer 200 either way. The body is
   read only when the status matches, up to 64 KiB.
+- On macOS, `exec` check commands and plugins no longer inherit the
+  daemon's sockets and pipes. A plugin could keep a check connection
+  open for as long as it ran, so the backend never saw it closed.
 
 ### emfor-check
 

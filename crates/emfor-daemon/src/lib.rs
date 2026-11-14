@@ -2,6 +2,7 @@
 //! LMDB state store. The `emfor` binary is a thin wrapper around [`cli`].
 
 pub mod checker;
+mod child;
 pub mod cli;
 pub mod config;
 pub mod dns;

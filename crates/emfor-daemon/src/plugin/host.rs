@@ -254,13 +254,15 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
     let program = command
         .first()
         .ok_or_else(|| format!("plugin {name}: empty command"))?;
-    let mut child = Command::new(program)
-        .args(&command[1..])
+    let mut cmd = Command::new(program);
+    cmd.args(&command[1..])
         .current_dir("/")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    crate::child::inherit_stdio_only(&mut cmd);
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("plugin {name}: cannot run {program}: {e}"))?;
     let pid = child.id().unwrap_or(0);
