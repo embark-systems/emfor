@@ -12,13 +12,22 @@ cargo +nightly fuzz run -O plugins corpus/plugins seeds/plugins -- -len_control=
 cargo +nightly fuzz run -O peers -- -max_total_time=600
 ```
 
-`seeds/plugins/` holds a well-formed answer for each plugin but grpc,
-written by `seeds/plugins.py`; the first directory is where the fuzzer
-keeps what it finds. Without the seeds the fuzzer rarely gets past a
-length field and an identifier that must match, and without
-`-len_control=0` it cuts the seeds short at first. `EMFOR_FUZZ_PRINT=1`
-prints the outcome of each input, for example to check the seeds:
-`EMFOR_FUZZ_PRINT=1 cargo +nightly fuzz run -O plugins seeds/plugins/*`.
+`seeds/plugins/` holds well-formed answers for each plugin, written by
+`seeds/plugins.py`; the first directory is where the fuzzer keeps what it
+finds. Without the seeds the fuzzer rarely gets past a length field and an
+identifier that must match, and without `-len_control=0` it cuts the seeds
+short at first.
+
+All plugins share one run, so each gets about a tenth of it.
+`EMFOR_FUZZ_PLUGIN=<name>` gives every input to that plugin instead; pass
+only its seeds (`seeds/plugins/<name>-*`). For `grpc` the fuzzer mostly
+breaks the HTTP/2 framing and seldom reaches the health message inside it:
+a planted out-of-bounds read in `grpc-message` decoding was found in under
+a minute, one in the protobuf decoding not in a million runs.
+
+`EMFOR_FUZZ_PRINT=1` prints the outcome of each input, for example to
+check the seeds: `EMFOR_FUZZ_PRINT=1 cargo +nightly fuzz run -O plugins
+seeds/plugins/*`.
 
 | Target | Input |
 | --- | --- |

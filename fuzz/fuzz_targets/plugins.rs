@@ -4,7 +4,7 @@
 //! sets per plugin, without TLS), the rest is what the backend answers:
 //! the bytes a TCP connection reads, or for UDP length-prefixed datagrams
 //! (see `emfor_check::net::fuzz`). `seeds/plugins.py` writes a well-formed
-//! answer for each plugin but grpc to `seeds/plugins/`. `mysql` and `pgsql`
+//! answer for each plugin to `seeds/plugins/`. `mysql` and `pgsql`
 //! are left out: their protocols are parsed by `mysql_async` and
 //! `tokio-postgres`, which connect on their own.
 #![no_main]
@@ -97,6 +97,21 @@ fn presets(kind: Kind) -> Vec<Value> {
     }
 }
 
+/// The plugin named by `EMFOR_FUZZ_PLUGIN`, which then gets every input
+/// whatever its first byte, so a run spends all its time on it.
+fn only() -> Option<Kind> {
+    static ONLY: OnceLock<Option<Kind>> = OnceLock::new();
+    *ONLY.get_or_init(|| {
+        let name = std::env::var("EMFOR_FUZZ_PLUGIN").ok()?;
+        let kind = Kind::from_name(&name).filter(|k| KINDS.contains(k));
+        assert!(
+            kind.is_some(),
+            "EMFOR_FUZZ_PLUGIN={name} is not a fuzzed plugin"
+        );
+        kind
+    })
+}
+
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
@@ -112,7 +127,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let [k, p, reply @ ..] = data else {
         return;
     };
-    let kind = KINDS[usize::from(*k) % KINDS.len()];
+    let kind = only().unwrap_or(KINDS[usize::from(*k) % KINDS.len()]);
     let presets = presets(kind);
     let Value::Object(options) = presets[usize::from(*p) % presets.len()].clone() else {
         return;
@@ -127,7 +142,12 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         timeout: Duration::from_secs(2),
     };
     let service = Service::new(kind);
-    let outcome = runtime().block_on(service.check(req));
+    // Like emfor_plugin::run: a check that takes longer than its timeout is
+    // down. The clock is paused, so this ends at once instead of hanging.
+    let timeout = req.timeout;
+    let outcome = runtime()
+        .block_on(async { tokio::time::timeout(timeout, service.check(req)).await })
+        .unwrap_or_else(|_| emfor_plugin::CheckOutcome::Down("timeout".into()));
     // EMFOR_FUZZ_PRINT=1 shows each outcome, to check the seeds by hand.
     if std::env::var_os("EMFOR_FUZZ_PRINT").is_some() {
         eprintln!(

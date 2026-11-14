@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write the seed inputs of the `plugins` fuzz target to fuzz/seeds/plugins/.
 
-Each seed is a byte picking the plugin (its index in KINDS in
+One seed or more per plugin. Each seed is a byte picking the plugin (its index in KINDS in
 fuzz_targets/plugins.rs), a byte picking its options, and a well-formed
 answer of the backend. In fuzzing builds request identifiers and nonces are
 zero, so these answers match the requests. UDP answers are datagrams, each
@@ -261,6 +261,43 @@ def mongodb():
     }
 
 
+# grpc: HTTP/2 frames on stream 1, the client's first request
+
+
+def frame(kind, flags, stream, payload):
+    return len(payload).to_bytes(3, "big") + bytes([kind, flags]) + struct.pack(">I", stream) + payload
+
+
+def hpack_literal(name_, value):
+    """A literal header field without indexing, with a new name (RFC 7541 6.2.2)."""
+    return b"\x00" + bytes([len(name_)]) + name_ + bytes([len(value)]) + value
+
+
+def grpc_response(status=None, grpc_status=b"0", grpc_message=None, http_status=b"\x88"):
+    """`http_status` is the HPACK of :status; 0x88 is the static entry 200."""
+    # The server's SETTINGS and its ACK of the client's, as a real server
+    # (h2) writes them.
+    settings = frame(4, 0, 0, b"") + frame(4, 1, 0, b"")
+    headers = http_status + b"\x5f\x10application/grpc"
+    out = settings + frame(1, 0x4, 1, headers)
+    if status is not None:
+        message = b"\x08" + bytes([status])
+        out += frame(0, 0, 1, b"\x00" + struct.pack(">I", len(message)) + message)
+    trailers = hpack_literal(b"grpc-status", grpc_status)
+    if grpc_message is not None:
+        trailers += hpack_literal(b"grpc-message", grpc_message)
+    return out + frame(1, 0x5, 1, trailers)
+
+
+def grpc():
+    return {
+        "grpc-serving": (0, grpc_response(status=1)),
+        "grpc-not-serving": (1, grpc_response(status=2)),
+        "grpc-unimplemented": (0, grpc_response(grpc_status=b"12", grpc_message=b"unknown%20service")),
+        "grpc-http-503": (0, grpc_response(http_status=b"\x48\x03503")),
+    }
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     seeds = {}
@@ -274,6 +311,7 @@ def main():
         (SMTP, smtp),
         (AMQP, amqp),
         (MONGODB, mongodb),
+        (GRPC, grpc),
     ]:
         for name_, (preset, reply) in make().items():
             seeds[name_] = bytes([kind, preset]) + reply

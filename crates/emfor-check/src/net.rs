@@ -244,9 +244,16 @@ pub mod fuzz {
 
     /// A connection that reads the reply, then end of file, and takes
     /// whatever is written.
+    ///
+    /// Every read first yields once (returns `Pending` and wakes itself
+    /// at once), so the other tasks run before it gets bytes, as they would
+    /// while a real backend is still answering. Without this, the HTTP/2
+    /// connection task of `grpc` reads the response before the request
+    /// task has opened its stream, and fails with a protocol error.
     pub struct Conn {
         data: Vec<u8>,
         pos: usize,
+        yielded: bool,
     }
 
     impl Conn {
@@ -254,6 +261,7 @@ pub mod fuzz {
             Conn {
                 data: REPLY.with(|r| r.borrow().clone()),
                 pos: 0,
+                yielded: false,
             }
         }
 
@@ -265,9 +273,15 @@ pub mod fuzz {
     impl AsyncRead for Conn {
         fn poll_read(
             mut self: Pin<&mut Self>,
-            _: &mut Context<'_>,
+            cx: &mut Context<'_>,
             buf: &mut ReadBuf<'_>,
         ) -> Poll<io::Result<()>> {
+            if !self.yielded {
+                self.yielded = true;
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            self.yielded = false;
             let rest = &self.data[self.pos..];
             let n = rest.len().min(buf.remaining());
             buf.put_slice(&rest[..n]);
