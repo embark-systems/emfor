@@ -163,7 +163,7 @@ backends = [
 | Key | 預設值 | 意義 |
 | --- | --- | --- |
 | `addr` | 必填 | `IPv4:port` 或 `[IPv6]:port`，port 為 1–65535。同一服務內不可重複。 |
-| `weight` | 1 | 1 到 100。`balance = "weighted"` 會用到。 |
+| `weight` | 1 | 1 到 100。`balance = "weighted"` 與帶 affinity key 的 `"sticky"` 會用到。 |
 | `site` | 無 | backend 所在的資料中心。`balance = "locality"` 會用到。 |
 | `backup` | `false` | `true` 或 `false`。備援 backend 只在沒有其他 backend 通過檢查時使用（[第 5 章](05-backend-selection.md#備援-backend)）。每個服務至少要有一個不是備援的 backend。 |
 

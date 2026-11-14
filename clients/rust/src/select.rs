@@ -72,11 +72,53 @@ pub fn rendezvous_hash(key: &str, id: &str) -> u32 {
     u32::from_be_bytes([d[0], d[1], d[2], d[3]])
 }
 
-/// Index of the id with the highest hash; ties go to the earlier one.
-pub fn rendezvous_index<'a>(key: &str, ids: impl Iterator<Item = &'a str>) -> usize {
+/// The largest weight the daemon accepts, and the most virtual nodes a
+/// candidate gets in [`rendezvous_score`].
+pub const MAX_STICKY_WEIGHT: u32 = 100;
+
+/// Weighted rendezvous score of backend `id` with `weight` for `key`: the
+/// largest of `h_0 .. h_(weight-1)`, where `h_0` is [`rendezvous_hash`] and
+/// `h_i` hashes `key ++ id ++ "#" ++ i` (decimal) the same way. Weights the
+/// daemon never writes are bounded: above [`MAX_STICKY_WEIGHT`] counts as
+/// that, so a damaged store cannot make a lookup hash billions of times,
+/// and 0 counts as 1.
+pub fn rendezvous_score(key: &str, id: &str, weight: u32) -> u32 {
+    let weight = weight.min(MAX_STICKY_WEIGHT);
+    let mut base = Md5::new();
+    base.update(key.as_bytes());
+    base.update(id.as_bytes());
+    let first = |d: &[u8]| u32::from_be_bytes([d[0], d[1], d[2], d[3]]);
+    let mut best = first(&base.clone().finalize());
+    let mut digits = [0u8; 10];
+    for i in 1..weight {
+        let mut h = base.clone();
+        h.update(b"#");
+        h.update(decimal(i, &mut digits));
+        best = best.max(first(&h.finalize()));
+    }
+    best
+}
+
+/// The decimal digits of `n`, written at the end of `buf`.
+fn decimal(mut n: u32, buf: &mut [u8; 10]) -> &[u8] {
+    let mut start = buf.len();
+    loop {
+        start -= 1;
+        // n % 10 is below 10, so the cast keeps every bit.
+        buf[start] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            return &buf[start..];
+        }
+    }
+}
+
+/// Index of the `(id, weight)` with the highest [`rendezvous_score`]; ties
+/// go to the earlier one.
+pub fn rendezvous_index<'a>(key: &str, candidates: impl Iterator<Item = (&'a str, u32)>) -> usize {
     let mut best: Option<(u32, usize)> = None;
-    for (i, id) in ids.enumerate() {
-        let h = rendezvous_hash(key, id);
+    for (i, (id, weight)) in candidates.enumerate() {
+        let h = rendezvous_score(key, id, weight);
         if best.is_none_or(|(b, _)| h > b) {
             best = Some((h, i));
         }
@@ -115,7 +157,8 @@ pub fn pick_at(
     match (balance, key) {
         (Balance::Failover, _) => return candidates[0].id.clone(),
         (Balance::Sticky, Some(k)) => {
-            let i = rendezvous_index(k, candidates.iter().map(|b| b.id.as_str()));
+            // Configured weights: slow start does not change sticky with a key.
+            let i = rendezvous_index(k, candidates.iter().map(|b| (b.id.as_str(), b.weight)));
             return candidates[i].id.clone();
         }
         _ => {}
@@ -347,9 +390,133 @@ mod tests {
         );
     }
 
+    /// Spec client-lookup Example "weighted hash vectors".
+    #[test]
+    fn weighted_hash_vectors() {
+        let virtual_node = |key: &str, id: &str, i: u32| {
+            let d = Md5::digest(format!("{key}{id}#{i}").as_bytes());
+            u32::from_be_bytes([d[0], d[1], d[2], d[3]])
+        };
+        for (key, id, i, want) in [
+            ("user-42", API[0], 1, 101315482),
+            ("user-42", API[0], 2, 3080192789),
+            ("user-42", API[2], 1, 491054110),
+            ("user-7", API[2], 1, 2987525892),
+        ] {
+            assert_eq!(virtual_node(key, id, i), want, "{key} {id}#{i}");
+        }
+        // The score is the largest of h_0 .. h_(w-1).
+        assert_eq!(rendezvous_score("user-42", API[0], 1), 1022706018);
+        assert_eq!(rendezvous_score("user-42", API[0], 2), 1022706018);
+        assert_eq!(rendezvous_score("user-42", API[0], 3), 3080192789);
+        assert_eq!(rendezvous_score("user-7", API[2], 2), 3484999621);
+        assert_eq!(rendezvous_score("user-42", API[0], 0), 1022706018);
+        // Spec Example "weights above 100": h_100 of key-795 at .12 is
+        // 4277241900, so only the cap keeps .11 (4257715895) ahead.
+        assert_eq!(rendezvous_score("key-795", API[0], 100), 4257715895);
+        assert_eq!(rendezvous_score("key-795", API[1], 100), 4228454921);
+        assert_eq!(rendezvous_score("key-795", API[1], 101), 4228454921);
+        assert_eq!(rendezvous_score("key-795", API[1], u32::MAX), 4228454921);
+        assert_eq!(decimal(0, &mut [0; 10]), b"0");
+        assert_eq!(decimal(u32::MAX, &mut [0; 10]), b"4294967295");
+    }
+
+    /// Spec client-lookup Example "weighted picks".
+    #[test]
+    fn weighted_picks() {
+        let never = || panic!("sticky with a key must not use the counter");
+        for (key, weights, want) in [
+            ("user-42", [1, 1, 1], API[1]),
+            ("user-42", [3, 1, 1], API[0]),
+            ("user-42", [1, 1, 100], API[2]),
+            ("user-7", [1, 1, 1], API[0]),
+            ("user-7", [2, 2, 2], API[0]),
+            ("user-7", [1, 1, 100], API[2]),
+        ] {
+            let all: Vec<BackendRecord> = API
+                .iter()
+                .zip(weights)
+                .map(|(a, w)| BackendRecord {
+                    weight: w,
+                    ..be(a, Healthy)
+                })
+                .collect();
+            let refs: Vec<&BackendRecord> = all.iter().collect();
+            assert_eq!(
+                pick(Balance::Sticky, &refs, Some(key), None, never),
+                want,
+                "{key} {weights:?}"
+            );
+        }
+    }
+
+    /// Spec client-lookup Scenario "Raising a weight only moves keys to
+    /// that backend", and weight 1 picks as rendezvous hashing version 1.
+    #[test]
+    fn raising_a_weight_only_moves_keys_to_it() {
+        let version_1 = |key: &str| {
+            let hashes: Vec<u32> = API.iter().map(|id| rendezvous_hash(key, id)).collect();
+            let mut best = 0;
+            for (i, h) in hashes.iter().enumerate() {
+                if *h > hashes[best] {
+                    best = i;
+                }
+            }
+            best
+        };
+        let pick_with =
+            |key: &str, weights: [u32; 3]| rendezvous_index(key, API.iter().copied().zip(weights));
+        let (mut to_heavy, mut moved) = (0, 0);
+        for k in 0..1000 {
+            let key = format!("key-{k}");
+            let before = pick_with(&key, [1, 1, 1]);
+            assert_eq!(before, version_1(&key), "{key}");
+            let after = pick_with(&key, [1, 1, 2]);
+            if after == 2 {
+                to_heavy += 1;
+            }
+            if after != before {
+                moved += 1;
+                assert_eq!(after, 2, "{key} moved to another backend");
+            }
+        }
+        assert_eq!((to_heavy, moved), (499, 151));
+    }
+
+    /// Slow start does not change the weights sticky with a key uses.
+    #[test]
+    fn weighted_sticky_ignores_slow_start() {
+        let all: Vec<BackendRecord> = API
+            .iter()
+            .zip([3, 1, 1])
+            .map(|(a, w)| BackendRecord {
+                weight: w,
+                recovered_at: Some(1_000),
+                ..be(a, Healthy)
+            })
+            .collect();
+        let refs: Vec<&BackendRecord> = all.iter().collect();
+        let never = || panic!("sticky with a key must not use the counter");
+        assert_eq!(
+            pick_at(
+                Balance::Sticky,
+                &refs,
+                Some("user-42"),
+                None,
+                60_000,
+                2_000,
+                never
+            ),
+            API[0]
+        );
+    }
+
     #[test]
     fn rendezvous_tie_goes_to_earlier() {
-        assert_eq!(rendezvous_index("k", ["same", "same"].into_iter()), 0);
+        assert_eq!(
+            rendezvous_index("k", [("same", 1), ("same", 1)].into_iter()),
+            0
+        );
     }
 
     #[test]
@@ -586,5 +753,33 @@ mod tests {
             ),
             map(&[(API[0], 3), (API[1], 10)])
         );
+    }
+
+    /// Time of one weighted sticky choice among 10 candidates of weight 1,
+    /// 10 and 100 (design "先量測，再決定"). Run with
+    /// `cargo test --release -p emfor-client --lib measure_weighted_sticky -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, run by hand in a release build"]
+    fn measure_weighted_sticky() {
+        let ids: Vec<String> = (1..=10).map(|i| format!("10.0.0.{i}:8080")).collect();
+        for weight in [1u32, 10, 100] {
+            let mut runs = Vec::new();
+            for _ in 0..3 {
+                let n = 100_000u32;
+                let start = std::time::Instant::now();
+                let mut sum = 0usize;
+                for k in 0..n {
+                    let key = format!("key-{k}");
+                    sum += rendezvous_index(&key, ids.iter().map(|id| (id.as_str(), weight)));
+                }
+                std::hint::black_box(sum);
+                runs.push(start.elapsed().as_secs_f64() * 1e6 / f64::from(n));
+            }
+            runs.sort_by(f64::total_cmp);
+            println!(
+                "10 x weight {weight}: {:.2} us per choice (runs {runs:.2?})",
+                runs[1]
+            );
+        }
     }
 }

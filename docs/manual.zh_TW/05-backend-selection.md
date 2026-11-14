@@ -23,6 +23,8 @@
 
 應用程式傳入一個 **affinity key**，例如使用者或 session ID。client 為每個候選計算 `MD5(key + backend id)`，取值最大的候選（rendezvous hashing）。因此同一個 key 在每個行程、每台主機、每種語言中都選到同一個 backend；該 backend 故障時只有它的 key 會移走，恢復後再回來。沒有 key（或 key 為空）時，`sticky` 的行為同 `round-robin`。
 
+`weight` 為 w 的 backend 分到的 key 是權重 1 的 w 倍：它的值是 `MD5(key + id)` 與 i 從 1 到 w − 1 的 `MD5(key + id + "#" + i)` 中最大的一個，所以一台權重 3 和兩台權重 1 的 backend 放在一起時，權重 3 那台分到 3/5 的 key。權重全為 1 時，選擇結果和這個版本以前相同。調高某台的權重只會把 key 移到它身上，調低只會把 key 從它身上移走。慢啟動不改變帶 key 的 `sticky` 所用的權重。store 裡超過 100 的權重（daemon 不會寫出）當成 100。每次查詢要為候選的權重總和各算一次 MD5：10 台權重 1 約 0.8 µs，10 台權重 100 約 72 µs（在 Apple M4 Max 上量測），所以查詢量大的 sticky 服務請讓權重保持小。
+
 ### failover
 
 設定檔順序中第一個健康的 backend。把 primary 列在最前面。搭配資料庫 plugin 的 `role` 選項時，只有目前的 primary 會通過檢查，所以新的 primary 到達 `rise` 後，`failover` 就會跟著切換。

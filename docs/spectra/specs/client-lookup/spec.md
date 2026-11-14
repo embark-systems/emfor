@@ -503,101 +503,6 @@ tests:
 -->
 
 ---
-### Requirement: Sticky uses rendezvous hashing version 1
-
-For a service with `balance = "sticky"` and a non-empty affinity key, the client SHALL compute, for each candidate, `MD5(key bytes followed by id bytes)` over the UTF-8 bytes with no separator, read the first 4 bytes of the digest as a big-endian unsigned 32-bit integer, and return the candidate with the largest value. On equal values the candidate earlier in config order SHALL win. With no affinity key, or an empty one, the client SHALL pick by round-robin as defined above.
-
-#### Scenario: Same key gives the same backend
-
-- **WHEN** a fresh sticky service is looked up repeatedly with the same affinity key and its candidates do not change
-- **THEN** every lookup returns the same address
-
-#### Scenario: Hash values and picks
-
-- **WHEN** a fresh sticky service has backends `10.0.0.11:8080`, `10.0.0.12:8080`, `10.0.0.13:8080`
-- **THEN** the hash values and picks are as listed
-
-##### Example: rendezvous hash vectors
-
-| Key | Id | Hash (u32) |
-| --- | --- | --- |
-| `user-42` | `10.0.0.11:8080` | 1022706018 |
-| `user-42` | `10.0.0.12:8080` | 3018330109 |
-| `user-42` | `10.0.0.13:8080` | 336531056 |
-| `user-7` | `10.0.0.11:8080` | 4189533513 |
-| `user-7` | `10.0.0.12:8080` | 1529156490 |
-| `user-7` | `10.0.0.13:8080` | 3484999621 |
-
-##### Example: rendezvous picks
-
-| Key | Healthy backends | Result |
-| --- | --- | --- |
-| `user-42` | all three | `10.0.0.12:8080` |
-| `user-42` | `.11`, `.13` (`.12` unhealthy) | `10.0.0.11:8080` |
-| `user-7` | all three | `10.0.0.11:8080` |
-| `user-7` | `.12`, `.13` (`.11` unhealthy) | `10.0.0.13:8080` |
-
-#### Scenario: Empty key falls back to round-robin
-
-- **WHEN** a fresh sticky service with three healthy backends is looked up 3 times with affinity key `""`
-- **THEN** the 3 results are exactly the set of its three addresses
-
-
-<!-- @trace
-source: emfor-clients
-updated: 2026-11-12
-code:
-  - clients/c/example.c
-  - clients/rust/src/capi.rs
-  - tests/conformance/v1/sticky-v1.json
-  - clients/rust/src/store.rs
-  - clients/rust/README.md
-  - clients/c/README.md
-  - clients/rust/src/client.rs
-  - clients/rust/examples/lookup.rs
-  - tests/conformance/v1/cases.json
-  - clients/c/Makefile
-  - clients/rust/src/select.rs
-  - tools/emfor-fixture/Cargo.toml
-  - tools/emfor-fixture/src/lib.rs
-  - tests/conformance/v1/README.md
-  - tests/spike/probe_read.py
-  - tests/spike/RESULTS.md
-  - clients/rust/src/config.rs
-  - tests/spike/probe/Cargo.toml
-  - clients/rust/src/lib.rs
-  - Cargo.toml
-  - tests/spike/probe/cbindgen.toml
-  - tools/emfor-fixture/src/main.rs
-  - clients/rust/cbindgen.toml
-  - tests/spike/probe_read.php
-  - .github/workflows/ci.yml
-  - clients/rust/Cargo.toml
-  - tests/spike/probe_read.c
-  - tests/spike/run.sh
-  - tests/spike/probe/src/lib.rs
-  - tests/spike/check_symbols.sh
-tests:
-  - clients/rust/tests/conformance_capi.rs
-  - clients/rust/tests/fork.rs
-  - clients/rust/tests/lock_format.rs
-  - clients/c/tests/check_symbols.sh
-  - clients/c/tests/test_fork.c
-  - clients/rust/tests/env_default.rs
-  - clients/rust/tests/env_invalid.rs
-  - clients/rust/tests/threads.rs
-  - clients/rust/tests/support/mod.rs
-  - clients/c/tests/test_threads.c
-  - clients/c/tests/common.h
-  - clients/rust/tests/conformance.rs
-  - clients/rust/tests/same_lmdb.rs
-  - clients/c/tests/fixture.json
-  - clients/rust/tests/env_retry.rs
-  - tools/emfor-fixture/tests/conformance_data.rs
-  - clients/c/tests/test_lookup.c
--->
-
----
 ### Requirement: Failover returns the first candidate
 
 For a service with `balance = "failover"`, the client SHALL return the first candidate in config order and SHALL ignore the affinity key.
@@ -1278,4 +1183,106 @@ code:
   - crates/emfor-daemon/src/dns.rs
   - docs/manual.zh_TW/03-configuration.md
   - clients/rust/src/client.rs
+-->
+
+---
+### Requirement: Sticky uses weighted rendezvous hashing
+
+For a service with `balance = "sticky"` and a non-empty affinity key, the client SHALL give each candidate a score and return the candidate with the largest score; on equal scores the candidate earlier in config order SHALL win. For a candidate with weight `w`, the score SHALL be the largest of the values `h_0` to `h_(w-1)`, where each value is the first 4 bytes of an MD5 digest read as a big-endian unsigned 32-bit integer: `h_0` is computed over the key bytes followed by the id bytes, and `h_i` for `i` from 1 is computed over the key bytes, the id bytes, the byte `#` and the decimal digits of `i`, all UTF-8 with no other separator. Each candidate SHALL therefore receive a share of keys equal to its weight divided by the sum of the candidates' weights. When every candidate has weight 1, the result SHALL be the candidate whose `MD5(key bytes followed by id bytes)` value is largest. A weight above 100, which the daemon never writes, SHALL count as 100, and a weight of 0 SHALL count as 1, so a damaged store cannot make one lookup compute more than 100 values per candidate. Slow start SHALL NOT change the weights used here. With no affinity key, or an empty one, the client SHALL pick by round-robin as defined above.
+
+#### Scenario: Same key gives the same backend
+
+- **WHEN** a fresh sticky service is looked up repeatedly with the same affinity key and its candidates and weights do not change
+- **THEN** every lookup returns the same address
+
+#### Scenario: Equal weights keep today's picks
+
+- **WHEN** a fresh sticky service has backends `10.0.0.11:8080`, `10.0.0.12:8080`, `10.0.0.13:8080`, all with weight 1
+- **THEN** the hash values and picks are as listed
+
+##### Example: rendezvous hash vectors
+
+| Key | Id | Hash (u32) |
+| --- | --- | --- |
+| `user-42` | `10.0.0.11:8080` | 1022706018 |
+| `user-42` | `10.0.0.12:8080` | 3018330109 |
+| `user-42` | `10.0.0.13:8080` | 336531056 |
+| `user-7` | `10.0.0.11:8080` | 4189533513 |
+| `user-7` | `10.0.0.12:8080` | 1529156490 |
+| `user-7` | `10.0.0.13:8080` | 3484999621 |
+
+##### Example: rendezvous picks
+
+| Key | Healthy backends | Result |
+| --- | --- | --- |
+| `user-42` | all three | `10.0.0.12:8080` |
+| `user-42` | `.11`, `.13` (`.12` unhealthy) | `10.0.0.11:8080` |
+| `user-7` | all three | `10.0.0.11:8080` |
+| `user-7` | `.12`, `.13` (`.11` unhealthy) | `10.0.0.13:8080` |
+
+#### Scenario: Weights change the share of keys
+
+- **WHEN** a fresh sticky service has backends `10.0.0.11:8080`, `10.0.0.12:8080` and `10.0.0.13:8080` with the weights listed, all healthy
+- **THEN** the virtual node values and picks are as listed
+
+##### Example: weighted hash vectors
+
+| Key | Bytes hashed after the key | Hash (u32) |
+| --- | --- | --- |
+| `user-42` | `10.0.0.11:8080#1` | 101315482 |
+| `user-42` | `10.0.0.11:8080#2` | 3080192789 |
+| `user-42` | `10.0.0.13:8080#1` | 491054110 |
+| `user-7` | `10.0.0.13:8080#1` | 2987525892 |
+
+##### Example: weighted picks
+
+| Key | Weights of `.11`, `.12`, `.13` | Result |
+| --- | --- | --- |
+| `user-42` | 1, 1, 1 | `10.0.0.12:8080` |
+| `user-42` | 3, 1, 1 | `10.0.0.11:8080` |
+| `user-42` | 1, 1, 100 | `10.0.0.13:8080` |
+| `user-7` | 1, 1, 1 | `10.0.0.11:8080` |
+| `user-7` | 2, 2, 2 | `10.0.0.11:8080` |
+| `user-7` | 1, 1, 100 | `10.0.0.13:8080` |
+
+#### Scenario: Raising a weight only moves keys to that backend
+
+- **WHEN** the keys `key-0` to `key-999` are looked up with weights 1, 1, 1 and again with weights 1, 1, 2 for `.11`, `.12`, `.13`
+- **THEN** with weights 1, 1, 2 `.13` gets 499 of the keys, and each of the 151 keys whose backend changed now goes to `.13`
+
+#### Scenario: Weights above 100 count as 100
+
+- **WHEN** a fresh sticky service has backends `10.0.0.11:8080` with weight 100 and `10.0.0.12:8080` with the weight listed, both healthy, and is looked up with the key listed
+- **THEN** the result is as listed and the lookup returns as quickly as with weight 100
+
+##### Example: weights above 100
+
+| Key | Weight of `.12` | Result |
+| --- | --- | --- |
+| `key-795` | 100 | `10.0.0.11:8080` |
+| `key-795` | 101 | `10.0.0.11:8080` |
+| `key-795` | 4294967295 | `10.0.0.11:8080` |
+
+With the weight of `.12` read as 101 the value of `h_100` (4277241900) would beat `.11` (4257715895) and `.12` would be picked.
+
+#### Scenario: Empty key falls back to round-robin
+
+- **WHEN** a fresh sticky service with three healthy backends is looked up 3 times with affinity key `""`
+- **THEN** the 3 results are exactly the set of its three addresses
+
+<!-- @trace
+source: emfor-weighted-sticky
+updated: 2026-11-14
+code:
+  - docs/manual/03-configuration.md
+  - tests/conformance/v1/cases.json
+  - clients/rust/src/lib.rs
+  - docs/manual.zh_TW/03-configuration.md
+  - docs/manual/05-backend-selection.md
+  - clients/rust/src/select.rs
+  - docs/manual.zh_TW/05-backend-selection.md
+  - tests/conformance/v1/README.md
+  - CHANGELOG.md
+tests:
+  - clients/rust/tests/conformance.rs
 -->

@@ -6,7 +6,7 @@ mod support;
 
 use std::path::Path;
 
-use emfor_client::testing::{Client, rendezvous_hash, rendezvous_pick};
+use emfor_client::testing::{Client, rendezvous_hash, rendezvous_pick, rendezvous_pick_weighted};
 use serde_json::Value;
 use support::{check, data};
 
@@ -77,4 +77,21 @@ fn sticky_vectors() {
         );
     }
     assert!(hashes.len() >= 6 && picks.len() >= 4);
+}
+
+/// Spec client-lookup Example "weighted picks", row `user-42` with weights
+/// 3, 1, 1; the same ids with every weight 1 pick as `rendezvous_pick`.
+#[test]
+fn weighted_pick() {
+    let ids = ["10.0.0.11:8080", "10.0.0.12:8080", "10.0.0.13:8080"];
+    let weighted: Vec<(&str, u32)> = ids.iter().copied().zip([3, 1, 1]).collect();
+    assert_eq!(
+        rendezvous_pick_weighted("user-42", &weighted),
+        "10.0.0.11:8080"
+    );
+    let equal: Vec<(&str, u32)> = ids.iter().map(|id| (*id, 1)).collect();
+    assert_eq!(
+        rendezvous_pick_weighted("user-42", &equal),
+        rendezvous_pick("user-42", &ids)
+    );
 }

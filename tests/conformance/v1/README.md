@@ -28,7 +28,13 @@ data" of the emfor-clients change.
   milliseconds, so slow start cases do not depend on the date they run.
 - `sticky-v1.json`: rendezvous hash vectors (`hashes`: key, id, big-endian
   u32 of the first 4 bytes of MD5(key ++ id)) and pick vectors (`picks`).
-  Generated with Python's hashlib.
+  Generated with Python's hashlib. Its picks have every weight 1, so they
+  hold for weighted rendezvous hashing too.
+- Weighted `sticky` (a backend with weight `w` scores the largest of
+  MD5(key ++ id) and MD5(key ++ id ++ "#" ++ i) for i in 1 to w - 1) is
+  checked through `cases.json`: the case "sticky with an affinity key
+  honours weights" has one service per set of weights, so every interface
+  runs it through `emfor-conformance` as an ordinary lookup.
 
 `emfor-fixture <cases.json> <index> <out.mdb>` (tools/emfor-fixture) writes a
 case's store to an LMDB file with the daemon's LMDB.

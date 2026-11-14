@@ -69,6 +69,22 @@ member runs this release, remove the line and reload each daemon.
   daemon's sockets and pipes. A plugin could keep a check connection
   open for as long as it ran, so the backend never saw it closed.
 
+### Clients
+
+- **Behaviour change:** `balance = "sticky"` with an affinity key now
+  honours `weight`: a backend of weight w gets w shares of the keys. Its
+  value is the highest of `MD5(key + id)` and `MD5(key + id + "#" + i)`
+  for i from 1 to w − 1, integers only, so every host and language still
+  picks the same backend for a key. With every weight 1 nothing changes.
+  A sticky service that already sets other weights moves some keys when
+  its clients are upgraded, and old and new clients pick differently for
+  those keys meanwhile, so upgrade the clients of such a service
+  together. Raising a weight only moves keys to that backend; slow start
+  does not apply, and a weight above 100 in the store counts as 100. A lookup costs one MD5 per unit of weight: 0.8 µs for 10
+  backends of weight 1, 72 µs for 10 of weight 100 (Apple M4 Max). The
+  Rust API adds `testing::rendezvous_pick_weighted`. See
+  [sticky](docs/manual/05-backend-selection.md#sticky).
+
 ### emfor-check
 
 - `role = "replica"` for `mysql` and `pgsql`, and for all three database

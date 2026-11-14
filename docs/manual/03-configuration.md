@@ -211,7 +211,7 @@ backends = [
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `addr` | required | `IPv4:port` or `[IPv6]:port`, port 1–65535. Unique within the service. |
-| `weight` | 1 | 1 to 100. Used by `balance = "weighted"`. |
+| `weight` | 1 | 1 to 100. Used by `balance = "weighted"`, and by `"sticky"` with an affinity key. |
 | `site` | none | The backend's data centre. Used by `balance = "locality"`. |
 | `backup` | `false` | `true` or `false`. A backup is used only while no other backend passes its checks ([chapter 5](05-backend-selection.md#backup-backends)). At least one backend of a service must not be a backup. |
 

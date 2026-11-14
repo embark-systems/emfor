@@ -178,9 +178,20 @@ pub mod testing {
         crate::select::rendezvous_hash(key, id)
     }
 
-    /// Rendezvous pick among `ids` (all healthy) for `key`.
+    /// Rendezvous pick among `ids` (all healthy) for `key`, every weight 1.
     pub fn rendezvous_pick<'a>(key: &str, ids: &[&'a str]) -> &'a str {
-        let i = crate::select::rendezvous_index(key, ids.iter().copied());
+        let i = crate::select::rendezvous_index(key, ids.iter().map(|id| (*id, 1)));
         ids[i]
+    }
+
+    /// Weighted rendezvous pick among `(id, weight)` (all healthy) for
+    /// `key`, as `balance = "sticky"` chooses with an affinity key.
+    ///
+    /// # Panics
+    ///
+    /// If `ids` is empty.
+    pub fn rendezvous_pick_weighted<'a>(key: &str, ids: &[(&'a str, u32)]) -> &'a str {
+        let i = crate::select::rendezvous_index(key, ids.iter().copied());
+        ids[i].0
     }
 }

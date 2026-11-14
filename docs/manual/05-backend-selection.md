@@ -35,6 +35,19 @@ every language; when that backend goes down, only its keys move, and they
 come back when it recovers. Without a key (or with an empty one), `sticky`
 works like `round-robin`.
 
+A backend with `weight` w gets w times the keys of a backend with weight 1:
+its value is the highest of `MD5(key + id)` and `MD5(key + id + "#" + i)`
+for i from 1 to w − 1, so a backend of weight 3 gets 3/5 of the keys
+next to two of weight 1. With every weight 1 the picks are the same as
+in releases before this one. Raising a backend's weight only moves keys
+to that backend, and lowering it only moves keys away from it. Slow start
+does not change the weights `sticky` uses with a key. A weight above 100 in
+the store, which the daemon never writes, counts as 100. A lookup computes
+one MD5 per unit of weight among the candidates: about 0.8 µs for 10
+backends of weight 1 and 72 µs for 10 of weight 100 (measured on an
+Apple M4 Max), so keep weights small for sticky services that see many
+lookups.
+
 ### failover
 
 The first healthy backend in config order. List the primary first. With
