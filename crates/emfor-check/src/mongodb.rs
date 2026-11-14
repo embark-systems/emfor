@@ -34,6 +34,9 @@ const OP_MSG: i32 = 2013;
 const CHECKSUM_PRESENT: u32 = 1;
 /// The fewest PBKDF2 iterations accepted from a server (RFC 7677).
 const MIN_ITERATIONS: u32 = 4096;
+/// The most PBKDF2 iterations computed for a server. MongoDB uses 15000 by
+/// default; a server asking for billions would hold a thread for minutes.
+const MAX_ITERATIONS: u32 = 1_000_000;
 
 /// The role a backend has to have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,7 +249,16 @@ async fn authenticate(
     let reply = conn.command("auth", &start.finish()).await?;
     let conversation = reply.get("conversationId").cloned().ok_or_else(bad_scram)?;
     let server_first = payload(&reply)?;
-    let client_final = scram.client_final(&server_first)?;
+    // PBKDF2 is CPU work that does not yield: run it off the async
+    // workers, so the check's timeout still ends the check.
+    let (scram_back, client_final) = tokio::task::spawn_blocking(move || {
+        let client_final = scram.client_final(&server_first);
+        (scram, client_final)
+    })
+    .await
+    .map_err(|e| CheckOutcome::Error(format!("auth: SCRAM computation failed: {e}")))?;
+    scram = scram_back;
+    let client_final = client_final?;
 
     let reply = conn
         .command(
@@ -333,6 +345,11 @@ impl Scram {
         let (Some(nonce), Some(salt), Some(iterations)) = (nonce, salt, iterations) else {
             return Err(bad_scram());
         };
+        if iterations > MAX_ITERATIONS {
+            return Err(CheckOutcome::Down(format!(
+                "auth: server asks for {iterations} SCRAM iterations, more than {MAX_ITERATIONS}"
+            )));
+        }
         if iterations < MIN_ITERATIONS
             || !nonce.starts_with(&self.nonce)
             || nonce.len() == self.nonce.len()
@@ -849,6 +866,19 @@ mod tests {
                 "{server_first}"
             );
         }
+    }
+
+    #[test]
+    fn scram_refuses_too_many_iterations() {
+        let mut scram = Scram::new("u", "pw", "abc");
+        let started = std::time::Instant::now();
+        assert_eq!(
+            scram.client_final("r=abcdef,s=c2FsdA==,i=4294967295"),
+            Err(CheckOutcome::Down(
+                "auth: server asks for 4294967295 SCRAM iterations, more than 1000000".into()
+            ))
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     /// How the fake server answers one command.

@@ -95,6 +95,12 @@ pub struct Combined {
     /// `(down votes, fresh votes)` when the region verdict is down while
     /// this daemon's own result was `up`.
     pub disagreement: Option<(u32, u32)>,
+    /// `false` when the check adds nothing new: the region verdict is down
+    /// only through `down` votes an earlier check time already counted,
+    /// and this daemon's own result is not `down`. Such a check is not
+    /// applied, so one vote never moves `fall` (or `rise`) more than once
+    /// (spec peer-group, "Region verdict and combined result").
+    pub applies: bool,
     /// This daemon is not an assigned checker, its own result is `down`,
     /// and at least [`REGION_DOWN_VOTES`] of the other assigned checkers'
     /// fresh votes are `up` with fewer `down`: a failure only this daemon
@@ -117,6 +123,10 @@ pub struct Votes {
     pub down: u32,
     /// Of those, `up` votes.
     pub up: u32,
+    /// Of the `down` votes, those no check time has counted yet.
+    pub new_down: u32,
+    /// Of the `up` votes, those no check time has counted yet.
+    pub new_up: u32,
     /// The reason of the highest-ranked `down` vote.
     pub down_reason: Option<String>,
 }
@@ -124,13 +134,14 @@ pub struct Votes {
 impl Votes {
     /// The region verdict when the votes alone decide it: `down` with at
     /// least [`REGION_DOWN_VOTES`] down votes, `up` with as many up votes,
-    /// `None` otherwise.
+    /// `None` otherwise, and `None` too when none of the deciding votes is
+    /// new: a vote decides at most one check time.
     pub fn decided(&self) -> Option<CheckResult> {
         if self.down >= REGION_DOWN_VOTES {
             let reason = self.down_reason.as_deref().unwrap_or_default();
-            Some(region_down(self.down, self.fresh, reason))
+            (self.new_down > 0).then(|| region_down(self.down, self.fresh, reason))
         } else if self.up >= REGION_DOWN_VOTES {
-            Some(CheckResult::Up)
+            (self.new_up > 0).then_some(CheckResult::Up)
         } else {
             None
         }
@@ -149,6 +160,8 @@ struct Kept {
     digest: String,
     interval: Duration,
     at: Instant,
+    /// A check time of this daemon has counted this result as a vote.
+    counted: bool,
 }
 
 type BackendKey = (String, String);
@@ -214,25 +227,40 @@ struct SummaryDisagreement<'a> {
     fresh: u32,
 }
 
-/// The vote of `member`'s kept result for a backend: `Some(None)` for up,
-/// `Some(Some(reason))` for down, `None` when it has none that is fresh
-/// and has `digest`.
+/// One vote: `None` for up, `Some(reason)` for down, and whether no check
+/// time has counted it yet.
+type Vote = (Option<String>, bool);
+
+/// The vote of `member`'s kept result for a backend, `None` when it has
+/// none that is fresh and has `digest`.
 fn kept_vote(
     st: &State,
     key: &BackendKey,
     member: SocketAddr,
     digest: &str,
     now: Instant,
-) -> Option<Option<String>> {
+) -> Option<Vote> {
     let k = st.votes.get(key)?.get(&member)?;
     let fresh = now.duration_since(k.at) < k.interval.saturating_mul(FRESH_INTERVALS);
     if k.digest != digest || !fresh {
         return None;
     }
-    Some(match &k.outcome {
+    let vote = match &k.outcome {
         Outcome::Up => None,
         Outcome::Down(r) => Some(r.clone()),
-    })
+    };
+    Some((vote, !k.counted))
+}
+
+/// Mark the kept results of `members` for a backend as counted.
+fn mark_counted(st: &mut State, key: &BackendKey, members: &[SocketAddr]) {
+    if let Some(kept) = st.votes.get_mut(key) {
+        for m in members {
+            if let Some(k) = kept.get_mut(m) {
+                k.counted = true;
+            }
+        }
+    }
 }
 
 /// The live members that are candidates for the assigned checkers of
@@ -347,6 +375,7 @@ impl Quorum {
             digest: r.digest.clone(),
             interval: Duration::from_millis(r.interval_ms),
             at: now,
+            counted: false,
         };
         self.state()
             .votes
@@ -377,21 +406,40 @@ impl Quorum {
         let key = (service.to_string(), backend.to_string());
         let ranked = assigned(service, backend, self.me, &candidates(&st, service));
         // Votes in rank order: `None` for a down vote's reason means up.
-        let votes: Vec<Option<String>> = ranked
+        // This daemon's own vote is always new.
+        let with_new: Vec<Vote> = ranked
             .iter()
             .filter_map(|m| {
                 if *m == self.me {
                     return match own {
-                        CheckResult::Up => Some(None),
-                        CheckResult::Down(r) => Some(Some(r.clone())),
+                        CheckResult::Up => Some((None, true)),
+                        CheckResult::Down(r) => Some((Some(r.clone()), true)),
                         CheckResult::Error(_) => None,
                     };
                 }
                 kept_vote(&st, &key, *m, digest, now)
             })
             .collect();
+        let new_down = with_new
+            .iter()
+            .filter(|(v, new)| *new && v.is_some())
+            .count();
+        let votes: Vec<Option<String>> = with_new.into_iter().map(|(v, _)| v).collect();
+        let others: Vec<SocketAddr> = ranked.iter().copied().filter(|m| *m != self.me).collect();
+        mark_counted(&mut st, &key, &others);
         let fresh = u32::try_from(votes.len()).unwrap_or(u32::MAX);
         let down = u32::try_from(votes.iter().filter(|v| v.is_some()).count()).unwrap_or(u32::MAX);
+        // A region verdict made only of votes counted before, against an
+        // own result that is not `down`, tells nothing new.
+        if down >= REGION_DOWN_VOTES && new_down == 0 && !matches!(own, CheckResult::Down(_)) {
+            return Combined {
+                result: own.clone(),
+                assigned: ranked.contains(&self.me),
+                disagreement: st.disagreements.get(&key).copied(),
+                local_failure: false,
+                applies: false,
+            };
+        }
         let is_assigned = ranked.contains(&self.me);
         // Not assigned: every vote is another assigned checker's, at most
         // three, so two `up` votes also mean fewer than two `down` votes.
@@ -432,6 +480,7 @@ impl Quorum {
             assigned: is_assigned,
             disagreement,
             local_failure,
+            applies: true,
         }
     }
 
@@ -442,21 +491,35 @@ impl Quorum {
         let st = self.state();
         let key = (service.to_string(), backend.to_string());
         let ranked = assigned(service, backend, self.me, &candidates(&st, service));
-        let votes: Vec<Option<String>> = ranked
+        let votes: Vec<Vote> = ranked
             .iter()
             .filter(|m| **m != self.me)
             .filter_map(|m| kept_vote(&st, &key, *m, digest, now))
             .collect();
         let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
-        let down = count(votes.iter().filter(|v| v.is_some()).count());
+        let down = count(votes.iter().filter(|(v, _)| v.is_some()).count());
+        let new_down = count(votes.iter().filter(|(v, new)| *new && v.is_some()).count());
+        let new_up = count(votes.iter().filter(|(v, new)| *new && v.is_none()).count());
         Votes {
             has_checkers: !ranked.is_empty(),
             assigned: ranked.contains(&self.me),
             fresh: count(votes.len()),
             down,
             up: count(votes.len()) - down,
-            down_reason: votes.into_iter().flatten().next(),
+            new_down,
+            new_up,
+            down_reason: votes.into_iter().filter_map(|(v, _)| v).next(),
         }
+    }
+
+    /// A check time of `backend` was decided by the votes now fresh: mark
+    /// them counted, so they decide no further check time.
+    pub fn count_votes(&self, service: &str, backend: &str) {
+        let mut st = self.state();
+        let key = (service.to_string(), backend.to_string());
+        let ranked = assigned(service, backend, self.me, &candidates(&st, service));
+        let others: Vec<SocketAddr> = ranked.into_iter().filter(|m| *m != self.me).collect();
+        mark_counted(&mut st, &key, &others);
     }
 
     /// The assigned checkers of a backend now, in rank order.
@@ -965,6 +1028,61 @@ mod tests {
         }
     }
 
+    /// Spec peer-group "a kept result counts once": the same two `down`
+    /// votes make the verdict at one check time; later own `up` results
+    /// with no new vote do not apply, an own `down` does, and a new vote
+    /// counts again. Votes that decided a check time decide no other.
+    #[test]
+    fn kept_results_count_once() {
+        let now = Instant::now();
+        // For 10.0.0.12:8080 the assigned checkers are .9, .6, .7.
+        let backend = "10.0.0.12:8080";
+        let q = quorum();
+        let r = |o| ResultMsg {
+            backend: backend.into(),
+            ..result(o)
+        };
+        q.record(addr("10.0.0.9:5302"), &r(down("refused")), now);
+        q.record(addr("10.0.0.6:5302"), &r(down("refused")), now);
+        let up = CheckResult::Up;
+        let got = q.combine(SVC, backend, DIGEST, &up, now);
+        assert!(got.applies);
+        assert_eq!(got.result, CheckResult::Down("peers 2/2: refused".into()));
+        let again = q.combine(SVC, backend, DIGEST, &up, now);
+        assert!(!again.applies, "the same votes again, own up");
+        assert_eq!(again.disagreement, Some((2, 2)), "kept as it was");
+        let own_down = q.combine(SVC, backend, DIGEST, &CheckResult::Down("x".into()), now);
+        assert!(own_down.applies, "an own down is new");
+        assert_eq!(
+            own_down.result,
+            CheckResult::Down("peers 2/2: refused".into())
+        );
+        q.record(addr("10.0.0.6:5302"), &r(down("reset")), now);
+        assert!(
+            q.combine(SVC, backend, DIGEST, &up, now).applies,
+            "one new vote"
+        );
+
+        // Decided by votes: counted when the check time uses them.
+        let q = quorum();
+        for from in ["10.0.0.9:5302", "10.0.0.6:5302"] {
+            q.record(addr(from), &r(Outcome::Up), now);
+        }
+        assert_eq!(
+            q.votes(SVC, backend, DIGEST, now).decided(),
+            Some(CheckResult::Up)
+        );
+        q.count_votes(SVC, backend);
+        let v = q.votes(SVC, backend, DIGEST, now);
+        assert_eq!((v.up, v.new_up), (2, 0));
+        assert_eq!(v.decided(), None, "no new vote: check instead");
+        q.record(addr("10.0.0.7:5302"), &r(Outcome::Up), now);
+        assert_eq!(
+            q.votes(SVC, backend, DIGEST, now).decided(),
+            Some(CheckResult::Up)
+        );
+    }
+
     #[test]
     fn prefixed_reasons_are_bounded() {
         let q = quorum();
@@ -1005,6 +1123,8 @@ mod tests {
         // Own down: the verdict is still down but it is no disagreement.
         q.combine(SVC, BACKEND, DIGEST, &CheckResult::Down("t".into()), start);
         assert_eq!(q.disagreements(), 0);
+        // New votes, own up: a disagreement again.
+        q.record(addr("10.0.0.8:5302"), &result(down("refused")), start);
         q.combine(SVC, BACKEND, DIGEST, &CheckResult::Up, start);
         assert_eq!(q.disagreements(), 1);
         // Backend removed.

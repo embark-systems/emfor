@@ -172,16 +172,17 @@ pub struct PeerLink {
 }
 
 /// The combined result of this daemon's own result `own` (spec peer-group,
-/// "Region verdict and combined result"); when this daemon is an assigned
-/// checker of the backend, its own `up` or `down` result is sent to the
-/// other members.
+/// "Region verdict and combined result"), whether it is a local failure,
+/// and whether it applies (see [`crate::quorum::Combined::applies`]); when
+/// this daemon is an assigned checker of the backend, its own `up` or
+/// `down` result is sent to the other members.
 fn combine(
     p: &PeerHooks,
     service: &Arc<str>,
     backend: &str,
     own: CheckResult,
     interval: Duration,
-) -> (CheckResult, bool) {
+) -> (CheckResult, bool, bool) {
     // A service the peer task does not know yet has no digest: no kept
     // result matches, so the own result stands.
     let digest = p.targets.digest(service).unwrap_or_default();
@@ -204,7 +205,7 @@ fn combine(
             interval,
         }));
     }
-    (c.result, c.local_failure)
+    (c.result, c.local_failure, c.applies)
 }
 
 /// The own check's reason inside a `local: <reason>` result.
@@ -258,14 +259,17 @@ pub fn spawn_backend(
                 None => Step::Check,
             };
             // `local_failure`: an own `down` against the assigned checkers'
-            // `up` votes, which starts a fast recheck run below.
-            let (result, sample_us, own_check, local_failure) = match step {
+            // `up` votes, which starts a fast recheck run below. `applies`
+            // is false for a check that adds nothing to votes already
+            // counted: it moves no counter and stores nothing.
+            let (result, sample_us, own_check, local_failure, applies) = match step {
                 Step::Decided(result) => {
                     decided_in_row += 1;
                     if let Some(p) = hooks {
                         p.quorum.skip();
+                        p.quorum.count_votes(&service, &backend.id);
                     }
-                    (result, None, false, false)
+                    (result, None, false, false, true)
                 }
                 Step::Check => {
                     let req = CheckRequest::new(service.clone(), backend.addr, s.timeout);
@@ -279,11 +283,11 @@ pub fn spawn_backend(
                         u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
                     last_own_up = Some(matches!(own, CheckResult::Up));
                     decided_in_row = 0;
-                    let (result, local_failure) = match hooks {
+                    let (result, local_failure, applies) = match hooks {
                         Some(p) => combine(p, &service, &backend.id, own, s.interval),
-                        None => (own, false),
+                        None => (own, false, true),
                     };
-                    (result, Some(sample_us), true, local_failure)
+                    (result, Some(sample_us), true, local_failure, applies)
                 }
             };
             let thresholds = Thresholds {
@@ -291,7 +295,11 @@ pub fn spawn_backend(
                 fall: s.fall,
                 interval: s.interval,
             };
-            let transition = health.apply(&result, Instant::now(), thresholds);
+            let transition = if applies {
+                health.apply(&result, Instant::now(), thresholds)
+            } else {
+                None
+            };
             let reason = result.reason().map(str::to_string);
             if let (Some(sample_us), CheckResult::Up) = (sample_us, &result) {
                 tracing::debug!(
@@ -303,6 +311,7 @@ pub fn spawn_backend(
                 );
             }
             latency_us = match sample_us {
+                Some(_) if !applies => latency_us,
                 Some(sample_us) => next_latency(latency_us, &result, sample_us, transition),
                 // Decided by votes: no sample; turning unhealthy still clears it.
                 None if transition.is_some_and(|t| t.to == HealthState::Unhealthy) => None,
@@ -368,7 +377,7 @@ pub fn spawn_backend(
                     reason: update.reason.clone().unwrap_or_default(),
                 }));
             }
-            if updates.send(WriterMsg::Update(update)).is_err() {
+            if applies && updates.send(WriterMsg::Update(update)).is_err() {
                 return; // writer gone: daemon is shutting down
             }
             let wait = if fast_left > 0 {
@@ -737,16 +746,27 @@ mod tests {
         let (otx, mut orx) = mpsc::unbounded_channel();
         let h = hooks(otx, &member(me).to_string());
         h.quorum.set_live((5..=9).map(member));
-        for (from, outcome) in kept {
-            let r = crate::peers::ResultMsg {
-                service: "a".into(),
-                digest: DIGEST.into(),
-                backend: "10.0.0.11:8080".into(),
-                outcome: outcome.clone(),
-                interval_ms: 3_600_000,
-            };
-            h.quorum.record(member(*from), &r, Instant::now());
-        }
+        let send = |h: &PeerHooks, kept: &[(u8, Outcome)]| {
+            for (from, outcome) in kept {
+                let r = crate::peers::ResultMsg {
+                    service: "a".into(),
+                    digest: DIGEST.into(),
+                    backend: "10.0.0.11:8080".into(),
+                    outcome: outcome.clone(),
+                    interval_ms: 3_600_000,
+                };
+                h.quorum.record(member(*from), &r, Instant::now());
+            }
+        };
+        send(&h, kept);
+        // The other checkers keep sending, so each check time has new votes.
+        let (sender, resend) = (h.clone(), kept.to_vec());
+        let repeat = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                send(&sender, &resend);
+            }
+        });
         let settings = Settings {
             interval: Duration::from_secs(1),
             jitter: 0.0,
@@ -761,6 +781,7 @@ mod tests {
         let task = spawn_backend("a".into(), backend(), chk, 0, srx, tx, link);
         tokio::time::sleep(Duration::from_secs(5)).await;
         task.abort();
+        repeat.abort();
         let mut updates = Vec::new();
         while let Ok(u) = rx.try_recv() {
             updates.push(update(u));
@@ -850,6 +871,9 @@ mod tests {
             fresh: kept.len() as u32,
             down,
             up: kept.len() as u32 - down,
+            // All new; `split_check_time_table` adds the counted case.
+            new_down: down,
+            new_up: kept.len() as u32 - down,
             down_reason: kept.iter().find_map(|o| match o {
                 Outcome::Down(r) => Some(r.clone()),
                 Outcome::Up => None,
@@ -930,6 +954,18 @@ mod tests {
             Step::Check,
             "no checkers"
         );
+        // Votes an earlier check time counted decide nothing.
+        let counted = |kept: &[Outcome]| Votes {
+            new_down: 0,
+            new_up: 0,
+            ..votes(true, false, kept)
+        };
+        assert_eq!(check(counted(&all_up), false), Step::Check, "counted up");
+        assert_eq!(
+            check(counted(&[refused(), refused(), up()]), false),
+            Step::Check,
+            "counted down"
+        );
     }
 
     /// Daemon .5, not an assigned checker of 10.0.0.11:8080 (assigned .7,
@@ -990,6 +1026,17 @@ mod tests {
         let h = hooks(otx, "10.0.0.5:5302");
         h.quorum.set_live(live.into_iter().map(member));
         record_all(&h, [Outcome::Up, Outcome::Up, Outcome::Up]);
+        // The assigned checkers keep sending, as they do after each own
+        // check; a vote counts at one check time only.
+        let sender = h.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if let Some(o) = SENDING.with(|s| s.borrow().clone()) {
+                    record_once(&sender, o);
+                }
+            }
+        });
         let settings = Settings {
             interval: Duration::from_secs(1),
             jitter: 0.0,
@@ -1053,8 +1100,28 @@ mod tests {
         assert!(orx.try_recv().is_err(), "nothing sent to the peer task");
     }
 
-    /// Keep results from .7, .6 and .9, in that (rank) order.
+    thread_local! {
+        /// The results the assigned checkers of [`with_live_link`] keep
+        /// sending, `None` once they stop.
+        static SENDING: std::cell::RefCell<Option<[Outcome; 3]>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// From now on the assigned checkers .7, .6 and .9 send these results,
+    /// in that (rank) order, every 100 ms: each check time has new votes.
     fn record_all(h: &PeerHooks, outcomes: [Outcome; 3]) {
+        SENDING.with(|s| *s.borrow_mut() = Some(outcomes.clone()));
+        record_once(h, outcomes);
+    }
+
+    /// The assigned checkers send these results once and then nothing.
+    fn record_only_once(h: &PeerHooks, outcomes: [Outcome; 3]) {
+        SENDING.with(|s| *s.borrow_mut() = None);
+        record_once(h, outcomes);
+    }
+
+    /// Keep results from .7, .6 and .9, in that (rank) order.
+    fn record_once(h: &PeerHooks, outcomes: [Outcome; 3]) {
         for (from, outcome) in [7, 6, 9].into_iter().zip(outcomes) {
             let r = crate::peers::ResultMsg {
                 service: "a".into(),
@@ -1290,6 +1357,37 @@ mod tests {
             1,
             "the own check passed against the region verdict"
         );
+    }
+
+    /// Spec peer-group "Region verdict and combined result", a vote counts
+    /// once: two `down` results sent once move `fall` at one check time
+    /// only; the own checks after it (`up`) add nothing, so the backend
+    /// stays healthy and nothing more is stored.
+    #[tokio::test(start_paused = true)]
+    async fn votes_sent_once_count_once() {
+        let (chk, h, mut rx, _orx, task) = not_assigned().await;
+        for _ in 0..4 {
+            next(&mut rx, &chk).await;
+        }
+        let refused = || Outcome::Down("refused".into());
+        record_only_once(&h, [refused(), refused(), Outcome::Up]);
+        let deadline = Instant::now() + Duration::from_secs(6);
+        let mut seen = Vec::new();
+        while let Ok(Some(m)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+            seen.push(update(m));
+        }
+        let own_checks = chk.starts.lock().unwrap().len();
+        task.abort();
+        assert!(
+            seen.iter().all(|u| u.state == HealthState::Healthy),
+            "{seen:?}"
+        );
+        let by_votes = seen
+            .iter()
+            .filter(|u| u.reason.as_deref() == Some("peers 2/3: refused"))
+            .count();
+        assert_eq!(by_votes, 1, "{seen:?}");
+        assert!(own_checks >= 6, "own checks once the votes were counted");
     }
 
     /// Spec peer-group "Moves decided by votes are not announced": with

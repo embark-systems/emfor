@@ -53,7 +53,7 @@ The daemon and a plugin SHALL exchange one JSON object per line, UTF-8, daemon t
 ---
 ### Requirement: Plugin check results
 
-A plugin answer SHALL become the check result given by its `result` and `reason`; a `down` or `error` answer without `reason` SHALL use reason `no reason given`. An answer with any other `result` value SHALL make the check `error` with reason `invalid plugin response`. A stdout line that is not valid JSON or has an unknown `type` SHALL be logged at `warn` and ignored. An answer whose `id` matches no pending request SHALL be ignored. Each line the plugin writes to stderr SHALL be logged at `info` with the plugin name.
+A plugin answer SHALL become the check result given by its `result` and `reason`; a `down` or `error` answer without `reason` SHALL use reason `no reason given`. An answer with any other `result` value SHALL make the check `error` with reason `invalid plugin response`. A stdout line that is not valid JSON or has an unknown `type` SHALL be logged at `warn` and ignored. An answer whose `id` matches no pending request SHALL be ignored. Each line the plugin writes to stderr SHALL be logged at `info` with the plugin name. A plugin built on the `emfor-plugin` crate SHALL send at most the first 512 characters of a reason, followed by `…` when the reason was longer, so the answer line stays within the 65536-byte line limit whatever text a backend returns; the daemon's reason normalization (spec health-checking) keeps no more than that.
 
 #### Scenario: Plugin reports down
 

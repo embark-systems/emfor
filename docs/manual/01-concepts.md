@@ -143,7 +143,11 @@ and come from a member with the same check definition:
 - with fewer than three live members, or no vote at all, the own result
   counts unchanged, as without a group.
 
-The counted result then goes through `rise` and `fall` as usual. A backend
+The counted result then goes through `rise` and `fall` as usual. Each
+result a member sends counts at one check time only: a member with a short
+`interval` does not count a slower member's single `down` again and again,
+and a check that only repeats votes already counted (with the own check
+passing) changes nothing. A backend
 that the group sees down while this host's own check passes is shown by
 `emfor status` with the marker `local-up`. Lookups still read only the
 local store. Members that are not reachable change nothing: the vote falls

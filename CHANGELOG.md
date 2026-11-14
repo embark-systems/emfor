@@ -14,8 +14,31 @@
   the usual backoff. A plugin that answers within `timeout_ms` is never
   affected (see [Plugin protocol](docs/plugins/protocol-v1.md#rules)).
 
+### Peers
+
+- A kept result counts once. A member kept another member's latest result
+  for 3 of the sender's intervals and counted it at every one of its own
+  check times in that span, so with `interval = "1s"` here and `"30s"` at
+  the assigned checkers one `down` from each of two checkers moved
+  `fall` up to about 90 times and marked a backend down that the checkers
+  themselves still saw healthy. Now each result counts at one check time;
+  a check time decided by votes alone needs a new vote, and an own check
+  that only repeats counted `down` votes while it passes changes nothing.
+  With equal intervals the results arrive once per check time and nothing
+  changes (see [spec peer-group](docs/spectra/specs/peer-group/spec.md)).
+
 ### emfor-check
 
+- Reasons longer than 512 characters are cut to 512 followed by `…`
+  before they are sent (the daemon keeps no more). A backend's long error
+  text, such as a 70 KB redis `-ERR`, made the answer line longer than the
+  daemon's 65536-byte limit, so the daemon restarted the plugin, again at
+  every check of that backend.
+- `mongodb`: a server asking for more than 1000000 SCRAM iterations is
+  down with `auth: server asks for <n> SCRAM iterations, more than
+  1000000`; one asking for 4294967295 held a worker thread for many
+  minutes. The key derivation now runs off the async workers, so the
+  check's timeout ends a slow login.
 - `sip` over TCP or TLS: a response with a Content-Length near the
   largest 64-bit number made the plugin loop forever on the same
   provisional response, holding a worker thread at full CPU, with no

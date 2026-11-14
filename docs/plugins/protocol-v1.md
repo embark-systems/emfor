@@ -92,7 +92,7 @@ Answer with the same `id`, a `result`, and an optional `reason`:
 | `error` | The plugin could not check, for example because of a local problem. This does not count against the backend. |
 
 Rules:
-- A `down` or `error` without `reason` is recorded with reason `no reason given`.
+- A `down` or `error` without `reason` is recorded with reason `no reason given`. emfor keeps at most 512 characters of a reason; plugins built on the `emfor-plugin` crate cut a longer one to its first 512 characters followed by `…` before sending it, so a backend's long error text never makes the answer line longer than 65536 bytes.
 - Any other `result` value is recorded as `error` with reason `invalid plugin response`.
 - **`timeout_ms`** is the service `timeout` minus `min(100ms, timeout / 10)`. For example, 1s gives 900 and 200ms gives 180.
   - Finish within `timeout_ms`, and answer `down` (for example `"reason":"timeout"`) if the backend is too slow.

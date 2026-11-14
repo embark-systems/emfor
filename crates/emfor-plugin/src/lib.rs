@@ -304,11 +304,30 @@ async fn read_requests<P: Plugin, R: AsyncBufRead + Unpin>(
     outcome
 }
 
+/// Characters of a reason sent to emfor; the daemon keeps no more than this
+/// (spec health-checking, reason normalization), so the result is the same.
+pub const REASON_MAX_CHARS: usize = 512;
+
+/// `reason` cut to its first [`REASON_MAX_CHARS`] characters, followed by
+/// `…` when it was longer. A backend's error text can be any length, and a
+/// line over the daemon's 65536-byte limit would get the plugin restarted.
+fn cap_reason(reason: String) -> String {
+    match reason.char_indices().nth(REASON_MAX_CHARS) {
+        None => reason,
+        Some((cut, _)) => {
+            let mut short = reason;
+            short.truncate(cut);
+            short.push('…');
+            short
+        }
+    }
+}
+
 fn check_response(id: u64, outcome: CheckOutcome) -> Response<'static> {
     let (result, reason) = match outcome {
         CheckOutcome::Up => ("up", None),
-        CheckOutcome::Down(r) => ("down", Some(r)),
-        CheckOutcome::Error(r) => ("error", Some(r)),
+        CheckOutcome::Down(r) => ("down", Some(cap_reason(r))),
+        CheckOutcome::Error(r) => ("error", Some(cap_reason(r))),
     };
     Response::Check { id, result, reason }
 }
@@ -368,6 +387,26 @@ mod tests {
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
         (answers, result)
+    }
+
+    #[test]
+    fn long_reasons_are_cut() {
+        let reason = |o| match check_response(7, o) {
+            Response::Check { reason, .. } => reason.expect("down has a reason"),
+            _ => unreachable!("check_response answers a check"),
+        };
+        // A backend's error text far past the daemon's line limit.
+        let long = "é".repeat(70_000);
+        let cut = reason(CheckOutcome::Down(long.clone()));
+        assert_eq!(cut.chars().count(), REASON_MAX_CHARS + 1);
+        assert!(cut.starts_with(&"é".repeat(REASON_MAX_CHARS)));
+        assert!(cut.ends_with('…'));
+        let line = serde_json::to_string(&check_response(7, CheckOutcome::Error(long))).unwrap();
+        assert!(line.len() < 65536, "line is {} bytes", line.len());
+        // Up to the limit nothing changes.
+        let exact = "x".repeat(REASON_MAX_CHARS);
+        assert_eq!(reason(CheckOutcome::Down(exact.clone())), exact);
+        assert_eq!(reason(CheckOutcome::Down("timeout".into())), "timeout");
     }
 
     #[tokio::test]
