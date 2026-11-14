@@ -8,7 +8,7 @@ Defines `emfor status`, the read-only command that shows operators what the loca
 
 ### Requirement: Status reads the store read-only
 
-`emfor status` SHALL read the state store at the `[store] path` of the config file given with `--config` (the build-time default config path when `--config` is absent), or `/var/lib/emfor/state.mdb` when the config file has no `[store] path`. It SHALL read only the `[store]` table of the config file and SHALL NOT validate the rest of the config, start plugins, run checks, or write to the store. It SHALL NOT take the daemon's writer lock, so a daemon can start or keep running while `emfor status` runs. When the store file does not exist, `emfor status` SHALL print `cannot open store <path>: no such file` and exit 2 without creating the store file or its `-lock` file. It SHALL read a store whose `meta/schema_version` is `1` or `2`. When `meta/schema_version` is anything else, it SHALL print `store format version <n>; this emfor reads versions 1 and 2` and exit 2. The other subcommands of `emfor` and running it without a subcommand SHALL follow the service-config requirement "Command line subcommands".
+`emfor status` SHALL read the state store at the `[store] path` of the config file given with `--config` (the build-time default config path when `--config` is absent), or `/var/lib/emfor/state.mdb` when the config file has no `[store] path`. It SHALL read only the `[store]` table of the config file and SHALL NOT validate the rest of the config, start plugins, run checks, or write to the store. It SHALL NOT take the daemon's writer lock, so a daemon can start or keep running while `emfor status` runs. When the store file does not exist, `emfor status` SHALL print `cannot open store <path>: no such file` and exit 2 without creating the store file or its `-lock` file. When the store data file is shorter than (last page number + 1) × page size as recorded by LMDB, checked right after opening it and before reading any data page, `emfor status` SHALL print `cannot open store <path>: truncated: <length> bytes, LMDB records <expected> bytes` and exit 2; `--watch` SHALL show that as a failed read. It SHALL read a store whose `meta/schema_version` is `1` or `2`. When `meta/schema_version` is anything else, it SHALL print `store format version <n>; this emfor reads versions 1 and 2` and exit 2. The other subcommands of `emfor` and running it without a subcommand SHALL follow the service-config requirement "Command line subcommands".
 
 #### Scenario: Status beside a running daemon
 
@@ -25,48 +25,10 @@ Defines `emfor status`, the read-only command that shows operators what the loca
 - **WHEN** the config file has a valid `[store]` table and a service with an unknown key `intervall`
 - **THEN** `emfor status` shows the store contents instead of a validation error
 
+#### Scenario: Truncated store
 
-<!-- @trace
-source: emfor-backup-backends
-updated: 2026-11-14
-code:
-  - docs/manual.zh_TW/05-backend-selection.md
-  - clients/go/emfor.go
-  - crates/emfor-daemon/src/status.rs
-  - tests/conformance/v1/README.md
-  - clients/python/emfor/__init__.py
-  - crates/emfor-daemon/src/writer.rs
-  - docs/manual.zh_TW/07-dns.md
-  - examples/emfor.toml
-  - tests/conformance/v1/cases.json
-  - README.md
-  - clients/rust/src/lib.rs
-  - clients/perl/README.md
-  - clients/rust/src/client.rs
-  - crates/emfor-format/src/lib.rs
-  - docs/manual.zh_TW/03-configuration.md
-  - crates/emfor-daemon/src/state.rs
-  - clients/c/README.md
-  - crates/emfor-daemon/src/select.rs
-  - crates/emfor-daemon/src/config.rs
-  - clients/python/README.md
-  - clients/rust/README.md
-  - docs/manual/06-clients.md
-  - docs/manual/07-dns.md
-  - CHANGELOG.md
-  - docs/manual/03-configuration.md
-  - crates/emfor-daemon/src/dns.rs
-  - docs/manual.zh_TW/06-clients.md
-  - docs/manual/05-backend-selection.md
-  - clients/rust/src/select.rs
-  - crates/emfor-daemon/src/metrics.rs
-  - crates/emfor-format/src/rules.rs
-  - clients/go/README.md
-  - clients/php/README.md
-tests:
-  - crates/emfor-daemon/tests/daemon.rs
-  - clients/rust/tests/conformance_capi.rs
--->
+- **WHEN** the config sets `[store] path = "/tmp/t/state.mdb"` and that store is cut short by its last page
+- **THEN** `emfor status` prints a line starting with `cannot open store /tmp/t/state.mdb: truncated:` and exits 2 instead of ending with `SIGBUS`
 
 ---
 ### Requirement: Status text output

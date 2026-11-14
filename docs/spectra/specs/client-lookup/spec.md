@@ -80,12 +80,12 @@ tests:
 
 A lookup that cannot return an address SHALL fail with exactly one of these codes, decided by the first step that fails, in this order:
 
-1. `UNAVAILABLE` — the store file cannot be opened (missing, permission denied, LMDB lock or data format different from the client's, any other open error), the key `meta/schema_version` is absent, or `EMFOR_MAX_STALENESS` holds an invalid value.
+1. `UNAVAILABLE` — the store file cannot be opened (missing, permission denied, LMDB lock or data format different from the client's, a data file shorter than the last page its LMDB meta page records, any other open error), the key `meta/schema_version` is absent, or `EMFOR_MAX_STALENESS` holds an invalid value.
 2. `INCOMPATIBLE` — `meta/schema_version` is neither `1` nor `2`, `meta/heartbeat` is missing or not a decimal integer, or the service record cannot be parsed as a version 2 record. A `balance`, backend `state` or `on_all_down` string the client does not know SHALL NOT count as a parse failure (see "Unknown balance falls back to round-robin" and "Candidates follow health and on_all_down").
 3. `NOT_FOUND` — no `svc/<name>` key exists for the normalized name.
 4. `ALL_DOWN` — no backend is usable and the service's `on_all_down` is `closed`.
 
-Each failure SHALL carry a human-readable message naming the cause. Each language SHALL expose the code in its own idiom (a status value in the C library, an error value in Rust) with the code's name available as the exact strings above. A malformed store SHALL NOT make the lookup crash, panic or abort.
+Each failure SHALL carry a human-readable message naming the cause. Each language SHALL expose the code in its own idiom (a status value in the C library, an error value in Rust) with the code's name available as the exact strings above. A store that LMDB reports as damaged, and a data file that is already shorter than the last page its LMDB meta page records when the client opens it, SHALL NOT make the lookup crash, panic or abort. When the client opens the store it SHALL compare the length of the file it opened, measured after reading the meta page, with (last page number + 1) × page size as recorded by that meta page, before any read of a data page, and SHALL fail a shorter file with `UNAVAILABLE` and a message containing the store path, `truncated`, the file length and the recorded length; such a failure counts as a store file that exists but cannot be opened. A data file changed in place (overwritten or truncated) after the client opened it, and a disk read error, are outside this guarantee: reading it through the memory map can end the process with `SIGBUS`.
 
 #### Scenario: Error code by store condition
 
@@ -122,48 +122,18 @@ Each failure SHALL carry a human-readable message naming the cause. Each languag
 - **WHEN** a lookup fails with `UNAVAILABLE` because the store file exists but cannot be opened, and the file is then replaced by a valid store
 - **THEN** lookups in the same process within 1 second of the failed open fail with the same error without opening the file, and the first lookup after that opens the store and returns an address
 
+#### Scenario: Truncated store fails instead of crashing
 
-<!-- @trace
-source: emfor-backup-backends
-updated: 2026-11-14
-code:
-  - docs/manual.zh_TW/05-backend-selection.md
-  - clients/go/emfor.go
-  - crates/emfor-daemon/src/status.rs
-  - tests/conformance/v1/README.md
-  - clients/python/emfor/__init__.py
-  - crates/emfor-daemon/src/writer.rs
-  - docs/manual.zh_TW/07-dns.md
-  - examples/emfor.toml
-  - tests/conformance/v1/cases.json
-  - README.md
-  - clients/rust/src/lib.rs
-  - clients/perl/README.md
-  - clients/rust/src/client.rs
-  - crates/emfor-format/src/lib.rs
-  - docs/manual.zh_TW/03-configuration.md
-  - crates/emfor-daemon/src/state.rs
-  - clients/c/README.md
-  - crates/emfor-daemon/src/select.rs
-  - crates/emfor-daemon/src/config.rs
-  - clients/python/README.md
-  - clients/rust/README.md
-  - docs/manual/06-clients.md
-  - docs/manual/07-dns.md
-  - CHANGELOG.md
-  - docs/manual/03-configuration.md
-  - crates/emfor-daemon/src/dns.rs
-  - docs/manual.zh_TW/06-clients.md
-  - docs/manual/05-backend-selection.md
-  - clients/rust/src/select.rs
-  - crates/emfor-daemon/src/metrics.rs
-  - crates/emfor-format/src/rules.rs
-  - clients/go/README.md
-  - clients/php/README.md
-tests:
-  - crates/emfor-daemon/tests/daemon.rs
-  - clients/rust/tests/conformance_capi.rs
--->
+- **WHEN** a store with a record of `api.svc.emfor` is cut short by its last page (the length becomes the recorded length minus one page) before any client opens it, and a client looks up `api.svc.emfor`
+- **THEN** the lookup fails with `UNAVAILABLE`, its message contains the store path and `truncated`, and the process goes on running
+
+##### Example: length check
+
+| File length | Last page number | Page size | Result |
+| --- | --- | --- | --- |
+| 16384 | 3 | 4096 | opened |
+| 12288 | 3 | 4096 | `UNAVAILABLE`, `truncated: 12288 bytes, LMDB records 16384 bytes` |
+| 20480 | 3 | 4096 | opened (a longer file is not checked further) |
 
 ---
 ### Requirement: Service names are normalized before lookup
