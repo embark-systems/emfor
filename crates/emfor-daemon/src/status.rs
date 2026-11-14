@@ -145,8 +145,9 @@ impl Reader {
             }
             Err(e) => return Err(failed(&e)),
         };
-        // SAFETY: opened read-only; only the daemon writes the file and
-        // nothing truncates it.
+        // SAFETY: opened read-only; only the daemon writes the file. A
+        // file truncated before this open is refused below; one truncated
+        // in place while it is read is outside what can be guarded against.
         let env = unsafe {
             let mut o = EnvOpenOptions::new().read_txn_without_tls();
             o.map_size(cfg.map_size);
@@ -154,6 +155,11 @@ impl Reader {
             o.open(path)
         }
         .map_err(|e| failed(&e))?;
+        // Before any read: a file shorter than LMDB records would be read
+        // past its end (`SIGBUS`).
+        if let Some(why) = crate::store::truncation(&env).map_err(|e| failed(&e))? {
+            return Err(failed(&why));
+        }
         let rtxn = env.read_txn().map_err(|e| failed(&e))?;
         let db = env
             .open_database::<Str, Str>(&rtxn, None)
@@ -2263,6 +2269,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Spec "Status reads the store read-only", truncated store: refused at
+    /// open instead of read past the end of the file (`SIGBUS`).
+    #[test]
+    fn reader_refuses_a_truncated_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::store::tests::cfg(dir.path());
+        let store = crate::store::Store::open(&cfg).unwrap();
+        store
+            .write(|txn, db| {
+                db.put(txn, KEY_SCHEMA_VERSION, "2")?;
+                db.put(txn, KEY_HEARTBEAT, "1")?;
+                // Keys no read looks at, so the meta keys end up on a
+                // later page.
+                for i in 0..200 {
+                    db.put(txn, &format!("a/{i:03}"), &"x".repeat(100))?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+        // LMDB's page size is the system's.
+        // SAFETY: sysconf has no preconditions.
+        let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
+        let len = std::fs::metadata(&cfg.path).unwrap().len();
+        assert!(len >= 3 * page, "a data page after the two meta pages");
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&cfg.path)
+            .unwrap();
+        f.set_len(len - page).unwrap();
+        drop(f);
+        let Err(Failure(m)) = Reader::open(&cfg).and_then(|r| r.read().map(|_| ())) else {
+            panic!("a truncated store was read");
+        };
+        let prefix = format!("cannot open store {}: truncated:", cfg.path.display());
+        assert!(m.starts_with(&prefix), "{m}");
     }
 
     /// Spec "Status reads the store read-only" with history: what one read

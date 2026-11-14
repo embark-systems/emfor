@@ -4,6 +4,15 @@
 
 ### Daemon
 
+- A store file shorter than LMDB records it (changed in place, or its
+  tail lost in a power loss) is moved to `<path>.corrupt` at start like
+  other damage, with a warning saying `truncated`. Before, reading it to
+  check it ended the daemon with `SIGBUS`, again at every restart.
+  After every commit the daemon extends the file with zero bytes to the
+  length LMDB records, which LMDB itself can leave a few pages short, so
+  clients never take a healthy store for a truncated one. A store an
+  older emfor left short that way is moved aside on the first start
+  after the upgrade (only the state history is lost).
 - A plugin that stops answering is restarted. Until now only a plugin
   that exited or closed its stdout was restarted: one that kept running
   but answered nothing (stuck in a loop, deadlocked, stopped) left every
@@ -223,6 +232,8 @@
 
 ### emfor status
 
+- A truncated store makes `emfor status` print `cannot open store
+  <path>: truncated: ...` and exit 2 instead of ending with `SIGBUS`.
 - `emfor status | head -1` keeps the normal exit status instead of
   exiting 2 silently; other output write errors are printed.
 - `--watch` opens the store again when the file is replaced, instead of
@@ -233,6 +244,11 @@
 
 ### Clients
 
+- A store file already shorter than LMDB records it when the client opens
+  it makes lookups fail with `UNAVAILABLE` (the message says `truncated`)
+  instead of ending the application with `SIGBUS`. A store changed in
+  place while it is open can still do that: replace it with `mv`, never
+  `cp` over it or `truncate` it.
 - A running application keeps reading the store after the daemon is
   restarted with a larger `[store] map_size` and the store grows past
   the old size. Before, every lookup failed with `UNAVAILABLE`

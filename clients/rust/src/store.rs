@@ -68,6 +68,51 @@ fn open_error(path: &Path, rc: i32) -> Error {
     })
 }
 
+/// Fail a store whose data file is shorter than LMDB records it (see
+/// [`emfor_format::truncated_store`]). Reads only the meta pages, and the
+/// length of the file LMDB opened, not of whatever is at the path now.
+///
+/// # Safety
+///
+/// `env` is an environment opened by `mdb_env_open`.
+unsafe fn check_length(env: *mut ffi::MDB_env, path: &Path) -> Result<(), Error> {
+    use std::mem::{ManuallyDrop, MaybeUninit};
+    use std::os::fd::FromRawFd;
+
+    let failed =
+        |what: String| unavailable(format!("cannot open store {}: {what}", path.display()));
+    let mut info = MaybeUninit::uninit();
+    let mut stat = MaybeUninit::uninit();
+    // SAFETY: `env` is open; both only read its meta pages.
+    let (info, stat) = unsafe {
+        let rc = ffi::mdb_env_info(env, info.as_mut_ptr());
+        if rc != 0 {
+            return Err(failed(strerror(rc)));
+        }
+        let rc = ffi::mdb_env_stat(env, stat.as_mut_ptr());
+        if rc != 0 {
+            return Err(failed(strerror(rc)));
+        }
+        (info.assume_init(), stat.assume_init())
+    };
+    // The length after the meta page: LMDB writes the data pages a meta
+    // page refers to before that meta page, so a length taken now covers
+    // them even when the daemon commits in between.
+    let mut fd = MaybeUninit::uninit();
+    // SAFETY: `env` is open; LMDB writes its data file descriptor.
+    let rc = unsafe { ffi::mdb_env_get_fd(env, fd.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(failed(strerror(rc)));
+    }
+    // SAFETY: the descriptor stays LMDB's: ManuallyDrop never closes it.
+    let file = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd.assume_init()) });
+    let len = file.metadata().map_err(|e| failed(e.to_string()))?.len();
+    match emfor_format::truncated_store(len, info.me_last_pgno as u64, u64::from(stat.ms_psize)) {
+        Some(why) => Err(failed(why)),
+        None => Ok(()),
+    }
+}
+
 /// Values read in one read transaction.
 pub struct Snapshot {
     pub schema_version: Option<String>,
@@ -157,6 +202,12 @@ impl Env {
             if rc != 0 {
                 ffi::mdb_env_close(env);
                 return Err(open_error(path, rc));
+            }
+            // Before any data page is read: a file shorter than LMDB
+            // records would be read past its end (`SIGBUS`).
+            if let Err(e) = check_length(env, path) {
+                ffi::mdb_env_close(env);
+                return Err(e);
             }
             let mut txn = ptr::null_mut();
             let mut dbi = 0;

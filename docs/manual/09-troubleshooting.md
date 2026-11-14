@@ -26,6 +26,7 @@ daemon's log (`journalctl -u emfor`, or syslog on FreeBSD).
 | `UNAVAILABLE`, permission denied | The application user cannot read the store or write `<store>-lock`. | See [who can use the store](08-operations.md#who-can-use-the-store). |
 | `UNAVAILABLE`, mentions the LMDB format or the release | `libemfor` is from another emfor release than the daemon. | Install both from the same release. |
 | `UNAVAILABLE`, mentions `EMFOR_MAX_STALENESS` | The variable has an invalid value. | Use a whole number with `ms` or `s`. |
+| `UNAVAILABLE`, says `truncated` | The store file is shorter than LMDB records it: it was changed in place, or lost its tail in a power loss. | Restart the daemon, which moves it to `<store>.corrupt` and starts a new store; never change the store in place (see [the store on disk](08-operations.md#the-store-on-disk)). |
 | `INCOMPATIBLE` | The store has another format version. | Install the client from the daemon's release. |
 | `NOT_FOUND` | No service of that name in the running config. | Check the spelling, and that the reload was applied (`emfor status`). |
 

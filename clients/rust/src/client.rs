@@ -590,6 +590,36 @@ mod tests {
         assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.22:8080");
     }
 
+    /// A truncated store moved in place of the open one is refused like any
+    /// other that cannot be opened: the open store stays in use.
+    #[test]
+    fn truncated_replacement_keeps_the_open_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = unthrottled(Client::new(stale_store(dir.path(), "10.0.0.11"), Ok(3000)));
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
+        let next = dir.path().join("next.mdb");
+        emfor_fixture::write_store(
+            &serde_json::json!({"schema_version": "1",
+                "services": [svc("api.svc.emfor", backend("10.0.0.22"))]}),
+            3000,
+            emfor_fixture::now_ms(),
+            &next,
+        )
+        .unwrap();
+        // SAFETY: sysconf has no preconditions.
+        let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
+        let len = std::fs::metadata(&next).unwrap().len();
+        let f = std::fs::OpenOptions::new().write(true).open(&next).unwrap();
+        f.set_len(len - page).unwrap();
+        drop(f);
+        std::fs::rename(&next, dir.path().join("state.mdb")).unwrap();
+        let _ = std::fs::remove_file(dir.path().join("next.mdb-lock"));
+        let _ = std::fs::remove_file(dir.path().join("state.mdb-lock"));
+        for _ in 0..2 {
+            assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
+        }
+    }
+
     /// A data file replaced under the same lock file is followed too, by
     /// closing the open store first.
     #[test]
@@ -671,6 +701,32 @@ mod tests {
                 .contains("install libemfor from the same emfor release as the daemon"),
             "{e}"
         );
+        assert!(e.message.contains(&path_text), "{e}");
+    }
+
+    /// A store cut short by its last page would make the lookup read past
+    /// the end of the mapped file (`SIGBUS`); the open refuses it instead.
+    #[test]
+    fn truncated_store_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            serde_json::json!({"schema_version": "1", "services": [svc("api.svc.emfor", serde_json::json!({}))]}),
+        );
+        // LMDB's page size is the system's.
+        // SAFETY: sysconf has no preconditions.
+        let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
+        let len = std::fs::metadata(&path).unwrap().len();
+        assert!(len >= 3 * page, "a data page after the two meta pages");
+        let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.set_len(len - page).unwrap();
+        drop(f);
+        let path_text = path.display().to_string();
+        let e = Client::new(path, Ok(FRESH_FOR_TESTS_MS))
+            .lookup("api.svc.emfor", None)
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::Unavailable, "{e}");
+        assert!(e.message.contains("truncated"), "{e}");
         assert!(e.message.contains(&path_text), "{e}");
     }
 

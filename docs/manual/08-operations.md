@@ -230,6 +230,21 @@ daemon's log (`changed from healthy to unhealthy` and the like), so look
 there for what happened before the crash. Set `sync = true` to flush
 every commit, at the risk described above.
 
+Never change the store file in place: no `cp` over it, no `truncate`, no
+shell redirection (`> state.mdb`). The daemon and every application read
+it through a memory map, and a file that becomes shorter while they have
+it open ends each of those processes with `SIGBUS`. To put another file
+in its place, write it next to the store and `mv` it over the store path:
+running applications then follow the new file. A store that is already
+shorter than LMDB records when it is opened, as after a power loss, is
+handled like other damage: the daemon moves it to `<store>.corrupt`,
+lookups fail with `UNAVAILABLE` (the message says `truncated`) until
+there is a good store, and `emfor status` exits 2. LMDB itself can leave
+a store a few pages shorter than it records (pages it freed again before
+writing them); the daemon extends the file after every commit, so this
+only matters for a store an older emfor wrote: the first start after the
+upgrade may move it aside, losing only the state history.
+
 Commits run on their own thread, so a slow disk does not delay DNS
 answers, metrics or checks. Watch `emfor_store_used_bytes` against
 `map_size`: when the store is full, commits fail and clients soon see a

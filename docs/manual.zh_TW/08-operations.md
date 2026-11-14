@@ -145,6 +145,8 @@ daemon 至少每秒 commit 一次 store，每次狀態變化也會 commit。預�
 
 斷電後 store 可能損毀。這時 daemon 會記錄警告、把它移到 `<store>.corrupt`，並以新的 store 啟動；執行中的應用程式會自行跟上新檔案。唯一遺失的是狀態歷史，也就是 `emfor status --history` 顯示的每個 backend 最近 20 筆狀態變化。每次狀態變化也都記在 daemon 的 log 裡（`changed from healthy to unhealthy` 等），要查當機前發生了什麼，請看 log。設定 `sync = true` 會讓每次 commit 都寫入磁碟，但要承擔上述的風險。
 
+不要原地修改 store 檔：不要用 `cp` 蓋過去、不要 `truncate`、也不要用 shell 重導向（`> state.mdb`）。daemon 和所有應用程式都透過記憶體映射讀它，檔案在它們開著時變短，這些 process 都會因 `SIGBUS` 結束。要換成另一個檔案，請先寫在 store 旁邊，再用 `mv` 蓋到 store 的路徑上，執行中的應用程式就會跟上新檔案。開檔時就已經比 LMDB 記錄的長度短的 store（例如斷電後）會當成損壞處理：daemon 把它移到 `<store>.corrupt`；在有正常的 store 之前，查詢回 `UNAVAILABLE`（訊息含 `truncated`）；`emfor status` 結束碼為 2。LMDB 本身也可能讓 store 比它記錄的短幾頁（頁面在寫入前又被釋放）；daemon 每次 commit 後都會把檔案補足長度，所以這只影響舊版 emfor 寫出的 store：升級後第一次啟動時可能被移走，只損失狀態歷史。
+
 commit 在自己的執行緒上執行，所以慢的磁碟不會拖慢 DNS 回答、metrics 或檢查。請留意 `emfor_store_used_bytes` 與 `map_size` 的比例：store 滿了之後 commit 會失敗，client 很快就會看到過期的 store。
 
 ### 把 store 放在記憶體

@@ -35,6 +35,29 @@ pub fn readable_schema(v: &str) -> bool {
 /// so far, so a larger table does not slow lookups down.
 pub const MAX_READERS: u32 = 1024;
 
+/// Why a store data file of `len` bytes cannot be read safely when LMDB
+/// records `last_page` as its last page (`me_last_pgno`) and `page_size`
+/// as its page size, or `None` when it is long enough. Readers map the
+/// file, and reading a page past its end raises `SIGBUS`, which ends the
+/// process; LMDB checks page numbers but not the file length. The daemon
+/// only ever makes the file longer, so a shorter one was overwritten or
+/// truncated in place, or lost its tail in a power loss. Called right after
+/// LMDB opens the file, before any data page is read.
+pub fn truncated_store(len: u64, last_page: u64, page_size: u64) -> Option<String> {
+    let expected = last_page
+        .checked_add(1)
+        .and_then(|pages| pages.checked_mul(page_size));
+    match expected {
+        Some(expected) if len >= expected => None,
+        Some(expected) => Some(format!(
+            "truncated: {len} bytes, LMDB records {expected} bytes"
+        )),
+        None => Some(format!(
+            "truncated: {len} bytes, LMDB records page {last_page} of {page_size} bytes"
+        )),
+    }
+}
+
 /// Format version, decimal string.
 pub const KEY_SCHEMA_VERSION: &str = "meta/schema_version";
 /// Unix time in milliseconds as a decimal string; `"0"` after a clean shutdown.
@@ -286,6 +309,24 @@ impl ServiceHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The client-lookup spec's length check example, plus an empty file
+    /// and a page count that overflows.
+    #[test]
+    fn truncated_store_rule() {
+        assert_eq!(truncated_store(16384, 3, 4096), None);
+        assert_eq!(
+            truncated_store(12288, 3, 4096).as_deref(),
+            Some("truncated: 12288 bytes, LMDB records 16384 bytes")
+        );
+        assert_eq!(truncated_store(20480, 3, 4096), None);
+        assert_eq!(
+            truncated_store(0, 1, 4096).as_deref(),
+            Some("truncated: 0 bytes, LMDB records 8192 bytes")
+        );
+        assert!(truncated_store(u64::MAX, u64::MAX, 4096).is_some());
+        assert!(truncated_store(u64::MAX, u64::MAX / 2, 4096).is_some());
+    }
 
     fn db_example() -> ServiceRecord {
         ServiceRecord {

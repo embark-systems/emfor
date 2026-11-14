@@ -32,6 +32,60 @@ pub enum StoreError {
     },
     #[error("lmdb: {0}")]
     Lmdb(#[from] heed::Error),
+    #[error("{}: {why}", path.display())]
+    Truncated { path: PathBuf, why: String },
+}
+
+/// Why [`open_env`] failed.
+#[derive(Debug)]
+enum OpenError {
+    Lmdb(heed::Error),
+    /// The data file is shorter than LMDB records it; the reason names
+    /// both lengths.
+    Truncated(String),
+}
+
+impl OpenError {
+    fn into_store_error(self, path: &Path) -> StoreError {
+        match self {
+            OpenError::Lmdb(e) => StoreError::Lmdb(e),
+            OpenError::Truncated(why) => StoreError::Truncated {
+                path: path.to_path_buf(),
+                why,
+            },
+        }
+    }
+}
+
+impl From<heed::Error> for OpenError {
+    fn from(e: heed::Error) -> Self {
+        OpenError::Lmdb(e)
+    }
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::Lmdb(e) => e.fmt(f),
+            OpenError::Truncated(why) => f.write_str(why),
+        }
+    }
+}
+
+/// Why a store just opened cannot be read safely, or `None` when its data
+/// file is as long as LMDB records it (see [`emfor_format::truncated_store`]).
+/// Reads only the meta pages and the length of the file LMDB opened; call it
+/// before any read transaction, which would read past the end of a shorter
+/// file and end the process with `SIGBUS`.
+pub(crate) fn truncation(env: &Env<WithoutTls>) -> heed::Result<Option<String>> {
+    // The meta page first, the length after: LMDB writes the data pages a
+    // meta page refers to before that meta page, so a length taken later
+    // covers them even when the daemon commits in between (`emfor status`
+    // opens the store while the daemon writes it).
+    let last_page = env.info().last_page_number as u64;
+    let page_size = u64::from(env.stat().page_size);
+    let len = env.real_disk_size()?;
+    Ok(emfor_format::truncated_store(len, last_page, page_size))
 }
 
 pub fn lock_file_path(path: &Path) -> PathBuf {
@@ -51,6 +105,9 @@ fn suffixed(path: &Path, suffix: &str) -> PathBuf {
 pub struct Store {
     env: Env<WithoutTls>,
     db: Database<Str, Str>,
+    /// LMDB's data file, to keep it as long as LMDB records it (see
+    /// [`pad`]).
+    data: File,
     path: PathBuf,
     _writer_lock: Flock<File>,
 }
@@ -87,7 +144,7 @@ impl Store {
                 }
             })?;
 
-        let (env, db) = match open_env(cfg) {
+        let Opened { env, db, data } = match open_env(cfg) {
             Err(e) if is_damage(&e) => {
                 let corrupt = set_aside(&cfg.path).map_err(io(&cfg.path))?;
                 tracing::warn!(
@@ -95,9 +152,9 @@ impl Store {
                     cfg.path.display(),
                     corrupt.display()
                 );
-                open_env(cfg)?
+                open_env(cfg).map_err(|e| e.into_store_error(&cfg.path))?
             }
-            r => r?,
+            r => r.map_err(|e| e.into_store_error(&cfg.path))?,
         };
         std::fs::set_permissions(&cfg.path, Permissions::from_mode(cfg.file_mode))
             .map_err(io(&cfg.path))?;
@@ -108,6 +165,7 @@ impl Store {
         let store = Store {
             env,
             db,
+            data,
             path: cfg.path.clone(),
             _writer_lock: writer_lock,
         };
@@ -160,6 +218,14 @@ impl Store {
         let mut wtxn = self.env.write_txn()?;
         let r = f(&mut wtxn, &self.db)?;
         wtxn.commit()?;
+        // The commit is done whatever happens here: a failure only leaves
+        // clients opening the store now to refuse it, until the next commit.
+        if let Err(e) = pad(&self.env, &self.data) {
+            tracing::warn!(
+                "cannot extend store {} to the length LMDB records: {e}",
+                self.path.display()
+            );
+        }
         Ok(r)
     }
 
@@ -200,9 +266,18 @@ impl Store {
     }
 }
 
+/// What [`open_env`] opened.
+struct Opened {
+    env: Env<WithoutTls>,
+    db: Database<Str, Str>,
+    /// LMDB's data file, for [`pad`].
+    data: File,
+}
+
 /// Open the LMDB environment and read every key once, so damage anywhere in
-/// the file shows up now rather than in the first commit.
-fn open_env(cfg: &StoreConfig) -> heed::Result<(Env<WithoutTls>, Database<Str, Str>)> {
+/// the file shows up now rather than in the first commit. A data file
+/// shorter than LMDB records it is refused before anything is read.
+fn open_env(cfg: &StoreConfig) -> Result<Opened, OpenError> {
     let env = unsafe {
         let mut opts = EnvOpenOptions::new().read_txn_without_tls();
         opts.map_size(cfg.map_size);
@@ -215,9 +290,22 @@ fn open_env(cfg: &StoreConfig) -> heed::Result<(Env<WithoutTls>, Database<Str, S
         }
         opts.flags(flags);
         // SAFETY: only this daemon writes the file (guarded by the writer
-        // lock) and readers only read; nothing truncates it.
+        // lock) and readers only read. A file shorter than LMDB records is
+        // refused below before anything is read; one truncated in place
+        // while the daemon runs is outside what it can guard against.
         opts.open(&cfg.path)?
     };
+    // On error `env` is dropped here, closing the file before it is moved.
+    // Reading a truncated file would go past its end (`SIGBUS`). Nor can it
+    // be extended with zero bytes and read: LMDB reads a zeroed page as a
+    // leaf with thousands of entries, past the page (an assertion abort in
+    // debug builds). A file LMDB left short only by pages nobody reads,
+    // which this daemon pads after every commit, cannot be told apart, so
+    // it is moved aside too; only the state history is lost with it.
+    if let Some(why) = truncation(&env)? {
+        return Err(OpenError::Truncated(why));
+    }
+    let data = env.try_clone_inner_file()?;
     let check = || -> heed::Result<Database<Str, Str>> {
         let rtxn = env.read_txn()?;
         let db = env
@@ -235,17 +323,41 @@ fn open_env(cfg: &StoreConfig) -> heed::Result<(Env<WithoutTls>, Database<Str, S
     };
     // On error `env` is dropped here, closing the file before it is moved.
     let db = check()?;
-    Ok((env, db))
+    Ok(Opened { env, db, data })
+}
+
+/// Extend LMDB's data file `data` with zero bytes to the length LMDB
+/// records (`(last page + 1) × page size`) when it is shorter. LMDB does not
+/// write pages allocated and freed again within one transaction, yet counts
+/// them in its last page number, so a store it commits can end before that;
+/// readers, which refuse a store shorter than recorded (see [`truncation`]),
+/// would take it for a truncated one. Holds LMDB's write lock, so no commit
+/// writes the file meanwhile and it is only ever made longer.
+fn pad(env: &Env<WithoutTls>, data: &File) -> heed::Result<()> {
+    let txn = env.write_txn()?;
+    let recorded =
+        (env.info().last_page_number as u64 + 1).checked_mul(u64::from(env.stat().page_size));
+    if let Some(recorded) = recorded
+        && data.metadata()?.len() < recorded
+    {
+        data.set_len(recorded)?;
+    }
+    txn.abort();
+    Ok(())
 }
 
 /// LMDB errors that mean the file itself is damaged, as after a power loss
 /// with `MDB_NOSYNC`. `MDB_INVALID` is also what a file that is not LMDB at
-/// all gives, which is why the file is moved aside, not deleted.
-fn is_damage(e: &heed::Error) -> bool {
+/// all gives, which is why the file is moved aside, not deleted. A data
+/// file shorter than LMDB records it is damaged too.
+fn is_damage(e: &OpenError) -> bool {
     use heed::MdbError;
     matches!(
         e,
-        heed::Error::Mdb(MdbError::Corrupted | MdbError::PageNotFound | MdbError::Invalid)
+        OpenError::Truncated(_)
+            | OpenError::Lmdb(heed::Error::Mdb(
+                MdbError::Corrupted | MdbError::PageNotFound | MdbError::Invalid
+            ))
     )
 }
 
@@ -470,6 +582,116 @@ pub(crate) mod tests {
             f.seek(SeekFrom::Start(2 * page)).unwrap();
             f.write_all(&vec![0; (len - 2 * page) as usize]).unwrap();
         });
+        assert_replaced(&dir, &store);
+    }
+
+    /// Spec "Damaged store is replaced at start", truncated: reading the
+    /// store to check it would end the daemon with `SIGBUS`.
+    #[test]
+    #[tracing_test::traced_test]
+    fn truncated_store_is_replaced() {
+        let (dir, store) = reopen_damaged(|f, page| {
+            let len = f.metadata().unwrap().len();
+            assert!(len >= 3 * page, "a data page after the two meta pages");
+            f.set_len(len - page).unwrap();
+        });
+        assert_replaced(&dir, &store);
+        assert!(logs_contain("truncated"));
+        assert!(logs_contain("state.mdb.corrupt"));
+    }
+
+    /// Commit `i` of a workload after which LMDB leaves the file shorter
+    /// than it records now and then: records of varying size added and
+    /// deleted again in one transaction. LMDB does not write pages freed
+    /// in the transaction that allocated them, yet counts them in its last
+    /// page number.
+    fn churn(i: u64, txn: &mut RwTxn, db: &Database<Str, Str>) -> heed::Result<()> {
+        db.put(txn, "meta/heartbeat", &i.to_string())?;
+        let n = 50 + i * 37 % 400;
+        let size = 300 + (i * 13 % 3000) as usize;
+        for j in 0..n {
+            db.put(
+                txn,
+                &format!("tmp/{j:05}"),
+                &"z".repeat(size + j as usize % 50),
+            )?;
+        }
+        for j in 0..n {
+            db.delete(txn, &format!("tmp/{j:05}"))?;
+        }
+        for j in (i % 5..300).step_by(5) {
+            db.put(
+                txn,
+                &format!("svc/{j:04}"),
+                &"s".repeat(200 + (i % 9) as usize),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn churn_cfg(dir: &Path) -> StoreConfig {
+        StoreConfig {
+            map_size: 64 << 20,
+            ..cfg(dir)
+        }
+    }
+
+    /// Bytes LMDB records for `env`, and the data file's length.
+    fn recorded_and_len(env: &Env<WithoutTls>, path: &Path) -> (u64, u64) {
+        let recorded = (env.info().last_page_number as u64 + 1) * u64::from(env.stat().page_size);
+        (recorded, std::fs::metadata(path).unwrap().len())
+    }
+
+    /// Spec "Damaged store is replaced at start", scenario "Commits keep
+    /// the file as long as LMDB records".
+    #[test]
+    fn commits_keep_the_file_as_long_as_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = churn_cfg(dir.path());
+        let store = Store::open(&c).unwrap();
+        for i in 0..1000 {
+            store.write(|txn, db| churn(i, txn, db)).unwrap();
+            let (recorded, len) = recorded_and_len(&store.env, &c.path);
+            assert!(
+                len >= recorded,
+                "commit {i}: {len} bytes, LMDB records {recorded}"
+            );
+        }
+    }
+
+    /// Spec "Damaged store is replaced at start", scenario "Store left
+    /// short by pages nobody reads is set aside": it cannot be told from a
+    /// truncated one without reading past the end.
+    #[test]
+    fn short_file_with_unread_pages_is_set_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = churn_cfg(dir.path());
+        {
+            // Plain LMDB, as an older daemon wrote the store.
+            // SAFETY: only this test opens the file.
+            let env = unsafe {
+                let mut o = EnvOpenOptions::new().read_txn_without_tls();
+                o.map_size(c.map_size);
+                o.flags(EnvFlags::NO_SUB_DIR);
+                o.open(&c.path).unwrap()
+            };
+            let mut txn = env.write_txn().unwrap();
+            let db: Database<Str, Str> = env.create_database(&mut txn, None).unwrap();
+            txn.commit().unwrap();
+            let mut short = false;
+            for i in 0..2000 {
+                let mut txn = env.write_txn().unwrap();
+                churn(i, &mut txn, &db).unwrap();
+                txn.commit().unwrap();
+                let (recorded, len) = recorded_and_len(&env, &c.path);
+                if len < recorded {
+                    short = true;
+                    break;
+                }
+            }
+            assert!(short, "the workload leaves the file short");
+        }
+        let store = Store::open(&c).unwrap();
         assert_replaced(&dir, &store);
     }
 

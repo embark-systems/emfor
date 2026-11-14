@@ -24,6 +24,7 @@
 | `UNAVAILABLE`，permission denied | 應用程式使用者無法讀取 store 或無法寫入 `<store>-lock`。 | 見[誰能使用 store](08-operations.md#誰能使用-store)。 |
 | `UNAVAILABLE`，提到 LMDB 格式或發行版 | `libemfor` 與 daemon 來自不同的 emfor 發行版。 | 兩者從同一發行版安裝。 |
 | `UNAVAILABLE`，提到 `EMFOR_MAX_STALENESS` | 這個變數的值無效。 | 使用整數加上 `ms` 或 `s`。 |
+| `UNAVAILABLE`，提到 `truncated` | store 檔比 LMDB 記錄的長度短：被原地修改過，或斷電時少了結尾。 | 重啟 daemon，它會把檔案移到 `<store>.corrupt` 並建立新的 store；不要原地修改 store（見[磁碟上的 store](08-operations.md#磁碟上的-store)）。 |
 | `INCOMPATIBLE` | store 的格式版本不同。 | 安裝與 daemon 同一發行版的 client。 |
 | `NOT_FOUND` | 執行中的設定裡沒有這個名稱的服務。 | 檢查拼字，並確認 reload 已套用（`emfor status`）。 |
 
