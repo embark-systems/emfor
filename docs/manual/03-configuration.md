@@ -86,7 +86,9 @@ next `interval`. With three or more live members, three of them are
 assigned to each backend: they check it every `interval` and send their
 results to the others; two `down` results among those three mark the
 backend down on every member. The other members let two agreeing results
-decide and check the backend themselves about every fifth `interval`. The
+decide and check the backend themselves about every third `interval`, and
+recheck every 200ms when their own check fails while the others see the
+backend up. The
 vote and the split need no setting of their own; they use the services'
 `interval`, and only members whose `check`, `check_options` and `timeout`
 match count. Clients still read only

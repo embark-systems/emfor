@@ -486,7 +486,7 @@ fn own_checks(path: &Path) -> usize {
 }
 
 /// Spec peer-group "Split checks": in a group of four, the one daemon that
-/// is not an assigned checker of the backend checks it about every fifth
+/// is not an assigned checker of the backend checks it about every third
 /// time, still notices a failure only it sees, and checks every time once
 /// a member is gone and it becomes an assigned checker.
 #[test]
@@ -524,7 +524,7 @@ fn split_checks() {
     );
 
     // About 8 check times: the assigned checkers check every time, the
-    // spare one about every fifth.
+    // spare one about every third (3 of 8).
     std::thread::sleep(Duration::from_secs(2));
     let before: Vec<usize> = (0..4).map(|i| own_checks(&count(i))).collect();
     std::thread::sleep(Duration::from_secs(8));
@@ -532,7 +532,7 @@ fn split_checks() {
     eprintln!("own checks in 8s: {made:?} (spare {spare})");
     for i in &checkers {
         assert!(made[*i] >= 6, "assigned checker {i}: {made:?}");
-        assert!(2 * made[spare] < made[*i], "spare {spare}: {made:?}");
+        assert!(2 * made[spare] <= made[*i], "spare {spare}: {made:?}");
     }
     let skipped = daemons[spare]
         .scrape()
@@ -546,17 +546,25 @@ fn split_checks() {
     assert!(skipped > 0, "the spare one counts its skipped checks");
     assert!(daemons[spare].log().contains(HEALTHY));
 
-    // A failure only the spare one sees: found within 5 check times plus
-    // `fall` = 3, with a local reason; the others stay healthy.
+    // A failure only the spare one sees: found within 3 check times, then
+    // `fall` = 3 checks 200 ms apart (about 3.4 s; it took up to about 7 s
+    // with an own check every fifth time and no fast run), with a local
+    // reason; the others stay healthy.
     let unhealthy: Vec<usize> = daemons
         .iter()
         .map(|d| d.log().matches(UNHEALTHY).count())
         .collect();
     std::fs::write(flag(spare), "").expect("the flag can be written");
     let text = "changed from healthy to unhealthy (local: refused)";
-    wait_within(text, Duration::from_secs(15), || {
+    wait_within(text, Duration::from_secs(6), || {
         daemons[spare].log().contains(text)
     });
+    assert!(
+        daemons[spare]
+            .log()
+            .contains("fails here while its assigned checkers see it up (refused); checking now"),
+        "the fast recheck run is logged"
+    );
     for i in &checkers {
         assert_eq!(
             daemons[*i].log().matches(UNHEALTHY).count(),

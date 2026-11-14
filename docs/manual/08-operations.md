@@ -153,7 +153,7 @@ peers: 10.0.0.6:5302 leaves out api.svc.emfor db.svc.emfor
 In a group of four or more, `emfor_peer_checks_skipped_total` grows on
 hosts that are not an assigned checker of some backends: they let the
 votes decide most check times and check those backends themselves about
-every fifth `interval`. `emfor status` marks those backends `voted` and
+every third `interval`. `emfor status` marks those backends `voted` and
 ends the `peers:` line with how many of the shown backends this host
 checks every time:
 
@@ -179,7 +179,7 @@ that this host is not an assigned checker; whether a given check time was
 decided by votes depends on the votes at that moment.
 `emfor_backend_checks_total` still counts every check time, decided by
 votes or not. A backend's latency is measured only
-by this host's own checks, so on such a host it changes about every fifth
+by this host's own checks, so on such a host it changes about every third
 `interval`.
 
 ## Logs

@@ -68,6 +68,16 @@ member runs this release, remove the line and reload each daemon.
 - On macOS, `exec` check commands and plugins no longer inherit the
   daemon's sockets and pipes. A plugin could keep a check connection
   open for as long as it ran, so the backend never saw it closed.
+- Peer groups notice a failure that only a member which is not one of the
+  backend's assigned checkers sees sooner (the known limit of 0.3.0).
+  Such a member now checks the backend itself at least every third
+  `interval` instead of every fifth, and when its own check fails while
+  the assigned checkers see the backend up it starts a fast recheck run
+  (every 200 ms, up to `fall` checks), as after a peer's `down` report.
+  With the defaults the backend is down there after at most about 6.4
+  seconds instead of about 14 (estimated from the schedule; 6 without a
+  group). In exchange a backend gets about 3 + (N − 3) / 3 checks per
+  `interval` from N members instead of 3 + (N − 3) / 5.
 
 ### Clients
 

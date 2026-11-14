@@ -120,7 +120,7 @@ pub fn starts_fast_run(
 /// Every this many check times a daemon that is not an assigned checker of
 /// a backend makes its own check, at least (spec peer-group, "Split
 /// checks").
-pub const OWN_CHECK_EVERY: u32 = 5;
+pub const OWN_CHECK_EVERY: u32 = 3;
 
 /// What a check time of a backend in a peer group comes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,7 +181,7 @@ fn combine(
     backend: &str,
     own: CheckResult,
     interval: Duration,
-) -> CheckResult {
+) -> (CheckResult, bool) {
     // A service the peer task does not know yet has no digest: no kept
     // result matches, so the own result stands.
     let digest = p.targets.digest(service).unwrap_or_default();
@@ -204,7 +204,13 @@ fn combine(
             interval,
         }));
     }
-    c.result
+    (c.result, c.local_failure)
+}
+
+/// The own check's reason inside a `local: <reason>` result.
+fn own_reason(result: &CheckResult) -> &str {
+    let reason = result.reason().unwrap_or_default();
+    reason.strip_prefix("local: ").unwrap_or(reason)
 }
 
 /// Spawn the check loop of one backend. Settings changes that do not reset
@@ -251,13 +257,15 @@ pub fn spawn_backend(
                 }
                 None => Step::Check,
             };
-            let (result, sample_us, own_check) = match step {
+            // `local_failure`: an own `down` against the assigned checkers'
+            // `up` votes, which starts a fast recheck run below.
+            let (result, sample_us, own_check, local_failure) = match step {
                 Step::Decided(result) => {
                     decided_in_row += 1;
                     if let Some(p) = hooks {
                         p.quorum.skip();
                     }
-                    (result, None, false)
+                    (result, None, false, false)
                 }
                 Step::Check => {
                     let req = CheckRequest::new(service.clone(), backend.addr, s.timeout);
@@ -271,11 +279,11 @@ pub fn spawn_backend(
                         u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
                     last_own_up = Some(matches!(own, CheckResult::Up));
                     decided_in_row = 0;
-                    let result = match hooks {
+                    let (result, local_failure) = match hooks {
                         Some(p) => combine(p, &service, &backend.id, own, s.interval),
-                        None => own,
+                        None => (own, false),
                     };
-                    (result, Some(sample_us), true)
+                    (result, Some(sample_us), true, local_failure)
                 }
             };
             let thresholds = Thresholds {
@@ -308,6 +316,23 @@ pub fn spawn_backend(
                 if fast_left == 0 {
                     last_run_end = Some(Instant::now());
                 }
+            }
+            if local_failure
+                && starts_fast_run(
+                    health.state,
+                    fast_left > 0,
+                    last_run_end,
+                    Instant::now(),
+                    &s,
+                )
+            {
+                tracing::info!(
+                    service = %service,
+                    backend = %backend.id,
+                    "backend {} of {} fails here while its assigned checkers see it up ({}); checking now",
+                    backend.id, service, own_reason(&result),
+                );
+                fast_left = s.fall;
             }
             if let Some(t) = transition {
                 tracing::info!(
@@ -843,7 +868,7 @@ mod tests {
         let region_down = || Step::Decided(CheckResult::Down("peers 2/3: refused".into()));
         /// (last own up, has latency, decided in a row, votes, step)
         type Row = (Option<bool>, bool, u32, Vec<Outcome>, Step);
-        let rows: [Row; 10] = [
+        let rows: [Row; 11] = [
             (None, false, 0, vec![up(), up(), up()], Step::Check),
             (
                 Some(true),
@@ -855,19 +880,26 @@ mod tests {
             (
                 Some(true),
                 true,
-                2,
+                1,
+                vec![up(), up(), up()],
+                Step::Decided(CheckResult::Up),
+            ),
+            (
+                Some(true),
+                true,
+                1,
                 vec![refused(), refused(), up()],
                 region_down(),
             ),
             (
                 Some(true),
                 false,
-                2,
+                1,
                 vec![refused(), refused(), up()],
                 region_down(),
             ),
             (Some(true), false, 0, vec![up(), up(), up()], Step::Check),
-            (Some(true), true, 4, vec![up(), up(), up()], Step::Check),
+            (Some(true), true, 2, vec![up(), up(), up()], Step::Check),
             (Some(true), true, 1, vec![up(), refused()], Step::Check),
             (Some(true), true, 1, vec![], Step::Check),
             (Some(false), true, 0, vec![up(), up(), up()], Step::Check),
@@ -910,13 +942,58 @@ mod tests {
         mpsc::UnboundedReceiver<PeerOut>,
         JoinHandle<()>,
     ) {
+        not_assigned_with_fall(3).await
+    }
+
+    /// [`not_assigned`] with another `fall`.
+    async fn not_assigned_with_fall(
+        fall: u32,
+    ) -> (
+        Arc<Switch>,
+        PeerHooks,
+        mpsc::UnboundedReceiver<WriterMsg>,
+        mpsc::UnboundedReceiver<PeerOut>,
+        JoinHandle<()>,
+    ) {
+        with_live(5..=9, fall).await
+    }
+
+    /// Daemon .5 with members `live` live and up results kept from .7, .6
+    /// and .9 (fresh for an hour); interval 1s, no jitter.
+    async fn with_live(
+        live: impl IntoIterator<Item = u8>,
+        fall: u32,
+    ) -> (
+        Arc<Switch>,
+        PeerHooks,
+        mpsc::UnboundedReceiver<WriterMsg>,
+        mpsc::UnboundedReceiver<PeerOut>,
+        JoinHandle<()>,
+    ) {
+        let (chk, h, rx, orx, task, _link) = with_live_link(live, fall).await;
+        (chk, h, rx, orx, task)
+    }
+
+    /// [`with_live`], also returning the peer link for sending reports.
+    async fn with_live_link(
+        live: impl IntoIterator<Item = u8>,
+        fall: u32,
+    ) -> (
+        Arc<Switch>,
+        PeerHooks,
+        mpsc::UnboundedReceiver<WriterMsg>,
+        mpsc::UnboundedReceiver<PeerOut>,
+        JoinHandle<()>,
+        PeerLink,
+    ) {
         let (otx, orx) = mpsc::unbounded_channel();
         let h = hooks(otx, "10.0.0.5:5302");
-        h.quorum.set_live((5..=9).map(member));
+        h.quorum.set_live(live.into_iter().map(member));
         record_all(&h, [Outcome::Up, Outcome::Up, Outcome::Up]);
         let settings = Settings {
             interval: Duration::from_secs(1),
             jitter: 0.0,
+            fall,
             ..Settings::default()
         };
         let (_stx, srx) = watch::channel(settings);
@@ -926,8 +1003,8 @@ mod tests {
             peers: Some(h.clone()),
         };
         let chk = Arc::new(Switch::default());
-        let task = spawn_backend("a".into(), backend(), chk.clone(), 0, srx, tx, link);
-        (chk, h, rx, orx, task)
+        let task = spawn_backend("a".into(), backend(), chk.clone(), 0, srx, tx, link.clone());
+        (chk, h, rx, orx, task, link)
     }
 
     /// Spec peer-group "Services left out of the peer group": with
@@ -1016,38 +1093,50 @@ mod tests {
             last = Some(u);
         }
         task.abort();
-        assert_eq!(own, [1, 1, 1, 1, 1, 2, 2, 2, 2, 2]);
-        assert_eq!(h.quorum.skipped(), 8);
+        assert_eq!(own, [1, 1, 1, 2, 2, 2, 3, 3, 3, 4]);
+        assert_eq!(h.quorum.skipped(), 6);
         let last = last.unwrap();
         assert_eq!(last.state, HealthState::Healthy);
         assert!(last.latency_us.is_some(), "kept from the own checks");
         assert_eq!(
-            at[9] - at[8],
+            at[8] - at[7],
             Duration::from_secs(1),
             "decided by votes, healthy"
         );
     }
 
-    /// Spec peer-group "Local failure while the region is up".
+    /// Spec peer-group "Local failure while the region is up": the failed
+    /// own check at the 4th check time starts a fast recheck run, so the
+    /// next two own checks follow 200 ms apart (plus the 10 ms check).
     #[tokio::test(start_paused = true)]
     async fn local_failure_while_the_region_is_up() {
         let (chk, _h, mut rx, mut orx, task) = not_assigned().await;
-        for _ in 0..5 {
+        for _ in 0..3 {
             next(&mut rx, &chk).await;
         }
         chk.down.store(true, Ordering::SeqCst);
-        let mut own = Vec::new();
-        let mut last = None;
+        let mut seen = Vec::new();
         for _ in 0..3 {
             let (u, n, _) = next(&mut rx, &chk).await;
-            own.push(n);
-            last = Some(u);
+            seen.push((u.state, n));
+            if u.state == HealthState::Unhealthy {
+                assert_eq!(u.reason.as_deref(), Some("local: connection refused"));
+            }
         }
         task.abort();
-        assert_eq!(own, [2, 3, 4], "own checks at the 6th, 7th and 8th");
-        let last = last.unwrap();
-        assert_eq!(last.state, HealthState::Unhealthy);
-        assert_eq!(last.reason.as_deref(), Some("local: connection refused"));
+        assert_eq!(
+            seen,
+            [
+                (HealthState::Healthy, 2),
+                (HealthState::Healthy, 3),
+                (HealthState::Unhealthy, 4),
+            ],
+            "own checks at the 4th check time and twice right after"
+        );
+        let starts = chk.starts.lock().unwrap().clone();
+        let fast = FAST_INTERVAL + Duration::from_millis(10);
+        assert_eq!(starts[2] - starts[1], fast);
+        assert_eq!(starts[3] - starts[2], fast);
         let mut downs = 0;
         while let Ok(o) = orx.try_recv() {
             assert!(
@@ -1059,12 +1148,118 @@ mod tests {
         assert_eq!(downs, 1, "an own check's move is announced");
     }
 
-    /// Spec peer-group "Region down without an own check" and "Moves
-    /// decided by votes are not announced".
+    /// Spec peer-group "Assigned checker does not start a run on its own
+    /// failure": with three live candidates (.5, .6, .7) every one is an
+    /// assigned checker, and a failed own check against two `up` votes is
+    /// followed by the next check one `interval` later.
+    #[tokio::test(start_paused = true)]
+    async fn assigned_checker_does_not_start_a_run_on_its_own_failure() {
+        let (chk, _h, mut rx, _orx, task) = with_live([6, 7], 3).await;
+        // `rise = 2`: healthy after two own checks.
+        for _ in 0..2 {
+            next(&mut rx, &chk).await;
+        }
+        chk.down.store(true, Ordering::SeqCst);
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            let (u, n, _) = next(&mut rx, &chk).await;
+            seen.push((u.state, n));
+        }
+        task.abort();
+        assert_eq!(
+            seen,
+            [
+                (HealthState::Healthy, 3),
+                (HealthState::Healthy, 4),
+                (HealthState::Unhealthy, 5),
+            ]
+        );
+        let starts = chk.starts.lock().unwrap().clone();
+        let interval = Duration::from_secs(1) + Duration::from_millis(10);
+        assert_eq!(starts[3] - starts[2], interval);
+        assert_eq!(starts[4] - starts[3], interval);
+    }
+
+    /// Spec peer-group "whether a failed own check starts a fast recheck
+    /// run", the row with a run in progress: a local failure at the first
+    /// check of a run started by a peer's report does not start another,
+    /// so the run, whose later checks give `error`, ends after `fall` = 3
+    /// checks.
+    #[tokio::test(start_paused = true)]
+    async fn local_failure_during_a_run_keeps_the_run() {
+        let (chk, _h, mut rx, _orx, task, link) = with_live_link(5..=9, 3).await;
+        for _ in 0..3 {
+            next(&mut rx, &chk).await;
+        }
+        let before = chk.starts.lock().unwrap().len();
+        chk.down.store(true, Ordering::SeqCst);
+        link.recheck.send(report());
+        let (u, _, _) = next(&mut rx, &chk).await;
+        assert_eq!(u.reason.as_deref(), Some("local: connection refused"));
+        assert_eq!(u.state, HealthState::Healthy);
+        chk.error.store(true, Ordering::SeqCst);
+        for _ in 0..3 {
+            next(&mut rx, &chk).await;
+        }
+        task.abort();
+        let starts = chk.starts.lock().unwrap()[before..].to_vec();
+        let fast = FAST_INTERVAL + Duration::from_millis(10);
+        assert_eq!(starts[1] - starts[0], fast);
+        assert_eq!(starts[2] - starts[1], fast);
+        assert!(
+            starts[3] - starts[2] >= Duration::from_secs(1),
+            "the run ended after 3 checks: {:?}",
+            starts[3] - starts[2]
+        );
+    }
+
+    /// Spec peer-group "whether a failed own check starts a fast recheck
+    /// run", the row whose last run ended too recently: with `fall = 4` a
+    /// run ends at an `up` check, and the failure at the next own check,
+    /// about 3 s later (less than `fall × interval` = 4 s), starts none.
+    #[tokio::test(start_paused = true)]
+    async fn no_new_run_soon_after_one_ended() {
+        let (chk, _h, mut rx, _orx, task) = not_assigned_with_fall(4).await;
+        for _ in 0..3 {
+            next(&mut rx, &chk).await;
+        }
+        chk.down.store(true, Ordering::SeqCst);
+        let (_, n, _) = next(&mut rx, &chk).await;
+        assert_eq!(n, 2, "the failed own check starts a run");
+        chk.down.store(false, Ordering::SeqCst);
+        let (u, n, _) = next(&mut rx, &chk).await;
+        assert_eq!((u.state, n), (HealthState::Healthy, 3), "the run ends up");
+        let first = chk.starts.lock().unwrap().clone();
+        assert_eq!(
+            first[2] - first[1],
+            FAST_INTERVAL + Duration::from_millis(10),
+            "the first failure started a fast run"
+        );
+        for _ in 0..2 {
+            let (_, n, _) = next(&mut rx, &chk).await;
+            assert_eq!(n, 3, "decided by votes");
+        }
+        chk.down.store(true, Ordering::SeqCst);
+        let (_, n, _) = next(&mut rx, &chk).await;
+        assert_eq!(n, 4);
+        let (_, n, _) = next(&mut rx, &chk).await;
+        assert_eq!(n, 5);
+        task.abort();
+        let starts = chk.starts.lock().unwrap().clone();
+        assert_eq!(
+            starts[4] - starts[3],
+            Duration::from_secs(1) + Duration::from_millis(10),
+            "no fast run: the next own check one interval later"
+        );
+    }
+
+    /// Spec peer-group "Region down without an own check": the move is made
+    /// by the own check at the third check time, so it is announced.
     #[tokio::test(start_paused = true)]
     async fn region_down_without_an_own_check() {
         let (chk, h, mut rx, mut orx, task) = not_assigned().await;
-        for _ in 0..6 {
+        // Own checks at the 1st and 4th check times.
+        for _ in 0..4 {
             next(&mut rx, &chk).await;
         }
         let refused = || Outcome::Down("refused".into());
@@ -1081,18 +1276,53 @@ mod tests {
             [
                 (HealthState::Healthy, reason.clone(), 2),
                 (HealthState::Healthy, reason.clone(), 2),
-                (HealthState::Unhealthy, reason, 2),
-            ]
+                (HealthState::Unhealthy, reason, 3),
+            ],
+            "two check times decided by votes, then an own check"
+        );
+        assert!(
+            matches!(orx.try_recv(), Ok(PeerOut::Down(_))),
+            "the own check's move is announced"
+        );
+        assert!(orx.try_recv().is_err());
+        assert_eq!(
+            h.quorum.disagreements(),
+            1,
+            "the own check passed against the region verdict"
+        );
+    }
+
+    /// Spec peer-group "Moves decided by votes are not announced": with
+    /// `fall = 2` the backend turns unhealthy at a check time decided by
+    /// votes alone, and nothing is sent.
+    #[tokio::test(start_paused = true)]
+    async fn moves_decided_by_votes_are_not_announced() {
+        let (chk, h, mut rx, mut orx, task) = not_assigned_with_fall(2).await;
+        for _ in 0..4 {
+            next(&mut rx, &chk).await;
+        }
+        let refused = || Outcome::Down("refused".into());
+        record_all(&h, [refused(), refused(), Outcome::Up]);
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let (u, n, _) = next(&mut rx, &chk).await;
+            seen.push((u.state, n));
+        }
+        task.abort();
+        assert_eq!(
+            seen,
+            [(HealthState::Healthy, 2), (HealthState::Unhealthy, 2)]
         );
         assert!(orx.try_recv().is_err(), "nothing sent");
-        assert_eq!(h.quorum.disagreements(), 0);
     }
 
     /// Spec peer-group "Recovery decided by votes waits for a latency".
     #[tokio::test(start_paused = true)]
     async fn recovery_by_votes_waits_for_a_latency() {
-        let (chk, h, mut rx, _orx, task) = not_assigned().await;
-        for _ in 0..6 {
+        // `fall = 2`: unhealthy after two check times decided by votes,
+        // before the next own check.
+        let (chk, h, mut rx, _orx, task) = not_assigned_with_fall(2).await;
+        for _ in 0..4 {
             next(&mut rx, &chk).await;
         }
         let refused = || Outcome::Down("refused".into());

@@ -95,6 +95,12 @@ pub struct Combined {
     /// `(down votes, fresh votes)` when the region verdict is down while
     /// this daemon's own result was `up`.
     pub disagreement: Option<(u32, u32)>,
+    /// This daemon is not an assigned checker, its own result is `down`,
+    /// and at least [`REGION_DOWN_VOTES`] of the other assigned checkers'
+    /// fresh votes are `up` with fewer `down`: a failure only this daemon
+    /// sees, which starts a fast recheck run (spec peer-group, "Split
+    /// checks").
+    pub local_failure: bool,
 }
 
 /// The fresh votes of a backend's assigned checkers other than this daemon
@@ -387,6 +393,11 @@ impl Quorum {
         let fresh = u32::try_from(votes.len()).unwrap_or(u32::MAX);
         let down = u32::try_from(votes.iter().filter(|v| v.is_some()).count()).unwrap_or(u32::MAX);
         let is_assigned = ranked.contains(&self.me);
+        // Not assigned: every vote is another assigned checker's, at most
+        // three, so two `up` votes also mean fewer than two `down` votes.
+        let local_failure = !is_assigned
+            && matches!(own, CheckResult::Down(_))
+            && fresh - down >= REGION_DOWN_VOTES;
         let (result, disagreement) = if fresh == 0 {
             (own.clone(), None)
         } else if down >= REGION_DOWN_VOTES {
@@ -420,6 +431,7 @@ impl Quorum {
             result,
             assigned: is_assigned,
             disagreement,
+            local_failure,
         }
     }
 
@@ -743,6 +755,77 @@ mod tests {
             }
             let got = q.combine(SVC, backend, DIGEST, &row.own, now);
             assert_eq!(got.result, row.want, "row {i}");
+        }
+    }
+
+    /// Spec peer-group "whether a failed own check starts a fast recheck
+    /// run", the columns about votes and the own result: only a `down` of a
+    /// daemon that is not an assigned checker, against at least two `up`
+    /// votes and fewer than two `down` votes, is a local failure.
+    #[test]
+    fn local_failure_table() {
+        let now = Instant::now();
+        let refused = || down("refused");
+        let own_down = || CheckResult::Down("refused".into());
+        // (assigned, kept votes in rank order, own result, local failure)
+        let rows: [(bool, Vec<Outcome>, CheckResult, bool); 9] = [
+            (
+                false,
+                vec![Outcome::Up, Outcome::Up, Outcome::Up],
+                own_down(),
+                true,
+            ),
+            (
+                false,
+                vec![Outcome::Up, Outcome::Up, refused()],
+                own_down(),
+                true,
+            ),
+            (
+                false,
+                vec![Outcome::Up, Outcome::Up, Outcome::Up],
+                CheckResult::Error("plugin exited".into()),
+                false,
+            ),
+            (false, vec![Outcome::Up, refused()], own_down(), false),
+            (
+                false,
+                vec![refused(), refused(), Outcome::Up],
+                own_down(),
+                false,
+            ),
+            (true, vec![Outcome::Up, Outcome::Up], own_down(), false),
+            // Beyond the spec's table.
+            (
+                false,
+                vec![Outcome::Up, Outcome::Up, Outcome::Up],
+                CheckResult::Up,
+                false,
+            ),
+            (false, vec![], own_down(), false),
+            (false, vec![Outcome::Up], own_down(), false),
+        ];
+        for (i, (assigned, kept, own, want)) in rows.into_iter().enumerate() {
+            let (backend, others): (&str, &[&str]) = if assigned {
+                (BACKEND, &["10.0.0.8:5302", "10.0.0.6:5302"])
+            } else {
+                (
+                    "10.0.0.12:8080",
+                    &["10.0.0.9:5302", "10.0.0.6:5302", "10.0.0.7:5302"],
+                )
+            };
+            let q = Quorum::new(addr("10.0.0.5:5302"));
+            q.set_live(members(6..=9));
+            for (from, outcome) in others.iter().zip(kept) {
+                let msg = ResultMsg {
+                    backend: backend.into(),
+                    ..result(outcome)
+                };
+                q.record(addr(from), &msg, now);
+            }
+            let got = q.combine(SVC, backend, DIGEST, &own, now);
+            assert_eq!(got.assigned, assigned, "row {i}");
+            assert_eq!(got.local_failure, want, "row {i}");
         }
     }
 

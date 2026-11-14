@@ -99,7 +99,7 @@ peers: check definition of api.svc.emfor differs at 10.0.0.6:5302
 peers: 10.0.0.6:5302 leaves out api.svc.emfor db.svc.emfor
 ```
 
-四台以上的群組裡，不是某些 backend 負責主機的主機，`emfor_peer_checks_skipped_total` 會增加：大部分的檢查時間讓投票決定，大約每五個 `interval` 才自己檢查那些 backend 一次。`emfor status` 會把那些 backend 標上 `voted`，並在 `peers:` 那一行最後寫出顯示的 backend 中有幾個是這台主機每次都檢查的：
+四台以上的群組裡，不是某些 backend 負責主機的主機，`emfor_peer_checks_skipped_total` 會增加：大部分的檢查時間讓投票決定，大約每三個 `interval` 才自己檢查那些 backend 一次。`emfor status` 會把那些 backend 標上 `voted`，並在 `peers:` 那一行最後寫出顯示的 backend 中有幾個是這台主機每次都檢查的：
 
 ```
 peers: 4/4 live, checks 12/40 backends here
@@ -114,7 +114,7 @@ peers: 4/4 live, checks 12/40 backends here
 ]
 ```
 
-daemon 沒有執行或沒有 `meta/peers` 時它是 `null`。status 依 `meta/peers` 中的存活成員算出這些內容，而 daemon 每秒更新一次 `meta/peers`，所以成員剛加入或離開時最多會落後一秒。`voted` 只表示這台主機不是負責主機；某次檢查時間是否由投票決定，要看當下的票。`emfor_backend_checks_total` 仍然計算每一次檢查時間，不論是否由投票決定。backend 的延遲只由這台主機自己的檢查量測，所以在這種主機上大約每五個 `interval` 才變一次。
+daemon 沒有執行或沒有 `meta/peers` 時它是 `null`。status 依 `meta/peers` 中的存活成員算出這些內容，而 daemon 每秒更新一次 `meta/peers`，所以成員剛加入或離開時最多會落後一秒。`voted` 只表示這台主機不是負責主機；某次檢查時間是否由投票決定，要看當下的票。`emfor_backend_checks_total` 仍然計算每一次檢查時間，不論是否由投票決定。backend 的延遲只由這台主機自己的檢查量測，所以在這種主機上大約每三個 `interval` 才變一次。
 
 ## Log
 
