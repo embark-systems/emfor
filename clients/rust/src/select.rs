@@ -63,7 +63,9 @@ pub fn pool_candidates<'a>(
 }
 
 /// Rendezvous hash version 1: the first 4 bytes of MD5(key ++ id) as a
-/// big-endian u32.
+/// big-endian u32. Lookups use [`rendezvous_score`], whose weight-1 value
+/// it is; this is kept for the tests and `testing::rendezvous_hash`.
+#[cfg(any(test, feature = "testing"))]
 pub fn rendezvous_hash(key: &str, id: &str) -> u32 {
     let mut h = Md5::new();
     h.update(key.as_bytes());
@@ -77,8 +79,8 @@ pub fn rendezvous_hash(key: &str, id: &str) -> u32 {
 pub const MAX_STICKY_WEIGHT: u32 = 100;
 
 /// Weighted rendezvous score of backend `id` with `weight` for `key`: the
-/// largest of `h_0 .. h_(weight-1)`, where `h_0` is [`rendezvous_hash`] and
-/// `h_i` hashes `key ++ id ++ "#" ++ i` (decimal) the same way. Weights the
+/// largest of `h_0 .. h_(weight-1)`, where `h_0` is the first 4 bytes of
+/// MD5(key ++ id) as a big-endian u32 and `h_i` hashes `key ++ id ++ "#" ++ i` (decimal) the same way. Weights the
 /// daemon never writes are bounded: above [`MAX_STICKY_WEIGHT`] counts as
 /// that, so a damaged store cannot make a lookup hash billions of times,
 /// and 0 counts as 1.
