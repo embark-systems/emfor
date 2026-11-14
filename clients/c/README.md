@@ -65,7 +65,7 @@ On failure `out` is left unchanged, and the status says why:
 | --- | --- | --- |
 | `EMFOR_OK` | 0 | The address is in `out`. |
 | `EMFOR_UNAVAILABLE` | 1 | The store cannot be used: it does not exist or cannot be opened, its LMDB format differs from this library's (install `libemfor` from the same emfor release as the daemon), it is not initialized, or `EMFOR_MAX_STALENESS` is invalid. |
-| `EMFOR_INCOMPATIBLE` | 2 | The store's format version is not 1, or a record cannot be parsed. |
+| `EMFOR_INCOMPATIBLE` | 2 | The store's format version is neither 1 nor 2, or a record cannot be parsed. |
 | `EMFOR_NOT_FOUND` | 3 | The store has no such service. |
 | `EMFOR_ALL_DOWN` | 4 | The service has no healthy backend and `on_all_down = "closed"`. |
 | `EMFOR_INVALID_ARGUMENT` | 5 | C only: `name` or `out` is NULL, a string is not UTF-8, or `out_len` is too small for the address. |

@@ -325,7 +325,7 @@ tests:
 ---
 ### Requirement: Host site and backend weight and site
 
-The config SHALL accept an optional top-level `site`, the label of the data centre this host is in. Each `backends` entry SHALL be either a backend string or a table with the key `addr` (a backend string) and the optional keys `weight` and `site`. `weight` SHALL default to 1 and `site` to none. A string entry SHALL be equivalent to a table with only `addr`. `weight` and `site` SHALL be accepted under every `balance` value; only `weighted` uses `weight` and only `locality` uses `site`. Site labels SHALL be ASCII-lowercased when read. A change of the top-level `site`, a backend's `weight`, or a backend's `site` SHALL take effect on reload.
+The config SHALL accept an optional top-level `site`, the label of the data centre this host is in. Each `backends` entry SHALL be either a backend string or a table with the key `addr` (a backend string) and the optional keys `weight`, `site` and `backup`. `weight` SHALL default to 1, `site` to none and `backup` to `false`; `backup` SHALL be a boolean. A service whose every backend has `backup = true` SHALL be a config error at the service's `backends` path with the message `at least one backend must not be a backup`. A string entry SHALL be equivalent to a table with only `addr`. `weight` and `site` SHALL be accepted under every `balance` value; only `weighted` uses `weight` and only `locality` uses `site`. Site labels SHALL be ASCII-lowercased when read. `backup` SHALL be accepted under every `balance` value. A change of the top-level `site`, a backend's `weight`, a backend's `site`, or a backend's `backup` SHALL take effect on reload, and the backend SHALL keep its health state.
 
 #### Scenario: Mixed backend forms
 
@@ -337,12 +337,66 @@ The config SHALL accept an optional top-level `site`, the label of the data cent
 - **WHEN** a `weighted` service changes a backend from `weight = 1` to `weight = 4` and the daemon receives `SIGHUP`
 - **THEN** the store record for that backend shows `weight` 4 and the DNS answers follow the new weight
 
+#### Scenario: Backup backends
+
+- **WHEN** a service lists `backends = ["10.0.0.10:8080", { addr = "10.0.1.10:8080", backup = true }]`
+- **THEN** the service has backend `10.0.0.10:8080` with `backup` false and backend `10.0.1.10:8080` with `backup` true
+
+#### Scenario: Only backup backends
+
+- **WHEN** service `api.svc.emfor` lists only `{ addr = "10.0.1.10:8080", backup = true }`
+- **THEN** `emfor check-config` reports `services."api.svc.emfor".backends: at least one backend must not be a backup` and exits 2
+
+##### Example: backup values
+
+| `backup` value in a backend table | Result |
+| --- | --- |
+| absent | not a backup |
+| `false` | not a backup |
+| `true` | backup |
+| `"yes"` | config error: `backup must be true or false` |
+
+
 <!-- @trace
-source: emfor-balance-2
-updated: 2026-11-12
+source: emfor-backup-backends
+updated: 2026-11-14
 code:
-  - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - docs/manual.zh_TW/05-backend-selection.md
+  - clients/go/emfor.go
+  - crates/emfor-daemon/src/status.rs
+  - tests/conformance/v1/README.md
+  - clients/python/emfor/__init__.py
+  - crates/emfor-daemon/src/writer.rs
+  - docs/manual.zh_TW/07-dns.md
+  - examples/emfor.toml
+  - tests/conformance/v1/cases.json
+  - README.md
+  - clients/rust/src/lib.rs
+  - clients/perl/README.md
+  - clients/rust/src/client.rs
+  - crates/emfor-format/src/lib.rs
+  - docs/manual.zh_TW/03-configuration.md
+  - crates/emfor-daemon/src/state.rs
+  - clients/c/README.md
+  - crates/emfor-daemon/src/select.rs
+  - crates/emfor-daemon/src/config.rs
+  - clients/python/README.md
+  - clients/rust/README.md
+  - docs/manual/06-clients.md
+  - docs/manual/07-dns.md
+  - CHANGELOG.md
+  - docs/manual/03-configuration.md
+  - crates/emfor-daemon/src/dns.rs
+  - docs/manual.zh_TW/06-clients.md
+  - docs/manual/05-backend-selection.md
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - crates/emfor-format/src/rules.rs
+  - clients/go/README.md
+  - clients/php/README.md
+tests:
+  - crates/emfor-daemon/tests/daemon.rs
+  - clients/rust/tests/conformance_capi.rs
 -->
 
 ---

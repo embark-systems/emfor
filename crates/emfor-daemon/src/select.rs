@@ -280,6 +280,7 @@ mod tests {
                     checked_at: None,
                     reason: None,
                     latency_us: None,
+                    backup: false,
                     recovered_at: None,
                 })
                 .collect(),
@@ -296,6 +297,17 @@ mod tests {
             .find(|b| b.ip == ip)
             .expect("the backend is in the record");
         b.reason = Some(reason.into());
+        r
+    }
+
+    /// `r` with backend `ip` marked `backup`.
+    fn backup(mut r: ServiceRecord, ip: &str) -> ServiceRecord {
+        let b = r
+            .backends
+            .iter_mut()
+            .find(|b| b.ip == ip)
+            .expect("the backend is in the record");
+        b.backup = true;
         r
     }
 
@@ -405,6 +417,68 @@ mod tests {
         assert_eq!(
             candidates(&r, Family::V4),
             Ok(ips(&["10.0.0.2", "10.0.0.3"]))
+        );
+    }
+
+    /// Spec "Candidate backends per address family", scenario "Backup used
+    /// while no primary passes".
+    #[test]
+    fn backup_used_while_no_primary_passes() {
+        let r = rec(
+            &[
+                ("10.0.0.1", Healthy),
+                ("10.0.0.2", Unhealthy),
+                ("10.0.1.1", Healthy),
+            ],
+            OnAllDown::Closed,
+            Balance::RoundRobin,
+        );
+        let r = backup(failing(r, "10.0.0.1", "timeout"), "10.0.1.1");
+        assert_eq!(candidates(&r, Family::V4), Ok(ips(&["10.0.1.1"])));
+    }
+
+    /// Spec "Candidate backends per address family", scenario "Passing
+    /// primary wins over a backup".
+    #[test]
+    fn passing_primary_wins_over_a_backup() {
+        let r = rec(
+            &[("10.0.0.1", Healthy), ("10.0.1.1", Healthy)],
+            OnAllDown::Closed,
+            Balance::RoundRobin,
+        );
+        let r = backup(r, "10.0.1.1");
+        assert_eq!(candidates(&r, Family::V4), Ok(ips(&["10.0.0.1"])));
+    }
+
+    /// Spec "Candidate backends per address family", example "candidate
+    /// sets", the rows with a backup (10.0.1.1).
+    #[test]
+    fn backup_candidate_sets() {
+        use OnAllDown::*;
+        let two = |a: HealthState, b: HealthState, oad| {
+            backup(
+                rec(
+                    &[("10.0.0.1", a), ("10.0.1.1", b)],
+                    oad,
+                    Balance::RoundRobin,
+                ),
+                "10.0.1.1",
+            )
+        };
+        let r = failing(
+            failing(two(Healthy, Healthy, Closed), "10.0.0.1", "timeout"),
+            "10.0.1.1",
+            "timeout",
+        );
+        assert_eq!(candidates(&r, Family::V4), Ok(ips(&["10.0.0.1"])));
+        let r = failing(two(Unhealthy, Healthy, Closed), "10.0.1.1", "timeout");
+        assert_eq!(candidates(&r, Family::V4), Ok(ips(&["10.0.1.1"])));
+        let r = two(Unhealthy, Unknown, Open);
+        assert_eq!(candidates(&r, Family::V4), Ok(ips(&["10.0.1.1"])));
+        let r = two(Unhealthy, Unhealthy, Open);
+        assert_eq!(
+            candidates(&r, Family::V4),
+            Ok(ips(&["10.0.0.1", "10.0.1.1"]))
         );
     }
 
@@ -761,6 +835,7 @@ mod tests {
                 checked_at: None,
                 reason: None,
                 latency_us: None,
+                backup: false,
                 recovered_at: None,
             })
             .collect();
@@ -990,6 +1065,31 @@ mod tests {
         assert_eq!(
             srv(&r, &AtomicU64::new(0), None).unwrap(),
             vec![row("10.0.0.12", 8080, 0, 1), row("10.0.0.13", 8080, 1, 1)]
+        );
+    }
+
+    /// Spec "SRV answers", scenario "Backups listed only while no primary
+    /// passes".
+    #[test]
+    fn srv_backups_listed_only_while_no_primary_passes() {
+        let r = srv_rec(
+            &[
+                ("10.0.0.11", 8080, Healthy, 1, None),
+                ("10.0.1.11", 8080, Healthy, 1, None),
+                ("10.0.1.12", 8080, Healthy, 1, None),
+            ],
+            OnAllDown::Closed,
+            Balance::Failover,
+        );
+        let r = backup(backup(r, "10.0.1.11"), "10.0.1.12");
+        let down = failing(r.clone(), "10.0.0.11", "timeout");
+        assert_eq!(
+            srv(&down, &AtomicU64::new(0), None).unwrap(),
+            vec![row("10.0.1.11", 8080, 0, 1), row("10.0.1.12", 8080, 1, 1)]
+        );
+        assert_eq!(
+            srv(&r, &AtomicU64::new(0), None).unwrap(),
+            vec![row("10.0.0.11", 8080, 0, 1)]
         );
     }
 
@@ -1229,6 +1329,38 @@ mod tests {
         );
         missing.pool = None;
         assert_eq!(four_a(&missing), got);
+    }
+
+    /// A `fastest` record whose pool the daemon computed from latencies:
+    /// primaries 10.0.0.1 (20 ms) and 10.0.0.2 (100 ms), backup 10.0.1.1
+    /// (2 ms), all passing.
+    fn fastest_with_fast_backup() -> ServiceRecord {
+        let mut r = srv_rec(
+            &[
+                ("10.0.0.1", 8080, Healthy, 1, None),
+                ("10.0.0.2", 8080, Healthy, 1, None),
+                ("10.0.1.1", 8080, Healthy, 1, None),
+            ],
+            OnAllDown::Open,
+            Balance::Fastest,
+        );
+        r = backup(r, "10.0.1.1");
+        for (b, l) in r.backends.iter_mut().zip([20_000, 100_000, 2_000]) {
+            b.latency_us = Some(l);
+        }
+        r.pool = Some(crate::state::fast_pool(&r.backends, &[]));
+        r
+    }
+
+    #[test]
+    fn fastest_with_a_fast_backup_keeps_preferring_fast_primaries() {
+        let r = fastest_with_fast_backup();
+        let a = chosen("10.0.0.1");
+        assert_eq!(four_a(&r), [a, a, a, a]);
+        assert_eq!(
+            srv(&r, &AtomicU64::new(0), None).unwrap(),
+            vec![row("10.0.0.1", 8080, 0, 1), row("10.0.0.2", 8080, 1, 1)]
+        );
     }
 
     #[test]

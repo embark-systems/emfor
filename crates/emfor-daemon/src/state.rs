@@ -129,8 +129,11 @@ pub fn is_fast(latency_us: u64, min_us: u64, fast_before: bool) -> bool {
 
 /// Pool of a `fastest` service: ids of its fast backends in config order.
 /// `previous` is the pool before this recomputation. Only healthy backends
-/// with a latency are in scope; the backend with the lowest latency is
-/// always fast, so the pool is empty exactly when nothing is in scope.
+/// with a latency are in scope. Primaries and backups are two groups, each
+/// with its own lowest latency, because candidates never mix the two: a
+/// fast backup must not push every primary out of the pool. The backend
+/// with the lowest latency of each group is always fast, so the pool is
+/// empty exactly when nothing is in scope.
 pub fn fast_pool(backends: &[BackendRecord], previous: &[String]) -> Vec<String> {
     let in_scope = |b: &BackendRecord| {
         if b.state == HealthState::Healthy {
@@ -139,12 +142,22 @@ pub fn fast_pool(backends: &[BackendRecord], previous: &[String]) -> Vec<String>
             None
         }
     };
-    let Some(min) = backends.iter().filter_map(in_scope).min() else {
-        return Vec::new();
+    let min_of = |backup: bool| {
+        backends
+            .iter()
+            .filter(|b| b.backup == backup)
+            .filter_map(in_scope)
+            .min()
     };
+    let (min_primary, min_backup) = (min_of(false), min_of(true));
     backends
         .iter()
-        .filter(|b| in_scope(b).is_some_and(|l| is_fast(l, min, previous.contains(&b.id))))
+        .filter(|b| {
+            let min = if b.backup { min_backup } else { min_primary };
+            in_scope(b)
+                .zip(min)
+                .is_some_and(|(l, min)| is_fast(l, min, previous.contains(&b.id)))
+        })
         .map(|b| b.id.clone())
         .collect()
 }
@@ -302,6 +315,7 @@ mod tests {
             checked_at: None,
             reason: None,
             latency_us,
+            backup: false,
             recovered_at: None,
         }
     }
@@ -350,5 +364,30 @@ mod tests {
         assert_eq!(fast_pool(&backends, &[]), ["a", "c"]);
         let none = [backend("a", Unhealthy, None), backend("b", Healthy, None)];
         assert!(fast_pool(&none, &["a".into()]).is_empty());
+    }
+
+    #[test]
+    fn pool_per_tier_primaries_and_backups() {
+        let mut c = backend("c", Healthy, Some(2000));
+        c.backup = true;
+        let mut d = backend("d", Healthy, Some(2900));
+        d.backup = true;
+        let mut e = backend("e", Healthy, Some(9000));
+        e.backup = true;
+        // A fast backup does not push the primaries out of the pool, and
+        // slow primaries do not decide which backups are fast.
+        let backends = [
+            backend("a", Healthy, Some(20_000)),
+            backend("b", Healthy, Some(100_000)),
+            c,
+            d,
+            e,
+        ];
+        assert_eq!(fast_pool(&backends, &[]), ["a", "c", "d"]);
+        // Only backups in scope: their own lowest latency decides.
+        let mut only = backends.clone();
+        only[0].state = Unhealthy;
+        only[1].latency_us = None;
+        assert_eq!(fast_pool(&only, &[]), ["c", "d"]);
     }
 }

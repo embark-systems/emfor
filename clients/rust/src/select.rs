@@ -180,6 +180,7 @@ mod tests {
             checked_at: Some(1),
             reason: None,
             latency_us: None,
+            backup: false,
             recovered_at: None,
         }
     }

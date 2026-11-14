@@ -62,7 +62,7 @@ tests:
 ---
 ### Requirement: Candidate backends per address family
 
-To choose a backend for an address family (IPv4 or IPv6), the system SHALL use only the service's backends of that family, in config order. If there are none, the result SHALL be "no backend of this family". Otherwise the candidates SHALL be the passing backends of that family, where a backend is passing when its `state` is `healthy` and its `reason` is `null`; if none of them is passing, the candidates SHALL be the `healthy` backends of that family, including those whose `reason` is not `null` (failing backends); if none of them is `healthy` and `on_all_down` is `open`, the candidates SHALL be the backends of that family whose `state` is `unknown` and `reason` is `null` (passing unknown backends), or, when there are none, every `unknown` backend of that family, or, when there are none, all backends of that family; if none of them is `healthy` and `on_all_down` is `closed`, the result SHALL be "all down".
+To choose a backend for an address family (IPv4 or IPv6), the system SHALL use only the service's backends of that family, in config order. If there are none, the result SHALL be "no backend of this family". Otherwise the candidates SHALL be the first of these sets of that family's backends that is not empty: the passing primary backends, where a backend is passing when its `state` is `healthy` and its `reason` is `null` and primary when its `backup` is false; the passing backup backends (`backup` true); the `healthy` primary backends, including those whose `reason` is not `null` (failing backends); the `healthy` backup backends, failing ones included. If none of them is `healthy` and `on_all_down` is `open`, the candidates SHALL be the backends of that family whose `state` is `unknown` and `reason` is `null` (passing unknown backends), or, when there are none, every `unknown` backend of that family, or, when there are none, all backends of that family; if none of them is `healthy` and `on_all_down` is `closed`, the result SHALL be "all down".
 
 #### Scenario: Unhealthy backends are skipped
 
@@ -84,6 +84,16 @@ To choose a backend for an address family (IPv4 or IPv6), the system SHALL use o
 - **WHEN** a service with `on_all_down = "open"` has IPv4 backends 10.0.0.1 (unhealthy), 10.0.0.2 (unknown, reason `timeout`) and 10.0.0.3 (unknown, reason `null`) and an IPv4 backend is chosen
 - **THEN** the only candidate is 10.0.0.3
 
+#### Scenario: Backup used while no primary passes
+
+- **WHEN** a service has IPv4 backends 10.0.0.1 (healthy, reason `timeout`), 10.0.0.2 (unhealthy) and backup 10.0.1.1 (healthy, reason `null`) and an IPv4 backend is chosen
+- **THEN** the only candidate is 10.0.1.1
+
+#### Scenario: Passing primary wins over a backup
+
+- **WHEN** a service has IPv4 backends 10.0.0.1 (healthy, reason `null`) and backup 10.0.1.1 (healthy, reason `null`) and an IPv4 backend is chosen
+- **THEN** the only candidate is 10.0.0.1
+
 ##### Example: candidate sets
 
 | IPv4 backends (state) | IPv6 backends (state) | `on_all_down` | Family asked | Result |
@@ -98,24 +108,52 @@ To choose a backend for an address family (IPv4 or IPv6), the system SHALL use o
 | 10.0.0.1 (unhealthy) | 2001:db8::1 (healthy) | closed | IPv6 | candidates: 2001:db8::1 |
 | 10.0.0.1 (healthy, reason "refused"), 10.0.0.2 (healthy, reason null) | none | closed | IPv4 | candidates: 10.0.0.2 |
 | 10.0.0.1 (healthy, reason "refused"), 10.0.0.2 (unhealthy) | 2001:db8::1 (healthy, reason null) | closed | IPv4 | candidates: 10.0.0.1 |
+| 10.0.0.1 (healthy, reason "timeout"), backup 10.0.1.1 (healthy, reason "timeout") | none | closed | IPv4 | candidates: 10.0.0.1 |
+| 10.0.0.1 (unhealthy), backup 10.0.1.1 (healthy, reason "timeout") | none | closed | IPv4 | candidates: 10.0.1.1 |
+| 10.0.0.1 (unhealthy), backup 10.0.1.1 (unknown) | none | open | IPv4 | candidates: 10.0.1.1 |
+| 10.0.0.1 (unhealthy), backup 10.0.1.1 (unhealthy) | none | open | IPv4 | candidates: 10.0.0.1, 10.0.1.1 |
 
 
 <!-- @trace
-source: emfor-open-prefers-unknown
+source: emfor-backup-backends
 updated: 2026-11-14
 code:
-  - tests/conformance/v1/cases.json
   - docs/manual.zh_TW/05-backend-selection.md
-  - docs/manual/07-dns.md
-  - crates/emfor-format/src/rules.rs
-  - docs/manual.zh_TW/01-concepts.md
-  - crates/emfor-daemon/src/select.rs
-  - clients/rust/src/select.rs
-  - CHANGELOG.md
-  - docs/manual/05-backend-selection.md
-  - docs/deploy/dns-resolver.md
+  - clients/go/emfor.go
+  - crates/emfor-daemon/src/status.rs
+  - tests/conformance/v1/README.md
+  - clients/python/emfor/__init__.py
+  - crates/emfor-daemon/src/writer.rs
   - docs/manual.zh_TW/07-dns.md
-  - docs/manual/01-concepts.md
+  - examples/emfor.toml
+  - tests/conformance/v1/cases.json
+  - README.md
+  - clients/rust/src/lib.rs
+  - clients/perl/README.md
+  - clients/rust/src/client.rs
+  - crates/emfor-format/src/lib.rs
+  - docs/manual.zh_TW/03-configuration.md
+  - crates/emfor-daemon/src/state.rs
+  - clients/c/README.md
+  - crates/emfor-daemon/src/select.rs
+  - crates/emfor-daemon/src/config.rs
+  - clients/python/README.md
+  - clients/rust/README.md
+  - docs/manual/06-clients.md
+  - docs/manual/07-dns.md
+  - CHANGELOG.md
+  - docs/manual/03-configuration.md
+  - crates/emfor-daemon/src/dns.rs
+  - docs/manual.zh_TW/06-clients.md
+  - docs/manual/05-backend-selection.md
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - crates/emfor-format/src/rules.rs
+  - clients/go/README.md
+  - clients/php/README.md
+tests:
+  - crates/emfor-daemon/tests/daemon.rs
+  - clients/rust/tests/conformance_capi.rs
 -->
 
 ---
@@ -220,7 +258,7 @@ code:
 ---
 ### Requirement: Fast membership decided by the daemon
 
-For every `fastest` service, the daemon SHALL keep a fast flag for each backend and SHALL recompute it for all backends of the service whenever a backend's state or latency changes and after a reload. Only backends that are `healthy` and have a latency, of either address family, SHALL be in scope; every other backend SHALL NOT be fast. With `min` the lowest latency in scope in microseconds, a backend in scope that is not fast SHALL become fast when its latency is at most the larger of `min * 3 / 2` (integer division) and `min + 1000`, and a fast backend in scope SHALL stay fast while its latency is at most the larger of `min * 2` and `min + 2000`, and SHALL become not fast otherwise. A backend that is added, reset to `unknown`, or becomes `unhealthy` SHALL NOT be fast. The service's pool SHALL be the ids of its fast backends in config order; the daemon SHALL write it to the store and SHALL use it for DNS answers. Readers SHALL use the pool as written and SHALL NOT recompute it.
+For every `fastest` service, the daemon SHALL keep a fast flag for each backend and SHALL recompute it for all backends of the service whenever a backend's state or latency changes and after a reload. Only backends that are `healthy` and have a latency, of either address family, SHALL be in scope; every other backend SHALL NOT be fast. Primaries (backends without `backup`) and backups SHALL be decided separately: with `min` the lowest latency in microseconds among the backends in scope of the same kind (primary or backup) as the backend, a backend in scope that is not fast SHALL become fast when its latency is at most the larger of `min * 3 / 2` (integer division) and `min + 1000`, and a fast backend in scope SHALL stay fast while its latency is at most the larger of `min * 2` and `min + 2000`, and SHALL become not fast otherwise. A backend that is added, reset to `unknown`, or becomes `unhealthy` SHALL NOT be fast. The service's pool SHALL be the ids of its fast backends in config order; the daemon SHALL write it to the store and SHALL use it for DNS answers. Readers SHALL use the pool as written and SHALL NOT recompute it.
 
 #### Scenario: Nearly equal backends are fast
 
@@ -231,6 +269,11 @@ For every `fastest` service, the daemon SHALL keep a fast flag for each backend 
 
 - **WHEN** a fast backend's latency rises from 2900 to 3500 microseconds while the lowest latency in the service stays 2000
 - **THEN** the backend stays fast, and it becomes not fast only when its latency exceeds 4000
+
+#### Scenario: Backups do not decide which primaries are fast
+
+- **WHEN** a service has healthy primaries 10.0.0.1 with latency 20000 and 10.0.0.2 with latency 100000, and a healthy backup 10.0.1.1 with latency 2000, none of them fast before
+- **THEN** the pool is 10.0.0.1 and 10.0.1.1, so while both primaries pass their checks every lookup returns 10.0.0.1
 
 #### Scenario: Missing latency is not fast
 
@@ -256,31 +299,45 @@ For every `fastest` service, the daemon SHALL keep a fast flag for each backend 
 
 
 <!-- @trace
-source: emfor-balance-fastest
-updated: 2026-11-12
+source: emfor-backup-backends
+updated: 2026-11-14
 code:
-  - crates/emfor-format/src/lib.rs
-  - crates/emfor-daemon/src/select.rs
-  - clients/rust/src/select.rs
-  - crates/emfor-daemon/src/dns.rs
-  - clients/c/README.md
-  - crates/emfor-daemon/src/config.rs
-  - examples/emfor.toml
-  - docs/deploy/dns-resolver.md
-  - crates/emfor-daemon/src/checker/mod.rs
-  - clients/rust/src/client.rs
-  - .spectra.yaml
-  - tests/conformance/v1/cases.json
-  - crates/emfor-daemon/src/state.rs
-  - crates/emfor-daemon/src/checker/http.rs
-  - crates/emfor-daemon/src/schedule.rs
-  - clients/rust/README.md
-  - crates/emfor-daemon/src/live.rs
+  - docs/manual.zh_TW/05-backend-selection.md
+  - clients/go/emfor.go
+  - crates/emfor-daemon/src/status.rs
+  - tests/conformance/v1/README.md
+  - clients/python/emfor/__init__.py
   - crates/emfor-daemon/src/writer.rs
+  - docs/manual.zh_TW/07-dns.md
+  - examples/emfor.toml
+  - tests/conformance/v1/cases.json
+  - README.md
+  - clients/rust/src/lib.rs
+  - clients/perl/README.md
+  - clients/rust/src/client.rs
+  - crates/emfor-format/src/lib.rs
+  - docs/manual.zh_TW/03-configuration.md
+  - crates/emfor-daemon/src/state.rs
+  - clients/c/README.md
+  - crates/emfor-daemon/src/select.rs
+  - crates/emfor-daemon/src/config.rs
+  - clients/python/README.md
+  - clients/rust/README.md
+  - docs/manual/06-clients.md
+  - docs/manual/07-dns.md
+  - CHANGELOG.md
+  - docs/manual/03-configuration.md
+  - crates/emfor-daemon/src/dns.rs
+  - docs/manual.zh_TW/06-clients.md
+  - docs/manual/05-backend-selection.md
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - crates/emfor-format/src/rules.rs
+  - clients/go/README.md
+  - clients/php/README.md
 tests:
-  - crates/emfor-daemon/tests/dns.rs
-  - tools/emfor-fixture/tests/conformance_data.rs
   - crates/emfor-daemon/tests/daemon.rs
+  - clients/rust/tests/conformance_capi.rs
 -->
 
 ---

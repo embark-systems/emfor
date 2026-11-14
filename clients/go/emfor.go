@@ -32,7 +32,7 @@ type Code int
 // The four shared error codes.
 const (
 	Unavailable  Code = 1 // the store cannot be used (missing, other LMDB format, not initialized, invalid EMFOR_MAX_STALENESS)
-	Incompatible Code = 2 // the store's format version is not 1, or a record cannot be parsed
+	Incompatible Code = 2 // the store's format version is neither 1 nor 2, or a record cannot be parsed
 	NotFound     Code = 3 // no such service
 	AllDown      Code = 4 // no healthy backend and on_all_down = "closed"
 )

@@ -79,6 +79,9 @@ peers = true           # take part in the peer group, when [peers] is set
 [services."db.svc.emfor"]
 check = "tcp"
 backends = ["10.0.1.5:5432", "10.0.1.6:5432"]
+# A backup is used only while no other backend passes its checks:
+# backends = ["10.0.1.5:5432", "10.0.1.6:5432",
+#             { addr = "10.2.1.5:5432", backup = true }]
 on_all_down = "closed"
 balance = "failover"   # always the first healthy backend in this order
 

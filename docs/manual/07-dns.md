@@ -58,10 +58,14 @@ The zone has a synthesized SOA whose negative-caching TTL is also
 
 ## SRV records
 
-SRV answers carry each backend's port and list every candidate: the
-healthy backends whose last check passed, or every healthy backend when
-all of them are failing (see [A backend whose checks start
-failing](05-backend-selection.md#a-backend-whose-checks-start-failing)), or,
+SRV answers carry each backend's port and list every candidate, chosen
+as for A and AAAA answers: the primaries whose last check passed, else the
+[backups](05-backend-selection.md#backup-backends) whose last check
+passed, else every healthy primary when all of them are failing (see [A
+backend whose checks start
+failing](05-backend-selection.md#a-backend-whose-checks-start-failing)),
+else every healthy backup. An answer never lists primaries and backups
+together while any backend is healthy. Or,
 when none is healthy and `on_all_down` is `open`, the `unknown` backends
 (those whose last check passed first) before all of them (see [When no
 backend is healthy](05-backend-selection.md#when-no-backend-is-healthy)).

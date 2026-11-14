@@ -157,6 +157,14 @@ lock file format depends on it. Install `libemfor` (and the wrappers) from
 the same emfor release as the daemon, and upgrade them together. A
 mismatch shows up as `UNAVAILABLE` with a message that says so.
 
+### Store format version
+
+The daemon writes store format version 2, which adds the backend field
+`backup`. Clients from this release read versions 1 and 2, so they work
+with an older daemon too; older clients fail every lookup on a version 2
+store with `INCOMPATIBLE`. When upgrading, upgrade the clients (and
+`emfor status`) on a host before the daemon.
+
 ## Performance
 
 A lookup takes about 1–1.5 µs on one thread. Throughput grows with threads

@@ -186,13 +186,15 @@ characters of `a-z`, `0-9` and `-` not starting or ending with `-`. Two
 names that differ only in case are duplicates. Clients normalize the name
 they look up the same way.
 
-**Backends** are strings, or tables when they need a weight or a site:
+**Backends** are strings, or tables when they need a weight, a site or
+`backup`:
 
 ```toml
 backends = [
   "10.0.4.11:9200",
   { addr = "10.0.4.12:9200", weight = 3 },
   { addr = "10.1.4.11:9200", site = "dc2" },
+  { addr = "10.2.4.11:9200", backup = true },
 ]
 ```
 
@@ -201,9 +203,10 @@ backends = [
 | `addr` | required | `IPv4:port` or `[IPv6]:port`, port 1–65535. Unique within the service. |
 | `weight` | 1 | 1 to 100. Used by `balance = "weighted"`. |
 | `site` | none | The backend's data centre. Used by `balance = "locality"`. |
+| `backup` | `false` | `true` or `false`. A backup is used only while no other backend passes its checks ([chapter 5](05-backend-selection.md#backup-backends)). At least one backend of a service must not be a backup. |
 
-`weight` and `site` are accepted under every `balance`, so you can switch
-`balance` without editing the backends.
+`weight`, `site` and `backup` are accepted under every `balance`, so you
+can switch `balance` without editing the backends.
 
 ## [plugins."name"]
 
@@ -251,7 +254,7 @@ error and keeps running the old config.
 | Services and backends added or removed | Applied; new backends start `unknown`. |
 | `check` or `check_options` of a service | Applied; its backends start over from `unknown`. |
 | `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, `peers` | Applied; backends keep their state. |
-| `balance`, `weight`, `site` (top level and backends), `dns_ttl`, `slow_start` | Applied; a backend in slow start keeps its recovery time. |
+| `balance`, `weight`, `site` (top level and backends), `backup`, `dns_ttl`, `slow_start` | Applied; backends keep their state, and a backend in slow start keeps its recovery time. |
 | `[dns] zone`, `[dns] ttl` | Applied. |
 | `[log] level` | Applied (unless `RUST_LOG` is set). |
 | A plugin's `command` | The plugin is restarted, and the services that use it start over from `unknown`. Unchanged plugins keep running. |

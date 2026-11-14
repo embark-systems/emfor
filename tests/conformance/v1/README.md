@@ -19,6 +19,10 @@ data" of the emfor-clients change.
 - `store.heartbeat` is `fresh`, `stale` (now minus twice the maximum
   staleness), `zero` or `missing`; `store.raw` holds keys written verbatim,
   such as `meta/site` for `locality` or malformed records.
+- `store.schema_version` is written to `meta/schema_version`. Cases use the
+  store format versions `1` and `2` (which adds the backend field `backup`);
+  any other value expects `INCOMPATIBLE`. The `v1` in this directory's
+  name is the version of this conformance data, not of the store.
 - A backend may have `recovered_ago_ms` instead of `recovered_at`: the
   store gets `recovered_at` = the time the store is written minus that many
   milliseconds, so slow start cases do not depend on the date they run.

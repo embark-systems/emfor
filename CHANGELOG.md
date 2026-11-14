@@ -2,8 +2,26 @@
 
 ## Unreleased
 
+**Breaking: the store format is version 2.** The daemon writes
+`meta/schema_version` 2, which adds the backend field `backup`. Clients
+and `emfor status` from this release read versions 1 and 2; older ones
+fail every lookup on a version 2 store with `INCOMPATIBLE`. Upgrade the
+clients on a host before the daemon (see
+[Store format version](docs/manual/06-clients.md#store-format-version)).
+
 ### Daemon
 
+- Backup backends: a backend table takes `backup = true`. Backups are
+  used only while no other backend passes its checks: clients and the DNS
+  server take the primaries whose last check passed, else the backups
+  whose last check passed, else the healthy primaries, else the healthy
+  backups, and `balance` works within that set; `fastest` decides which
+  backends are fast among the primaries and among the backups
+  separately. When no backend is
+  healthy, `on_all_down` decides as before and backups count like the
+  others. SRV answers list only the chosen set. At least one backend of a
+  service must not be a backup, and `backup` is applied on reload. See
+  [Backup backends](docs/manual/05-backend-selection.md#backup-backends).
 - Clients and the DNS server leave out a healthy backend whose last
   check failed (its `reason` is set) while another healthy backend passed
   its last check, so a backend stops being chosen at its first failed

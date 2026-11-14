@@ -8,7 +8,7 @@ Defines `emfor status`, the read-only command that shows operators what the loca
 
 ### Requirement: Status reads the store read-only
 
-`emfor status` SHALL read the state store at the `[store] path` of the config file given with `--config` (the build-time default config path when `--config` is absent), or `/var/lib/emfor/state.mdb` when the config file has no `[store] path`. It SHALL read only the `[store]` table of the config file and SHALL NOT validate the rest of the config, start plugins, run checks, or write to the store. It SHALL NOT take the daemon's writer lock, so a daemon can start or keep running while `emfor status` runs. When the store file does not exist, `emfor status` SHALL print `cannot open store <path>: no such file` and exit 2 without creating the store file or its `-lock` file. When `meta/schema_version` is not `1`, it SHALL print `store format version <n>; this emfor reads version 1` and exit 2. The other subcommands of `emfor` and running it without a subcommand SHALL follow the service-config requirement "Command line subcommands".
+`emfor status` SHALL read the state store at the `[store] path` of the config file given with `--config` (the build-time default config path when `--config` is absent), or `/var/lib/emfor/state.mdb` when the config file has no `[store] path`. It SHALL read only the `[store]` table of the config file and SHALL NOT validate the rest of the config, start plugins, run checks, or write to the store. It SHALL NOT take the daemon's writer lock, so a daemon can start or keep running while `emfor status` runs. When the store file does not exist, `emfor status` SHALL print `cannot open store <path>: no such file` and exit 2 without creating the store file or its `-lock` file. It SHALL read a store whose `meta/schema_version` is `1` or `2`. When `meta/schema_version` is anything else, it SHALL print `store format version <n>; this emfor reads versions 1 and 2` and exit 2. The other subcommands of `emfor` and running it without a subcommand SHALL follow the service-config requirement "Command line subcommands".
 
 #### Scenario: Status beside a running daemon
 
@@ -27,30 +27,45 @@ Defines `emfor status`, the read-only command that shows operators what the loca
 
 
 <!-- @trace
-source: emfor-server-subcommand
-updated: 2026-11-13
+source: emfor-backup-backends
+updated: 2026-11-14
 code:
-  - README.md
-  - docs/deploy/plugins.md
-  - examples/systemd/emfor.service
-  - tests/spike/run.sh
-  - docs/plugins/protocol-v1.md
-  - examples/freebsd/Makefile
-  - examples/freebsd/README.md
-  - examples/rc.d/emfor
-  - CHANGELOG.md
-  - tests/plugins/inside.sh
-  - README.zh-TW.md
-  - docs/deploy/daemon.md
-  - tests/resolver/resolved.sh
+  - docs/manual.zh_TW/05-backend-selection.md
+  - clients/go/emfor.go
+  - crates/emfor-daemon/src/status.rs
+  - tests/conformance/v1/README.md
+  - clients/python/emfor/__init__.py
+  - crates/emfor-daemon/src/writer.rs
+  - docs/manual.zh_TW/07-dns.md
   - examples/emfor.toml
-  - tests/resolver/inside.sh
-  - crates/emfor-daemon/src/cli.rs
+  - tests/conformance/v1/cases.json
+  - README.md
+  - clients/rust/src/lib.rs
+  - clients/perl/README.md
+  - clients/rust/src/client.rs
+  - crates/emfor-format/src/lib.rs
+  - docs/manual.zh_TW/03-configuration.md
+  - crates/emfor-daemon/src/state.rs
+  - clients/c/README.md
+  - crates/emfor-daemon/src/select.rs
+  - crates/emfor-daemon/src/config.rs
+  - clients/python/README.md
+  - clients/rust/README.md
+  - docs/manual/06-clients.md
+  - docs/manual/07-dns.md
+  - CHANGELOG.md
+  - docs/manual/03-configuration.md
+  - crates/emfor-daemon/src/dns.rs
+  - docs/manual.zh_TW/06-clients.md
+  - docs/manual/05-backend-selection.md
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - crates/emfor-format/src/rules.rs
+  - clients/go/README.md
+  - clients/php/README.md
 tests:
-  - crates/emfor-daemon/tests/dns.rs
-  - crates/emfor-daemon/tests/metrics.rs
   - crates/emfor-daemon/tests/daemon.rs
-  - crates/emfor-daemon/tests/plugins.rs
+  - clients/rust/tests/conformance_capi.rs
 -->
 
 ---

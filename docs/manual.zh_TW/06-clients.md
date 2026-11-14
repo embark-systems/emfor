@@ -126,6 +126,10 @@ try {
 
 client 函式庫內含 daemon 自己的 LMDB build，而 store 的 lock 檔格式取決於它。`libemfor`（以及各語言包裝）要與 daemon 來自同一個 emfor 發行版，並一起升級。版本不符會以 `UNAVAILABLE` 呈現，訊息會說明原因。
 
+### store 格式版本
+
+daemon 寫入 store 格式版本 2，它新增了 backend 欄位 `backup`。這個發行版的 client 能讀版本 1 與 2，所以搭配較舊的 daemon 也能用；較舊的 client 讀到版本 2 的 store 時，每次查詢都會以 `INCOMPATIBLE` 失敗。升級時，請先升級主機上的 client（以及 `emfor status`），再升級 daemon。
+
 ## 效能
 
 單一執行緒一次查詢約 1–1.5 µs。吞吐量隨執行緒增加到大約四個為止，之後由 store 共用的 reader lock 決定速度（在 Linux 上合計約每秒兩百萬次查詢）。量測數據見 [docs/performance.md](../performance.md)。

@@ -106,6 +106,33 @@ every backend, nothing changes.
   peers still find the backend up (the reason starts with `local: `), so
   this host stops choosing it at once.
 
+## Backup backends
+
+A backend with `backup = true` is held back for when the others cannot
+serve, for example a replica in another data centre or a smaller machine.
+While the store is fresh, the candidates are the first of these that is
+not empty:
+
+1. the primary backends (not backups) whose last check passed;
+2. the backups whose last check passed;
+3. the healthy primary backends, failing ones included;
+4. the healthy backups, failing ones included.
+
+So backups take over as soon as no primary passes its checks, not only
+after the primaries turn unhealthy, and they give way again at a
+primary's next passed check. Within the chosen set, `balance` works as
+usual: `failover` takes the first backup in config order, `weighted`
+uses the backups' weights, and so on. `fastest` decides which backends
+are fast among the primaries and among the backups separately, so a fast
+backup does not push the primaries out of the pool. When no backend is
+healthy at all,
+`on_all_down` decides and primaries and backups count alike (see below).
+A stale store also uses every backend.
+
+DNS answers follow the same order; SRV records list only the chosen set.
+Backups need clients that read store format version 2 ([chapter
+6](06-clients.md#store-format-version)).
+
 ## Slow start
 
 A backend that comes back may have cold caches or connection pools. With

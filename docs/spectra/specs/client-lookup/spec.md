@@ -81,7 +81,7 @@ tests:
 A lookup that cannot return an address SHALL fail with exactly one of these codes, decided by the first step that fails, in this order:
 
 1. `UNAVAILABLE` — the store file cannot be opened (missing, permission denied, LMDB lock or data format different from the client's, any other open error), the key `meta/schema_version` is absent, or `EMFOR_MAX_STALENESS` holds an invalid value.
-2. `INCOMPATIBLE` — `meta/schema_version` is not `1`, `meta/heartbeat` is missing or not a decimal integer, or the service record cannot be parsed as a version 1 record. A `balance` string the client does not know SHALL NOT count as a parse failure (see "Unknown balance falls back to round-robin").
+2. `INCOMPATIBLE` — `meta/schema_version` is neither `1` nor `2`, `meta/heartbeat` is missing or not a decimal integer, or the service record cannot be parsed as a version 2 record. A `balance` string the client does not know SHALL NOT count as a parse failure (see "Unknown balance falls back to round-robin").
 3. `NOT_FOUND` — no `svc/<name>` key exists for the normalized name.
 4. `ALL_DOWN` — no backend is usable and the service's `on_all_down` is `closed`.
 
@@ -99,7 +99,7 @@ Each failure SHALL carry a human-readable message naming the cause. Each languag
 | store file does not exist | `UNAVAILABLE` |
 | store exists, `meta/schema_version` absent | `UNAVAILABLE` |
 | `EMFOR_MAX_STALENESS=fast` | `UNAVAILABLE` |
-| `meta/schema_version` = `2` | `INCOMPATIBLE` |
+| `meta/schema_version` = `3` | `INCOMPATIBLE` |
 | `meta/heartbeat` absent | `INCOMPATIBLE` |
 | `svc/api.svc.emfor` = `{not json` | `INCOMPATIBLE` |
 | `svc/api.svc.emfor` has `"balance":5` (not a string) | `INCOMPATIBLE` |
@@ -109,7 +109,7 @@ Each failure SHALL carry a human-readable message naming the cause. Each languag
 
 #### Scenario: Schema check wins over a missing service
 
-- **WHEN** `meta/schema_version` is `2` and the looked-up name has no record
+- **WHEN** `meta/schema_version` is `3` and the looked-up name has no record
 - **THEN** the lookup fails with `INCOMPATIBLE`, not `NOT_FOUND`
 
 #### Scenario: Missing store is retried
@@ -119,11 +119,45 @@ Each failure SHALL carry a human-readable message naming the cause. Each languag
 
 
 <!-- @trace
-source: emfor-balance-2
-updated: 2026-11-12
+source: emfor-backup-backends
+updated: 2026-11-14
 code:
-  - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - docs/manual.zh_TW/05-backend-selection.md
+  - clients/go/emfor.go
+  - crates/emfor-daemon/src/status.rs
+  - tests/conformance/v1/README.md
+  - clients/python/emfor/__init__.py
+  - crates/emfor-daemon/src/writer.rs
+  - docs/manual.zh_TW/07-dns.md
+  - examples/emfor.toml
+  - tests/conformance/v1/cases.json
+  - README.md
+  - clients/rust/src/lib.rs
+  - clients/perl/README.md
+  - clients/rust/src/client.rs
+  - crates/emfor-format/src/lib.rs
+  - docs/manual.zh_TW/03-configuration.md
+  - crates/emfor-daemon/src/state.rs
+  - clients/c/README.md
+  - crates/emfor-daemon/src/select.rs
+  - crates/emfor-daemon/src/config.rs
+  - clients/python/README.md
+  - clients/rust/README.md
+  - docs/manual/06-clients.md
+  - docs/manual/07-dns.md
+  - CHANGELOG.md
+  - docs/manual/03-configuration.md
+  - crates/emfor-daemon/src/dns.rs
+  - docs/manual.zh_TW/06-clients.md
+  - docs/manual/05-backend-selection.md
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - crates/emfor-format/src/rules.rs
+  - clients/go/README.md
+  - clients/php/README.md
+tests:
+  - crates/emfor-daemon/tests/daemon.rs
+  - clients/rust/tests/conformance_capi.rs
 -->
 
 ---
@@ -282,7 +316,7 @@ tests:
 ---
 ### Requirement: Candidates follow health and on_all_down
 
-When the store is fresh, the candidates SHALL be the passing backends, in config order: a backend is passing when its `state` is `healthy` and its `reason` is `null`, and failing when its `state` is `healthy` and its `reason` is not `null`. When the store is fresh and no backend is passing, the candidates SHALL be every `healthy` backend, failing ones included, in config order. When the store is stale, `reason` SHALL NOT affect the candidates. When no backend is a candidate (none healthy, or the store is stale), a service with `on_all_down = "closed"` SHALL fail with `ALL_DOWN`. A service with `on_all_down = "open"` SHALL then use, in config order: when the store is fresh and at least one backend is unknown and passing (`state` `unknown` and `reason` `null`), only those backends; otherwise, when the store is fresh and at least one backend's `state` is `unknown`, every `unknown` backend; otherwise every backend. When the store is stale, every backend SHALL be a candidate of an open service. The lookup SHALL NOT tell the caller that the result came from an all-down service or from a service whose healthy backends are all failing.
+A backend is passing when its `state` is `healthy` and its `reason` is `null`, failing when its `state` is `healthy` and its `reason` is not `null`, a backup when its `backup` is true, and primary otherwise. When the store is fresh, the candidates SHALL be, in config order, the first of these sets that is not empty: the passing primary backends (`state` `healthy`, `reason` `null`, `backup` false); when there are none, the passing backup backends (`backup` true); when there are none, every `healthy` primary backend, failing ones included; when there are none, every `healthy` backup backend, failing ones included. When the store is stale, `reason` SHALL NOT affect the candidates. When no backend is a candidate (none healthy, or the store is stale), a service with `on_all_down = "closed"` SHALL fail with `ALL_DOWN`. A service with `on_all_down = "open"` SHALL then use, in config order: when the store is fresh and at least one backend is unknown and passing (`state` `unknown` and `reason` `null`), only those backends; otherwise, when the store is fresh and at least one backend's `state` is `unknown`, every `unknown` backend; otherwise every backend. When the store is stale, every backend SHALL be a candidate of an open service. The lookup SHALL NOT tell the caller that the result came from an all-down service or from a service whose healthy backends are all failing.
 
 #### Scenario: Unhealthy backends are skipped
 
@@ -324,6 +358,16 @@ When the store is fresh, the candidates SHALL be the passing backends, in config
 - **WHEN** a stale failover service with `on_all_down = "open"` lists `10.0.1.5:5432` (`healthy`, reason `timeout`) then `10.0.1.6:5432` (`healthy`, reason `null`)
 - **THEN** the lookup returns `10.0.1.5:5432`
 
+#### Scenario: Backup takes over while no primary passes
+
+- **WHEN** a fresh round-robin service with `on_all_down = "closed"` lists `10.0.1.5:5432` (`healthy`, reason `timeout`), backup `10.0.2.5:5432` (`healthy`, reason `null`) and backup `10.0.2.6:5432` (`healthy`, reason `null`)
+- **THEN** consecutive lookups return `10.0.2.5:5432` and `10.0.2.6:5432` and never `10.0.1.5:5432`
+
+#### Scenario: Primary passes again
+
+- **WHEN** the same service's `10.0.1.5:5432` has reason `null` again
+- **THEN** every lookup returns `10.0.1.5:5432`
+
 ##### Example: candidates by state, reason and heartbeat
 
 | Backends in config order (state, reason) | Heartbeat | `on_all_down` | Candidates |
@@ -339,24 +383,53 @@ When the store is fresh, the candidates SHALL be the passing backends, in config
 | A (unhealthy, "refused"), B (unknown, null) | stale | open | A, B |
 | A (healthy, "refused"), B (healthy, null) | stale | open | A, B |
 | A (healthy, "refused"), B (healthy, null) | stale | closed | none: `ALL_DOWN` |
+| A (healthy, "timeout"), B backup (healthy, null) | fresh | closed | B |
+| A (healthy, "timeout"), B backup (healthy, "refused") | fresh | closed | A |
+| A (unhealthy, "refused"), B backup (healthy, "refused") | fresh | closed | B |
+| A (unhealthy, "refused"), B backup (unknown, null) | fresh | open | B |
+| A (healthy, null), B backup (healthy, null) | stale | open | A, B |
 
 
 <!-- @trace
-source: emfor-open-prefers-unknown
+source: emfor-backup-backends
 updated: 2026-11-14
 code:
-  - tests/conformance/v1/cases.json
   - docs/manual.zh_TW/05-backend-selection.md
-  - docs/manual/07-dns.md
-  - crates/emfor-format/src/rules.rs
-  - docs/manual.zh_TW/01-concepts.md
-  - crates/emfor-daemon/src/select.rs
-  - clients/rust/src/select.rs
-  - CHANGELOG.md
-  - docs/manual/05-backend-selection.md
-  - docs/deploy/dns-resolver.md
+  - clients/go/emfor.go
+  - crates/emfor-daemon/src/status.rs
+  - tests/conformance/v1/README.md
+  - clients/python/emfor/__init__.py
+  - crates/emfor-daemon/src/writer.rs
   - docs/manual.zh_TW/07-dns.md
-  - docs/manual/01-concepts.md
+  - examples/emfor.toml
+  - tests/conformance/v1/cases.json
+  - README.md
+  - clients/rust/src/lib.rs
+  - clients/perl/README.md
+  - clients/rust/src/client.rs
+  - crates/emfor-format/src/lib.rs
+  - docs/manual.zh_TW/03-configuration.md
+  - crates/emfor-daemon/src/state.rs
+  - clients/c/README.md
+  - crates/emfor-daemon/src/select.rs
+  - crates/emfor-daemon/src/config.rs
+  - clients/python/README.md
+  - clients/rust/README.md
+  - docs/manual/06-clients.md
+  - docs/manual/07-dns.md
+  - CHANGELOG.md
+  - docs/manual/03-configuration.md
+  - crates/emfor-daemon/src/dns.rs
+  - docs/manual.zh_TW/06-clients.md
+  - docs/manual/05-backend-selection.md
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - crates/emfor-format/src/rules.rs
+  - clients/go/README.md
+  - clients/php/README.md
+tests:
+  - crates/emfor-daemon/tests/daemon.rs
+  - clients/rust/tests/conformance_capi.rs
 -->
 
 ---

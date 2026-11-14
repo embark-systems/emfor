@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 
-use emfor_format::{SCHEMA_VERSION, ServiceRecord, service_key};
+use emfor_format::{READABLE_SCHEMA_VERSIONS, ServiceRecord, readable_schema, service_key};
 
 use crate::select::{candidates, is_stale, normalize, pick_at, pool_candidates};
 use crate::store::{Env, Snapshot};
@@ -192,11 +192,11 @@ impl Client {
                 format!("store {path} is not initialized: meta/schema_version is missing"),
             )
         })?;
-        if schema != SCHEMA_VERSION.to_string() {
+        if !readable_schema(&schema) {
             return Err(Error::new(
                 ErrorCode::Incompatible,
                 format!(
-                    "store {path} has format version {schema:?}; this client reads version {SCHEMA_VERSION}"
+                    "store {path} has format version {schema:?}; this client reads versions {READABLE_SCHEMA_VERSIONS}"
                 ),
             ));
         }
@@ -302,15 +302,15 @@ mod tests {
                 Unavailable,
             ),
             (
-                "schema_version 2",
-                Some(serde_json::json!({"schema_version": "2", "services": [ok()]})),
+                "schema_version 3",
+                Some(serde_json::json!({"schema_version": "3", "services": [ok()]})),
                 Ok(3000),
                 "api.svc.emfor",
                 Incompatible,
             ),
             (
                 "schema wins over missing service",
-                Some(serde_json::json!({"schema_version": "2"})),
+                Some(serde_json::json!({"schema_version": "3"})),
                 Ok(3000),
                 "nope.svc.emfor",
                 Incompatible,

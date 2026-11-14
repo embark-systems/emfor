@@ -40,7 +40,7 @@ pub enum ErrorCode { Unavailable, Incompatible, NotFound, AllDown }
 | Code | Meaning |
 | --- | --- |
 | `UNAVAILABLE` | The store cannot be used: it does not exist or cannot be opened, its LMDB format differs from this library's (install `libemfor` from the same emfor release as the daemon), it is not initialized, or `EMFOR_MAX_STALENESS` is invalid. |
-| `INCOMPATIBLE` | The store's format version is not 1, or a record cannot be parsed. |
+| `INCOMPATIBLE` | The store's format version is neither 1 nor 2, or a record cannot be parsed. |
 | `NOT_FOUND` | The store has no such service. |
 | `ALL_DOWN` | The service has no healthy backend and `on_all_down = "closed"`. |
 

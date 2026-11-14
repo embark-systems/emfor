@@ -183,7 +183,7 @@ code:
 ---
 ### Requirement: SRV answers
 
-For an SRV query on a service name or on one of its SRV owner names, the server SHALL take as candidates the service's backends of both address families in config order, keeping only passing backends (`state` `healthy` and `reason` `null`) when at least one backend is passing, and otherwise only healthy backends, failing ones (`state` `healthy` and `reason` not `null`) included, when at least one backend is healthy. When no backend is healthy and `on_all_down` is `open`, the candidates SHALL be the backends whose `state` is `unknown` and `reason` is `null` when there is at least one, otherwise every `unknown` backend when there is at least one, otherwise every backend; when no backend is healthy and `on_all_down` is `closed`, the server SHALL return SERVFAIL. The server SHALL return NOERROR with the AA flag and one SRV record per candidate, whose owner is the query name as received, whose port is the backend's port, whose target is the backend's target name, and whose TTL equals the service's `dns_ttl` when set, otherwise `[dns] ttl`. Priority, weight and record order SHALL follow the service's `balance`:
+For an SRV query on a service name or on one of its SRV owner names, the server SHALL take as candidates the service's backends of both address families in config order, keeping the first of these sets that is not empty: the passing primary backends (`state` `healthy`, `reason` `null`, `backup` false), the passing backup backends (`backup` true), the healthy primary backends, failing ones (`state` `healthy` and `reason` not `null`) included, and the healthy backup backends, failing ones included. When no backend is healthy and `on_all_down` is `open`, the candidates SHALL be the backends whose `state` is `unknown` and `reason` is `null` when there is at least one, otherwise every `unknown` backend when there is at least one, otherwise every backend; when no backend is healthy and `on_all_down` is `closed`, the server SHALL return SERVFAIL. The server SHALL return NOERROR with the AA flag and one SRV record per candidate, whose owner is the query name as received, whose port is the backend's port, whose target is the backend's target name, and whose TTL equals the service's `dns_ttl` when set, otherwise `[dns] ttl`. Priority, weight and record order SHALL follow the service's `balance`:
 
 - `failover`: priority equals the candidate's position among the candidates (0 for the first), weight 1, config order.
 - `weighted`: priority 0, weight equals the backend's `weight`, config order.
@@ -248,6 +248,11 @@ The additional section SHALL contain one A or AAAA record per distinct target na
 - **WHEN** a `failover` service `api.svc.emfor` has backends `10.0.0.11:8080` (unhealthy), `10.0.0.12:8080` (healthy, reason `timeout`), `10.0.0.13:8080` (healthy, reason `timeout`) in config order, and a client queries SRV
 - **THEN** the answer is `0 1 8080 10-0-0-12.api.svc.emfor.` followed by `1 1 8080 10-0-0-13.api.svc.emfor.`
 
+#### Scenario: Backups listed only while no primary passes
+
+- **WHEN** a `failover` service `api.svc.emfor` has backends `10.0.0.11:8080` (healthy, reason `timeout`), backup `10.0.1.11:8080` (healthy, reason `null`) and backup `10.0.1.12:8080` (healthy, reason `null`) in config order, and a client queries SRV
+- **THEN** the answer is `0 1 8080 10-0-1-11.api.svc.emfor.` followed by `1 1 8080 10-0-1-12.api.svc.emfor.`, and once `10.0.0.11:8080` passes again the answer is only `0 1 8080 10-0-0-11.api.svc.emfor.`
+
 #### Scenario: All down closed
 
 - **WHEN** every backend of a service is unhealthy and `on_all_down = "closed"`
@@ -275,21 +280,45 @@ The additional section SHALL contain one A or AAAA record per distinct target na
 
 
 <!-- @trace
-source: emfor-open-prefers-unknown
+source: emfor-backup-backends
 updated: 2026-11-14
 code:
-  - tests/conformance/v1/cases.json
   - docs/manual.zh_TW/05-backend-selection.md
-  - docs/manual/07-dns.md
-  - crates/emfor-format/src/rules.rs
-  - docs/manual.zh_TW/01-concepts.md
-  - crates/emfor-daemon/src/select.rs
-  - clients/rust/src/select.rs
-  - CHANGELOG.md
-  - docs/manual/05-backend-selection.md
-  - docs/deploy/dns-resolver.md
+  - clients/go/emfor.go
+  - crates/emfor-daemon/src/status.rs
+  - tests/conformance/v1/README.md
+  - clients/python/emfor/__init__.py
+  - crates/emfor-daemon/src/writer.rs
   - docs/manual.zh_TW/07-dns.md
-  - docs/manual/01-concepts.md
+  - examples/emfor.toml
+  - tests/conformance/v1/cases.json
+  - README.md
+  - clients/rust/src/lib.rs
+  - clients/perl/README.md
+  - clients/rust/src/client.rs
+  - crates/emfor-format/src/lib.rs
+  - docs/manual.zh_TW/03-configuration.md
+  - crates/emfor-daemon/src/state.rs
+  - clients/c/README.md
+  - crates/emfor-daemon/src/select.rs
+  - crates/emfor-daemon/src/config.rs
+  - clients/python/README.md
+  - clients/rust/README.md
+  - docs/manual/06-clients.md
+  - docs/manual/07-dns.md
+  - CHANGELOG.md
+  - docs/manual/03-configuration.md
+  - crates/emfor-daemon/src/dns.rs
+  - docs/manual.zh_TW/06-clients.md
+  - docs/manual/05-backend-selection.md
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - crates/emfor-format/src/rules.rs
+  - clients/go/README.md
+  - clients/php/README.md
+tests:
+  - crates/emfor-daemon/tests/daemon.rs
+  - clients/rust/tests/conformance_capi.rs
 -->
 
 ---

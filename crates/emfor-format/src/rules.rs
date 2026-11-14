@@ -7,14 +7,16 @@ use crate::{BackendRecord, Balance, HealthState, OnAllDown};
 
 /// The entries of `list` that may be chosen, in their order:
 ///
-/// 1. the passing ones (`healthy` with no `reason`: the last check was up),
-///    when there are any;
-/// 2. otherwise the healthy ones, failing ones (`healthy` with a `reason`)
-///    included, when there are any;
-/// 3. otherwise, when `on_all_down` is `open`, the passing unknown ones
-///    (`unknown` with no `reason`), when there are any;
-/// 4. otherwise, when `open`, every `unknown` one, when there are any;
-/// 5. otherwise every entry when `open`, or `None` (all down) when
+/// 1. the passing primary ones (`healthy` with no `reason`: the last check
+///    was up; `backup` false), when there are any;
+/// 2. otherwise the passing backup ones (`backup` true);
+/// 3. otherwise the healthy primary ones, failing ones (`healthy` with a
+///    `reason`) included;
+/// 4. otherwise the healthy backup ones, failing ones included;
+/// 5. otherwise, when `on_all_down` is `open`, the passing unknown ones
+///    (`unknown` with no `reason`), primary and backup alike;
+/// 6. otherwise, when `open`, every `unknown` one;
+/// 7. otherwise every entry when `open`, or `None` (all down) when
 ///    `on_all_down` is `closed` or `list` is empty.
 ///
 /// `backend` gives each entry's record; `trust_health` false (a stale
@@ -31,16 +33,19 @@ pub fn healthy_or_all<'a, T: Copy>(
         .copied()
         .filter(|&t| trust_health && backend(t).state == HealthState::Healthy)
         .collect();
-    let passing: Vec<T> = healthy
-        .iter()
-        .copied()
-        .filter(|&t| backend(t).reason.is_none())
-        .collect();
-    if !passing.is_empty() {
-        return Some(passing);
-    }
-    if !healthy.is_empty() {
-        return Some(healthy);
+    let tiers: [(bool, bool); 4] = [(true, false), (true, true), (false, false), (false, true)];
+    for (passing_only, backup) in tiers {
+        let tier: Vec<T> = healthy
+            .iter()
+            .copied()
+            .filter(|&t| {
+                let b = backend(t);
+                b.backup == backup && (!passing_only || b.reason.is_none())
+            })
+            .collect();
+        if !tier.is_empty() {
+            return Some(tier);
+        }
     }
     if on_all_down != OnAllDown::Open || list.is_empty() {
         return None;
@@ -154,6 +159,7 @@ mod tests {
             checked_at: None,
             reason: None,
             latency_us: None,
+            backup: false,
             recovered_at: None,
         }
     }
@@ -205,6 +211,21 @@ mod tests {
         let unknown_passing = [&da, &ut, &uc];
         let unknown_failing = [&da, &ut, &ur];
         let two_down = [&da, &db];
+        // Backups (B is 10.0.0.2:80 marked `backup`).
+        let backup = |mut r: BackendRecord| {
+            r.backup = true;
+            r
+        };
+        let (bp, bf, bu) = (
+            backup(b("10.0.0.2:80", Healthy, None)),
+            backup(failing("10.0.0.2:80", "refused")),
+            backup(b("10.0.0.2:80", Unknown, None)),
+        );
+        let failing_primary_passing_backup = [&fa, &bp];
+        let both_failing = [&fa, &bf];
+        let down_primary_failing_backup = [&da, &bf];
+        let down_primary_unknown_backup = [&da, &bu];
+        let passing_both = [&pa, &bp];
         let both = [&up, &down];
         let only_down = [&down];
         type Case<'a> = (
@@ -276,6 +297,42 @@ mod tests {
                 Some(vec!["10.0.0.1:80", "10.0.0.2:80"]),
             ),
             (&mixed, OnAllDown::Closed, false, None),
+            (
+                &failing_primary_passing_backup,
+                OnAllDown::Closed,
+                true,
+                Some(vec!["10.0.0.2:80"]),
+            ),
+            (
+                &both_failing,
+                OnAllDown::Closed,
+                true,
+                Some(vec!["10.0.0.1:80"]),
+            ),
+            (
+                &down_primary_failing_backup,
+                OnAllDown::Closed,
+                true,
+                Some(vec!["10.0.0.2:80"]),
+            ),
+            (
+                &down_primary_unknown_backup,
+                OnAllDown::Open,
+                true,
+                Some(vec!["10.0.0.2:80"]),
+            ),
+            (
+                &passing_both,
+                OnAllDown::Open,
+                false,
+                Some(vec!["10.0.0.1:80", "10.0.0.2:80"]),
+            ),
+            (
+                &passing_both,
+                OnAllDown::Closed,
+                true,
+                Some(vec!["10.0.0.1:80"]),
+            ),
         ];
         for (list, mode, trust, want) in cases {
             let got = ids(healthy_or_all(*mode, list, *trust, |r| r));

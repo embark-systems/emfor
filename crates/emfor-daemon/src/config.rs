@@ -303,16 +303,19 @@ pub struct Backend {
     pub weight: u32,
     /// Lowercased `site` label; used by `locality`.
     pub site: Option<String>,
+    /// `backup = true`: used only while no primary backend passes.
+    pub backup: bool,
 }
 
 impl Backend {
-    /// A backend with weight 1 and no site.
+    /// A primary backend with weight 1 and no site.
     pub fn new(addr: SocketAddr) -> Backend {
         Backend {
             id: addr.to_string(),
             addr,
             weight: 1,
             site: None,
+            backup: false,
         }
     }
 }
@@ -1228,7 +1231,7 @@ impl Validator {
             Some(_) => {
                 self.err(
                     &bpath,
-                    "must be an array of \"ip:port\" strings or { addr, weight, site } tables",
+                    "must be an array of \"ip:port\" strings or { addr, weight, site, backup } tables",
                 );
                 return None;
             }
@@ -1238,10 +1241,18 @@ impl Validator {
         let mut seen = HashSet::new();
         for (i, item) in items.iter().enumerate() {
             let ipath = format!("{bpath}[{i}]");
-            let (s, weight, site) = match item {
-                toml::Value::String(s) => (s.as_str(), 1, None),
+            let (s, weight, site, backup) = match item {
+                toml::Value::String(s) => (s.as_str(), 1, None, false),
                 toml::Value::Table(bt) => {
-                    self.unknown_keys(bt, &ipath, &["addr", "weight", "site"]);
+                    self.unknown_keys(bt, &ipath, &["addr", "weight", "site", "backup"]);
+                    let backup = match bt.get("backup") {
+                        None => false,
+                        Some(toml::Value::Boolean(b)) => *b,
+                        Some(_) => {
+                            self.err(key_path(&ipath, "backup"), "backup must be true or false");
+                            false
+                        }
+                    };
                     let weight = match bt.get("weight") {
                         None => 1,
                         Some(toml::Value::Integer(w)) if (1..=100).contains(w) => *w as u32,
@@ -1252,7 +1263,7 @@ impl Validator {
                     };
                     let site = self.site(bt, &ipath);
                     match bt.get("addr") {
-                        Some(toml::Value::String(a)) => (a.as_str(), weight, site),
+                        Some(toml::Value::String(a)) => (a.as_str(), weight, site, backup),
                         Some(_) => {
                             self.err(key_path(&ipath, "addr"), "must be a string");
                             continue;
@@ -1276,6 +1287,7 @@ impl Validator {
                         out.push(Backend {
                             weight,
                             site,
+                            backup,
                             ..Backend::new(addr)
                         });
                     }
@@ -1285,6 +1297,9 @@ impl Validator {
                     format!("backend \"{s}\" must be an IP literal with port: IPv4:port or [IPv6]:port, port 1-65535"),
                 ),
             }
+        }
+        if self.errors.len() == before && out.iter().all(|b| b.backup) {
+            self.err(&bpath, "at least one backend must not be a backup");
         }
         (self.errors.len() == before).then_some(out)
     }
@@ -1656,6 +1671,41 @@ backends = ["10.0.0.1:80"]
         assert_eq!(c.services[0].name, "api.svc.emfor");
         assert_eq!(c.services[0].settings.balance, Balance::RoundRobin);
         assert_eq!(c.services[1].settings.balance, Balance::Failover);
+    }
+
+    /// Spec "Host site and backend weight and site", scenarios "Backup
+    /// backends" and "Only backup backends", example "backup values".
+    #[test]
+    fn backup_backends() {
+        let svc = |backends: &str| {
+            format!("[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = {backends}\n")
+        };
+        let c = parse_ok(&svc(
+            r#"["10.0.0.10:8080", { addr = "10.0.1.10:8080", backup = true }]"#,
+        ));
+        let b = &c.services[0].backends;
+        assert!(!b[0].backup);
+        assert!(b[1].backup);
+        for (value, backup) in [
+            ("", false),
+            (", backup = false", false),
+            (", backup = true", true),
+        ] {
+            let c = parse_ok(&svc(&format!(
+                r#"["10.0.0.1:80", {{ addr = "10.0.1.1:80"{value} }}]"#
+            )));
+            assert_eq!(c.services[0].backends[1].backup, backup, "{value:?}");
+        }
+        let e = parse_err(&svc(
+            r#"["10.0.0.1:80", { addr = "10.0.1.1:80", backup = "yes" }]"#,
+        ));
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(e[0].path, r#"services."api.svc.emfor".backends[1].backup"#);
+        assert_eq!(e[0].message, "backup must be true or false");
+        let e = parse_err(&svc(r#"[{ addr = "10.0.1.10:8080", backup = true }]"#));
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(e[0].path, r#"services."api.svc.emfor".backends"#);
+        assert_eq!(e[0].message, "at least one backend must not be a backup");
     }
 
     /// Spec "Slow start setting", scenario "Default and override" and

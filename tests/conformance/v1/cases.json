@@ -279,7 +279,7 @@
     "max_staleness": "1500ms"
   },
   {
-    "case": "schema_version 2 wins over a missing service",
+    "case": "schema_version 3 wins over a missing service",
     "store": {
       "heartbeat": "fresh",
       "services": [
@@ -301,7 +301,7 @@
         }
       ],
       "raw": {},
-      "schema_version": "2"
+      "schema_version": "3"
     },
     "max_staleness_ms": 3000,
     "lookups": [
@@ -2090,6 +2090,74 @@
     ]
   },
   {
+    "case": "fastest with a faster backup: the pool holds the fastest of each tier",
+    "store": {
+      "heartbeat": "fresh",
+      "services": [
+        {
+          "name": "api.svc.emfor",
+          "on_all_down": "open",
+          "balance": "fastest",
+          "all_down": false,
+          "backends": [
+            {
+              "id": "10.0.0.11:8080",
+              "ip": "10.0.0.11",
+              "port": 8080,
+              "weight": 1,
+              "site": null,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": 20000,
+              "backup": false
+            },
+            {
+              "id": "10.0.0.12:8080",
+              "ip": "10.0.0.12",
+              "port": 8080,
+              "weight": 1,
+              "site": null,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": 100000,
+              "backup": false
+            },
+            {
+              "id": "10.0.0.13:8080",
+              "ip": "10.0.0.13",
+              "port": 8080,
+              "weight": 1,
+              "site": null,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": 2000,
+              "backup": true
+            }
+          ],
+          "pool": [
+            "10.0.0.11:8080",
+            "10.0.0.13:8080"
+          ]
+        }
+      ],
+      "raw": {},
+      "schema_version": "2"
+    },
+    "max_staleness_ms": 3000,
+    "lookups": [
+      {
+        "name": "api.svc.emfor",
+        "affinity_key": "user-42",
+        "expect_counts": {
+          "10.0.0.11:8080": 4
+        }
+      }
+    ]
+  },
+  {
     "case": "fastest with an empty pool is round-robin",
     "store": {
       "heartbeat": "fresh",
@@ -2799,6 +2867,261 @@
       {
         "name": "db.svc.emfor",
         "expect_error": "ALL_DOWN"
+      }
+    ]
+  },
+  {
+    "case": "backup takes over while no primary passes",
+    "store": {
+      "heartbeat": "fresh",
+      "services": [
+        {
+          "name": "db.svc.emfor",
+          "on_all_down": "closed",
+          "balance": "round-robin",
+          "all_down": false,
+          "slow_start_ms": 0,
+          "backends": [
+            {
+              "id": "10.0.1.5:5432",
+              "ip": "10.0.1.5",
+              "port": 5432,
+              "weight": 1,
+              "site": null,
+              "backup": false,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": "timeout",
+              "latency_us": null,
+              "recovered_at": null
+            },
+            {
+              "id": "10.0.2.5:5432",
+              "ip": "10.0.2.5",
+              "port": 5432,
+              "weight": 1,
+              "site": null,
+              "backup": true,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null,
+              "recovered_at": null
+            },
+            {
+              "id": "10.0.2.6:5432",
+              "ip": "10.0.2.6",
+              "port": 5432,
+              "weight": 1,
+              "site": null,
+              "backup": true,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null,
+              "recovered_at": null
+            }
+          ]
+        }
+      ],
+      "raw": {},
+      "schema_version": "2"
+    },
+    "max_staleness_ms": 3000,
+    "lookups": [
+      {
+        "name": "db.svc.emfor",
+        "expect_counts": {
+          "10.0.2.5:5432": 2,
+          "10.0.2.6:5432": 2
+        }
+      }
+    ]
+  },
+  {
+    "case": "primary passes again: backups are not used",
+    "store": {
+      "heartbeat": "fresh",
+      "services": [
+        {
+          "name": "db.svc.emfor",
+          "on_all_down": "closed",
+          "balance": "round-robin",
+          "all_down": false,
+          "slow_start_ms": 0,
+          "backends": [
+            {
+              "id": "10.0.1.5:5432",
+              "ip": "10.0.1.5",
+              "port": 5432,
+              "weight": 1,
+              "site": null,
+              "backup": false,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null,
+              "recovered_at": null
+            },
+            {
+              "id": "10.0.2.5:5432",
+              "ip": "10.0.2.5",
+              "port": 5432,
+              "weight": 1,
+              "site": null,
+              "backup": true,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null,
+              "recovered_at": null
+            },
+            {
+              "id": "10.0.2.6:5432",
+              "ip": "10.0.2.6",
+              "port": 5432,
+              "weight": 1,
+              "site": null,
+              "backup": true,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null,
+              "recovered_at": null
+            }
+          ]
+        }
+      ],
+      "raw": {},
+      "schema_version": "2"
+    },
+    "max_staleness_ms": 3000,
+    "lookups": [
+      {
+        "name": "db.svc.emfor",
+        "expect_counts": {
+          "10.0.1.5:5432": 3
+        }
+      }
+    ]
+  },
+  {
+    "case": "failover in the backup tier returns the first passing backup",
+    "store": {
+      "heartbeat": "fresh",
+      "services": [
+        {
+          "name": "db.svc.emfor",
+          "on_all_down": "closed",
+          "balance": "failover",
+          "all_down": false,
+          "slow_start_ms": 0,
+          "backends": [
+            {
+              "id": "10.0.1.5:5432",
+              "ip": "10.0.1.5",
+              "port": 5432,
+              "weight": 1,
+              "site": null,
+              "backup": false,
+              "state": "unhealthy",
+              "checked_at": 1794455158107,
+              "reason": "refused",
+              "latency_us": null,
+              "recovered_at": null
+            },
+            {
+              "id": "10.0.2.5:5432",
+              "ip": "10.0.2.5",
+              "port": 5432,
+              "weight": 1,
+              "site": null,
+              "backup": true,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null,
+              "recovered_at": null
+            },
+            {
+              "id": "10.0.2.6:5432",
+              "ip": "10.0.2.6",
+              "port": 5432,
+              "weight": 1,
+              "site": null,
+              "backup": true,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null,
+              "recovered_at": null
+            }
+          ]
+        }
+      ],
+      "raw": {},
+      "schema_version": "2"
+    },
+    "max_staleness_ms": 3000,
+    "lookups": [
+      {
+        "name": "db.svc.emfor",
+        "expect": "10.0.2.5:5432"
+      }
+    ]
+  },
+  {
+    "case": "schema_version 2 store without backups",
+    "store": {
+      "heartbeat": "fresh",
+      "services": [
+        {
+          "name": "db.svc.emfor",
+          "on_all_down": "closed",
+          "balance": "round-robin",
+          "all_down": false,
+          "slow_start_ms": 0,
+          "backends": [
+            {
+              "id": "10.0.1.5:5432",
+              "ip": "10.0.1.5",
+              "port": 5432,
+              "weight": 1,
+              "site": null,
+              "backup": false,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null,
+              "recovered_at": null
+            },
+            {
+              "id": "10.0.1.6:5432",
+              "ip": "10.0.1.6",
+              "port": 5432,
+              "weight": 1,
+              "site": null,
+              "backup": false,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null,
+              "latency_us": null,
+              "recovered_at": null
+            }
+          ]
+        }
+      ],
+      "raw": {},
+      "schema_version": "2"
+    },
+    "max_staleness_ms": 3000,
+    "lookups": [
+      {
+        "name": "db.svc.emfor",
+        "expect_counts": {
+          "10.0.1.5:5432": 2,
+          "10.0.1.6:5432": 2
+        }
       }
     ]
   }

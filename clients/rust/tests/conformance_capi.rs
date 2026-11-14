@@ -180,15 +180,15 @@ fn conformance_and_status_mapping_through_the_c_api() {
         .unwrap();
     assert_eq!(other, "");
 
-    // Store cannot be opened, and schema version 2.
+    // Store cannot be opened, and schema version 3.
     use_store(dir.path().join("missing.mdb"), "3s");
     assert_eq!(
         c_lookup(Some("api.svc.emfor"), None, 64).0,
         emfor_status::EMFOR_UNAVAILABLE
     );
     let mut store = support::store_json();
-    store["schema_version"] = json!("2");
-    let path = dir.path().join("v2.mdb");
+    store["schema_version"] = json!("3");
+    let path = dir.path().join("v3.mdb");
     emfor_fixture::write_store(&store, 3000, emfor_fixture::now_ms(), &path).unwrap();
     use_store(&path, "3s");
     assert_eq!(

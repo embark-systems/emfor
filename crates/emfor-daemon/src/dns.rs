@@ -451,6 +451,7 @@ mod tests {
                     checked_at: None,
                     reason: None,
                     latency_us: None,
+                    backup: false,
                     recovered_at: None,
                 })
                 .collect(),
@@ -868,6 +869,7 @@ mod tests {
                     checked_at: None,
                     reason: None,
                     latency_us: None,
+                    backup: false,
                     recovered_at: None,
                 }
             })

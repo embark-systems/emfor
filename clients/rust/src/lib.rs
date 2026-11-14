@@ -39,7 +39,7 @@ pub enum ErrorCode {
     /// from this client's, it is not initialized, or the client's
     /// environment setting is invalid.
     Unavailable,
-    /// The store's format version is not 1, or a value cannot be parsed.
+    /// The store's format version is neither 1 nor 2, or a value cannot be parsed.
     Incompatible,
     /// No service has that name.
     NotFound,

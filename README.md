@@ -123,7 +123,7 @@ Linux and FreeBSD are the deployment platforms; macOS is for development. FreeBS
 | Path | Contents |
 | --- | --- |
 | `crates/emfor-daemon` | The daemon and the `emfor` command |
-| `crates/emfor-format` | State store keys and record format (version 1) |
+| `crates/emfor-format` | State store keys and record format (version 2) |
 | `crates/emfor-check` | The `emfor-check` plugin program |
 | `crates/emfor-plugin` | Writing plugins in Rust |
 | `crates/emfor-tls` | TLS shared by the `tcp` checker and `emfor-check` |

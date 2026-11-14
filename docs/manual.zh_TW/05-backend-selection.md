@@ -68,6 +68,19 @@ backend 要連續失敗 `fall` 次才會轉為不健康；在那之前它仍是�
 - 使用 `sticky` 時，正在失敗的 backend 的 key 會改對到其他候選，在它下一次檢查通過後回來。
 - 在 peer group 中，即使 peer 仍判定 backend 為 up，本機自己的檢查失敗也算數（`reason` 以 `local: ` 開頭），所以本機會立即不再選它。
 
+## 備援 backend
+
+`backup = true` 的 backend 保留給其他 backend 都不能用的時候，例如另一個資料中心的副本或規格較小的機器。store 新鮮時，候選依下列順序，取第一個不是空的集合：
+
+1. 最近一次檢查通過的主要 backend（不是備援的）；
+2. 最近一次檢查通過的備援；
+3. 健康的主要 backend，正在失敗的也算；
+4. 健康的備援，正在失敗的也算。
+
+所以只要沒有主要 backend 通過檢查，備援就接手，不必等主要 backend 轉為不健康；主要 backend 下一次通過時，備援就讓回去。在選出的集合中，`balance` 照常運作：`failover` 取設定檔順序的第一台備援，`weighted` 用備援的權重，依此類推。`fastest` 在主要 backend 與備援之間各自判斷哪些夠快，所以很快的備援不會把主要 backend 擠出 pool。完全沒有健康的 backend 時由 `on_all_down` 決定，主要與備援一視同仁（見下文）。過期的 store 也用全部 backend。
+
+DNS 回答依同樣的順序；SRV 記錄只列出選出的集合。使用備援需要能讀 store 格式版本 2 的 client（[第 6 章](06-clients.md#store-格式版本)）。
+
 ## 慢啟動（slow start）
 
 剛恢復的 backend 可能快取還是冷的、連線池還沒建立。設定 `slow_start`（例如 `slow_start = "30s"`）後，從 `unhealthy` 轉為 `healthy` 的 backend 會在這段時間內逐步增加分到的流量，而不是立刻拿到全部份額。

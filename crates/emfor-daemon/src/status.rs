@@ -26,8 +26,8 @@ use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyM
 use crossterm::{cursor, terminal};
 use emfor_format::{
     HIST_KEY_PREFIX, HealthState, HistoryEntry, KEY_DNS_LISTEN, KEY_HEARTBEAT, KEY_METRICS_LISTEN,
-    KEY_PEERS, KEY_SCHEMA_VERSION, KEY_SITE, KEY_STARTED_AT, SCHEMA_VERSION, SERVICE_KEY_PREFIX,
-    ServiceHistory, ServiceRecord,
+    KEY_PEERS, KEY_SCHEMA_VERSION, KEY_SITE, KEY_STARTED_AT, READABLE_SCHEMA_VERSIONS,
+    SERVICE_KEY_PREFIX, ServiceHistory, ServiceRecord,
 };
 use futures::StreamExt;
 use heed::types::Str;
@@ -169,10 +169,10 @@ impl Reader {
         let number = |v: Option<&str>| v.and_then(|s| s.parse::<u64>().ok());
 
         match get(KEY_SCHEMA_VERSION)? {
-            Some(v) if v == SCHEMA_VERSION.to_string() => {}
+            Some(v) if emfor_format::readable_schema(v) => {}
             v => {
                 return Err(Failure(format!(
-                    "store format version {}; this emfor reads version {SCHEMA_VERSION}",
+                    "store format version {}; this emfor reads versions {READABLE_SCHEMA_VERSIONS}",
                     v.unwrap_or("(missing)")
                 )));
             }
@@ -2169,6 +2169,37 @@ mod tests {
             ]
         );
         assert!(lines[1].starts_with("daemon: running"));
+    }
+
+    /// Spec "Status reads the store read-only": versions 1 and 2 are read,
+    /// any other is refused with a message naming both.
+    #[test]
+    fn reader_reads_versions_1_and_2() {
+        for (version, ok) in [("1", true), ("2", true), ("3", false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let cfg = crate::store::tests::cfg(dir.path());
+            let store = crate::store::Store::open(&cfg).unwrap();
+            store
+                .write(|txn, db| {
+                    db.put(txn, KEY_SCHEMA_VERSION, version)?;
+                    db.put(txn, KEY_HEARTBEAT, "1")?;
+                    Ok(())
+                })
+                .unwrap();
+            drop(store);
+            match Reader::open(&cfg).unwrap().read() {
+                Ok(_) => assert!(ok, "version {version} read"),
+                Err(Failure(m)) => {
+                    assert!(!ok, "version {version}: {m}");
+                    assert_eq!(
+                        m,
+                        format!(
+                            "store format version {version}; this emfor reads versions 1 and 2"
+                        )
+                    );
+                }
+            }
+        }
     }
 
     /// Spec "Status reads the store read-only" with history: what one read

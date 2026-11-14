@@ -61,7 +61,7 @@ class UnavailableError(Error):
 
 
 class IncompatibleError(Error):
-    """The store's format version is not 1, or a record cannot be parsed."""
+    """The store's format version is neither 1 nor 2, or a record cannot be parsed."""
 
     code = "INCOMPATIBLE"
 

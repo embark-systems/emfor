@@ -48,7 +48,7 @@ TTL 是服務的 `dns_ttl`，否則為 `[dns] ttl`（預設 1 秒）。zone 有�
 
 ## SRV 記錄
 
-SRV 回答帶有每個 backend 的 port，並列出所有候選：最近一次檢查通過的健康 backend；全部健康的 backend 都在失敗時列出它們全部（見[檢查開始失敗的 backend](05-backend-selection.md#檢查開始失敗的-backend)）；沒有任何健康且 `on_all_down` 為 `open` 時，列出 open 的候選（見[第 5 章](05-backend-selection.md#沒有任何-backend-健康時)）：先是 `unknown` 的 backend（最近一次檢查通過的優先），沒有才列出全部。IPv4 與 IPv6 backend 一起列出。Go 的 `net.LookupSRV("http", "tcp", "api.svc.emfor")`、gRPC 與類似的 client 會查詢 `_http._tcp.api.svc.emfor`，emfor 會回答。
+SRV 回答帶有每個 backend 的 port，並列出所有候選，選法與 A、AAAA 回答相同：最近一次檢查通過的主要 backend；沒有的話，最近一次檢查通過的[備援](05-backend-selection.md#備援-backend)；再沒有的話，全部健康的主要 backend 都在失敗時列出它們全部（見[檢查開始失敗的 backend](05-backend-selection.md#檢查開始失敗的-backend)），否則列出全部健康的備援。只要有健康的 backend，同一個回答就不會同時列出主要與備援；沒有任何健康且 `on_all_down` 為 `open` 時，列出 open 的候選（見[第 5 章](05-backend-selection.md#沒有任何-backend-健康時)）：先是 `unknown` 的 backend（最近一次檢查通過的優先），沒有才列出全部。IPv4 與 IPv6 backend 一起列出。Go 的 `net.LookupSRV("http", "tcp", "api.svc.emfor")`、gRPC 與類似的 client 會查詢 `_http._tcp.api.svc.emfor`，emfor 會回答。
 
 | `balance` | Priority | Weight | 順序 |
 | --- | --- | --- | --- |

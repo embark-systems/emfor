@@ -59,7 +59,7 @@ every backend counts as unhealthy and the service's `on_all_down` decides:
 | Code | Meaning |
 | --- | --- |
 | `UNAVAILABLE` | The store cannot be used: missing, unreadable, another LMDB format (install `libemfor` from the same emfor release as the daemon), not initialized, or an invalid `EMFOR_MAX_STALENESS`. |
-| `INCOMPATIBLE` | The store's format version is not 1, or a record cannot be parsed. |
+| `INCOMPATIBLE` | The store's format version is neither 1 nor 2, or a record cannot be parsed. |
 | `NOT_FOUND` | No such service. |
 | `ALL_DOWN` | No healthy backend, and `on_all_down = "closed"`. |
 

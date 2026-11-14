@@ -275,6 +275,36 @@ fn check_config_valid_and_invalid() {
 }
 
 #[test]
+fn check_config_rejects_a_service_of_only_backups() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    let write = |backends: &str| {
+        std::fs::write(
+            &cfg,
+            format!("[services.\"db.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [{backends}]\n"),
+        )
+        .unwrap();
+        Command::new(cargo_bin("emfor"))
+            .args(["check-config", "--config"])
+            .arg(&cfg)
+            .output_locked()
+            .unwrap()
+    };
+    let out = write(r#""10.0.0.1:5432", { addr = "10.0.1.1:5432", backup = true }"#);
+    assert_eq!(out.status.code(), Some(0));
+    let out = write(
+        r#"{ addr = "10.0.1.1:5432", backup = true }, { addr = "10.0.1.2:5432", backup = true }"#,
+    );
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("services.\"db.svc.emfor\".backends")
+            && err.contains("at least one backend must not be a backup"),
+        "{err}"
+    );
+}
+
+#[test]
 fn invalid_config_at_startup_exits_two_without_store() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
@@ -918,7 +948,7 @@ fn status_refuses_another_format_version() {
         };
         let mut wtxn = env.write_txn().unwrap();
         let db: Database<Str, Str> = env.create_database(&mut wtxn, None).unwrap();
-        db.put(&mut wtxn, "meta/schema_version", "2").unwrap();
+        db.put(&mut wtxn, "meta/schema_version", "3").unwrap();
         wtxn.commit().unwrap();
     }
     let cfg = dir.path().join("emfor.toml");
@@ -927,7 +957,7 @@ fn status_refuses_another_format_version() {
     assert_eq!(code, 2);
     assert_eq!(
         err.trim(),
-        "store format version 2; this emfor reads version 1"
+        "store format version 3; this emfor reads versions 1 and 2"
     );
 }
 

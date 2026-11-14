@@ -411,9 +411,11 @@ impl<S: Sink> Writer<S> {
                         .as_ref()
                         .and_then(|o| o.backends.iter().find(|ob| ob.id == b.id).cloned())
                         .unwrap_or_else(|| fresh_backend(b));
-                    // Health state carries over; weight and site follow the config.
+                    // Health state carries over; weight, site and backup
+                    // follow the config.
                     rec.weight = b.weight;
                     rec.site = b.site.clone();
+                    rec.backup = b.backup;
                     rec
                 })
                 .collect();
@@ -571,6 +573,7 @@ fn fresh_backend(b: &Backend) -> BackendRecord {
         port: b.addr.port(),
         weight: b.weight,
         site: b.site.clone(),
+        backup: b.backup,
         state: HealthState::Unknown,
         checked_at: None,
         reason: None,
@@ -1070,6 +1073,55 @@ mod tests {
         let rec = record(&store, "api.svc.emfor");
         assert_eq!(rec.backends[0].weight, 4);
         assert_eq!(rec.backends[0].state, HealthState::Healthy);
+        assert!(!rec.backends[0].backup);
+    }
+
+    /// Spec "Store record format version 2", example "backup written", and
+    /// spec "Host site and backend weight and site": a reload that changes
+    /// `backup` applies it and keeps the backend's health.
+    #[tokio::test]
+    async fn backup_written_and_reloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
+        let mut l = layout(
+            "api.svc.emfor",
+            &["10.0.0.11:8080", "10.0.1.11:8080"],
+            0,
+            true,
+        );
+        l.backends[1].backup = true;
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![l.clone()],
+        })
+        .unwrap();
+        tx.send(upd(
+            "api.svc.emfor",
+            "10.0.1.11:8080",
+            HealthState::Healthy,
+            true,
+        ))
+        .unwrap();
+        settled(&tx).await;
+        let json = store.get(&service_key("api.svc.emfor")).unwrap().unwrap();
+        assert!(json.contains(r#""id":"10.0.0.11:8080","ip":"10.0.0.11","port":8080,"weight":1,"site":null,"backup":false"#), "{json}");
+        assert!(json.contains(r#""id":"10.0.1.11:8080","ip":"10.0.1.11","port":8080,"weight":1,"site":null,"backup":true"#), "{json}");
+        assert_eq!(store.get(KEY_SCHEMA_VERSION).unwrap().as_deref(), Some("2"));
+        l.reset = false;
+        l.backends[1].backup = false;
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![l],
+        })
+        .unwrap();
+        settled(&tx).await;
+        let rec = record(&store, "api.svc.emfor");
+        assert!(!rec.backends[1].backup);
+        assert_eq!(rec.backends[1].state, HealthState::Healthy);
     }
 
     #[tokio::test]
@@ -1088,7 +1140,7 @@ mod tests {
         let hb1: u64 = store.get(KEY_HEARTBEAT).unwrap().unwrap().parse().unwrap();
         let hb = || -> u64 { store.get(KEY_HEARTBEAT).unwrap().unwrap().parse().unwrap() };
         eventually("heartbeat advances", || hb() > hb1).await;
-        assert_eq!(store.get(KEY_SCHEMA_VERSION).unwrap().as_deref(), Some("1"));
+        assert_eq!(store.get(KEY_SCHEMA_VERSION).unwrap().as_deref(), Some("2"));
         assert!(store.get(KEY_STARTED_AT).unwrap().is_some());
     }
 

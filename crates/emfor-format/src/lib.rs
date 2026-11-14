@@ -1,4 +1,4 @@
-//! emfor state store format, version 1.
+//! emfor state store format, version 2.
 //!
 //! The daemon writes these keys and records into a single-file LMDB
 //! environment (`MDB_NOSUBDIR`, default database only). Keys and values are
@@ -10,8 +10,18 @@ pub mod rules;
 
 use serde::{Deserialize, Serialize};
 
-/// Current store format version, stored at [`KEY_SCHEMA_VERSION`].
-pub const SCHEMA_VERSION: u32 = 1;
+/// Current store format version, stored at [`KEY_SCHEMA_VERSION`]. Version
+/// 2 added [`BackendRecord::backup`]; it is otherwise version 1.
+pub const SCHEMA_VERSION: u32 = 2;
+
+/// The format versions a reader can read, as a message names them.
+pub const READABLE_SCHEMA_VERSIONS: &str = "1 and 2";
+
+/// Whether a reader can read a store whose [`KEY_SCHEMA_VERSION`] is `v`:
+/// version 2, or version 1, whose backends are all read as not backups.
+pub fn readable_schema(v: &str) -> bool {
+    v == "1" || v == SCHEMA_VERSION.to_string()
+}
 
 /// LMDB reader slots in the store's lock file, shared by every reading
 /// process on the host. LMDB's default is 126. The process that first opens
@@ -145,6 +155,10 @@ pub struct BackendRecord {
     /// Site label for `locality`; `None` when the backend has none.
     #[serde(default)]
     pub site: Option<String>,
+    /// `true` for a backup backend, used only while no primary backend
+    /// passes its checks; missing (read as `false`) in version 1 stores.
+    #[serde(default)]
+    pub backup: bool,
     pub state: HealthState,
     /// Unix milliseconds when the last check finished; `None` before the first check.
     pub checked_at: Option<u64>,
@@ -261,6 +275,7 @@ mod tests {
                 checked_at: Some(1762905600123),
                 reason: None,
                 latency_us: Some(1834),
+                backup: false,
                 recovered_at: None,
             }],
             pool: None,
@@ -272,7 +287,7 @@ mod tests {
         let json = serde_json::to_string(&db_example()).unwrap();
         assert_eq!(
             json,
-            r#"{"name":"db.svc.emfor","on_all_down":"closed","balance":"round-robin","all_down":false,"slow_start_ms":0,"backends":[{"id":"[2001:db8::5]:5432","ip":"2001:db8::5","port":5432,"weight":1,"site":null,"state":"healthy","checked_at":1762905600123,"reason":null,"latency_us":1834,"recovered_at":null}]}"#
+            r#"{"name":"db.svc.emfor","on_all_down":"closed","balance":"round-robin","all_down":false,"slow_start_ms":0,"backends":[{"id":"[2001:db8::5]:5432","ip":"2001:db8::5","port":5432,"weight":1,"site":null,"backup":false,"state":"healthy","checked_at":1762905600123,"reason":null,"latency_us":1834,"recovered_at":null}]}"#
         );
     }
 
@@ -361,6 +376,33 @@ mod tests {
         let rec: ServiceRecord = serde_json::from_str(json).unwrap();
         assert_eq!(rec.slow_start_ms, 0);
         assert_eq!(rec.backends[0].recovered_at, None);
+        // A version 1 record has no `backup`: not a backup.
+        assert!(!rec.backends[0].backup);
+    }
+
+    /// Spec "Store record format version 2", example "backup written".
+    #[test]
+    fn backup_written() {
+        let mut rec = db_example();
+        rec.backends[0].backup = true;
+        let json = serde_json::to_string(&rec).unwrap();
+        assert!(
+            json.contains(r#""site":null,"backup":true,"state""#),
+            "{json}"
+        );
+        let back: ServiceRecord = serde_json::from_str(&json).unwrap();
+        assert!(back.backends[0].backup);
+    }
+
+    #[test]
+    fn readable_schema_versions() {
+        assert_eq!(SCHEMA_VERSION, 2);
+        for v in ["1", "2"] {
+            assert!(readable_schema(v), "{v}");
+        }
+        for v in ["0", "3", "", "01", " 2"] {
+            assert!(!readable_schema(v), "{v:?}");
+        }
     }
 
     #[test]
