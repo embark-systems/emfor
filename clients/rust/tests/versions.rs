@@ -69,20 +69,3 @@ fn freebsd_port_lists_the_locked_crates() {
         "examples/freebsd/Makefile.crates does not match Cargo.lock; regenerate it (examples/freebsd/README.md)"
     );
 }
-
-/// The FreeBSD port's rc.d script is `examples/rc.d/emfor` with the port's
-/// substitutions (examples/freebsd/README.md), so the two cannot drift.
-#[test]
-fn freebsd_port_rc_script_matches_the_example() {
-    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
-    let example = std::fs::read_to_string(format!("{root}/examples/rc.d/emfor")).unwrap();
-    let want = example
-        .replace("/usr/local", "%%PREFIX%%")
-        .replace("emfor_user:=root", "emfor_user:=emfor")
-        .replace("(default root)", "(default emfor)");
-    let got = std::fs::read_to_string(format!("{root}/examples/freebsd/files/emfor.in")).unwrap();
-    assert!(
-        got == want,
-        "examples/freebsd/files/emfor.in does not match examples/rc.d/emfor; regenerate it (examples/freebsd/README.md)"
-    );
-}

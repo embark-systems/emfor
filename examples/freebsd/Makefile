@@ -25,8 +25,7 @@ CARGO_ENV+=	EMFOR_PREFIX=${PREFIX}
 USERS=		emfor
 GROUPS=		emfor
 
-# files/emfor.in is examples/rc.d/emfor with %%PREFIX%% paths and
-# emfor_user defaulting to emfor (README.md says how to regenerate it).
+# files/emfor.in is the rc.d script; USE_RC_SUBR fills in %%PREFIX%%.
 USE_RC_SUBR=	emfor
 
 # The store goes in /var/db/emfor, where FreeBSD keeps daemon state. The

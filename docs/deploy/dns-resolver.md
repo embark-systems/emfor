@@ -90,9 +90,9 @@ drill -p 5300 api.svc.emfor @127.0.0.1   # emfor directly
 getent hosts api.svc.emfor                # through the system resolver
 ```
 
-`tests/resolver/freebsd.sh` checks this recipe and `examples/rc.d/emfor` (`service emfor start`, `reload`, `stop`) on a FreeBSD host; it passes on FreeBSD 15.1-RELEASE (arm64), and the optional CI `freebsd` job runs it too.
+`tests/resolver/freebsd.sh` checks this recipe and the port's rc.d script, `examples/freebsd/files/emfor.in` (`service emfor start`, `reload`, `stop`) on a FreeBSD host; it passes on FreeBSD 15.1-RELEASE (arm64), and the optional CI `freebsd` job runs it too.
 
-To run emfor itself, see `examples/rc.d/emfor`.
+To run emfor itself, see [Running on FreeBSD](../manual/02-installation.md#running-on-freebsd).
 
 ## systemd-resolved
 

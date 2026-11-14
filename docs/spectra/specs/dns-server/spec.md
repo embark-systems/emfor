@@ -31,7 +31,7 @@ source: emfor-dns
 updated: 2026-11-12
 code:
   - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
 -->
 
 ---
@@ -72,7 +72,7 @@ source: emfor-dns-srv
 updated: 2026-11-12
 code:
   - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
 -->
 
 ---
@@ -121,7 +121,7 @@ source: emfor-dns-srv
 updated: 2026-11-12
 code:
   - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
 -->
 
 ---
@@ -140,7 +140,7 @@ source: emfor-dns
 updated: 2026-11-12
 code:
   - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
 -->
 
 ---
@@ -159,7 +159,7 @@ source: emfor-dns
 updated: 2026-11-12
 code:
   - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
 -->
 
 ---
@@ -177,7 +177,7 @@ source: emfor-dns
 updated: 2026-11-12
 code:
   - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
 -->
 
 ---
@@ -348,7 +348,7 @@ source: emfor-dns-srv
 updated: 2026-11-12
 code:
   - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
 -->
 
 ---
@@ -381,7 +381,7 @@ source: emfor-dns-srv
 updated: 2026-11-12
 code:
   - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
 -->
 
 ---
@@ -421,7 +421,7 @@ code:
   - docs/plugins/protocol-v1.md
   - examples/freebsd/Makefile
   - examples/freebsd/README.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
   - CHANGELOG.md
   - tests/plugins/inside.sh
   - README.zh-TW.md

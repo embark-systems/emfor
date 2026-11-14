@@ -100,14 +100,16 @@ Build without `EMFOR_PREFIX` (or with `/usr`) so that `emfor status` and
 
 ## Running on FreeBSD
 
-[examples/rc.d/emfor](../../examples/rc.d/emfor) is an rc.d script that
-runs the daemon under `daemon(8)`, which starts it again 2 seconds after it
-exits. Copy it to `/usr/local/etc/rc.d/emfor` (mode 0555), build emfor with
-`EMFOR_PREFIX=/usr/local`, and:
+[examples/freebsd/](../../examples/freebsd/) is an example port
+(`net-mgmt/emfor`) that builds `emfor` and `emfor-check`, installs an rc.d
+script and a sample config, and creates the `emfor` user and
+`/var/db/emfor`, where its sample config puts the store (applications set
+`EMFOR_STORE=/var/db/emfor/state.mdb`). The rc.d script runs the daemon
+under `daemon(8)`, which starts it again 2 seconds after it exits. After
+installing the port and editing `/usr/local/etc/emfor/emfor.toml`:
 
 ```sh
 sysrc emfor_enable=YES
-sysrc emfor_user=emfor        # recommended; see the script's comments
 service emfor start
 emfor status
 ```
@@ -116,20 +118,26 @@ emfor status
 | --- | --- | --- |
 | `emfor_enable` | `NO` | Start at boot. |
 | `emfor_config` | `/usr/local/etc/emfor/emfor.toml` | Config file. |
-| `emfor_user` | see the script | User the daemon runs as. It needs write access to the store's directory. |
+| `emfor_user` | `emfor` | User the daemon runs as. It needs write access to the store's directory. |
 
 `service emfor configtest` checks the config (as `emfor_user`);
 `service emfor reload` checks it and then sends SIGHUP; `start` refuses an
 invalid config. The daemon's log goes to syslog with the tag `emfor`.
 
-[examples/freebsd/](../../examples/freebsd/) is an example port
-(`net-mgmt/emfor`) that builds `emfor` and `emfor-check`, installs the rc.d
-script and a sample config, and creates the `emfor` user and
-`/var/db/emfor`, where its sample config puts the store (applications set
-`EMFOR_STORE=/var/db/emfor/state.mdb`). Read the comments in the script and the port's README
-before using them. Both have been run on FreeBSD 15.1-RELEASE (arm64, in a
-VM), the port with `make stage check-plist install`; not with poudriere,
-on 14.x or on amd64.
+Without the port, build emfor with `EMFOR_PREFIX=/usr/local`, install the
+port's rc.d script with its prefix filled in, and create the `emfor` user
+(or set `emfor_user`), which needs write access to the directory of
+`[store] path`:
+
+```sh
+sed 's|%%PREFIX%%|/usr/local|g' examples/freebsd/files/emfor.in > /usr/local/etc/rc.d/emfor
+chmod 0555 /usr/local/etc/rc.d/emfor
+pw useradd emfor -d /nonexistent -s /usr/sbin/nologin -c "emfor daemon"
+```
+
+Read the comments in the script and the port's README before using them.
+Both have been run on FreeBSD 15.1-RELEASE (arm64, in a VM), the port with
+`make stage check-plist install`; not with poudriere, on 14.x or on amd64.
 
 ## Installing the client libraries
 

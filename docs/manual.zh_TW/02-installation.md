@@ -79,11 +79,10 @@ emfor status
 
 ## 在 FreeBSD 上執行
 
-[examples/rc.d/emfor](../../examples/rc.d/emfor) 是一個 rc.d script，在 `daemon(8)` 底下執行 daemon；daemon 結束 2 秒後 `daemon(8)` 會再把它啟動。把它複製到 `/usr/local/etc/rc.d/emfor`（mode 0555），以 `EMFOR_PREFIX=/usr/local` 建置 emfor，然後：
+[examples/freebsd/](../../examples/freebsd/) 是一個範例 port（`net-mgmt/emfor`），它建置 `emfor` 與 `emfor-check`、安裝 rc.d script 與範例設定檔，並建立 `emfor` 使用者與 `/var/db/emfor`，它的範例設定檔把 store 放在那裡（應用程式要設定 `EMFOR_STORE=/var/db/emfor/state.mdb`）。rc.d script 在 `daemon(8)` 底下執行 daemon；daemon 結束 2 秒後 `daemon(8)` 會再把它啟動。安裝 port 並編輯 `/usr/local/etc/emfor/emfor.toml` 之後：
 
 ```sh
 sysrc emfor_enable=YES
-sysrc emfor_user=emfor        # recommended; see the script's comments
 service emfor start
 emfor status
 ```
@@ -92,11 +91,19 @@ emfor status
 | --- | --- | --- |
 | `emfor_enable` | `NO` | 開機時啟動。 |
 | `emfor_config` | `/usr/local/etc/emfor/emfor.toml` | 設定檔。 |
-| `emfor_user` | 見 script | daemon 執行時的使用者。需要 store 所在目錄的寫入權限。 |
+| `emfor_user` | `emfor` | daemon 執行時的使用者。需要 store 所在目錄的寫入權限。 |
 
 `service emfor configtest` 檢查設定檔（以 `emfor_user` 身分）；`service emfor reload` 先檢查再送 SIGHUP；`start` 拒絕無效的設定。daemon 的 log 以 tag `emfor` 送進 syslog。
 
-[examples/freebsd/](../../examples/freebsd/) 是一個範例 port（`net-mgmt/emfor`），它建置 `emfor` 與 `emfor-check`、安裝 rc.d script 與範例設定檔，並建立 `emfor` 使用者與 `/var/db/emfor`，它的範例設定檔把 store 放在那裡（應用程式要設定 `EMFOR_STORE=/var/db/emfor/state.mdb`）。使用前請先讀 script 的註解與 port 的 README。兩者都已在 FreeBSD 15.1-RELEASE（arm64，VM）上跑過，port 用的是 `make stage check-plist install`；尚未用 poudriere、14.x 或 amd64 測試。
+不用 port 時，以 `EMFOR_PREFIX=/usr/local` 建置 emfor，把 port 的 rc.d script 填好 prefix 後安裝，再建立 `emfor` 使用者（或設定 `emfor_user`），它需要 `[store] path` 所在目錄的寫入權限：
+
+```sh
+sed 's|%%PREFIX%%|/usr/local|g' examples/freebsd/files/emfor.in > /usr/local/etc/rc.d/emfor
+chmod 0555 /usr/local/etc/rc.d/emfor
+pw useradd emfor -d /nonexistent -s /usr/sbin/nologin -c "emfor daemon"
+```
+
+使用前請先讀 script 的註解與 port 的 README。兩者都已在 FreeBSD 15.1-RELEASE（arm64，VM）上跑過，port 用的是 `make stage check-plist install`；尚未用 poudriere、14.x 或 amd64 測試。
 
 ## 安裝 client 函式庫
 

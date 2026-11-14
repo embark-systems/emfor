@@ -1,7 +1,8 @@
 #!/bin/sh
 # Usage: tests/resolver/freebsd.sh   (FreeBSD, as root)
-# Installs emfor with examples/rc.d/emfor, checks start/reload/stop, and
-# checks the local_unbound recipe from docs/deploy/dns-resolver.md.
+# Installs emfor with the port's rc.d script (examples/freebsd/files/emfor.in,
+# its prefix filled in as the port does), checks start/reload/stop, and checks
+# the local_unbound recipe from docs/deploy/dns-resolver.md.
 # Used by the CI freebsd job.
 set -eu
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -10,14 +11,14 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 cargo build --bin emfor
 install -m 0555 target/debug/emfor /usr/local/bin/emfor
-install -m 0555 examples/rc.d/emfor /usr/local/etc/rc.d/emfor
+sed 's|%%PREFIX%%|/usr/local|g' examples/freebsd/files/emfor.in > /usr/local/etc/rc.d/emfor
+chmod 0555 /usr/local/etc/rc.d/emfor
 mkdir -p /usr/local/etc/emfor /var/db/emfor
 # Run as a dedicated user, as the port does: rc.subr then starts daemon(8)
 # itself as that user, which must still be able to write its pid files.
 pw usershow emfor >/dev/null 2>&1 ||
     pw useradd emfor -d /nonexistent -s /usr/sbin/nologin -c "emfor daemon"
 chown emfor /var/db/emfor
-sysrc emfor_user=emfor
 cat > /usr/local/etc/emfor/emfor.toml <<'CFG'
 [store]
 path = "/var/db/emfor/state.mdb"

@@ -320,7 +320,7 @@ code:
   - crates/emfor-daemon/src/cli.rs
   - crates/emfor-daemon/src/status.rs
   - crates/emfor-daemon/src/config.rs
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
 tests:
   - crates/emfor-daemon/tests/daemon.rs
 -->

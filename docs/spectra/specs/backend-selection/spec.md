@@ -191,7 +191,7 @@ source: emfor-dns
 updated: 2026-11-12
 code:
   - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
 -->
 
 ---
@@ -223,7 +223,7 @@ source: emfor-balance-2
 updated: 2026-11-12
 code:
   - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
 -->
 
 ---
@@ -252,7 +252,7 @@ source: emfor-balance-2
 updated: 2026-11-12
 code:
   - docs/deploy/dns-resolver.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
 -->
 
 ---

@@ -80,9 +80,10 @@ member runs this release, remove the line and reload each daemon.
   `interval` from N members instead of 3 + (N − 3) / 5. Measured with
   `interval = "2s"` and `fall = 3`: 0.8 to 5.8 seconds, 3.3 seconds
   median, over 12 failures started at different points of the schedule.
-- FreeBSD: `examples/rc.d/emfor` starts `daemon(8)` with `-f`. Without it,
+- FreeBSD: the rc.d script starts `daemon(8)` with `-f`. Without it,
   `daemon(8)` and emfor kept the terminal or SSH session that ran
-  `service emfor start`, so that session never closed.
+  `service emfor start`, so that session never closed. The rc.d script,
+  the port and the tests have now run on FreeBSD 15.1-RELEASE (arm64).
 - FreeBSD: the example port puts the store in `/var/db/emfor`, where
   FreeBSD keeps daemon state, instead of `/var/lib/emfor`: it creates that
   directory, and its sample config sets `[store] path =
@@ -90,8 +91,11 @@ member runs this release, remove the line and reload each daemon.
   `/var/lib/emfor/state.mdb`, so applications on the host set
   `EMFOR_STORE`. After updating an installed port, move the store or keep
   the old `[store] path`; the history is all it holds.
-  The rc.d script, the port and the tests have now run on FreeBSD
-  15.1-RELEASE (arm64).
+- **Breaking, on FreeBSD only:** `examples/rc.d/emfor` is gone. The port's
+  `examples/freebsd/files/emfor.in` is the only rc.d script; to use it
+  without the port, fill in `%%PREFIX%%` (chapter 2 of the manual shows
+  the command). Its `emfor_user` defaults to `emfor`, not `root`, so
+  create that user or set `emfor_user`.
 
 ### Clients
 

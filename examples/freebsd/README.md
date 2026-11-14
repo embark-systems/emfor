@@ -1,8 +1,8 @@
 # FreeBSD port of emfor (example)
 
 A port skeleton for `net-mgmt/emfor`: it builds `emfor` and `emfor-check`
-from the GitHub release, installs the rc.d script and a sample config from
-the source's `examples/`, and creates the `emfor` user and the store
+from the GitHub release, installs its rc.d script (`files/emfor.in`) and a
+sample config from the source's `examples/`, and creates the `emfor` user and the store
 directory.
 
 Built and installed on FreeBSD 15.1-RELEASE (arm64, in a VM) with the
@@ -16,7 +16,7 @@ yet through poudriere, and not on 14.x or amd64.
 | `Makefile` | The port. `DISTVERSION` follows the emfor release. |
 | `pkg-descr` | Package description. |
 | `Makefile.crates` | Every crate in the release's `Cargo.lock`, as `CARGO_CRATES`. `USES=cargo` includes it from the port's directory. |
-| `files/emfor.in` | The rc.d script for `USE_RC_SUBR`: `examples/rc.d/emfor` with `%%PREFIX%%` for `/usr/local` and `emfor_user` defaulting to `emfor`. |
+| `files/emfor.in` | The rc.d script, installed by `USE_RC_SUBR`, which fills in `%%PREFIX%%`. It is the only copy: to use it without the port, see [Running on FreeBSD](../../docs/manual/02-installation.md#running-on-freebsd). |
 
 ## Making the port
 
@@ -51,15 +51,6 @@ awk '/^name = /{n=$3} /^version = /{v=$3}
      /^source = "registry\+/{gsub(/"/,"",n); gsub(/"/,"",v); print n"-"v}' Cargo.lock |
   awk 'NR==1{printf "CARGO_CRATES=\t%s", $0; next}
        {printf " \\\n\t\t%s", $0} END{print ""}' > examples/freebsd/Makefile.crates
-```
-
-When `examples/rc.d/emfor` changes, regenerate `files/emfor.in`
-(`clients/rust/tests/versions.rs` fails until it matches):
-
-```sh
-sed -e 's|/usr/local|%%PREFIX%%|g' -e 's|emfor_user:=root|emfor_user:=emfor|' \
-    -e 's|(default root)|(default emfor)|' \
-    examples/rc.d/emfor > examples/freebsd/files/emfor.in
 ```
 
 On FreeBSD, `make cargo-crates` lists the crates too. It extracts the

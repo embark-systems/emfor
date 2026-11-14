@@ -1,7 +1,10 @@
 #!/bin/sh
 #
-# Example FreeBSD rc.d script for the emfor daemon. Copy it to
-# %%PREFIX%%/etc/rc.d/emfor (mode 0555) and enable it with:
+# FreeBSD rc.d script for the emfor daemon, installed by the port in
+# examples/freebsd as %%PREFIX%%/etc/rc.d/emfor. To use it without the port,
+# fill in the prefix as the port does ("Running on FreeBSD" in
+# docs/manual/02-installation.md shows the command), install it with mode
+# 0555, create the emfor user (or set emfor_user), and enable it with:
 #
 #   sysrc emfor_enable=YES
 #
@@ -12,8 +15,8 @@
 #                 binary's own default too, so "emfor status" and
 #                 "emfor check-config" need no --config
 #                 (see docs/deploy/daemon.md).
-#   emfor_user    user to run as (default emfor). A dedicated user is better:
-#                 it needs write access to the directory of [store] path and
+#   emfor_user    user to run as (default emfor, which the port creates).
+#                 It needs write access to the directory of [store] path and
 #                 nothing else, since the default DNS port 5300 is unprivileged.
 #                 "service emfor configtest" (also run before start) checks
 #                 the config as this user too, so plugins never run as root.

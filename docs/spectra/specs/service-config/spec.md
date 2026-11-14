@@ -201,7 +201,7 @@ code:
   - docs/plugins/protocol-v1.md
   - examples/freebsd/Makefile
   - examples/freebsd/README.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
   - CHANGELOG.md
   - tests/plugins/inside.sh
   - README.zh-TW.md
@@ -437,7 +437,7 @@ code:
   - docs/plugins/protocol-v1.md
   - examples/freebsd/Makefile
   - examples/freebsd/README.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
   - CHANGELOG.md
   - tests/plugins/inside.sh
   - README.zh-TW.md
@@ -499,7 +499,7 @@ code:
   - docs/plugins/protocol-v1.md
   - examples/freebsd/Makefile
   - examples/freebsd/README.md
-  - examples/rc.d/emfor
+  - examples/freebsd/files/emfor.in
   - CHANGELOG.md
   - tests/plugins/inside.sh
   - README.zh-TW.md
