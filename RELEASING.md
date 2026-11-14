@@ -51,7 +51,7 @@ Add a section at the top of `CHANGELOG.md`, below the title:
 Group the changes as the 0.1.0 entry does (Daemon, emfor-check, Clients,
 Deployment), and update **Known limits**: drop what was fixed, add what is
 new. Links go to files in the repository by relative path
-(`docs/performance.md`); step 6 makes them absolute for the GitHub Release.
+(`docs/performance.md`); step 7 makes them absolute for the GitHub Release.
 
 ## 4. Check
 
@@ -89,10 +89,35 @@ docker run --rm -v "$PWD":/src -w /src \
 The container installs `libemfor` into `clients/build/prefix`, which macOS
 uses too, and its pkg-config file points at `/src`. `make` reinstalls it
 on every run, so the checks are not affected; but before building against
-`clients/build/prefix` by hand on macOS (step 7), run
+`clients/build/prefix` by hand on macOS (step 8), run
 `make -C clients/go libemfor` there first.
 
-## 5. Commit, tag and push
+## 5. Fuzz
+
+Run every fuzz target in [fuzz/](fuzz/README.md) for 10 minutes. This
+needs `cargo-fuzz` and a nightly toolchain (`cargo install cargo-fuzz`,
+`rustup toolchain install nightly`):
+
+```sh
+cd fuzz
+cargo +nightly fuzz run -O plugins corpus/plugins seeds/plugins -- -len_control=0 -max_total_time=600
+for t in peers metrics plugin_line config; do
+  cargo +nightly fuzz run -O "$t" -- -max_total_time=600 || break
+done
+cd ..
+```
+
+Each run must end with `Done N runs in 601 second(s)` and leave nothing in
+`fuzz/artifacts/`. A crash stops the release: fix it in its own commit,
+with a test that reproduces it, run that target again, and go back to
+step 4.
+
+The first run after step 2 updates the emfor versions in
+`fuzz/Cargo.lock`; it goes into the release commit. `fuzz/corpus/` keeps
+what the fuzzer found and makes the next release's run start from there;
+it is not committed.
+
+## 6. Commit, tag and push
 
 ```sh
 git commit -am "Release X.Y.Z"
@@ -106,7 +131,7 @@ Never move or delete a pushed tag: the Go module proxy keeps what it first
 saw for `clients/go/vX.Y.Z`, so a moved tag gives Go users a different
 package than the repository shows. Fix a bad release with a new version.
 
-## 6. Publish the GitHub Release
+## 7. Publish the GitHub Release
 
 Take the version's changelog section, make its relative links absolute
 for the tag, and publish it:
@@ -121,7 +146,7 @@ gh release create vX.Y.Z --title "emfor X.Y.Z" --notes-file /tmp/emfor-notes.md 
 
 Open each link in the published Release once.
 
-## 7. Check the Go client
+## 8. Check the Go client
 
 Outside the repository, with `libemfor` X.Y.Z installed:
 
