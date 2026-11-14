@@ -26,6 +26,13 @@
 - State changes already queued when one is written are committed in the
   same transaction, so a burst of changes (a network split) costs one
   commit, not one per backend.
+- A slow commit no longer freezes DNS answers and `/metrics`. While the
+  state store waited for the disk (`[store] sync = true`, or the kernel
+  writing back), the daemon stopped applying check results, so DNS kept
+  answering with the states from before the commit and the results
+  queued up in memory. Results are now applied as they arrive; the
+  changes made meanwhile are written together by the next commit, which
+  starts as soon as the slow one ends.
 - A reload that changes `interval` or `jitter` applies to the wait
   already under way. Before, going from `10m` to `2s` took up to 11
   minutes to apply.

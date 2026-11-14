@@ -178,9 +178,36 @@ pub enum WriterMsg {
     Barrier(oneshot::Sender<()>),
 }
 
+/// What a store job on a blocking thread hands back with the sink.
+enum Done<S> {
+    Commit {
+        sink: S,
+        ops: Vec<Op>,
+        result: Result<(), String>,
+        usage: Option<(u64, u64)>,
+    },
+    Readers {
+        sink: S,
+        result: Result<usize, String>,
+    },
+}
+
 struct Writer<S: Sink> {
-    /// Taken while a commit runs on a blocking thread.
+    /// Taken while a store job runs on a blocking thread.
     sink: Option<S>,
+    /// The store job in progress: one at a time, so commits reach the
+    /// store in order. The writer keeps handling messages meanwhile.
+    job: Option<tokio::task::JoinHandle<Done<S>>>,
+    /// A commit is due: it starts once the current job ends.
+    commit_wanted: bool,
+    /// A reader slot check is due; it runs before the next commit.
+    readers_wanted: bool,
+    /// Ops for the next commit besides `pending` and dirty records (the
+    /// heartbeat and layout keys), in the order they were queued.
+    extra: Vec<Op>,
+    /// Services whose record or history the commit in progress writes;
+    /// marked dirty again if it fails.
+    committing: (BTreeSet<Arc<str>>, BTreeSet<Arc<str>>),
     records: BTreeMap<Arc<str>, ServiceRecord>,
     /// Generation of the current check task of each backend, in the order
     /// of the record's backends. A backend's state belongs to its check
@@ -199,7 +226,7 @@ struct Writer<S: Sink> {
     /// JSON values, written at a fresh start; a key is deleted when its
     /// value is `None`.
     listen: [(&'static str, Option<String>); 3],
-    /// Updated before every commit attempt.
+    /// Updated as messages arrive, also while a commit runs.
     live: LiveState,
     /// Heartbeats since the last reader slot check.
     ticks_since_reader_check: u32,
@@ -272,6 +299,11 @@ fn spawn_inner<S: Sink>(
     tokio::spawn(async move {
         let mut w = Writer {
             sink: Some(sink),
+            job: None,
+            commit_wanted: false,
+            readers_wanted: false,
+            extra: Vec::new(),
+            committing: (BTreeSet::new(), BTreeSet::new()),
             records: BTreeMap::new(),
             generations: BTreeMap::new(),
             pending: Vec::new(),
@@ -313,16 +345,16 @@ fn spawn_inner<S: Sink>(
                                     }
                                 }
                                 if commit {
-                                    w.flush(Vec::new()).await;
+                                    w.commit(Vec::new());
                                 }
                             }
                             WriterMsg::Restarted { service, generation, backend_id } => {
-                                w.restarted(&service, generation, &backend_id).await;
+                                w.restarted(&service, generation, &backend_id);
                             }
                             WriterMsg::Checked { service, generation, backend_id, outcome } => {
                                 w.checked(&service, generation, &backend_id, outcome);
                             }
-                            WriterMsg::SetLayout { fresh_start, site, services } => w.set_layout(fresh_start, site, services).await,
+                            WriterMsg::SetLayout { fresh_start, site, services } => w.set_layout(fresh_start, site, services),
                             WriterMsg::PeerState(json) => w.peer_state(json),
                             WriterMsg::Shutdown(done) => {
                                 w.shutdown().await;
@@ -331,12 +363,17 @@ fn spawn_inner<S: Sink>(
                             }
                             #[cfg(test)]
                             WriterMsg::Barrier(done) => {
+                                w.settle().await;
                                 let _ = done.send(());
                             }
                         }
                     }
                 }
-                _ = ticker.tick() => w.heartbeat().await,
+                done = async { w.job.as_mut().expect("polled only while a job runs").await }, if w.job.is_some() => {
+                    w.job = None;
+                    w.job_done(done);
+                }
+                _ = ticker.tick() => w.heartbeat(),
             }
         }
     })
@@ -414,7 +451,7 @@ impl<S: Sink> Writer<S> {
     /// the live view do too, even when the backend already was `unknown`;
     /// a change of state is a transition like any other (history, counter,
     /// commit).
-    async fn restarted(&mut self, service: &Arc<str>, generation: u64, backend_id: &str) {
+    fn restarted(&mut self, service: &Arc<str>, generation: u64, backend_id: &str) {
         let Some(rec) = self.records.get_mut(service) else {
             return;
         };
@@ -445,7 +482,7 @@ impl<S: Sink> Writer<S> {
         self.live.update_backend(rec, index, None, transition);
         self.dirty.insert(service.clone());
         if transition.is_none() {
-            self.flush(Vec::new()).await;
+            self.commit(Vec::new());
             return;
         }
         self.histories.entry(service.clone()).or_default().push(
@@ -458,7 +495,7 @@ impl<S: Sink> Writer<S> {
             },
         );
         self.hist_dirty.insert(service.clone());
-        self.flush(Vec::new()).await;
+        self.commit(Vec::new());
     }
 
     /// Queue the new `meta/peers` value and remember it, so a later fresh
@@ -472,7 +509,7 @@ impl<S: Sink> Writer<S> {
         self.pending.push(Op::Put(KEY_PEERS.into(), json));
     }
 
-    async fn set_layout(
+    fn set_layout(
         &mut self,
         fresh_start: bool,
         site: Option<String>,
@@ -483,6 +520,7 @@ impl<S: Sink> Writer<S> {
             self.records.clear();
             self.generations.clear();
             self.pending.clear();
+            self.extra.clear();
             self.dirty.clear();
             ops.push(Op::Put(
                 KEY_SCHEMA_VERSION.into(),
@@ -583,48 +621,84 @@ impl<S: Sink> Writer<S> {
             None => Op::Delete(KEY_SITE.into()),
         });
         self.live.replace(live, site);
-        self.flush(ops).await;
+        self.commit(ops);
     }
 
-    async fn heartbeat(&mut self) {
+    fn heartbeat(&mut self) {
         self.ticks_since_reader_check += 1;
         if self.ticks_since_reader_check >= READER_CHECK_TICKS {
-            self.clear_stale_readers().await;
+            self.ticks_since_reader_check = 0;
+            self.readers_wanted = true;
         }
-        self.flush(vec![Op::Put(KEY_HEARTBEAT.into(), unix_ms().to_string())])
-            .await;
+        // Only the newest heartbeat matters when a slow commit holds the
+        // next one back.
+        self.extra
+            .retain(|op| !matches!(op, Op::Put(k, _) if k == KEY_HEARTBEAT));
+        self.commit(vec![Op::Put(KEY_HEARTBEAT.into(), unix_ms().to_string())]);
     }
 
-    async fn clear_stale_readers(&mut self) {
+    /// Wait for the store jobs in progress and due, then commit
+    /// `meta/heartbeat = "0"` and wait for that too.
+    async fn shutdown(&mut self) {
+        self.settle().await;
+        self.commit(vec![Op::Put(KEY_HEARTBEAT.into(), "0".into())]);
+        self.settle().await;
+    }
+
+    /// Queue `extra` and commit it with pending ops and every dirty record
+    /// and history: now when no store job runs, else right after it.
+    /// Results that arrive meanwhile go into that same commit.
+    fn commit(&mut self, extra: Vec<Op>) {
+        self.extra.extend(extra);
+        self.commit_wanted = true;
+        self.start_next();
+    }
+
+    /// Start the next due store job unless one runs.
+    fn start_next(&mut self) {
+        if self.job.is_some() {
+            return;
+        }
+        if self.readers_wanted {
+            self.readers_wanted = false;
+            self.start_reader_check();
+        } else if self.commit_wanted {
+            self.commit_wanted = false;
+            self.start_commit();
+        }
+    }
+
+    /// Wait until no store job runs or is due.
+    async fn settle(&mut self) {
+        while let Some(job) = self.job.as_mut() {
+            let done = job.await;
+            self.job = None;
+            self.job_done(done);
+        }
+    }
+
+    fn take_sink(&mut self) -> S {
+        self.sink.take().expect(
+            "the sink is taken only while a store job runs, and only one job runs at a time",
+        )
+    }
+
+    fn start_reader_check(&mut self) {
         self.ticks_since_reader_check = 0;
         // On a blocking thread, like a commit: it takes the reader table's
         // lock in the lock file, which any process using the store can hold.
-        let mut sink = self.sink.take().expect(
-            "the sink is taken only while a commit or reader check runs and is put back before it returns",
-        );
-        let (sink, result) = tokio::task::spawn_blocking(move || {
+        let mut sink = self.take_sink();
+        self.job = Some(tokio::task::spawn_blocking(move || {
             let result = sink.clear_stale_readers();
-            (sink, result)
-        })
-        .await
-        .expect(
-            "a store reader check panicked; the writer stops, and the daemon exits with status 70",
-        );
-        self.sink = Some(sink);
-        if let Err(e) = result {
-            tracing::error!("cannot check the state store's reader slots: {e}");
-        }
+            Done::Readers { sink, result }
+        }));
     }
 
-    async fn shutdown(&mut self) {
-        self.flush(vec![Op::Put(KEY_HEARTBEAT.into(), "0".into())])
-            .await;
-    }
-
-    /// Commit pending ops, `extra`, and every dirty service record in one transaction.
-    async fn flush(&mut self, extra: Vec<Op>) {
+    /// Start one commit of pending ops, queued extra ops, and every dirty
+    /// service record and history.
+    fn start_commit(&mut self) {
         let mut ops = std::mem::take(&mut self.pending);
-        ops.extend(extra);
+        ops.append(&mut self.extra);
         for name in &self.dirty {
             if let Some(rec) = self.records.get(name) {
                 let json = serde_json::to_string(rec).expect("a ServiceRecord serializes: it holds only strings, numbers, booleans and lists");
@@ -644,45 +718,80 @@ impl<S: Sink> Writer<S> {
         if ops.is_empty() {
             return;
         }
+        self.committing = (
+            std::mem::take(&mut self.dirty),
+            std::mem::take(&mut self.hist_dirty),
+        );
         // On a blocking thread: a commit can wait for the disk (`[store]
         // sync = true`, or the kernel writing back), and must not hold up a
         // worker that serves DNS, metrics and checks meanwhile.
-        let mut sink = self.sink.take().expect(
-            "the sink is taken only while a commit or reader check runs and is put back before it returns",
-        );
-        let (sink, ops, result, usage) = tokio::task::spawn_blocking(move || {
+        let mut sink = self.take_sink();
+        self.job = Some(tokio::task::spawn_blocking(move || {
             #[cfg(feature = "test-hooks")]
             commit_panic_hook();
             let result = sink.commit(&ops);
             let usage = result.as_ref().ok().and_then(|()| sink.usage());
-            (sink, ops, result, usage)
-        })
-        .await
-        .expect("a store commit panicked; the writer stops, and the daemon exits with status 70");
-        self.sink = Some(sink);
-        match result {
-            Ok(()) => {
-                self.dirty.clear();
-                self.hist_dirty.clear();
-                self.live.record_commit(unix_ms(), usage);
+            Done::Commit {
+                sink,
+                ops,
+                result,
+                usage,
             }
-            Err(e) => {
-                tracing::error!("state store commit failed, retrying at next heartbeat: {e}");
-                self.live.count_commit_failure();
-                self.clear_stale_readers().await;
-                // Keep everything except service and history puts (dirty records and
-                // histories are re-rendered) and stale heartbeats (a fresh one is
-                // written next tick).
-                self.pending = ops
-                    .into_iter()
-                    .filter(|op| {
-                        !matches!(op, Op::Put(k, _) if k.starts_with(SERVICE_KEY_PREFIX)
-                            || k.starts_with(HIST_KEY_PREFIX)
-                            || k == KEY_HEARTBEAT)
-                    })
-                    .collect();
+        }));
+    }
+
+    /// Take back the sink from a finished store job, act on its result,
+    /// and start the next due job.
+    fn job_done(&mut self, done: Result<Done<S>, tokio::task::JoinError>) {
+        let done = done.expect(
+            "a store commit or reader check panicked; the writer stops, and the daemon exits with status 70",
+        );
+        match done {
+            Done::Readers { sink, result } => {
+                self.sink = Some(sink);
+                if let Err(e) = result {
+                    tracing::error!("cannot check the state store's reader slots: {e}");
+                }
+            }
+            Done::Commit {
+                sink,
+                ops,
+                result,
+                usage,
+            } => {
+                self.sink = Some(sink);
+                let (dirty, hist_dirty) = std::mem::take(&mut self.committing);
+                match result {
+                    Ok(()) => self.live.record_commit(unix_ms(), usage),
+                    Err(e) => {
+                        tracing::error!(
+                            "state store commit failed, retrying at next heartbeat: {e}"
+                        );
+                        self.live.count_commit_failure();
+                        // A full store is what reader slots of dead
+                        // processes lead to: check them before the retry.
+                        self.readers_wanted = true;
+                        self.dirty.extend(dirty);
+                        self.hist_dirty.extend(hist_dirty);
+                        // Keep everything except service and history puts
+                        // (dirty records and histories are re-rendered) and
+                        // stale heartbeats (a fresh one is written next
+                        // tick), ahead of ops queued since.
+                        let mut kept: Vec<Op> = ops
+                            .into_iter()
+                            .filter(|op| {
+                                !matches!(op, Op::Put(k, _) if k.starts_with(SERVICE_KEY_PREFIX)
+                                    || k.starts_with(HIST_KEY_PREFIX)
+                                    || k == KEY_HEARTBEAT)
+                            })
+                            .collect();
+                        kept.append(&mut self.pending);
+                        self.pending = kept;
+                    }
+                }
             }
         }
+        self.start_next();
     }
 }
 
@@ -1896,6 +2005,101 @@ mod tests {
             record(&store, "a").backends[0].state == HealthState::Healthy
         })
         .await;
+    }
+
+    /// Commits wait while the gate is closed; counts commits started.
+    struct Gated {
+        inner: Arc<Store>,
+        gate: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+        started: Arc<AtomicUsize>,
+    }
+    impl Sink for Gated {
+        fn commit(&mut self, ops: &[Op]) -> Result<(), String> {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            let (open, cv) = &*self.gate;
+            let _open = cv.wait_while(open.lock().unwrap(), |o| !*o).unwrap();
+            self.inner.commit(ops)
+        }
+        fn clear_stale_readers(&mut self) -> Result<usize, String> {
+            Ok(0)
+        }
+    }
+
+    fn set_gate(gate: &(std::sync::Mutex<bool>, std::sync::Condvar), open: bool) {
+        *gate.0.lock().unwrap() = open;
+        gate.1.notify_all();
+    }
+
+    /// A commit that waits for the disk does not hold up the live view:
+    /// results that arrive meanwhile are served at once, and go to the
+    /// store with the next commit.
+    #[tokio::test]
+    async fn live_state_updated_while_a_commit_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let gate = Arc::new((std::sync::Mutex::new(true), std::sync::Condvar::new()));
+        let started = Arc::new(AtomicUsize::new(0));
+        let live = LiveState::default();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let sink = Gated {
+            inner: store.clone(),
+            gate: gate.clone(),
+            started: started.clone(),
+        };
+        spawn_inner(
+            sink,
+            rx,
+            Duration::from_secs(3600),
+            live.clone(),
+            BTreeMap::new(),
+            ListenKeys::default(),
+        );
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![layout("a", &["10.0.0.1:80", "10.0.0.2:80"], 0)],
+        })
+        .unwrap();
+        settled(&tx).await;
+        let before = started.load(Ordering::SeqCst);
+        set_gate(&gate, false);
+        // Opens the gate if an assertion fails, so the runtime can stop.
+        struct Open(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+        impl Drop for Open {
+            fn drop(&mut self) {
+                set_gate(&self.0, true);
+            }
+        }
+        let _open = Open(gate.clone());
+        tx.send(upd("a", "10.0.0.1:80", HealthState::Healthy, true))
+            .unwrap();
+        eventually("the first commit starts", || {
+            started.load(Ordering::SeqCst) > before
+        })
+        .await;
+        tx.send(upd("a", "10.0.0.2:80", HealthState::Unhealthy, true))
+            .unwrap();
+        eventually("the live view takes the second result", || {
+            live.read().services["a"].record.backends[1].state == HealthState::Unhealthy
+        })
+        .await;
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            before + 1,
+            "one commit at a time"
+        );
+        set_gate(&gate, true);
+        settled(&tx).await;
+        let rec = record(&store, "a");
+        assert_eq!(rec.backends[0].state, HealthState::Healthy);
+        assert_eq!(rec.backends[1].state, HealthState::Unhealthy);
+        let h = history(&store, "a").expect("history committed");
+        assert_eq!(ats(&h, "10.0.0.1:80").len(), 1);
+        assert_eq!(
+            ats(&h, "10.0.0.2:80").len(),
+            1,
+            "both transitions committed"
+        );
     }
 
     #[tokio::test]

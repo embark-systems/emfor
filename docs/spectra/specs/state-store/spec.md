@@ -98,7 +98,7 @@ tests:
 ---
 ### Requirement: Heartbeat and timely state updates
 
-The daemon SHALL update `meta/heartbeat` at least once per second while running. A change of any backend's health state SHALL be committed to the store immediately, without waiting for the next heartbeat; check results already waiting to be written at that moment (up to 1024) SHALL be applied first and committed in the same transaction, so a burst of changes costs one commit and not one each. Changes to `checked_at` or `reason` alone SHALL be committed no later than the next heartbeat.
+The daemon SHALL update `meta/heartbeat` at least once per second while running. A change of any backend's health state SHALL be committed to the store immediately, without waiting for the next heartbeat; check results already waiting to be written at that moment (up to 1024) SHALL be applied first and committed in the same transaction, so a burst of changes costs one commit and not one each. Changes to `checked_at` or `reason` alone SHALL be committed no later than the next heartbeat. The daemon SHALL run at most one commit at a time. While a commit is in progress, the daemon SHALL keep applying check results, reloads and restarts of check tasks to the state served by its DNS server and `/metrics`, and a commit due meanwhile SHALL start as soon as the one in progress ends, writing every change made since that one started in one transaction; "immediately" above means this when a commit is already in progress. Memory held for changes not yet committed SHALL grow with the number of backends, not with the time a commit takes.
 
 #### Scenario: Heartbeat advances
 
@@ -109,6 +109,12 @@ The daemon SHALL update `meta/heartbeat` at least once per second while running.
 
 - **WHEN** a backend changes from `healthy` to `unhealthy`
 - **THEN** its new state is readable from the store before the next heartbeat commit
+
+#### Scenario: Slow commit does not hold up the served state
+
+- **GIVEN** a commit that waits for the disk
+- **WHEN** a backend's check result changes its state while that commit waits
+- **THEN** the DNS server and `/metrics` show the new state at once, no second commit starts while the first waits, and the change is committed by the next commit, which starts when the first ends
 
 
 <!-- @trace
