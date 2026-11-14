@@ -97,7 +97,11 @@ backends in and out. When the pool is empty, or the store is stale,
 ### Unknown values
 
 A client that reads a `balance` it does not know (written by a newer
-daemon) uses `round-robin`. Unknown fields in the store are ignored.
+daemon) uses `round-robin`. A backend `state` it does not know counts as
+`unhealthy`, so such a backend is used only when an `open` service has
+nothing better, and an `on_all_down` it does not know counts as `open`,
+the default. `emfor status` shows them as `unrecognized` and
+`on_all_down=unknown`. Unknown fields in the store are ignored.
 
 ## A backend whose checks start failing
 

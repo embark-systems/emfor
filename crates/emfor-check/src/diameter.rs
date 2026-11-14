@@ -10,9 +10,10 @@ use std::time::Duration;
 use emfor_plugin::{CheckOutcome, CheckRequest, OptionError, Options};
 use emfor_tls::{ClientCertificate, TlsSettings};
 use serde_json::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::time::Instant;
 
+use crate::frame::{Frame, FrameError, FrameReader};
 use crate::net::{self, Stream, io_failure};
 use crate::options::{boolean, check_file, string, tls_settings};
 
@@ -198,10 +199,17 @@ fn client_certificate(
         }
         return None;
     }
-    Some(ClientCertificate {
+    let client = ClientCertificate {
         cert_file: cert_file?,
         key_file: key_file?,
-    })
+    };
+    // Each file is usable on its own; build the client configuration a
+    // check builds, which also needs the key to fit the certificate.
+    if read_files && let Err(message) = emfor_tls::check_client_certificate(&client) {
+        errors.push(OptionError::new("tls_key_file", message));
+        return None;
+    }
+    Some(client)
 }
 
 /// A required DiameterIdentity option.
@@ -582,7 +590,7 @@ fn judge(answer: &Message, stage: &str) -> Result<(), CheckOutcome> {
 /// A connection on which the capabilities exchange succeeded.
 struct Peer {
     conn: Box<dyn Stream>,
-    buf: Vec<u8>,
+    buf: FrameReader,
     ids: Ids,
 }
 
@@ -644,7 +652,7 @@ async fn exchange(
     };
     let host_ip = settings.host_ip_address.unwrap_or(local.ip());
     let ids = Ids::random();
-    let mut buf = Vec::new();
+    let mut buf = FrameReader::read_ahead(MAX_MESSAGE);
     send(
         &mut conn,
         &capabilities_exchange_request(settings, host_ip, ids),
@@ -692,7 +700,7 @@ async fn send(conn: &mut Box<dyn Stream>, bytes: &[u8]) -> Result<(), CheckOutco
 /// names the awaited answer in reasons (`cea: connection closed by peer`).
 async fn answer(
     conn: &mut Box<dyn Stream>,
-    buf: &mut Vec<u8>,
+    buf: &mut FrameReader,
     command: u32,
     ids: Ids,
     stage: &str,
@@ -705,42 +713,33 @@ async fn answer(
     }
 }
 
-/// Read one message from `conn`, with `buf` holding bytes already read.
+/// Read one message from `conn`; `buf` keeps bytes that arrived early.
 async fn read_message(
     conn: &mut Box<dyn Stream>,
-    buf: &mut Vec<u8>,
+    buf: &mut FrameReader,
     stage: &str,
 ) -> Result<Message, CheckOutcome> {
-    let mut need = 4;
-    let mut length = None;
-    loop {
-        if buf.len() >= need {
-            match length {
-                None => {
-                    let l = message_length(buf).map_err(CheckOutcome::Down)?;
-                    length = Some(l);
-                    need = l;
-                    continue;
-                }
-                Some(l) => {
-                    let message = decode(&buf[..l]).map_err(CheckOutcome::Down);
-                    buf.drain(..l);
-                    return message;
-                }
-            }
+    let mut framer = |bytes: &[u8]| {
+        if bytes.len() < 4 {
+            return Frame::Need(4);
         }
-        let mut chunk = [0u8; 4096];
-        let n = match conn.read(&mut chunk).await {
-            Ok(n) => n,
-            Err(e) if closed(&e) => 0,
-            Err(e) => return Err(io_failure("query: ", &e)),
-        };
-        if n == 0 {
-            return Err(CheckOutcome::Down(format!(
-                "{stage}: connection closed by peer"
-            )));
+        match message_length(bytes) {
+            Ok(length) if bytes.len() >= length => Frame::Complete(length),
+            Ok(length) => Frame::Need(length),
+            Err(reason) => Frame::Invalid(reason),
         }
-        buf.extend_from_slice(&chunk[..n]);
+    };
+    match buf.next(conn, &mut framer).await {
+        Ok(bytes) => decode(&bytes).map_err(CheckOutcome::Down),
+        Err(FrameError::Io(e)) if !closed(&e) => Err(io_failure("query: ", &e)),
+        Err(FrameError::Closed { .. } | FrameError::Io(_)) => Err(CheckOutcome::Down(format!(
+            "{stage}: connection closed by peer"
+        ))),
+        // message_length already refuses longer messages.
+        Err(FrameError::TooLarge) => Err(CheckOutcome::Down(
+            "query: message longer than 65536 bytes".into(),
+        )),
+        Err(FrameError::Invalid(reason)) => Err(CheckOutcome::Down(reason)),
     }
 }
 
@@ -759,6 +758,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::net::SocketAddr;
+    use tokio::io::AsyncReadExt;
     use tokio::net::{TcpListener, TcpStream};
 
     /// The E flag of an error answer.
@@ -900,6 +900,16 @@ mod tests {
             )),
             Vec::new()
         );
+        // Each file is fine on its own, but the key belongs to another
+        // certificate: a check could not build its TLS configuration.
+        let other = dir.path().join("other.key");
+        let other_pki = emfor_tls::testing::mutual_pki("dra.example.org", "other.example.org");
+        std::fs::write(&other, &other_pki.client_key_pem).unwrap();
+        let wrong = errors(acct(
+            json!({ "tls": true, "tls_cert_file": crt, "tls_key_file": other.to_str().unwrap() }),
+        ));
+        assert_eq!(wrong.len(), 1, "{wrong:?}");
+        assert_eq!(wrong[0].0, "tls_key_file", "{wrong:?}");
     }
 
     #[test]

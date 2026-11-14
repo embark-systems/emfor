@@ -34,7 +34,7 @@ The `tcp` checker SHALL accept these optional `check_options` keys and no others
 - `server_name`: a host name or IP address, default the backend IP. The server certificate SHALL match it, and it SHALL be sent as SNI when it is a host name.
 - `ca_file`: an absolute path of a PEM file. The server certificate SHALL be verified against the certificates in it instead of the system's CA certificates.
 
-Validation SHALL fail when `send` or `expect` is not a string, when `send` is set without `expect` (error on `expect`: `required when send is set`), when `expect` is empty, or when `expect` is longer than 16384 bytes; when `tls` or `tls_verify` is not a boolean (`must be a boolean`); when `server_name` is not a valid host name or IP address (`not a valid host name or IP address`); when `ca_file` is not an absolute path (`not an absolute path`), does not exist (`file not found`) or holds no PEM certificate (`no certificate found`); and when `tls_verify`, `server_name` or `ca_file` is set without `tls = true` (`requires tls = true`). An empty `send` with an `expect` SHALL behave as `expect` alone.
+Validation SHALL fail when `send` or `expect` is not a string, when `send` is set without `expect` (error on `expect`: `required when send is set`), when `expect` is empty, or when `expect` is longer than 16384 bytes; when `tls` or `tls_verify` is not a boolean (`must be a boolean`); when `server_name` is not a valid host name or IP address (`not a valid host name or IP address`); when `ca_file` is not an absolute path (`not an absolute path`), does not exist (`file not found`), holds no PEM certificate (`no certificate found`) or holds none that can be used as a trust anchor (`no usable certificate`), as a check would read it; and when `tls_verify`, `server_name` or `ca_file` is set without `tls = true` (`requires tls = true`). An empty `send` with an `expect` SHALL behave as `expect` alone.
 
 With `tls = true`, a failed TLS handshake or certificate verification SHALL be `down` with a reason starting `tls: `. The handshake SHALL get at most 90% of the time left before the service's `timeout`; when the backend has not completed it by then, the result SHALL be `down` with reason `tls: no answer to the TLS handshake (does the port speak TLS?)`. When the backend closes or resets the connection before the handshake is done, the result SHALL be `down` with reason `tls: connection closed during the TLS handshake (does the server have a certificate?)`. When less than 100 ms would be left for the handshake, the service's `timeout` SHALL apply instead. When `ca_file` cannot be read during a check, or the host has no system CA certificates and `ca_file` is not set, the result SHALL be `error` with a reason starting `ca_file: ` or `tls: ` respectively. A `ca_file` that was replaced or rewritten (another inode, size, modification or change time) SHALL take effect at the next check without a reload; an unchanged one MAY be kept parsed instead of being read again on every check.
 
@@ -184,6 +184,7 @@ Without `expect`, a completed connection (with `tls = true`, a completed handsha
 | `{ tls = true, ca_file = "ca.pem" }` | `ca_file` | `not an absolute path` |
 | `{ tls = true, ca_file = "/etc/emfor/missing.pem" }` | `ca_file` | `file not found` |
 | `{ tls = true, ca_file = "/etc/emfor/not-pem.txt" }` | `ca_file` | `no certificate found` |
+| `{ tls = true, ca_file = "/etc/emfor/broken.pem" }` (a certificate block that is not a valid certificate) | `ca_file` | `no usable certificate` |
 
 
 <!-- @trace
@@ -208,7 +209,7 @@ tests:
 ---
 ### Requirement: HTTP checker
 
-The `http` checker SHALL send one `GET` request per check to the backend IP and port using `scheme` (`http` or `https`, default `http`) and `path` (default `/`), with the `Host` header set to `host_header` when configured. `host_header` SHALL be an IPv4 address, an IPv6 address in brackets, or a host name that a URL holds unchanged as its host (ignoring ASCII case), each with an optional `:port` of 1 to 5 digits up to 65535; anything else SHALL fail validation with `must be a host with an optional port, such as "api.internal" or "api.internal:8443"`. With a host name, the request URL SHALL use that name and the connection SHALL still go to the backend IP and port, so that with `https` the name is the TLS server name. It SHALL NOT follow redirects. The result SHALL be `up` when the response status matches any entry of `expect_status` (default `["200-399"]`; each entry is a status code or an inclusive `lo-hi` range) and `down` otherwise, with the status code in the reason. For `https`, certificate verification SHALL be on unless `tls_verify = false`. When `expect_body` is set (a string of 1 to 16384 bytes), a response whose status matches SHALL also be read, up to 65536 bytes and stopping as soon as `expect_body` is found as a case-sensitive byte substring; the result SHALL be `up` only when it is found, and otherwise `down` with reason `expect_body: got "<first 64 bytes of the body, escaped>"`. A failure while reading the body SHALL be `down` with a reason starting `body: `. Without `expect_body`, the checker SHALL NOT read the body.
+The `http` checker SHALL send one `GET` request per check to the backend IP and port using `scheme` (`http` or `https`, default `http`) and `path` (default `/`), with the `Host` header set to `host_header` when configured. `path` SHALL start with `/` (otherwise `must start with '/'`) and SHALL NOT contain `#`, `\` or a control character, which the request URL would cut off, drop or turn into `/` (`must not contain '#', '\' or control characters`); other characters, such as a space, SHALL be sent percent-encoded. `host_header` SHALL be an IPv4 address, an IPv6 address in brackets, or a host name that a URL holds unchanged as its host (ignoring ASCII case), each with an optional `:port` of 1 to 5 digits up to 65535; anything else SHALL fail validation with `must be a host with an optional port, such as "api.internal" or "api.internal:8443"`. With a host name, the request URL SHALL use that name and the connection SHALL still go to the backend IP and port, so that with `https` the name is the TLS server name. It SHALL NOT follow redirects. The result SHALL be `up` when the response status matches any entry of `expect_status` (default `["200-399"]`; each entry is a status code or an inclusive `lo-hi` range) and `down` otherwise, with the status code in the reason. For `https`, certificate verification SHALL be on unless `tls_verify = false`. When `expect_body` is set (a string of 1 to 16384 bytes), a response whose status matches SHALL also be read, up to 65536 bytes and stopping as soon as `expect_body` is found as a case-sensitive byte substring; the result SHALL be `up` only when it is found, and otherwise `down` with reason `expect_body: got "<first 64 bytes of the body, escaped>"`. A failure while reading the body SHALL be `down` with a reason starting `body: `. Without `expect_body`, the checker SHALL NOT read the body.
 
 #### Scenario: Status inside expected range
 
@@ -370,7 +371,7 @@ updated: 2026-11-13
 code:
   - crates/emfor-daemon/src/schedule.rs
   - docs/manual/08-operations.md
-  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/peers/
   - docs/manual/01-concepts.md
   - docs/deploy/daemon.md
   - crates/emfor-daemon/src/quorum.rs
@@ -384,7 +385,9 @@ tests:
 ---
 ### Requirement: Health state machine with rise and fall
 
-Each backend SHALL have a health state of `unknown`, `healthy`, or `unhealthy`, a consecutive-success counter, and a consecutive-failure counter, all starting at `unknown`, 0, 0 when the daemon starts. An `up` result SHALL increment the success counter and reset the failure counter; reaching `rise` SHALL set the state to `healthy`. A `down` result SHALL increment the failure counter and reset the success counter; reaching `fall` SHALL set the state to `unhealthy`. An `error` result SHALL change neither counter nor the state, except that when a backend has received only `error` results for longer than `fall × interval`, its state SHALL become `unknown` and both counters SHALL reset to 0. When a backend's check task stops (a bug) and the daemon starts it again, the backend SHALL start again from `unknown` with both counters at 0 and no latency; when its state was another one, this SHALL be a transition like any other, committed at once, counted, and recorded in the history with reason `check task restarted`. In a daemon with `[peers]`, the result of a check, as used by this requirement and by every other requirement of this spec (scheduling, fast recheck runs, logging, latency and counters), SHALL be the combined result of that check defined in spec peer-group ("Region verdict and combined result"); without `[peers]` it SHALL be the result the checker returned.
+Each backend SHALL have a health state of `unknown`, `healthy`, or `unhealthy`, a consecutive-success counter, and a consecutive-failure counter, all starting at `unknown`, 0, 0 when the daemon starts. An `up` result SHALL increment the success counter and reset the failure counter; reaching `rise` SHALL set the state to `healthy`. A `down` result SHALL increment the failure counter and reset the success counter; reaching `fall` SHALL set the state to `unhealthy`. An `error` result SHALL change neither counter nor the state, except that when a backend has received only `error` results for longer than `fall × interval`, its state SHALL become `unknown` and both counters SHALL reset to 0. When a backend's check task stops (a bug) and the daemon starts it again, the backend SHALL start again from `unknown` with both counters at 0 and no latency, and its reason SHALL be `check task restarted`, also when it was already `unknown`; when its state was another one, this SHALL be a transition like any other, committed at once, counted, and recorded in the history with that reason.
+
+The state machine of a backend SHALL belong to the one check task that checks it. The backend's record in the store and the state the DNS server answers from SHALL change only by results of that task, so all three agree on the state, the reason and the latency. Each check task SHALL have a generation of its own, and a result of any task but the backend's current one (a task stopped by a reload or replaced after it stopped) SHALL NOT change the record, the DNS state or the counters. A backend SHALL keep its state exactly while its check task keeps running (a reload that does not change `check` or `check_options`, see spec state-store, "Store updates on reload"); whenever a new task takes over the backend (daemon start, a new service or backend, a backend removed and added back, `check` or `check_options` changed, or the task started again after it stopped), the record and the DNS state SHALL be `unknown` before the new task's first result, as the new task is. In a daemon with `[peers]`, the result of a check, as used by this requirement and by every other requirement of this spec (scheduling, fast recheck runs, logging, latency and counters), SHALL be the combined result of that check defined in spec peer-group ("Region verdict and combined result"); without `[peers]` it SHALL be the result the checker returned.
 
 #### Scenario: Backend becomes healthy
 
@@ -409,6 +412,16 @@ Each backend SHALL have a health state of `unknown`, `healthy`, or `unhealthy`, 
 - **WHEN** a `healthy` backend with `interval = "2s"` and `fall = 3` receives only `error` results for more than 6s
 - **THEN** its state becomes `unknown` and both counters are 0
 
+#### Scenario: Restarted task of an unknown backend
+
+- **WHEN** a backend with `rise = 2` got one `up` result (still `unknown`, with a latency) and its check task then stops and is started again
+- **THEN** the backend is `unknown` with no latency and reason `check task restarted`, in the store and in DNS, and no history entry is added
+
+#### Scenario: Result of a stopped task ignored
+
+- **WHEN** a reload removes backend `10.0.0.11:8080`, its check task sends one last `up` result, and the result is handled only after a second reload added the backend back
+- **THEN** the backend stays `unknown` until its new check task reports
+
 #### Scenario: Combined result feeds the state machine
 
 - **WHEN** a daemon in a peer group of three has a `healthy` backend with `fall = 3`, its own checks give `up`, and the two other assigned checkers keep reporting `down`
@@ -425,7 +438,7 @@ code:
   - crates/emfor-daemon/src/status.rs
   - crates/emfor-daemon/src/metrics.rs
   - docs/manual/08-operations.md
-  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/peers/
   - crates/emfor-daemon/src/lib.rs
   - crates/emfor-daemon/src/schedule.rs
   - crates/emfor-daemon/src/quorum.rs
@@ -479,7 +492,7 @@ tests:
 ---
 ### Requirement: Exec checker
 
-The `exec` checker SHALL run the command given in `check_options.command` once per check, without a shell, with the backend passed in the environment variables `EMFOR_IP`, `EMFOR_PORT`, and `EMFOR_SERVICE`. The result SHALL follow the exit status: 0 is `up`; 1 or 2 is `down` with the first line of standard output as the reason (or `exit code N` when there is none); any other exit code is `error`; death by a signal is `error`; failure to start the command is `error`. When the check exceeds `timeout`, the command's whole process group SHALL be killed and the result SHALL be `down` with reason `timeout`. `check_options.command` SHALL be required, SHALL be a non-empty array of strings whose first element is an absolute path to an existing executable file, and SHALL be the only accepted key.
+The `exec` checker SHALL run the command given in `check_options.command` once per check, without a shell, with the backend passed in the environment variables `EMFOR_IP`, `EMFOR_PORT`, and `EMFOR_SERVICE`. The result SHALL follow the exit status: 0 is `up`; 1 or 2 is `down` with the first line of standard output as the reason (or `exit code N` when there is none); any other exit code is `error`; death by a signal is `error`; failure to start the command is `error`. When the check exceeds `timeout`, the command's whole process group SHALL be killed and the result SHALL be `down` with reason `timeout`. `check_options.command` SHALL be required, SHALL be a non-empty array of strings whose first element is an absolute path to an existing executable file, SHALL NOT contain a NUL character in any element (`must not contain NUL`), and SHALL be the only accepted key.
 
 #### Scenario: Script reports critical
 

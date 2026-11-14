@@ -39,7 +39,10 @@ pub fn candidates(rec: &ServiceRecord, stale: bool) -> Result<Vec<&BackendRecord
             OnAllDown::Closed => {
                 format!("service {}: {why}, and on_all_down is closed", rec.name)
             }
-            OnAllDown::Open => format!("service {} has no backends", rec.name),
+            // A value this client does not know counts as open.
+            OnAllDown::Open | OnAllDown::Unknown => {
+                format!("service {} has no backends", rec.name)
+            }
         },
     ))
 }
@@ -306,6 +309,35 @@ mod tests {
         assert_eq!(candidates(&r, false).unwrap_err().code, ErrorCode::AllDown);
         let r = rec(Balance::Failover, OnAllDown::Open, vec![]);
         assert_eq!(candidates(&r, false).unwrap_err().code, ErrorCode::AllDown);
+    }
+
+    /// Values a newer daemon may write: a backend `state` the client does
+    /// not know counts as `unhealthy`, an `on_all_down` it does not know as
+    /// `open`.
+    #[test]
+    fn unknown_state_and_on_all_down_values() {
+        let parse = |on_all_down: &str, second: &str| -> ServiceRecord {
+            let json = format!(
+                r#"{{"name":"api.svc.emfor","on_all_down":"{on_all_down}","all_down":true,"backends":[{{"id":"10.0.0.11:8080","ip":"10.0.0.11","port":8080,"state":"some-future-state","checked_at":1,"reason":null}},{{"id":"10.0.0.12:8080","ip":"10.0.0.12","port":8080,"state":"{second}","checked_at":1,"reason":"refused"}}]}}"#
+            );
+            serde_json::from_str(&json).expect("a record with unknown values parses")
+        };
+        let ids = |c: Vec<&BackendRecord>| c.iter().map(|b| b.id.clone()).collect::<Vec<_>>();
+        // Not healthy: an `unknown` backend is preferred to it.
+        let r = parse("open", "unknown");
+        assert_eq!(ids(candidates(&r, false).unwrap()), ["10.0.0.12:8080"]);
+        // Like `unhealthy`: open with nothing healthy or unknown uses all.
+        let r = parse("some-future-mode", "unhealthy");
+        assert_eq!(
+            ids(candidates(&r, false).unwrap()),
+            ["10.0.0.11:8080", "10.0.0.12:8080"]
+        );
+        // Never healthy: closed fails.
+        let r = parse("closed", "unhealthy");
+        assert_eq!(candidates(&r, false).unwrap_err().code, ErrorCode::AllDown);
+        // A healthy backend is still chosen over it.
+        let r = parse("some-future-mode", "healthy");
+        assert_eq!(ids(candidates(&r, false).unwrap()), ["10.0.0.12:8080"]);
     }
 
     /// A healthy backend whose last check failed (`reason` set) is used

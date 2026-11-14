@@ -15,9 +15,12 @@ use crate::writer::{ServiceLayout, WriterMsg};
 
 struct Running {
     config: ServiceConfig,
-    generation: u64,
     settings: watch::Sender<Settings>,
     tasks: HashMap<String, JoinHandle<()>>,
+    /// Generation of each backend's check task, by backend id: unique to
+    /// the task, so the writer can tell its results from those of a task
+    /// it replaced.
+    generations: HashMap<String, u64>,
     /// "Recheck now" channel of each backend task, by backend id; kept when
     /// a task is started again.
     rechecks: HashMap<String, Arc<Recheck>>,
@@ -51,6 +54,7 @@ impl Running {
         for (_, t) in self.tasks.drain() {
             t.abort();
         }
+        self.generations.clear();
         self.rechecks.clear();
     }
 }
@@ -58,6 +62,7 @@ impl Running {
 pub struct Supervisor {
     writer: mpsc::UnboundedSender<WriterMsg>,
     services: BTreeMap<Arc<str>, Running>,
+    /// Generation of the last check task started; every task gets the next.
     next_generation: u64,
     /// Every backend's recheck channel, for the peer task.
     targets: Targets,
@@ -83,7 +88,7 @@ impl Supervisor {
         let mut s = Supervisor {
             writer,
             services: BTreeMap::new(),
-            next_generation: 1,
+            next_generation: 0,
             targets,
             peers,
         };
@@ -142,16 +147,17 @@ impl Supervisor {
     /// Start again every check task that ended on its own. A task only ends
     /// by a panic while the daemon runs (or when the writer is gone, at
     /// shutdown), and without this its backend would keep its last state
-    /// for good. The new task starts from `unknown`, and so does the
-    /// backend in the store, with a transition in its history (reason
-    /// `check task restarted`) when it was in another state. A task that keeps
-    /// stopping is started again after 1s, 2s, 4s and so on, up to 60s, so
-    /// a checker that always panics does not fill the log; the wait starts
+    /// for good. The new task starts from `unknown` under a new generation,
+    /// and so does the backend in the store and the live view, with a
+    /// transition in its history (reason `check task restarted`) when it was
+    /// in another state. A task that keeps stopping is started again after
+    /// 1s, 2s, 4s and so on, up to 60s, so a checker that always panics does not fill the log; the wait starts
     /// over once a task ran 5 minutes. Returns how many were restarted.
     pub fn restart_finished(&mut self) -> usize {
         let now = tokio::time::Instant::now();
         let mut restarted = 0;
         let peers = self.peers.clone();
+        let next_generation = &mut self.next_generation;
         for (name, r) in &mut self.services {
             for b in &r.config.backends {
                 let Some(t) = r.tasks.get_mut(&b.id) else {
@@ -177,18 +183,22 @@ impl Supervisor {
                     next.as_secs()
                 );
                 // Before the new task's first update: the store goes back
-                // to `unknown` with the task, as a recorded transition.
+                // to `unknown` with the task, as a recorded transition, and
+                // takes results from the new task only.
+                *next_generation += 1;
+                let generation = *next_generation;
                 let _ = self.writer.send(WriterMsg::Restarted {
                     service: name.clone(),
-                    generation: r.generation,
+                    generation,
                     backend_id: b.id.clone(),
                 });
+                r.generations.insert(b.id.clone(), generation);
                 let recheck = r.rechecks.entry(b.id.clone()).or_default().clone();
                 *t = spawn_backend(
                     name.clone(),
                     b.clone(),
                     r.config.checker.clone(),
-                    r.generation,
+                    generation,
                     r.settings.subscribe(),
                     self.writer.clone(),
                     PeerLink {
@@ -253,6 +263,7 @@ impl Supervisor {
                     keep
                 });
                 r.restarts.retain(|id, _| ids.contains(&id.as_str()));
+                r.generations.retain(|id, _| ids.contains(&id.as_str()));
                 r.rechecks.retain(|id, _| ids.contains(&id.as_str()));
                 for addr in removed {
                     r.config.checker.forget(addr);
@@ -261,16 +272,23 @@ impl Supervisor {
         }
 
         // 2. Send the layout, so updates from tasks spawned below follow it.
+        // A backend whose task keeps running keeps its generation, and with
+        // it its state; every other one gets the generation of the task
+        // spawned for it below, and starts from `unknown`.
         let mut layouts = Vec::new();
         for (name, new) in &wanted {
-            let reset = !self.services.contains_key(name);
-            let generation = match self.services.get(name) {
-                Some(r) => r.generation,
-                None => {
-                    self.next_generation += 1;
-                    self.next_generation
-                }
-            };
+            let running = self.services.get(name);
+            let generations = new
+                .backends
+                .iter()
+                .map(|b| match running.and_then(|r| r.generations.get(&b.id)) {
+                    Some(&g) => g,
+                    None => {
+                        self.next_generation += 1;
+                        self.next_generation
+                    }
+                })
+                .collect();
             layouts.push(ServiceLayout {
                 name: name.clone(),
                 on_all_down: new.settings.on_all_down,
@@ -279,8 +297,7 @@ impl Supervisor {
                 slow_start_ms: u64::try_from(new.settings.slow_start.as_millis())
                     .unwrap_or(u64::MAX),
                 backends: new.backends.clone(),
-                generation,
-                reset,
+                generations,
             });
         }
         let _ = self.writer.send(WriterMsg::SetLayout {
@@ -297,9 +314,9 @@ impl Supervisor {
                 .entry(layout.name.clone())
                 .or_insert_with(|| Running {
                     config: new.clone(),
-                    generation: layout.generation,
                     settings: watch::channel(new.settings).0,
                     tasks: HashMap::new(),
+                    generations: HashMap::new(),
                     rechecks: HashMap::new(),
                     restarts: HashMap::new(),
                 });
@@ -309,7 +326,7 @@ impl Supervisor {
                 ..new.clone()
             };
             r.settings.send_replace(new.settings);
-            for b in &new.backends {
+            for (b, &generation) in new.backends.iter().zip(&layout.generations) {
                 if !r.tasks.contains_key(&b.id) {
                     r.rechecks.entry(b.id.clone()).or_default();
                     let link = PeerLink {
@@ -320,12 +337,13 @@ impl Supervisor {
                         layout.name.clone(),
                         b.clone(),
                         checker.clone(),
-                        layout.generation,
+                        generation,
                         r.settings.subscribe(),
                         self.writer.clone(),
                         link,
                     );
                     r.tasks.insert(b.id.clone(), t);
+                    r.generations.insert(b.id.clone(), generation);
                 }
             }
         }
@@ -550,6 +568,107 @@ mod tests {
                 (Unknown, Healthy, None),
             ]
         );
+    }
+
+    /// A backend keeps its task generation, and with it its state, exactly
+    /// while its task keeps running; every new task has a generation of its
+    /// own, so the writer drops what an earlier task of the backend sends.
+    #[tokio::test]
+    async fn every_new_check_task_has_its_own_generation() {
+        let h = harness();
+        let (x, y) = ("10.0.0.1:80", "10.0.0.2:80");
+        let svc = |check: &str, timeout: &str, ids: &[&str]| {
+            let ids: Vec<String> = ids.iter().map(|i| format!("\"{i}\"")).collect();
+            conf(&format!(
+                "[services.a]\ncheck = \"{check}\"\ntimeout = \"{timeout}\"\nbackends = [{}]\n",
+                ids.join(", ")
+            ))
+        };
+        let gens = |sup: &Supervisor| -> Vec<Option<u64>> {
+            let r = &sup.services["a"];
+            [x, y]
+                .iter()
+                .map(|id| r.generations.get(*id).copied())
+                .collect()
+        };
+        let mut sup = Supervisor::start(&svc("tcp", "1s", &[x, y]), h.tx.clone());
+        let first = gens(&sup);
+        assert!(first[0].is_some() && first[1].is_some() && first[0] != first[1]);
+        sup.reload(&svc("tcp", "500ms", &[x, y]));
+        assert_eq!(gens(&sup), first, "timing change keeps the tasks");
+        sup.reload(&svc("tcp", "500ms", &[y]));
+        assert_eq!(gens(&sup), [None, first[1]]);
+        sup.reload(&svc("tcp", "500ms", &[x, y]));
+        let back = gens(&sup);
+        assert_eq!(back[1], first[1]);
+        assert!(back[0] > first[1], "added back: a new task");
+        let ids_before: Vec<u64> = back.iter().flatten().copied().collect();
+        sup.reload(&svc("http", "500ms", &[x, y]));
+        assert!(
+            gens(&sup).iter().flatten().all(|g| !ids_before.contains(g)),
+            "check changed: new tasks"
+        );
+        sup.stop();
+    }
+
+    /// A restarted task of an `unknown` backend: the new task has no
+    /// latency, and neither have the record and the live view.
+    #[tokio::test]
+    async fn restart_of_an_unknown_backend_leaves_it_without_latency() {
+        use crate::checker::{CheckRequest, CheckResult, Checker};
+        use futures::future::BoxFuture;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        /// `up` (rise 2: still unknown, with a latency), then a panic, then
+        /// `down` for good.
+        #[derive(Debug, Default)]
+        struct UpThenPanic(AtomicU32);
+        impl Checker for UpThenPanic {
+            fn check(&self, _: CheckRequest) -> BoxFuture<'_, CheckResult> {
+                Box::pin(async move {
+                    match self.0.fetch_add(1, Ordering::SeqCst) {
+                        0 => CheckResult::Up,
+                        1 => panic!("checker bug"),
+                        _ => CheckResult::Down("refused".into()),
+                    }
+                })
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let live = crate::live::LiveState::default();
+        let (tx, rx) = mpsc::unbounded_channel();
+        writer::spawn_live(
+            store.clone(),
+            rx,
+            live.clone(),
+            BTreeMap::new(),
+            writer::ListenKeys::default(),
+        );
+        let mut config = conf(
+            "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"127.0.0.1:1\"]\ninterval = \"200ms\"\ntimeout = \"100ms\"\nrise = 2\njitter = \"0%\"\n",
+        );
+        config.services[0].checker = Arc::new(UpThenPanic::default());
+        let mut sup = Supervisor::start(&config, tx.clone());
+        let latency = || {
+            live.read()
+                .services
+                .get("api.svc.emfor")
+                .and_then(|s| s.record.backends[0].latency_us)
+        };
+        wait_for("latency of the first up", || latency().is_some()).await;
+        let finished = |sup: &Supervisor| {
+            let r = sup.services.values().next().unwrap();
+            r.tasks.values().next().unwrap().is_finished()
+        };
+        wait_for("task ended by the panic", || finished(&sup)).await;
+        assert_eq!(sup.restart_finished(), 1);
+        wait_for("latency cleared", || latency().is_none()).await;
+        let r = rec(&store, "api.svc.emfor").unwrap();
+        assert_eq!(r.backends[0].state, HealthState::Unknown);
+        assert_eq!(r.backends[0].latency_us, None);
+        sup.stop();
     }
 
     #[test]

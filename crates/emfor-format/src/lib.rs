@@ -4,7 +4,11 @@
 //! environment (`MDB_NOSUBDIR`, default database only). Keys and values are
 //! UTF-8 strings; service records are JSON. Readers in every client language
 //! parse this format directly, so any change here is a format change and must
-//! bump [`SCHEMA_VERSION`].
+//! bump [`SCHEMA_VERSION`], unless older readers already handle it the way
+//! the change intends: they ignore fields and keys they do not know, and
+//! read a `balance`, backend `state` or `on_all_down` value they do not know
+//! as [`Balance::Unknown`] (round-robin), [`HealthState::Unrecognized`]
+//! (unhealthy) or [`OnAllDown::Unknown`] (open).
 
 pub mod rules;
 
@@ -75,6 +79,10 @@ pub enum HealthState {
     Unknown,
     Healthy,
     Unhealthy,
+    /// A value this reader does not know (written by a newer daemon).
+    /// Readers treat it as unhealthy; the daemon never writes it.
+    #[serde(other)]
+    Unrecognized,
 }
 
 impl HealthState {
@@ -83,6 +91,7 @@ impl HealthState {
             HealthState::Unknown => "unknown",
             HealthState::Healthy => "healthy",
             HealthState::Unhealthy => "unhealthy",
+            HealthState::Unrecognized => "unrecognized",
         }
     }
 }
@@ -102,6 +111,26 @@ pub enum OnAllDown {
     Open,
     /// Return a failure.
     Closed,
+    /// A value this reader does not know (written by a newer daemon).
+    /// Readers treat it as `open`; the daemon never writes it.
+    #[serde(other)]
+    Unknown,
+}
+
+impl OnAllDown {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OnAllDown::Open => "open",
+            OnAllDown::Closed => "closed",
+            OnAllDown::Unknown => "unknown",
+        }
+    }
+
+    /// Whether a service with no healthy backend still uses the others:
+    /// `open`, and a value this reader does not know.
+    pub fn is_open(self) -> bool {
+        self != OnAllDown::Closed
+    }
 }
 
 /// How one backend of a service is chosen.
@@ -333,6 +362,31 @@ mod tests {
     fn unknown_balance_parses() {
         let b: Balance = serde_json::from_str("\"some-future-method\"").unwrap();
         assert_eq!(b, Balance::Unknown);
+    }
+
+    /// Values a newer daemon may write: a backend state or `on_all_down`
+    /// this reader does not know parses instead of failing the record.
+    #[test]
+    fn unknown_state_and_on_all_down_parse() {
+        let json = r#"{"name":"a","on_all_down":"some-future-mode","all_down":true,"backends":[{"id":"10.0.0.1:80","ip":"10.0.0.1","port":80,"state":"some-future-state","checked_at":1,"reason":null}]}"#;
+        let rec: ServiceRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(rec.on_all_down, OnAllDown::Unknown);
+        assert!(rec.on_all_down.is_open());
+        assert_eq!(rec.backends[0].state, HealthState::Unrecognized);
+        let h: HistoryEntry = serde_json::from_str(
+            r#"{"at":1,"from":"healthy","to":"some-future-state","reason":null}"#,
+        )
+        .unwrap();
+        assert_eq!(h.to, HealthState::Unrecognized);
+        assert!(OnAllDown::Open.is_open());
+        assert!(!OnAllDown::Closed.is_open());
+        for (v, s) in [
+            (OnAllDown::Open, "\"open\""),
+            (OnAllDown::Closed, "\"closed\""),
+        ] {
+            assert_eq!(serde_json::to_string(&v).unwrap(), s);
+            assert_eq!(format!("\"{}\"", v.as_str()), s);
+        }
     }
 
     #[test]

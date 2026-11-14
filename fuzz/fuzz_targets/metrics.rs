@@ -2,5 +2,5 @@
 #![no_main]
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
-    emfor_daemon::metrics::fuzz_request(data);
+    emfor_fuzz::on_worker_stack(|| emfor_daemon::metrics::fuzz_request(data));
 });

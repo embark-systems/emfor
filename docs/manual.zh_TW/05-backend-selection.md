@@ -60,7 +60,7 @@ daemon 依平滑後的檢查延遲，決定哪些健康的 backend 算快，把�
 
 ### 不認得的值
 
-client 讀到不認得的 `balance`（由較新的 daemon 寫入）時，使用 `round-robin`。store 中不認得的欄位會被忽略。
+client 讀到不認得的 `balance`（由較新的 daemon 寫入）時，使用 `round-robin`。不認得的 backend `state` 視為 `unhealthy`，所以只有在 `open` 的服務沒有更好的選擇時才會用到這個 backend；不認得的 `on_all_down` 視為預設的 `open`。`emfor status` 把它們顯示為 `unrecognized` 與 `on_all_down=unknown`。store 中不認得的欄位會被忽略。
 
 ## 檢查開始失敗的 backend
 

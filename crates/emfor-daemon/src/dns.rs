@@ -28,6 +28,14 @@ use crate::config::in_zone;
 use crate::live::{LiveService, LiveState, LiveView};
 use crate::select::{Family, Selection, select, srv_targets};
 
+// Fuzzing entry point (`fuzz/fuzz_targets/dns.rs`): a request through
+// `Handler`, `answer` and `fit_response`.
+#[cfg(fuzzing)]
+#[path = "dns_fuzz.rs"]
+mod fuzz;
+#[cfg(fuzzing)]
+pub use fuzz::fuzz_request;
+
 /// Settings that reload may change without touching sockets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DnsSettings {
@@ -115,6 +123,17 @@ pub fn ip_label(ip: IpAddr) -> String {
     }
 }
 
+/// The SRV target name of a backend at `ip` under service `svc_name`:
+/// `<ip_label>.<svc_name>.`. `None` when it is longer than a DNS name may
+/// be, as with a long service name and a 39-character IPv6 label. The
+/// config validation uses it too, so a service it accepts can always be
+/// answered.
+pub fn srv_target(ip: IpAddr, svc_name: &str) -> Option<Name> {
+    let mut target = Name::from_ascii(format!("{}.{svc_name}.", ip_label(ip))).ok()?;
+    target.set_fqdn(true);
+    Some(target)
+}
+
 fn addr_rdata(ip: IpAddr) -> RData {
     match ip {
         IpAddr::V4(v4) => RData::A(A(v4)),
@@ -141,13 +160,12 @@ fn srv_reply(
     let mut additionals: Vec<Record> = Vec::new();
     let mut seen: Vec<IpAddr> = Vec::new();
     for t in list {
-        // A long service name plus a 39-character IPv6 label can exceed the
-        // 255-byte name limit; such a target cannot be named at all.
-        let Ok(mut target) = Name::from_ascii(format!("{}.{svc_name}.", ip_label(t.ip))) else {
+        // The config refuses a backend whose target name is too long; a
+        // target that still cannot be named fails the whole answer.
+        let Some(target) = srv_target(t.ip, svc_name) else {
             tracing::debug!("SRV target name for {} under {svc_name} is too long", t.ip);
             return Reply::error(ResponseCode::ServFail);
         };
-        target.set_fqdn(true);
         let srv = SRV::new(t.priority, t.weight, t.port, target.clone());
         answers.push(Record::from_rdata(qname.clone(), ttl, RData::SRV(srv)));
         if !seen.contains(&t.ip) {
@@ -737,7 +755,7 @@ mod tests {
 
     #[test]
     fn replies_by_case_example() {
-        use OnAllDown::*;
+        use OnAllDown::{Closed, Open};
         let nx = |c| (c, Vec::<String>::new(), true);
         let rows: Vec<(&str, HealthState, OnAllDown, RecordType, Summary)> = vec![
             (

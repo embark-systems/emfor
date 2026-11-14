@@ -134,9 +134,11 @@ MariaDB Galera, multi-source replication (only the default connection is read), 
 
 If the file cannot be read during a check, the check is `error`, which does not count against the backend.
 
+A `user` (and for `pgsql` a `database`) with a NUL character is refused by `emfor check-config`: the protocols end those strings at NUL. For `amqp` the password must not contain NUL either, since the PLAIN login separates the fields with it.
+
 ### TLS
 
-With `tls = true` (or `starttls = true` for `ldap`), the certificate is checked against `server_name`, or against the backend IP when `server_name` is not set. Backends are listed by IP, and database certificates usually name a host, so set `server_name` unless the certificate has the IP in its subject alternative names. Use `ca_file` for an internal CA; certificates in it that cannot serve as a CA are skipped, and a file with none left makes the check `error` with `ca_file: no usable certificate`. `tls_verify = false` keeps the connection encrypted but accepts any certificate. A server that closes the connection during the handshake is down with `tls: connection closed during the TLS handshake (does the server have a certificate?)`; Active Directory does this on 636, and refuses StartTLS with `52 unavailable`, until a certificate for LDAPS is installed on the domain controller.
+With `tls = true` (or `starttls = true` for `ldap`), the certificate is checked against `server_name`, or against the backend IP when `server_name` is not set. Backends are listed by IP, and database certificates usually name a host, so set `server_name` unless the certificate has the IP in its subject alternative names. Use `ca_file` for an internal CA; certificates in it that cannot serve as a CA are skipped. `emfor check-config` refuses a file with none left (`no usable certificate`), and one that changes into such a file later makes the check `error` with `ca_file: no usable certificate`. `tls_verify = false` keeps the connection encrypted but accepts any certificate. A server that closes the connection during the handshake is down with `tls: connection closed during the TLS handshake (does the server have a certificate?)`; Active Directory does this on 636, and refuses StartTLS with `52 unavailable`, until a certificate for LDAPS is installed on the domain controller.
 
 ### LDAP
 
@@ -243,8 +245,8 @@ backends = ["10.0.9.11:5060", "10.0.9.12:5060"]
 | `transport` | string | `udp` | `udp` or `tcp` |
 | `tls` | boolean | `false` | SIP over TLS (usually port 5061); needs `transport = "tcp"` |
 | `tls_verify`, `server_name`, `ca_file` | | | As for the other plugins, see [TLS](#tls); need `tls = true` |
-| `uri` | string | `sip:<backend IP>:<port>` (`sips:` with TLS) | Request-URI and To; a `sip:` or `sips:` URI of at most 256 bytes |
-| `from` | string | `sip:emfor@emfor.invalid` | From |
+| `uri` | string | `sip:<backend IP>:<port>` (`sips:` with TLS) | Request-URI and To; a `sip:` or `sips:` URI of at most 256 bytes, without `<` or `>` |
+| `from` | string | `sip:emfor@emfor.invalid` | From; without `<` or `>` |
 | `expect_status` | array of strings | `["200-499"]` | Final status codes that count as up: codes from 200 to 699 or ranges `lo-hi` |
 
 Any other key is an error. SCTP, WebSocket, REGISTER and authentication are not supported.
@@ -293,7 +295,7 @@ supported_vendor_ids = [10415]
 At least one of `auth_application_ids`, `acct_application_ids` and `vendor_specific_application_ids` is required: the node accepts a peer only when they share an application, and emfor does not guess which one yours has. Any other key is an error. SCTP, DTLS, application requests (S6a AIR, Gx CCR, …) and a long-lived peer connection are not supported.
 
 - **Allow emfor as a peer.** Diameter nodes accept only the peers they know: add every emfor host's `origin_host` to the node's peer list or ACL. Many implementations allow a wildcard or a whole realm. Give each emfor host its own `origin_host` so the node's logs tell them apart.
-- **Client certificates.** RFC 6733 TLS authenticates both sides, and nodes such as freeDiameter require a client certificate whose name matches the peer's Origin-Host. Without one the TLS handshake completes on emfor's side and the node then closes the connection, so the check is down with `cea: connection closed by peer` (or `tls: ` when the node sends a TLS alert first). `tls_cert_file` and `tls_key_file` are read on every check, so a renewed certificate takes effect without a reload; a file that cannot be read, or holds no certificate or no private key, is `error` with `tls_cert_file: ` or `tls_key_file: `, and nothing is sent. A key that does not belong to the certificate is reported as `tls_key_file: ` too.
+- **Client certificates.** RFC 6733 TLS authenticates both sides, and nodes such as freeDiameter require a client certificate whose name matches the peer's Origin-Host. Without one the TLS handshake completes on emfor's side and the node then closes the connection, so the check is down with `cea: connection closed by peer` (or `tls: ` when the node sends a TLS alert first). `tls_cert_file` and `tls_key_file` are read on every check, so a renewed certificate takes effect without a reload; a file that cannot be read, or holds no certificate or no private key, is `error` with `tls_cert_file: ` or `tls_key_file: `, and nothing is sent. A key that does not belong to the certificate is reported as `tls_key_file: ` too, and `emfor check-config` already reports it on `tls_key_file`.
 - **Interval.** Every check is a peer connection, a capabilities exchange and a disconnect, which the node usually logs. Use an `interval` of 10 seconds or more.
 - A failed capabilities exchange or watchdog is down with `cea: <code> <name>` or `dwa: <code> <name>`; codes RFC 6733 does not name are shown as the number alone. Common ones:
 

@@ -140,7 +140,10 @@ impl BackendCounters {
         match s {
             HealthState::Unknown => 0,
             HealthState::Healthy => 1,
-            HealthState::Unhealthy => 2,
+            // The daemon's own state machine never produces a state it does
+            // not know; were it to, it would count as unhealthy, as readers
+            // treat it.
+            HealthState::Unhealthy | HealthState::Unrecognized => 2,
         }
     }
 }

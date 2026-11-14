@@ -130,10 +130,12 @@ pub struct ServiceLayout {
     /// `slow_start` in milliseconds; 0 is off.
     pub slow_start_ms: u64,
     pub backends: Vec<Backend>,
-    /// Updates from tasks of any other generation are dropped.
-    pub generation: u64,
-    /// Discard all backend state (new service or `check` / `check_options` changed).
-    pub reset: bool,
+    /// Generation of the check task of each backend, in `backends` order.
+    /// The writer takes results for a backend only from its current task,
+    /// and a backend keeps its state across a layout exactly when its task
+    /// does (same generation); a new generation starts it from `unknown`
+    /// (new service or backend, `check` / `check_options` changed).
+    pub generations: Vec<u64>,
 }
 
 #[derive(Debug)]
@@ -161,7 +163,8 @@ pub enum WriterMsg {
     PeerState(String),
     /// The check task of a backend stopped and was started again from
     /// `unknown`; the store follows, with a transition when the backend's
-    /// state was another one.
+    /// state was another one. `generation` is the new task's: results of
+    /// the stopped one are dropped from now on.
     Restarted {
         service: Arc<str>,
         generation: u64,
@@ -179,7 +182,11 @@ struct Writer<S: Sink> {
     /// Taken while a commit runs on a blocking thread.
     sink: Option<S>,
     records: BTreeMap<Arc<str>, ServiceRecord>,
-    generations: BTreeMap<Arc<str>, u64>,
+    /// Generation of the current check task of each backend, in the order
+    /// of the record's backends. A backend's state belongs to its check
+    /// task: the record and the live view change only by results of that
+    /// task, and go back to `unknown` whenever a new task takes over.
+    generations: BTreeMap<Arc<str>, Vec<u64>>,
     /// Ops not yet committed (from failed commits or pending layout changes).
     pending: Vec<Op>,
     /// Services whose record changed since the last commit.
@@ -339,13 +346,10 @@ impl<S: Sink> Writer<S> {
     /// Apply one check result to the records and the live state. Returns
     /// whether it changed a health state, which is committed at once.
     fn update(&mut self, u: BackendUpdate) -> bool {
-        if self.generations.get(&u.service) != Some(&u.generation) {
-            return false; // from a task replaced by a reload
-        }
-        let Some(rec) = self.records.get_mut(&u.service) else {
-            return false;
+        let Some(index) = self.current(&u.service, u.generation, &u.backend_id) else {
+            return false; // from a task stopped by a reload
         };
-        let Some(index) = rec.backends.iter().position(|b| b.id == u.backend_id) else {
+        let Some(rec) = self.records.get_mut(&u.service) else {
             return false;
         };
         let b = &mut rec.backends[index];
@@ -384,6 +388,14 @@ impl<S: Sink> Writer<S> {
         true
     }
 
+    /// Index of backend `backend_id` of `service` when `generation` is that
+    /// of its current check task; `None` for a result of any other task.
+    fn current(&self, service: &Arc<str>, generation: u64, backend_id: &str) -> Option<usize> {
+        let rec = self.records.get(service)?;
+        let index = rec.backends.iter().position(|b| b.id == backend_id)?;
+        (self.generations.get(service)?.get(index) == Some(&generation)).then_some(index)
+    }
+
     /// Count the outcome of a check that does not apply.
     fn checked(
         &self,
@@ -392,29 +404,33 @@ impl<S: Sink> Writer<S> {
         backend_id: &str,
         outcome: crate::schedule::CheckOutcome,
     ) {
-        if self.generations.get(service) == Some(&generation) {
+        if self.current(service, generation, backend_id).is_some() {
             self.live.count_check(service, backend_id, outcome);
         }
     }
 
-    /// A backend's check task was started again: the new task starts from
-    /// `unknown` with no latency, so the record does too, and a change of
-    /// state is a transition like any other (history, counter, commit).
+    /// A backend's check task was started again as task `generation`: the
+    /// new task starts from `unknown` with no latency, so the record and
+    /// the live view do too, even when the backend already was `unknown`;
+    /// a change of state is a transition like any other (history, counter,
+    /// commit).
     async fn restarted(&mut self, service: &Arc<str>, generation: u64, backend_id: &str) {
-        if self.generations.get(service) != Some(&generation) {
-            return;
-        }
         let Some(rec) = self.records.get_mut(service) else {
             return;
         };
         let Some(index) = rec.backends.iter().position(|b| b.id == backend_id) else {
             return;
         };
+        let Some(current) = self
+            .generations
+            .get_mut(service)
+            .and_then(|g| g.get_mut(index))
+        else {
+            return;
+        };
+        *current = generation;
         let b = &mut rec.backends[index];
         let from = b.state;
-        if from == HealthState::Unknown {
-            return;
-        }
         let at = unix_ms();
         b.state = HealthState::Unknown;
         b.reason = Some(RESTART_REASON.into());
@@ -422,12 +438,16 @@ impl<S: Sink> Writer<S> {
         b.recovered_at = None;
         rec.refresh_all_down();
         refresh_pool(rec);
-        let transition = Transition {
+        let transition = (from != HealthState::Unknown).then_some(Transition {
             from,
             to: HealthState::Unknown,
-        };
-        self.live.update_backend(rec, index, None, Some(transition));
+        });
+        self.live.update_backend(rec, index, None, transition);
         self.dirty.insert(service.clone());
+        if transition.is_none() {
+            self.flush(Vec::new()).await;
+            return;
+        }
         self.histories.entry(service.clone()).or_default().push(
             backend_id,
             HistoryEntry {
@@ -510,11 +530,9 @@ impl<S: Sink> Writer<S> {
         for s in services {
             // Config parsing normalizes names; the live view relies on it.
             debug_assert_eq!(&*s.name, s.name.to_ascii_lowercase());
-            let old = if s.reset {
-                None
-            } else {
-                self.records.remove(&s.name)
-            };
+            debug_assert_eq!(s.backends.len(), s.generations.len());
+            let old = self.records.remove(&s.name);
+            let old_generations = self.generations.remove(&s.name).unwrap_or_default();
             if let Some(h) = self.histories.get_mut(&s.name) {
                 let pruned = h.retain(|id| s.backends.iter().any(|b| b.id == id));
                 // At start, also rewrite (or delete, when empty) every loaded key.
@@ -525,10 +543,16 @@ impl<S: Sink> Writer<S> {
             let backends = s
                 .backends
                 .iter()
-                .map(|b| {
+                .zip(&s.generations)
+                .map(|(b, generation)| {
+                    // Carried over exactly when the backend's check task is.
                     let mut rec = old
                         .as_ref()
-                        .and_then(|o| o.backends.iter().find(|ob| ob.id == b.id).cloned())
+                        .and_then(|o| {
+                            let i = o.backends.iter().position(|ob| ob.id == b.id)?;
+                            (old_generations.get(i) == Some(generation))
+                                .then(|| o.backends[i].clone())
+                        })
                         .unwrap_or_else(|| fresh_backend(b));
                     // Health state carries over; weight, site and backup
                     // follow the config.
@@ -550,7 +574,7 @@ impl<S: Sink> Writer<S> {
             rec.refresh_all_down();
             refresh_pool(&mut rec);
             live.insert(s.name.to_string(), LiveService::new(rec.clone(), s.dns_ttl));
-            self.generations.insert(s.name.clone(), s.generation);
+            self.generations.insert(s.name.clone(), s.generations);
             self.records.insert(s.name.clone(), rec);
             self.dirty.insert(s.name);
         }
@@ -711,7 +735,8 @@ mod tests {
         Backend::new(id.parse().unwrap())
     }
 
-    fn layout(name: &str, ids: &[&str], generation: u64, reset: bool) -> ServiceLayout {
+    /// Layout whose backends all have check task `generation`.
+    fn layout(name: &str, ids: &[&str], generation: u64) -> ServiceLayout {
         ServiceLayout {
             name: name.into(),
             on_all_down: OnAllDown::Open,
@@ -719,8 +744,7 @@ mod tests {
             dns_ttl: None,
             slow_start_ms: 0,
             backends: ids.iter().map(|i| be(i)).collect(),
-            generation,
-            reset,
+            generations: vec![generation; ids.len()],
         }
     }
 
@@ -815,7 +839,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+            services: vec![layout("a", &["10.0.0.1:80"], 0)],
         })
         .unwrap();
         let (done_tx, done_rx) = oneshot::channel();
@@ -857,7 +881,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+            services: vec![layout("a", &["10.0.0.1:80"], 0)],
         })
         .unwrap();
         let (done_tx, done_rx) = oneshot::channel();
@@ -928,7 +952,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: Some("dc1".into()),
-            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+            services: vec![layout("a", &["10.0.0.1:80"], 0)],
         })
         .unwrap();
         settled(&tx).await;
@@ -936,7 +960,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
             site: None,
-            services: vec![layout("a", &["10.0.0.1:80"], 0, false)],
+            services: vec![layout("a", &["10.0.0.1:80"], 0)],
         })
         .unwrap();
         settled(&tx).await;
@@ -959,7 +983,7 @@ mod tests {
             tx.send(WriterMsg::SetLayout {
                 fresh_start,
                 site: None,
-                services: vec![layout("a", &["10.0.0.1:80"], 0, fresh_start)],
+                services: vec![layout("a", &["10.0.0.1:80"], 0)],
             })
             .unwrap();
         };
@@ -1026,7 +1050,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+            services: vec![layout("a", &["10.0.0.1:80"], 0)],
         })
         .unwrap();
         settled(&tx).await;
@@ -1064,7 +1088,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+            services: vec![layout("a", &["10.0.0.1:80"], 0)],
         })
         .unwrap();
         settled(&tx).await;
@@ -1093,7 +1117,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
         let id = "10.0.0.11:8080";
-        let mut l = layout("api.svc.emfor", &[id], 0, true);
+        let mut l = layout("api.svc.emfor", &[id], 0);
         l.slow_start_ms = 30000;
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
@@ -1119,7 +1143,6 @@ mod tests {
             .unwrap();
         settled(&tx).await;
         // A reload that keeps the backend keeps it; one that resets clears it.
-        l.reset = false;
         l.slow_start_ms = 0;
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
@@ -1140,8 +1163,7 @@ mod tests {
         .unwrap();
         settled(&tx).await;
         assert_eq!(record(&store, "api.svc.emfor").slow_start_ms, 30000);
-        l.reset = true;
-        l.generation = 1;
+        l.generations = vec![1];
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
             site: None,
@@ -1158,7 +1180,7 @@ mod tests {
         let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
         let (tx, rx) = mpsc::unbounded_channel();
         spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
-        let mut l = layout("api.svc.emfor", &["10.0.0.11:8080"], 0, true);
+        let mut l = layout("api.svc.emfor", &["10.0.0.11:8080"], 0);
         l.balance = Balance::Weighted;
         l.backends[0].weight = 3;
         l.backends[0].site = Some("dc1".into());
@@ -1179,7 +1201,6 @@ mod tests {
         let json = store.get(&service_key("api.svc.emfor")).unwrap().unwrap();
         assert!(json.contains(r#""weight":3,"site":"dc1""#), "{json}");
         // Reload changing the weight: the record follows, health carries over.
-        l.reset = false;
         l.backends[0].weight = 4;
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
@@ -1203,12 +1224,7 @@ mod tests {
         let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
         let (tx, rx) = mpsc::unbounded_channel();
         spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
-        let mut l = layout(
-            "api.svc.emfor",
-            &["10.0.0.11:8080", "10.0.1.11:8080"],
-            0,
-            true,
-        );
+        let mut l = layout("api.svc.emfor", &["10.0.0.11:8080", "10.0.1.11:8080"], 0);
         l.backends[1].backup = true;
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
@@ -1228,7 +1244,6 @@ mod tests {
         assert!(json.contains(r#""id":"10.0.0.11:8080","ip":"10.0.0.11","port":8080,"weight":1,"site":null,"backup":false"#), "{json}");
         assert!(json.contains(r#""id":"10.0.1.11:8080","ip":"10.0.1.11","port":8080,"weight":1,"site":null,"backup":true"#), "{json}");
         assert_eq!(store.get(KEY_SCHEMA_VERSION).unwrap().as_deref(), Some("2"));
-        l.reset = false;
         l.backends[1].backup = false;
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
@@ -1251,7 +1266,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+            services: vec![layout("a", &["10.0.0.1:80"], 0)],
         })
         .unwrap();
         settled(&tx).await;
@@ -1271,7 +1286,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+            services: vec![layout("a", &["10.0.0.1:80"], 0)],
         })
         .unwrap();
         // Without a transition, the change waits for the (hour-long) tick.
@@ -1306,7 +1321,7 @@ mod tests {
             tx.send(WriterMsg::SetLayout {
                 fresh_start: true,
                 site: None,
-                services: vec![layout("a", &ids, 0, true)],
+                services: vec![layout("a", &ids, 0)],
             })
             .unwrap();
             for (id, st) in ids.iter().zip(states.iter()) {
@@ -1383,7 +1398,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![layout("api.svc.emfor", &ids, 0, true)],
+            services: vec![layout("api.svc.emfor", &ids, 0)],
         })
         .unwrap();
         tx.send(trans(
@@ -1426,7 +1441,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
             site: None,
-            services: vec![layout("api.svc.emfor", &ids, 0, true)],
+            services: vec![layout("api.svc.emfor", &ids, 0)],
         })
         .unwrap();
         settled(&tx).await;
@@ -1455,7 +1470,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+            services: vec![layout("a", &["10.0.0.1:80"], 0)],
         })
         .unwrap();
         settled(&tx).await;
@@ -1483,7 +1498,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![layout("a", &id_refs, 0, true)],
+            services: vec![layout("a", &id_refs, 0)],
         })
         .unwrap();
         settled(&tx).await;
@@ -1525,7 +1540,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+            services: vec![layout("a", &["10.0.0.1:80"], 0)],
         })
         .unwrap();
         settled(&tx).await;
@@ -1590,8 +1605,8 @@ mod tests {
             fresh_start: true,
             site: None,
             services: vec![
-                layout("api.svc.emfor", &["10.0.0.11:8080"], 0, true),
-                layout("bad.svc.emfor", &["10.0.0.2:80"], 0, true),
+                layout("api.svc.emfor", &["10.0.0.11:8080"], 0),
+                layout("bad.svc.emfor", &["10.0.0.2:80"], 0),
             ],
         })
         .unwrap();
@@ -1649,13 +1664,8 @@ mod tests {
             fresh_start: true,
             site: None,
             services: vec![
-                layout(
-                    "api.svc.emfor",
-                    &["10.0.0.11:8080", "10.0.0.12:8080"],
-                    0,
-                    true,
-                ),
-                layout("db.svc.emfor", &["10.0.0.2:5432"], 0, true),
+                layout("api.svc.emfor", &["10.0.0.11:8080", "10.0.0.12:8080"], 0),
+                layout("db.svc.emfor", &["10.0.0.2:5432"], 0),
             ],
         })
         .unwrap();
@@ -1695,7 +1705,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
             site: None,
-            services: vec![layout("api.svc.emfor", &["10.0.0.12:8080"], 0, false)],
+            services: vec![layout("api.svc.emfor", &["10.0.0.12:8080"], 0)],
         })
         .unwrap();
         settled(&tx).await;
@@ -1707,7 +1717,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
             site: None,
-            services: vec![layout("api.svc.emfor", &["10.0.0.13:8080"], 0, false)],
+            services: vec![layout("api.svc.emfor", &["10.0.0.13:8080"], 0)],
         })
         .unwrap();
         settled(&tx).await;
@@ -1763,7 +1773,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![layout(svc, &[id], 1, true)],
+            services: vec![layout(svc, &[id], 1)],
         })
         .unwrap();
         let (h, u) = (HealthState::Healthy, HealthState::Unhealthy);
@@ -1788,7 +1798,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
             site: None,
-            services: vec![layout(svc, &[id], 2, true)],
+            services: vec![layout(svc, &[id], 2)],
         })
         .unwrap();
         settled(&tx).await;
@@ -1798,7 +1808,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
             site: None,
-            services: vec![layout(svc, &["10.0.0.12:8080"], 3, false)],
+            services: vec![layout(svc, &["10.0.0.12:8080"], 3)],
         })
         .unwrap();
         settled(&tx).await;
@@ -1810,7 +1820,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
             site: None,
-            services: vec![layout(svc, &[id, "10.0.0.12:8080"], 4, false)],
+            services: vec![layout(svc, &[id, "10.0.0.12:8080"], 4)],
         })
         .unwrap();
         settled(&tx).await;
@@ -1841,7 +1851,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+            services: vec![layout("a", &["10.0.0.1:80"], 0)],
         })
         .unwrap();
         settled(&tx).await;
@@ -1868,7 +1878,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![layout("a", &["10.0.0.1:80"], 0, true)],
+            services: vec![layout("a", &["10.0.0.1:80"], 0)],
         })
         .unwrap();
         settled(&tx).await;
@@ -1903,7 +1913,7 @@ mod tests {
             BTreeMap::new(),
             ListenKeys::default(),
         );
-        let mut l = layout("a", &["10.0.0.1:80"], 0, true);
+        let mut l = layout("a", &["10.0.0.1:80"], 0);
         l.dns_ttl = Some(5);
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
@@ -1944,7 +1954,7 @@ mod tests {
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![layout("a", &["10.0.0.1:80"], 5, true)],
+            services: vec![layout("a", &["10.0.0.1:80"], 5)],
         })
         .unwrap();
         tx.send(upd("a", "10.0.0.1:80", HealthState::Healthy, true))
@@ -1957,6 +1967,158 @@ mod tests {
         assert_eq!(store.get(KEY_HEARTBEAT).unwrap().as_deref(), Some("0"));
     }
 
+    /// The record and the live view of service `name` are the same.
+    fn same_as_live(store: &Store, live: &LiveState, name: &str) -> ServiceRecord {
+        let rec = record(store, name);
+        assert_eq!(
+            live.read().services[name].record,
+            rec,
+            "live view of {name}"
+        );
+        rec
+    }
+
+    /// A check task restarted while its backend is `unknown` (one `up` of
+    /// `rise = 2`, which already measured a latency) starts with no
+    /// latency: the record and the live view follow, without a transition.
+    #[tokio::test]
+    async fn restart_of_an_unknown_backend_clears_its_latency() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let live = LiveState::default();
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_inner(
+            store.clone(),
+            rx,
+            Duration::from_secs(3600),
+            live.clone(),
+            BTreeMap::new(),
+            ListenKeys::default(),
+        );
+        let id = "10.0.0.1:80";
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![layout("a", &[id], 0)],
+        })
+        .unwrap();
+        let WriterMsg::Update(mut u) = upd("a", id, HealthState::Unknown, false) else {
+            unreachable!()
+        };
+        u.latency_us = Some(1200);
+        tx.send(WriterMsg::Update(u)).unwrap();
+        settled(&tx).await;
+        assert_eq!(
+            live.read().services["a"].record.backends[0].latency_us,
+            Some(1200)
+        );
+        tx.send(WriterMsg::Restarted {
+            service: "a".into(),
+            generation: 0,
+            backend_id: id.into(),
+        })
+        .unwrap();
+        settled(&tx).await;
+        let b = &same_as_live(&store, &live, "a").backends[0];
+        assert_eq!(b.state, HealthState::Unknown);
+        assert_eq!(b.latency_us, None, "the new task has no latency");
+        assert_eq!(b.reason.as_deref(), Some(RESTART_REASON));
+        assert_eq!(history(&store, "a"), None, "no transition");
+    }
+
+    /// A backend removed by one reload and added back by the next gets a
+    /// new check task. A result the removed task sent while it was being
+    /// stopped, and the writer reads only after the second reload, is not
+    /// the new task's: the backend stays `unknown`, as its new task is.
+    #[tokio::test]
+    async fn late_result_of_a_removed_task_is_dropped_when_the_backend_returns() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let live = LiveState::default();
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_inner(
+            store.clone(),
+            rx,
+            Duration::from_secs(3600),
+            live.clone(),
+            BTreeMap::new(),
+            ListenKeys::default(),
+        );
+        let (x, y) = ("10.0.0.1:80", "10.0.0.2:80");
+        // Task 0 of `x` is stopped by the first reload; the second starts
+        // task 1 for it. `y` keeps its task 0 throughout.
+        let mut back = layout("a", &[x, y], 0);
+        back.generations = vec![1, 0];
+        for (fresh_start, l) in [
+            (true, layout("a", &[x, y], 0)),
+            (false, layout("a", &[y], 0)),
+            (false, back),
+        ] {
+            tx.send(WriterMsg::SetLayout {
+                fresh_start,
+                site: None,
+                services: vec![l],
+            })
+            .unwrap();
+        }
+        tx.send(upd("a", x, HealthState::Healthy, true)).unwrap(); // from task 0
+        tx.send(upd("a", y, HealthState::Healthy, true)).unwrap();
+        settled(&tx).await;
+        let rec = same_as_live(&store, &live, "a");
+        assert_eq!(rec.backends[0].state, HealthState::Unknown);
+        assert_eq!(rec.backends[1].state, HealthState::Healthy, "kept task");
+        let h = history(&store, "a").unwrap();
+        assert_eq!(h.backends.keys().collect::<Vec<_>>(), [y]);
+    }
+
+    /// After a restart, results of the stopped task are dropped and those
+    /// of the new one are taken.
+    #[tokio::test]
+    async fn restart_takes_results_of_the_new_task_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let live = LiveState::default();
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_inner(
+            store.clone(),
+            rx,
+            Duration::from_secs(3600),
+            live.clone(),
+            BTreeMap::new(),
+            ListenKeys::default(),
+        );
+        let id = "10.0.0.1:80";
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![layout("a", &[id], 0)],
+        })
+        .unwrap();
+        tx.send(upd("a", id, HealthState::Healthy, true)).unwrap();
+        tx.send(WriterMsg::Restarted {
+            service: "a".into(),
+            generation: 7,
+            backend_id: id.into(),
+        })
+        .unwrap();
+        tx.send(upd("a", id, HealthState::Unhealthy, true)).unwrap(); // task 0
+        settled(&tx).await;
+        assert_eq!(
+            same_as_live(&store, &live, "a").backends[0].state,
+            HealthState::Unknown
+        );
+        let WriterMsg::Update(mut u) = upd("a", id, HealthState::Healthy, true) else {
+            unreachable!()
+        };
+        u.generation = 7;
+        tx.send(WriterMsg::Update(u)).unwrap();
+        settled(&tx).await;
+        assert_eq!(
+            same_as_live(&store, &live, "a").backends[0].state,
+            HealthState::Healthy
+        );
+    }
+
     fn updl(id: &str, state: HealthState, latency_us: Option<u64>, transition: bool) -> WriterMsg {
         let WriterMsg::Update(mut u) = upd("f", id, state, transition) else {
             unreachable!()
@@ -1966,7 +2128,7 @@ mod tests {
     }
 
     fn fastest(ids: &[&str]) -> ServiceLayout {
-        let mut l = layout("f", ids, 0, true);
+        let mut l = layout("f", ids, 0);
         l.balance = Balance::Fastest;
         l
     }
@@ -2035,8 +2197,7 @@ mod tests {
         settled(&tx).await;
         assert_eq!(live_pool(&live), ids);
         // A reload keeping the backends keeps the membership.
-        let mut l = fastest(&ids);
-        l.reset = false;
+        let l = fastest(&ids);
         tx.send(WriterMsg::SetLayout {
             fresh_start: false,
             site: None,
@@ -2075,12 +2236,12 @@ mod tests {
         let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
         let (tx, rx) = mpsc::unbounded_channel();
         spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
-        let mut f = layout("api.svc.emfor", &["10.0.0.11:8080"], 0, true);
+        let mut f = layout("api.svc.emfor", &["10.0.0.11:8080"], 0);
         f.balance = Balance::Fastest;
         tx.send(WriterMsg::SetLayout {
             fresh_start: true,
             site: None,
-            services: vec![f, layout("rr.svc.emfor", &["10.0.0.12:8080"], 0, true)],
+            services: vec![f, layout("rr.svc.emfor", &["10.0.0.12:8080"], 0)],
         })
         .unwrap();
         let send = |state, latency_us, from| {

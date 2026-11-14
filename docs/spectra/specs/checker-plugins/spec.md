@@ -8,7 +8,7 @@ Defines external plugins: checkers that run as long-lived child processes outsid
 
 ### Requirement: Plugin registration in config
 
-A plugin SHALL be declared as `[plugins."<name>"]` with a required `command`: a non-empty array of strings whose first element is an absolute path to an existing executable file. `[plugins."<name>"]` SHALL accept no other keys. Plugin names SHALL be 1 to 63 characters of `a-z`, `0-9`, `_`, `-` and SHALL NOT be `tcp`, `http`, or `exec`. A service SHALL use a plugin by setting `check` to the plugin's name. Every declared plugin SHALL be started when a config is applied, whether or not a service uses it.
+A plugin SHALL be declared as `[plugins."<name>"]` with a required `command`: a non-empty array of strings whose first element is an absolute path to an existing executable file and no element of which contains a NUL character (`must not contain NUL`). `[plugins."<name>"]` SHALL accept no other keys. Plugin names SHALL be 1 to 63 characters of `a-z`, `0-9`, `_`, `-` and SHALL NOT be `tcp`, `http`, or `exec`. A service SHALL use a plugin by setting `check` to the plugin's name. Every declared plugin SHALL be started when a config is applied, whether or not a service uses it.
 
 #### Scenario: Service uses a plugin
 

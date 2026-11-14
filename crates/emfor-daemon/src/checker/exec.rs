@@ -39,6 +39,8 @@ pub(crate) fn parse_command(value: Option<&toml::Value>) -> Result<Vec<String>, 
     let mut argv = Vec::with_capacity(items.len());
     for item in items {
         match item.as_str() {
+            // Arguments are passed as C strings: a NUL makes the spawn fail.
+            Some(s) if s.contains('\0') => return Err("must not contain NUL".into()),
             Some(s) => argv.push(s.to_string()),
             None => return Err("must be an array of strings".into()),
         }
@@ -468,6 +470,11 @@ mod tests {
             (
                 "command = \"/bin/sh\"".parse().unwrap(),
                 "must be an array of strings",
+            ),
+            // Spawning refuses an argument with NUL.
+            (
+                options(&["/bin/sh", "-c", "exit 0\0"]),
+                "must not contain NUL",
             ),
         ];
         for (opts, want) in cases {

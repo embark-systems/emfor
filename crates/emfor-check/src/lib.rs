@@ -6,6 +6,7 @@ mod amqp;
 mod ber;
 mod diameter;
 mod dns;
+mod frame;
 mod grpc;
 mod ldap;
 mod mongodb;

@@ -135,7 +135,6 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         return;
     };
     let options: Options = options;
-    emfor_check::net::fuzz::set_reply(reply);
     let req = CheckRequest {
         service: "fuzz.svc.emfor".into(),
         ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
@@ -147,9 +146,14 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     // Like emfor_plugin::run: a check that takes longer than its timeout is
     // down. The clock is paused, so this ends at once instead of hanging.
     let timeout = req.timeout;
-    let outcome = runtime()
-        .block_on(async { tokio::time::timeout(timeout, service.check(req)).await })
-        .unwrap_or_else(|_| emfor_plugin::CheckOutcome::Down("timeout".into()));
+    // On a thread with a worker's stack, as in a plugin. The reply is per
+    // thread, and the current-thread runtime runs every task on this one.
+    let outcome = emfor_fuzz::on_worker_stack(|| {
+        emfor_check::net::fuzz::set_reply(reply);
+        runtime()
+            .block_on(async { tokio::time::timeout(timeout, service.check(req)).await })
+            .unwrap_or_else(|_| emfor_plugin::CheckOutcome::Down("timeout".into()))
+    });
     // EMFOR_FUZZ_PRINT=1 shows each outcome, to check the seeds by hand.
     if std::env::var_os("EMFOR_FUZZ_PRINT").is_some() {
         eprintln!(

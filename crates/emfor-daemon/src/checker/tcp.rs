@@ -548,7 +548,16 @@ expect = "STAT pid""#,
         let missing = dir.path().join("missing.pem");
         let not_pem = dir.path().join("not-pem.txt");
         std::fs::write(&not_pem, "hello").unwrap();
-        let (missing, not_pem) = (missing.display(), not_pem.display());
+        // A certificate block holding no certificate: a check could not
+        // use it as a trust anchor.
+        let unusable = dir.path().join("unusable.pem");
+        std::fs::write(
+            &unusable,
+            "-----BEGIN CERTIFICATE-----\nAAECAwQFBgcICQ==\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        let (missing, not_pem, unusable) =
+            (missing.display(), not_pem.display(), unusable.display());
         let cases = [
             (r#"tls = "yes""#.to_string(), "tls", "must be a boolean"),
             (
@@ -580,6 +589,11 @@ expect = "STAT pid""#,
                 format!("tls = true\nca_file = \"{not_pem}\""),
                 "ca_file",
                 "no certificate found",
+            ),
+            (
+                format!("tls = true\nca_file = \"{unusable}\""),
+                "ca_file",
+                "no usable certificate",
             ),
         ];
         for (opts, key, message) in cases {

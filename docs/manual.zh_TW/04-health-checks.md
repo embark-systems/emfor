@@ -24,7 +24,7 @@
 | `tls` | 布林 | `false` | 連線後立即進行 TLS handshake；絕不退回明文。 |
 | `tls_verify` | 布林 | `true` | `false` 接受任何憑證（仍然加密）。需要 `tls = true`。 |
 | `server_name` | 字串 | backend IP | 憑證必須符合的名稱（或 IP）；是名稱時也作為 SNI 送出。需要 `tls = true`。 |
-| `ca_file` | 絕對路徑 | 系統 CA | 改為信任這個 PEM 檔中的 CA 憑證。載入設定時檔案必須存在。需要 `tls = true`。 |
+| `ca_file` | 絕對路徑 | 系統 CA | 改為信任這個 PEM 檔中的 CA 憑證。載入設定時檔案必須存在，且至少有一張可以當作 CA 使用的憑證。需要 `tls = true`。 |
 
 ```toml
 [services."smtp.svc.emfor"]
@@ -52,7 +52,7 @@ check_options = { tls = true, server_name = "imap.internal", expect = "* OK" }
 | 選項 | 型別 | 預設值 | 意義 |
 | --- | --- | --- | --- |
 | `scheme` | `"http"` 或 `"https"` | `"http"` | 協定。 |
-| `path` | 以 `/` 開頭的字串 | `"/"` | 請求路徑。 |
+| `path` | 以 `/` 開頭的字串 | `"/"` | 請求路徑。`#`、`\` 與控制字元會被拒絕，因為請求 URL 會在那裡截斷或改寫路徑；空白等特殊字元會以百分比編碼送出。 |
 | `host_header` | 字串 | 無 | 要送出的 `Host` header：主機名稱或 IP 位址，可加 `:port`，IPv6 要加中括號（`api.internal`、`api.internal:8443`、`[2001:db8::1]`）。連線仍然連到 backend；用 `https` 時，主機名稱也是 TLS 的 server name。 |
 | `expect_status` | 非空清單 | `["200-399"]` | 視為 `up` 的狀態碼：單一狀態碼（`200` 或 `"200"`）或含頭尾的範圍（`"200-299"`），都必須在 100–599 之間。 |
 | `tls_verify` | 布林 | `true` | 用於 `https`：`false` 接受任何憑證。 |
@@ -88,7 +88,7 @@ check_options = { command = ["/usr/local/libexec/check_pg_replication", "--max-l
 | 其他結束代碼、被 signal 終止、無法啟動 | `error` |
 | 到 `timeout` 仍在執行 | `down`（`timeout`）；程式與它所有子行程都會被終止 |
 
-`command` 是唯一的選項：非空清單，第一個元素是可執行檔的絕對路徑。每次檢查都啟動一個行程的成本不低；需要頻繁檢查很多 backend 時，請用 plugin。
+`command` 是唯一的選項：不含 NUL 的字串組成的非空清單，第一個元素是可執行檔的絕對路徑。每次檢查都啟動一個行程的成本不低；需要頻繁檢查很多 backend 時，請用 plugin。
 
 ## plugin 與 emfor-check
 
@@ -125,7 +125,7 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 
 主要選項：`user`、`password_file`（絕不寫密碼本身；每次檢查都會讀取）、`database`（`pgsql`）、`role`（redis 為 `master`/`replica`，MySQL 與 PostgreSQL 為 `primary`/`replica`；`primary` 讓 `failover` 跟著 primary 走，`replica` 另外要求複寫正在進行；MongoDB 為 `primary`/`secondary`）、`max_lag`（搭配 `role = "replica"`，replica 最多可以落後幾秒），以及 `tls`、`starttls`（`ldap`）、`tls_verify`、`server_name`、`ca_file`。`dns` plugin 則用 `name`、`type`、`transport`、`recursion_desired`、`expect_rcode`、`expect_answer`；`radius` plugin 用 `secret_file`、`request`、`application`、`user`、`password_file`、`reject_is_up`、`nas_identifier`、`require_message_authenticator`；`sip` plugin 用 `transport`、`tls`（及 TLS 相關鍵）、`uri`、`from`、`expect_status`；`diameter` plugin 用 `origin_host`、`origin_realm`、各 application id、`supported_vendor_ids`、`host_ip_address`、`tls`（及 TLS 相關鍵與客戶端憑證 `tls_cert_file`、`tls_key_file`）；`smtp` plugin 用 `helo`、`starttls`、`tls`（及 TLS 相關鍵）；`amqp` plugin 用 `user`、`password_file`、`vhost`、`tls`（及 TLS 相關鍵）；`mongodb` plugin 用 `user`、`password_file`、`auth_source`、`role`、`tls`（及 TLS 相關鍵）；`grpc` plugin 用 `service`、`tls`（及 TLS 相關鍵）；`quic` plugin 用 `alpn`、`tls_verify`、`server_name`、`ca_file`（一律加密，所以沒有 `tls` 鍵）、`http3`、`path`、`host_header`、`expect_status`、`expect_body`。[docs/deploy/plugins.md](../deploy/plugins.md) 列出所有選項與 reason。
 
-`emfor check-config` 與每次 reload 都會啟動 plugin，讓它們驗證每個服務的 `check_options`，所以錯誤會在設定套用前就被發現。
+`emfor check-config` 與每次 reload 都會啟動 plugin，讓它們驗證每個服務的 `check_options`，所以錯誤會在設定套用前就被發現。驗證時會建出檢查時要建的東西：`ca_file` 必須有可以當作 CA 使用的憑證，`tls_key_file` 必須是 `tls_cert_file` 的私鑰，而協定以 NUL 結尾或以 NUL 分隔送出的值（`mysql` 與 `pgsql` 的 `user`、`pgsql` 的 `database`、`amqp` 的 `user` 與密碼）不能含 NUL。
 
 plugin 結束時，等待中的檢查變成 `error`（`plugin exited`），daemon 在 1 秒、2 秒、4 秒……最多 30 秒後重新啟動它；在那之前它的檢查都是 `error`（`plugin <name> unavailable`）。當掉的 plugin 不會讓 backend 變成 down：`error` 不算檢查失敗。但一個 backend 只收到 error 的時間超過 `fall × interval` 時會回到 `unknown`（見[第 1 章](01-concepts.md)），所以一直當掉的 plugin 會讓它的 backend 變成 `unknown`，而不是維持 `healthy`。以 `emfor-plugin` crate 寫的 plugin 中，panic 的檢查會回答 `error`，reason 為 `check panicked: <message>`，plugin 繼續執行。plugin 寫到 stderr 的每一行都以 `info` 記錄，一次最多 100 行，之後每秒最多 10 行；log 會寫出丟掉了幾行。每個 plugin 在自己的 process group 中執行：plugin 結束或被停止時，它啟動的行程也會一起被終止。
 

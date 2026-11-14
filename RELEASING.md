@@ -102,11 +102,16 @@ needs `cargo-fuzz` and a nightly toolchain (`cargo install cargo-fuzz`,
 cd fuzz
 cargo +nightly fuzz run -O plugins corpus/plugins seeds/plugins -- -len_control=0 -max_total_time=600
 cargo +nightly fuzz run -O peers corpus/peers seeds/peers -- -max_total_time=600
+cargo +nightly fuzz run -O dns corpus/dns seeds/dns -- -max_total_time=600
 for t in metrics plugin_line config; do
   cargo +nightly fuzz run -O "$t" -- -max_total_time=600 || break
 done
 cd ..
 ```
+
+These `-O` builds keep overflow checks and debug assertions on
+(`fuzz/Cargo.toml`), and every input runs on a 2 MiB stack like a tokio
+worker's ([fuzz/README.md](fuzz/README.md)).
 
 Each run must end with `Done N runs in 601 second(s)` and leave nothing in
 `fuzz/artifacts/`. A crash stops the release: fix it in its own commit,

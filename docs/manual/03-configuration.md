@@ -64,7 +64,7 @@ turns it on with the defaults. See [chapter 7](07-dns.md).
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `listen` | `["127.0.0.1:5300"]` | Addresses to answer on, UDP and TCP. |
-| `zone` | `"svc.emfor"` | Only names under the zone are answered. At most 242 characters. |
+| `zone` | `"svc.emfor"` | Only names under the zone are answered. At most 242 characters. A service in the zone must leave room for the SRV target name of each backend, `<ip label>.<service>` in at most 253 characters (an IPv6 label is 39). |
 | `ttl` | `"1s"` | TTL of answers and of the zone SOA; whole seconds from `0s` to `3600s`. |
 
 ## [metrics]
@@ -251,7 +251,7 @@ command = ["/usr/local/libexec/emfor-check", "redis"]
 
 | Key | Meaning |
 | --- | --- |
-| `command` | Required. The program and its arguments; the first element is an absolute path to an executable. Run without a shell. |
+| `command` | Required. The program and its arguments; the first element is an absolute path to an executable. No element may contain NUL. Run without a shell. |
 
 The name is 1–63 characters of `a-z`, `0-9`, `_` and `-`, and not `tcp`,
 `http` or `exec`. A service uses the plugin with `check = "<name>"`. Every

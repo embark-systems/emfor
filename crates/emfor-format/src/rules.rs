@@ -19,6 +19,10 @@ use crate::{BackendRecord, Balance, HealthState, OnAllDown};
 /// 7. otherwise every entry when `open`, or `None` (all down) when
 ///    `on_all_down` is `closed` or `list` is empty.
 ///
+/// A `state` this reader does not know ([`HealthState::Unrecognized`])
+/// counts as `unhealthy`, an `on_all_down` it does not know as `open`
+/// ([`OnAllDown::is_open`]).
+///
 /// `backend` gives each entry's record; `trust_health` false (a stale
 /// store) counts no backend as healthy or unknown, so neither `state` nor
 /// `reason` plays a part and an open service uses every entry.
@@ -47,7 +51,7 @@ pub fn healthy_or_all<'a, T: Copy>(
             return Some(tier);
         }
     }
-    if on_all_down != OnAllDown::Open || list.is_empty() {
+    if !on_all_down.is_open() || list.is_empty() {
         return None;
     }
     let unknown: Vec<T> = list
@@ -228,6 +232,9 @@ mod tests {
         let passing_both = [&pa, &bp];
         let both = [&up, &down];
         let only_down = [&down];
+        let future = b("10.0.0.1:80", Unrecognized, None);
+        let future_unknown = [&future, &ub];
+        let future_down = [&future, &db];
         type Case<'a> = (
             &'a [&'a BackendRecord],
             OnAllDown,
@@ -333,6 +340,28 @@ mod tests {
                 true,
                 Some(vec!["10.0.0.1:80"]),
             ),
+            // Values from a newer daemon: an unrecognized state is
+            // unhealthy, an unknown on_all_down is open.
+            (
+                &future_unknown,
+                OnAllDown::Open,
+                true,
+                Some(vec!["10.0.0.2:80"]),
+            ),
+            (
+                &future_down,
+                OnAllDown::Unknown,
+                true,
+                Some(vec!["10.0.0.1:80", "10.0.0.2:80"]),
+            ),
+            (&future_down, OnAllDown::Closed, true, None),
+            (
+                &only_down,
+                OnAllDown::Unknown,
+                true,
+                Some(vec!["10.0.0.2:80"]),
+            ),
+            (&[], OnAllDown::Unknown, true, None),
         ];
         for (list, mode, trust, want) in cases {
             let got = ids(healthy_or_all(*mode, list, *trust, |r| r));

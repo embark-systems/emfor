@@ -310,6 +310,11 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    /// Staleness for tests that need a fresh store but do not test
+    /// staleness: a host that stalls for a few seconds between writing the
+    /// store and the lookup must not make it stale.
+    const FRESH_FOR_TESTS_MS: u64 = 60_000;
+
     fn write(dir: &Path, store: serde_json::Value) -> PathBuf {
         let path = dir.join("state.mdb");
         emfor_fixture::write_store(&store, 3000, emfor_fixture::now_ms(), &path).unwrap();
@@ -443,7 +448,7 @@ mod tests {
             dir.path(),
             serde_json::json!({"schema_version": "1", "services": [svc("api.svc.emfor", serde_json::json!({}))]}),
         );
-        let c = Client::new(p, Ok(3000));
+        let c = Client::new(p, Ok(FRESH_FOR_TESTS_MS));
         for n in ["api.svc.emfor", "API.Svc.Emfor", "api.svc.emfor."] {
             assert_eq!(c.lookup(n, None).unwrap(), "10.0.0.11:8080", "{n}");
         }
@@ -547,7 +552,7 @@ mod tests {
             dir.path(),
             serde_json::json!({"schema_version": "1", "services": [svc("api.svc.emfor", down)]}),
         );
-        let c = Client::new(p, Ok(3000));
+        let c = Client::new(p, Ok(FRESH_FOR_TESTS_MS));
         assert_eq!(code(&c, "api.svc.emfor"), ErrorCode::AllDown);
         assert_eq!(c.last_replace_check.load(Ordering::Relaxed), 0);
         assert_eq!(code(&c, "db.svc.emfor"), ErrorCode::NotFound);
@@ -676,7 +681,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.mdb");
         std::fs::write(&path, vec![0x5a; 16384]).unwrap();
-        let mut c = Client::new(path.clone(), Ok(3000));
+        let mut c = Client::new(path.clone(), Ok(FRESH_FOR_TESTS_MS));
         // Long enough that a slow host cannot reach it while the store is
         // written below; set to zero afterwards instead of sleeping.
         c.open_retry = Duration::from_secs(600);
@@ -703,7 +708,7 @@ mod tests {
     #[test]
     fn missing_store_is_retried_at_once() {
         let dir = tempfile::tempdir().unwrap();
-        let c = Client::new(dir.path().join("state.mdb"), Ok(3000));
+        let c = Client::new(dir.path().join("state.mdb"), Ok(FRESH_FOR_TESTS_MS));
         assert_eq!(code(&c, "api.svc.emfor"), ErrorCode::Unavailable);
         write(
             dir.path(),
@@ -725,7 +730,7 @@ mod tests {
         let store = serde_json::json!({"schema_version": "1", "heartbeat": "fresh", "raw": {},
             "services": [svc("api.svc.emfor", serde_json::json!({"balance": "round-robin", "backends": [
                 be("10.0.0.11:8080", "healthy"), be("10.0.0.12:8080", "unhealthy"), be("10.0.0.13:8080", "healthy")]}))]});
-        let c = Client::new(write(dir.path(), store), Ok(3000));
+        let c = Client::new(write(dir.path(), store), Ok(FRESH_FOR_TESTS_MS));
         let mut counts = std::collections::BTreeMap::new();
         for _ in 0..4 {
             *counts

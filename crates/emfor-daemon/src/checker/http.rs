@@ -32,6 +32,8 @@ const EXCERPT: usize = 64;
 const HOST_HEADER_RULE: &str =
     "must be a host with an optional port, such as \"api.internal\" or \"api.internal:8443\"";
 
+const PATH_RULE: &str = "must not contain '#', '\\' or control characters";
+
 pub struct HttpFactory;
 
 /// Inclusive status range.
@@ -69,9 +71,13 @@ fn parse_options(options: &toml::Table) -> Result<HttpOptions, Vec<OptionError>>
 
     let path = match options.get("path") {
         None => "/".to_string(),
-        Some(toml::Value::String(p)) if p.starts_with('/') => p.clone(),
-        Some(toml::Value::String(_)) => {
+        Some(toml::Value::String(p)) if !p.starts_with('/') => {
             errors.push(OptionError::new("path", "must start with '/'"));
+            "/".into()
+        }
+        Some(toml::Value::String(p)) if valid_path(p) => p.clone(),
+        Some(toml::Value::String(_)) => {
+            errors.push(OptionError::new("path", PATH_RULE));
             "/".into()
         }
         Some(_) => {
@@ -314,6 +320,17 @@ fn valid_host_header(h: &str) -> bool {
             && u.path() == "/"
             && u.username().is_empty()
     })
+}
+
+/// Whether `path` (starting with `/`) reaches the backend as written when
+/// [`HttpChecker::url`] puts it in the request URL. The URL parser cuts
+/// it at `#` (the rest is a fragment, never sent), drops tabs and line
+/// breaks, and reads `\` as `/`; such a path would request another one.
+fn valid_path(path: &str) -> bool {
+    !path.contains(['#', '\\'])
+        && !path.chars().any(char::is_control)
+        && reqwest::Url::parse(&format!("http://127.0.0.1:1{path}"))
+            .is_ok_and(|u| u.fragment().is_none() && u.host_str() == Some("127.0.0.1"))
 }
 
 /// A port: 1 to 5 digits, at most 65535.
@@ -633,6 +650,29 @@ tls_verify = "yes""#)
             .len(),
             2
         );
+    }
+
+    /// A path the request URL would change: cut at `#`, with a tab or line
+    /// break dropped, or with `\` read as `/`. Each was accepted before and
+    /// then requested another path.
+    #[test]
+    fn path_must_reach_the_backend_as_written() {
+        for path in [
+            "/health#ready",
+            "/a\\tb",
+            "/he\\nalth",
+            "/he\\ralth",
+            "/a\\\\..\\\\b",
+            "/x\\u0001",
+        ] {
+            let errs = HttpFactory
+                .validate(&format!("path = \"{path}\"").parse::<toml::Table>().unwrap())
+                .unwrap_err();
+            assert_eq!(errs, vec![OptionError::new("path", PATH_RULE)], "{path}");
+        }
+        for path in ["/", "/healthz?full=1", "/a b", "/%41/caf\u{e9}"] {
+            assert!(valid_path(path), "{path} is sent percent-encoded at worst");
+        }
     }
 
     /// A server answering every request with `status` and a body written in

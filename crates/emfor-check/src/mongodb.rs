@@ -8,8 +8,9 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use emfor_plugin::{CheckOutcome, CheckRequest, OptionError, Options};
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
+use crate::frame::{Frame, FrameError, FrameReader};
 use crate::net::{self, Stream, io_failure};
 use crate::options::{
     TlsSettings, boolean, check_password_file, file, read_option_file, read_password, string,
@@ -195,6 +196,7 @@ pub async fn check(req: &CheckRequest, settings: &Settings) -> CheckOutcome {
     };
     let mut conn = Connection {
         stream,
+        reader: FrameReader::exact(MAX_REPLY),
         next_id: net::random::<u16>().into(),
     };
     match converse(&mut conn, settings, login).await {
@@ -434,6 +436,7 @@ fn pbkdf2(password: &[u8], salt: &[u8], iterations: u32) -> Vec<u8> {
 /// A connection that sends OP_MSG commands.
 struct Connection {
     stream: Box<dyn Stream>,
+    reader: FrameReader,
     next_id: i32,
 }
 
@@ -479,18 +482,20 @@ impl Connection {
 
     /// Read the reply to request `id`.
     async fn reply(&mut self, id: i32) -> Result<Doc, CheckOutcome> {
-        let mut len = [0u8; 4];
-        self.read_exact(&mut len).await?;
-        let len = usize::try_from(i32::from_le_bytes(len)).map_err(|_| malformed())?;
-        if len > MAX_REPLY {
-            return Err(CheckOutcome::Down("query: reply too large".into()));
-        }
-        // Header (16), flagBits (4) and a section kind byte.
-        if len < 21 {
-            return Err(malformed());
-        }
-        let mut rest = vec![0u8; len - 4];
-        self.read_exact(&mut rest).await?;
+        let message = match self.reader.next(&mut self.stream, &mut reply_frame).await {
+            Ok(message) => message,
+            Err(FrameError::Io(e)) if e.kind() != std::io::ErrorKind::UnexpectedEof => {
+                return Err(io_failure("query: ", &e));
+            }
+            Err(FrameError::Closed { .. } | FrameError::Io(_)) => {
+                return Err(CheckOutcome::Down("query: connection closed".into()));
+            }
+            Err(FrameError::TooLarge) => {
+                return Err(CheckOutcome::Down("query: reply too large".into()));
+            }
+            Err(FrameError::Invalid(reason)) => return Err(CheckOutcome::Down(reason)),
+        };
+        let rest = &message[4..];
         let word =
             |at: usize| i32::from_le_bytes([rest[at], rest[at + 1], rest[at + 2], rest[at + 3]]);
         let (response_to, op_code) = (word(4), word(8));
@@ -515,15 +520,20 @@ impl Connection {
             _ => Err(malformed()),
         }
     }
+}
 
-    async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), CheckOutcome> {
-        match self.stream.read_exact(buf).await {
-            Ok(_) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                Err(CheckOutcome::Down("query: connection closed".into()))
-            }
-            Err(e) => Err(io_failure("query: ", &e)),
-        }
+/// Finds the end of a reply: its length (int32, little-endian) counts
+/// itself, and covers the header (16), flagBits (4) and a section kind
+/// byte at least.
+fn reply_frame(buf: &[u8]) -> Frame {
+    let Some(&[a, b, c, d]) = buf.first_chunk::<4>() else {
+        return Frame::Need(4);
+    };
+    match usize::try_from(i32::from_le_bytes([a, b, c, d])) {
+        Ok(len) if len < 21 => Frame::Invalid("query: malformed reply".into()),
+        Ok(len) if buf.len() >= len => Frame::Complete(len),
+        Ok(len) => Frame::Need(len),
+        Err(_) => Frame::Invalid("query: malformed reply".into()),
     }
 }
 
@@ -733,6 +743,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::net::SocketAddr;
     use std::time::Duration;
+    use tokio::io::AsyncReadExt;
     use tokio::net::TcpListener;
 
     fn options(v: Value) -> Options {

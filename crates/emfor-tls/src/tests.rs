@@ -348,4 +348,52 @@ fn client_certificate_files() {
         config("client.crt", "empty"),
         local("tls_key_file: no private key found")
     );
+
+    // Validation builds the same configuration: a pair that loads passes,
+    // and a key of another certificate, which each file check accepts,
+    // fails as the build does.
+    let pair = |cert: &str, key: &str| {
+        check_client_certificate(&ClientCertificate {
+            cert_file: path(cert),
+            key_file: path(key),
+        })
+    };
+    assert_eq!(pair("client.crt", "client.key"), Ok(()));
+    std::fs::write(
+        path("other.key"),
+        mutual_pki("dra.test", "other.test").client_key_pem,
+    )
+    .unwrap();
+    assert_eq!(check_key_file(&path("other.key")), Ok(()));
+    assert!(config("client.crt", "other.key").is_err());
+    let message = pair("client.crt", "other.key").expect_err("the key does not fit");
+    assert!(!message.starts_with("tls_key_file: "), "{message}");
+}
+
+/// A PEM block labelled as a certificate whose content is not one: found
+/// by `load_certificates`, but not usable as a trust anchor.
+const UNUSABLE_CERTIFICATE: &str =
+    "-----BEGIN CERTIFICATE-----\nAAECAwQFBgcICQ==\n-----END CERTIFICATE-----\n";
+
+#[test]
+fn ca_file_without_a_usable_certificate() {
+    let dir = tempfile::tempdir().unwrap();
+    let ca = dir.path().join("ca.pem");
+    std::fs::write(&ca, UNUSABLE_CERTIFICATE).unwrap();
+    assert_eq!(load_certificates(UNUSABLE_CERTIFICATE.as_bytes()).len(), 1);
+    // A check cannot use it ...
+    assert_eq!(
+        client_config(&settings(Some(&ca), None, true)).map(|_| ()),
+        Err(TlsFailure::local("ca_file: no usable certificate"))
+    );
+    // ... so validation refuses it too.
+    assert_eq!(check_ca_file(&ca), Err("no usable certificate".into()));
+    // One usable certificate among unusable ones is enough for both.
+    std::fs::write(
+        &ca,
+        format!("{UNUSABLE_CERTIFICATE}{}", pki("x.test").ca_pem),
+    )
+    .unwrap();
+    assert!(client_config(&settings(Some(&ca), None, true)).is_ok());
+    assert_eq!(check_ca_file(&ca), Ok(()));
 }

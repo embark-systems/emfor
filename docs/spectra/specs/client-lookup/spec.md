@@ -81,7 +81,7 @@ tests:
 A lookup that cannot return an address SHALL fail with exactly one of these codes, decided by the first step that fails, in this order:
 
 1. `UNAVAILABLE` — the store file cannot be opened (missing, permission denied, LMDB lock or data format different from the client's, any other open error), the key `meta/schema_version` is absent, or `EMFOR_MAX_STALENESS` holds an invalid value.
-2. `INCOMPATIBLE` — `meta/schema_version` is neither `1` nor `2`, `meta/heartbeat` is missing or not a decimal integer, or the service record cannot be parsed as a version 2 record. A `balance` string the client does not know SHALL NOT count as a parse failure (see "Unknown balance falls back to round-robin").
+2. `INCOMPATIBLE` — `meta/schema_version` is neither `1` nor `2`, `meta/heartbeat` is missing or not a decimal integer, or the service record cannot be parsed as a version 2 record. A `balance`, backend `state` or `on_all_down` string the client does not know SHALL NOT count as a parse failure (see "Unknown balance falls back to round-robin" and "Candidates follow health and on_all_down").
 3. `NOT_FOUND` — no `svc/<name>` key exists for the normalized name.
 4. `ALL_DOWN` — no backend is usable and the service's `on_all_down` is `closed`.
 
@@ -321,7 +321,7 @@ tests:
 ---
 ### Requirement: Candidates follow health and on_all_down
 
-A backend is passing when its `state` is `healthy` and its `reason` is `null`, failing when its `state` is `healthy` and its `reason` is not `null`, a backup when its `backup` is true, and primary otherwise. When the store is fresh, the candidates SHALL be, in config order, the first of these sets that is not empty: the passing primary backends (`state` `healthy`, `reason` `null`, `backup` false); when there are none, the passing backup backends (`backup` true); when there are none, every `healthy` primary backend, failing ones included; when there are none, every `healthy` backup backend, failing ones included. When the store is stale, `reason` SHALL NOT affect the candidates. When no backend is a candidate (none healthy, or the store is stale), a service with `on_all_down = "closed"` SHALL fail with `ALL_DOWN`. A service with `on_all_down = "open"` SHALL then use, in config order: when the store is fresh and at least one backend is unknown and passing (`state` `unknown` and `reason` `null`), only those backends; otherwise, when the store is fresh and at least one backend's `state` is `unknown`, every `unknown` backend; otherwise every backend. When the store is stale, every backend SHALL be a candidate of an open service. The lookup SHALL NOT tell the caller that the result came from an all-down service or from a service whose healthy backends are all failing.
+A backend is passing when its `state` is `healthy` and its `reason` is `null`, failing when its `state` is `healthy` and its `reason` is not `null`, a backup when its `backup` is true, and primary otherwise. When the store is fresh, the candidates SHALL be, in config order, the first of these sets that is not empty: the passing primary backends (`state` `healthy`, `reason` `null`, `backup` false); when there are none, the passing backup backends (`backup` true); when there are none, every `healthy` primary backend, failing ones included; when there are none, every `healthy` backup backend, failing ones included. When the store is stale, `reason` SHALL NOT affect the candidates. When no backend is a candidate (none healthy, or the store is stale), a service with `on_all_down = "closed"` SHALL fail with `ALL_DOWN`. A service with `on_all_down = "open"` SHALL then use, in config order: when the store is fresh and at least one backend is unknown and passing (`state` `unknown` and `reason` `null`), only those backends; otherwise, when the store is fresh and at least one backend's `state` is `unknown`, every `unknown` backend; otherwise every backend. When the store is stale, every backend SHALL be a candidate of an open service. The lookup SHALL NOT tell the caller that the result came from an all-down service or from a service whose healthy backends are all failing. A backend whose `state` the client does not know (written by a newer daemon) SHALL be handled like an `unhealthy` one, and a service whose `on_all_down` the client does not know like an `open` one: a state the client cannot interpret gives no evidence that the backend works, so it is never preferred to a healthy or `unknown` one, and `open`, the default, keeps a service that has no usable backend answering instead of failing on a setting the client cannot read.
 
 #### Scenario: Unhealthy backends are skipped
 
@@ -347,6 +347,11 @@ A backend is passing when its `state` is `healthy` and its `reason` is `null`, f
 
 - **WHEN** a fresh round-robin service with `on_all_down = "open"` lists `10.0.1.5:5432` and `10.0.1.6:5432`, both `unhealthy`
 - **THEN** consecutive lookups return both backends
+
+#### Scenario: State and on_all_down values from a newer daemon
+
+- **WHEN** fresh round-robin services list `10.0.0.11:8080` with `state` `"some-future-state"` and a second backend `10.0.0.12:8080`: service A with `on_all_down` `"some-future-mode"` and the second backend `unhealthy`, service B with `on_all_down = "open"` and the second backend `unknown`, service C with `on_all_down = "closed"` and no second backend
+- **THEN** consecutive lookups of A return both backends, lookups of B return only `10.0.0.12:8080`, and a lookup of C fails with `ALL_DOWN`
 
 #### Scenario: Failing backend is skipped while another passes
 
@@ -858,7 +863,7 @@ The repository SHALL contain conformance data under `tests/conformance/v1/`: `ca
 #### Scenario: Data covers every requirement
 
 - **WHEN** the cases are listed by the requirement they exercise
-- **THEN** each requirement in this capability except thread and fork safety, the C library sharing the daemon's LMDB, and the language wrappers has at least one case, and the four error codes, the six balance methods, an unknown balance value, both `on_all_down` settings and all four heartbeat forms (fresh, stale, zero, missing) each appear in at least one case
+- **THEN** each requirement in this capability except thread and fork safety, the C library sharing the daemon's LMDB, and the language wrappers has at least one case, and the four error codes, the six balance methods, an unknown balance value, both `on_all_down` settings, an unknown `state` and `on_all_down` value, and all four heartbeat forms (fresh, stale, zero, missing) each appear in at least one case
 
 #### Scenario: Driver detects a wrong answer
 

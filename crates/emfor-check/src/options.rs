@@ -123,6 +123,16 @@ fn parse_with(
             errors.push(OptionError::new(*key, "missing required key"));
         }
     }
+    // mysql and pgsql send these as NUL-terminated strings: the PostgreSQL
+    // driver refuses one with a NUL inside, and MySQL would read the name
+    // only up to it.
+    if matches!(kind, Kind::Mysql | Kind::Pgsql) {
+        for (key, value) in [("user", &user), ("database", &database)] {
+            if value.as_deref().is_some_and(|s| s.contains('\0')) {
+                errors.push(OptionError::new(key, "must not contain NUL"));
+            }
+        }
+    }
 
     let password_file = match options.get("password_file") {
         None => None,
@@ -473,6 +483,12 @@ mod tests {
         let missing = f.missing();
         let not_pem = f.write("not-pem.txt", b"hello\n");
         let pass = f.write("ldap.pass", b"s3cret\n");
+        // A certificate PEM block that does not hold a certificate: a
+        // check could not use it as a trust anchor.
+        let unusable = f.write(
+            "unusable.pem",
+            b"-----BEGIN CERTIFICATE-----\nAAECAwQFBgcICQ==\n-----END CERTIFICATE-----\n",
+        );
         let rows: Vec<(Kind, Value, Errors)> = vec![
             (Kind::Mysql, json!({}), one("user", "missing required key")),
             (
@@ -625,6 +641,27 @@ mod tests {
                 Kind::Ldap,
                 json!({"database": "dc=example"}),
                 one("database", "unknown key"),
+            ),
+            // Sent as NUL-terminated strings, which cannot hold a NUL.
+            (
+                Kind::Mysql,
+                json!({"user": "em\u{0}for"}),
+                one("user", "must not contain NUL"),
+            ),
+            (
+                Kind::Pgsql,
+                json!({"user": "em\u{0}for", "database": "app"}),
+                one("user", "must not contain NUL"),
+            ),
+            (
+                Kind::Pgsql,
+                json!({"user": "emfor", "database": "a\u{0}pp"}),
+                one("database", "must not contain NUL"),
+            ),
+            (
+                Kind::Redis,
+                json!({"tls": true, "ca_file": unusable}),
+                one("ca_file", "no usable certificate"),
             ),
         ];
         for (kind, options, want) in rows {

@@ -58,7 +58,7 @@ sync = false
 | Key | 預設值 | 意義 |
 | --- | --- | --- |
 | `listen` | `["127.0.0.1:5300"]` | 回答查詢的位址，UDP 與 TCP。 |
-| `zone` | `"svc.emfor"` | 只回答 zone 之下的名稱。最多 242 個字元。 |
+| `zone` | `"svc.emfor"` | 只回答 zone 之下的名稱。最多 242 個字元。zone 之內的服務名稱要留出每個 backend 的 SRV 目標名稱空間：`<ip label>.<service>` 最多 253 個字元（IPv6 的 label 是 39 個字元）。 |
 | `ttl` | `"1s"` | 回答與 zone SOA 的 TTL；`0s` 到 `3600s` 的整數秒。 |
 
 ## [metrics]
@@ -190,7 +190,7 @@ command = ["/usr/local/libexec/emfor-check", "redis"]
 
 | Key | 意義 |
 | --- | --- |
-| `command` | 必填。程式與它的參數；第一個元素是可執行檔的絕對路徑。不經過 shell 執行。 |
+| `command` | 必填。程式與它的參數；第一個元素是可執行檔的絕對路徑。任何元素都不能含 NUL。不經過 shell 執行。 |
 
 名稱為 1–63 個 `a-z`、`0-9`、`_` 與 `-` 字元，且不可為 `tcp`、`http` 或 `exec`。服務以 `check = "<name>"` 使用 plugin。每個宣告的 plugin 都會被啟動，不論有沒有服務使用。見[第 4 章](04-health-checks.md#plugin-與-emfor-check)。
 

@@ -704,7 +704,8 @@ impl Validator {
                     self.err(&path, "must be a table");
                     continue;
                 };
-                if let Some(s) = self.service(t, &path, name, &defaults, registry) {
+                let zone = dns.as_ref().map(|d| d.zone.as_str());
+                if let Some(s) = self.service(t, &path, name, &defaults, zone, registry) {
                     services.push(s);
                 }
             }
@@ -1178,6 +1179,7 @@ impl Validator {
         path: &str,
         name: String,
         defaults: &Settings,
+        zone: Option<&str>,
         registry: &Registry,
     ) -> Option<ServiceConfig> {
         let mut allowed = vec!["check", "backends", "check_options", "dns_ttl"];
@@ -1196,6 +1198,20 @@ impl Validator {
         }
 
         let backends = self.backends(t, path);
+        // The DNS server names each backend `<ip label>.<service>.` in SRV
+        // answers; build those names now, as the answer would.
+        if let (Some(zone), Some(list)) = (zone, &backends)
+            && in_zone(&name, zone)
+        {
+            for (i, b) in list.iter().enumerate() {
+                if crate::dns::srv_target(b.addr.ip(), &name).is_none() {
+                    self.err(
+                        format!("{}[{i}]", key_path(path, "backends")),
+                        "service name too long for this backend's SRV target name (<ip label>.<service>, at most 253 characters)",
+                    );
+                }
+            }
+        }
         let dns_ttl = self.dns_seconds(t, path, "dns_ttl");
 
         let check_options = match t.get("check_options") {
@@ -2198,6 +2214,31 @@ slow_start = "0s"
         z
     }
 
+    /// A 230-character service name in the default zone: an IPv4 target
+    /// name fits (8 + 1 + 230), an IPv6 one (39 + 1 + 230) does not, so the
+    /// DNS server could never answer SRV for it.
+    #[test]
+    fn srv_target_names_must_fit() {
+        let name = format!("{}.svc.emfor", long_zone(230 - ".svc.emfor".len()));
+        assert_eq!(name.len(), 230);
+        let text = |dns: &str| {
+            format!(
+                "{dns}[services.\"{name}\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\", \"[2001:db8::1]:80\"]\n"
+            )
+        };
+        let e = parse_err(&text("[dns]\n"));
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(e[0].path, format!("services.\"{name}\".backends[1]"));
+        assert!(e[0].message.contains("SRV target name"), "{}", e[0]);
+        // Not served by DNS: no [dns], or a name outside the zone.
+        parse_ok(&text(""));
+        parse_ok(&text("[dns]\nzone = \"other.zone\"\n"));
+        // An IPv4 backend alone fits.
+        parse_ok(&format!(
+            "[dns]\n[services.\"{name}\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n"
+        ));
+    }
+
     #[test]
     fn longest_zone_is_accepted() {
         let zone = long_zone(MAX_ZONE_LEN);
@@ -2306,6 +2347,11 @@ slow_start = "0s"
             (
                 "[plugins.\"redis\"]\ncommand = [\"/bin/sh\"]\nargs = [\"-v\"]\n",
                 Some(("plugins.redis.args", "unknown key")),
+            ),
+            // An argument with NUL cannot be passed to the plugin.
+            (
+                "[plugins.\"redis\"]\ncommand = [\"/bin/sh\", \"-c\\u0000x\"]\n",
+                Some(("plugins.redis.command", "must not contain NUL")),
             ),
         ];
         for (text, want) in rows {

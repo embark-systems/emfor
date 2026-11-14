@@ -113,7 +113,10 @@ pub fn message_header(buf: &[u8]) -> Result<Option<(usize, usize)>, BerError> {
         return Ok(None);
     };
     let header = 1 + header;
-    if header + len > MAX_MESSAGE {
+    if header
+        .checked_add(len)
+        .is_none_or(|total| total > MAX_MESSAGE)
+    {
         return err(format!("response longer than {MAX_MESSAGE} bytes"));
     }
     Ok(Some((header, len)))

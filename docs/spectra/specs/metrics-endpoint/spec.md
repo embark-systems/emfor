@@ -205,7 +205,7 @@ updated: 2026-11-13
 code:
   - crates/emfor-daemon/src/schedule.rs
   - docs/manual/08-operations.md
-  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/peers/
   - docs/manual/01-concepts.md
   - docs/deploy/daemon.md
   - crates/emfor-daemon/src/quorum.rs

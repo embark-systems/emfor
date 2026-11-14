@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
-use emfor_format::{HIST_KEY_PREFIX, ServiceHistory};
+use emfor_format::{HIST_KEY_PREFIX, HealthState, ServiceHistory};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing_subscriber::layer::SubscriberExt;
@@ -234,8 +234,18 @@ fn load_history(store: &Store) -> BTreeMap<String, ServiceHistory> {
     stored
         .into_iter()
         .map(|(key, value)| {
-            let h = match value.as_deref().map(serde_json::from_str) {
-                Some(Ok(h)) => h,
+            let h = match value.as_deref().map(serde_json::from_str::<ServiceHistory>) {
+                Some(Ok(mut h)) => {
+                    // Left by a newer daemon: transitions to or from a state
+                    // this one does not know are dropped, so that it never
+                    // writes such a state back.
+                    let known = |s: HealthState| s != HealthState::Unrecognized;
+                    for entries in h.backends.values_mut() {
+                        entries.retain(|e| known(e.from) && known(e.to));
+                    }
+                    h.retain(|_| true);
+                    h
+                }
                 Some(Err(e)) => {
                     tracing::warn!("discarding {key}: {e}");
                     ServiceHistory::default()
@@ -655,6 +665,25 @@ mod tests {
         );
         assert_eq!(loaded["a.svc.emfor"].backends["10.0.0.1:80"].len(), 1);
         assert!(loaded["b.svc.emfor"].is_empty());
+    }
+
+    /// History left by a newer daemon: transitions with a state this one
+    /// does not know are dropped, the others kept.
+    #[test]
+    fn history_drops_states_it_does_not_know() {
+        use crate::store::tests::{cfg, put_raw};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&cfg(dir.path())).unwrap();
+        let value = r#"{"backends":{"10.0.0.1:80":[{"at":1,"from":"healthy","to":"unhealthy","reason":null},{"at":2,"from":"unhealthy","to":"some-future-state","reason":null}],"10.0.0.2:80":[{"at":3,"from":"some-future-state","to":"healthy","reason":null}]}}"#;
+        put_raw(&store, b"hist/a.svc.emfor", value.as_bytes());
+        let loaded = load_history(&store);
+        let h = &loaded["a.svc.emfor"];
+        assert_eq!(
+            h.backends.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["10.0.0.1:80"]
+        );
+        assert_eq!(h.backends["10.0.0.1:80"].len(), 1);
+        assert_eq!(h.backends["10.0.0.1:80"][0].to, HealthState::Unhealthy);
     }
 
     /// State-store "DNS listen addresses in the store" and "Metrics listen

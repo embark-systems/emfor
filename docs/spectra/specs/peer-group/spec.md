@@ -51,7 +51,7 @@ code:
   - RELEASING.md
   - fuzz/seeds/peers/down-emp1
   - fuzz/seeds/peers/heartbeat-payload
-  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/peers/
   - docs/manual/03-configuration.md
   - examples/emfor.toml
   - docs/manual.zh_TW/03-configuration.md
@@ -145,7 +145,7 @@ code:
   - RELEASING.md
   - fuzz/seeds/peers/down-emp1
   - fuzz/seeds/peers/heartbeat-payload
-  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/peers/
   - docs/manual/03-configuration.md
   - examples/emfor.toml
   - docs/manual.zh_TW/03-configuration.md
@@ -196,7 +196,7 @@ code:
   - crates/emfor-daemon/Cargo.toml
   - crates/emfor-daemon/src/lib.rs
   - docs/deploy/daemon.md
-  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/peers/
   - crates/emfor-daemon/src/supervisor.rs
   - crates/emfor-daemon/src/schedule.rs
   - docs/manual/03-configuration.md
@@ -266,7 +266,7 @@ source: emfor-peers-off-announce
 updated: 2026-11-13
 code:
   - examples/emfor.toml
-  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/peers/
   - docs/manual/03-configuration.md
   - crates/emfor-daemon/src/status.rs
   - crates/emfor-daemon/src/quorum.rs
@@ -313,7 +313,7 @@ code:
   - crates/emfor-daemon/Cargo.toml
   - crates/emfor-daemon/src/lib.rs
   - docs/deploy/daemon.md
-  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/peers/
   - crates/emfor-daemon/src/supervisor.rs
   - crates/emfor-daemon/src/schedule.rs
   - docs/manual/03-configuration.md
@@ -373,7 +373,7 @@ updated: 2026-11-13
 code:
   - crates/emfor-daemon/src/schedule.rs
   - docs/manual/08-operations.md
-  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/peers/
   - docs/manual/01-concepts.md
   - docs/deploy/daemon.md
   - crates/emfor-daemon/src/quorum.rs
@@ -410,7 +410,7 @@ code:
   - RELEASING.md
   - fuzz/seeds/peers/down-emp1
   - fuzz/seeds/peers/heartbeat-payload
-  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/peers/
   - docs/manual/03-configuration.md
   - examples/emfor.toml
   - docs/manual.zh_TW/03-configuration.md
@@ -490,7 +490,7 @@ source: emfor-peers-off-announce
 updated: 2026-11-13
 code:
   - examples/emfor.toml
-  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/peers/
   - docs/manual/03-configuration.md
   - crates/emfor-daemon/src/status.rs
   - crates/emfor-daemon/src/quorum.rs
@@ -579,7 +579,7 @@ code:
   - crates/emfor-daemon/src/status.rs
   - crates/emfor-daemon/src/metrics.rs
   - docs/manual/08-operations.md
-  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/peers/
   - crates/emfor-daemon/src/lib.rs
   - crates/emfor-daemon/src/schedule.rs
   - crates/emfor-daemon/src/quorum.rs
@@ -726,7 +726,7 @@ source: emfor-peers-off-announce
 updated: 2026-11-13
 code:
   - examples/emfor.toml
-  - crates/emfor-daemon/src/peers.rs
+  - crates/emfor-daemon/src/peers/
   - docs/manual/03-configuration.md
   - crates/emfor-daemon/src/status.rs
   - crates/emfor-daemon/src/quorum.rs

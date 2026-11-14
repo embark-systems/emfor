@@ -66,6 +66,8 @@ A change to `unknown` with reason `check task restarted` in
 `emfor status --history` is not a check result: the backend's check task
 stopped on a bug and was started again, and the log has an error line
 `check task of backend ... stopped`. Please report it with that line.
+A backend that was already `unknown` gets no history entry, but
+`emfor status` shows the same reason until its next check.
 
 ## DNS does not resolve
 

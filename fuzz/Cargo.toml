@@ -22,6 +22,20 @@ tokio = { version = "1.54.1", features = ["rt", "time", "test-util"] }
 [workspace]
 members = ["."]
 
+# cargo fuzz builds with the release profile. Keep debug assertions and
+# overflow checks on, as in `cargo test`: an integer overflow is a crash
+# the fuzzer must see, not a value that silently wraps.
+[profile.release]
+debug-assertions = true
+overflow-checks = true
+
+# What the targets share (see src/lib.rs).
+[lib]
+name = "emfor_fuzz"
+path = "src/lib.rs"
+test = false
+doc = false
+
 [[bin]]
 name = "plugins"
 path = "fuzz_targets/plugins.rs"
@@ -53,6 +67,13 @@ bench = false
 [[bin]]
 name = "config"
 path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dns"
+path = "fuzz_targets/dns.rs"
 test = false
 doc = false
 bench = false

@@ -5,8 +5,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use emfor_plugin::{CheckOutcome, CheckRequest, OptionError, Options};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
+use crate::frame::{Frame, FrameError, FrameReader};
 use crate::net::{self, Stream, io_failure};
 use crate::options::{
     TlsSettings, boolean, check_password_file, file, read_password, string, tls_settings,
@@ -73,11 +74,20 @@ pub fn parse(options: &Options, read_files: bool) -> Result<Settings, Vec<Option
     if !options.contains_key("user") {
         errors.push(OptionError::new("user", "missing required key"));
     }
+    // PLAIN separates the user from the password with NUL (RFC 4616), so
+    // a NUL in either would send a different login.
+    let user = match user {
+        Some(u) if u.contains('\0') => {
+            errors.push(OptionError::new("user", "must not contain NUL"));
+            None
+        }
+        u => u,
+    };
     let password_file = file(
         options,
         "password_file",
         read_files,
-        check_password_file,
+        check_plain_password_file,
         &mut errors,
     );
     if !options.contains_key("password_file") {
@@ -103,6 +113,16 @@ pub fn parse(options: &Options, read_files: bool) -> Result<Settings, Vec<Option
     }
 }
 
+/// The common password file rules, and no NUL, which PLAIN cannot carry.
+fn check_plain_password_file(path: &std::path::Path) -> Result<(), String> {
+    use crate::options::{read_option_file, trim_newline};
+    check_password_file(path)?;
+    if trim_newline(&read_option_file(path)?).contains(&0) {
+        return Err("password must not contain NUL".into());
+    }
+    Ok(())
+}
+
 /// A string option of 1 to 255 bytes.
 fn name(options: &Options, key: &str, errors: &mut Vec<OptionError>) -> Option<String> {
     match string(options, key, errors) {
@@ -125,7 +145,10 @@ pub async fn check(req: &CheckRequest, settings: &Settings) -> CheckOutcome {
         Ok(s) => s,
         Err(outcome) => return outcome,
     };
-    let mut conn = Connection { stream };
+    let mut conn = Connection {
+        stream,
+        reader: FrameReader::exact(7 + MAX_FRAME as usize + 1),
+    };
     match handshake(&mut conn, settings, &password).await {
         Ok(()) => {
             // The result does not wait for the broker to confirm the close.
@@ -194,9 +217,36 @@ fn malformed() -> CheckOutcome {
     CheckOutcome::Down("query: malformed frame".into())
 }
 
+/// Finds the end of a frame: a 7-byte header (type, channel, payload
+/// size), the payload and the frame-end octet. A broker that does not
+/// speak 0-9-1 answers with its own 8-byte protocol header instead.
+fn frame_end(buf: &[u8]) -> Frame {
+    let Some(header) = buf.get(..7) else {
+        return Frame::Need(7);
+    };
+    if header.starts_with(b"AMQP") {
+        return match buf.get(7) {
+            Some(last) => Frame::Invalid(format!(
+                "query: server speaks AMQP {}-{}-{}",
+                header[5], header[6], last
+            )),
+            None => Frame::Need(8),
+        };
+    }
+    let size = u32::from_be_bytes([header[3], header[4], header[5], header[6]]);
+    // The reader refuses a size above MAX_FRAME as too large.
+    let total = usize::try_from(size).map_or(usize::MAX, |size| size.saturating_add(8));
+    if buf.len() >= total {
+        Frame::Complete(total)
+    } else {
+        Frame::Need(total)
+    }
+}
+
 /// An AMQP connection on channel 0.
 struct Connection {
     stream: Box<dyn Stream>,
+    reader: FrameReader,
 }
 
 impl Connection {
@@ -250,37 +300,22 @@ impl Connection {
 
     /// One frame: its type and payload.
     async fn frame(&mut self, phase: Phase) -> Result<(u8, Vec<u8>), CheckOutcome> {
-        let mut header = [0u8; 7];
-        self.read_exact(&mut header, phase).await?;
-        if header.starts_with(b"AMQP") {
-            // The broker does not speak 0-9-1 and answered with its own
-            // protocol header.
-            let mut last = [0u8; 1];
-            self.read_exact(&mut last, phase).await?;
-            return Err(CheckOutcome::Down(format!(
-                "query: server speaks AMQP {}-{}-{}",
-                header[5], header[6], last[0]
-            )));
-        }
-        let size = u32::from_be_bytes([header[3], header[4], header[5], header[6]]);
-        if size > MAX_FRAME {
-            return Err(CheckOutcome::Down("query: frame too large".into()));
-        }
-        let len = usize::try_from(size).map_err(|_| malformed())?;
-        let mut payload = vec![0u8; len + 1];
-        self.read_exact(&mut payload, phase).await?;
-        if payload.pop() != Some(FRAME_END) {
+        let mut frame = match self.reader.next(&mut self.stream, &mut frame_end).await {
+            Ok(frame) => frame,
+            Err(FrameError::Io(e)) if e.kind() != std::io::ErrorKind::UnexpectedEof => {
+                return Err(io_failure("query: ", &e));
+            }
+            Err(FrameError::Closed { .. } | FrameError::Io(_)) => return Err(phase.closed()),
+            Err(FrameError::TooLarge) => {
+                return Err(CheckOutcome::Down("query: frame too large".into()));
+            }
+            Err(FrameError::Invalid(reason)) => return Err(CheckOutcome::Down(reason)),
+        };
+        if frame.pop() != Some(FRAME_END) {
             return Err(malformed());
         }
-        Ok((header[0], payload))
-    }
-
-    async fn read_exact(&mut self, buf: &mut [u8], phase: Phase) -> Result<(), CheckOutcome> {
-        match self.stream.read_exact(buf).await {
-            Ok(_) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Err(phase.closed()),
-            Err(e) => Err(io_failure("query: ", &e)),
-        }
+        let payload = frame.split_off(7);
+        Ok((frame[0], payload))
     }
 
     /// Close the connection normally: Close, then Close-Ok within
@@ -456,6 +491,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::net::SocketAddr;
     use std::sync::{Arc, Mutex};
+    use tokio::io::AsyncReadExt;
     use tokio::net::TcpListener;
 
     fn options(v: Value) -> Options {
@@ -533,6 +569,30 @@ mod tests {
         .unwrap();
         assert_eq!(settings.vhost, "/");
         assert_eq!(settings.tls, None);
+    }
+
+    /// PLAIN separates user and password with NUL, so neither may hold one.
+    #[test]
+    fn amqp_plain_login_without_nul() {
+        assert_eq!(
+            errors(json!({"user": "em\u{0}for", "password_file": "/etc/emfor/amqp.pass"})),
+            vec![err("user", "must not contain NUL")]
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("amqp.pass");
+        std::fs::write(&path, b"pa\0ss\n").unwrap();
+        let o = options(json!({"user": "emfor", "password_file": path.to_str().unwrap()}));
+        let got: Vec<_> = parse(&o, true)
+            .expect_err("a password with NUL is refused")
+            .into_iter()
+            .map(|e| (e.key, e.message))
+            .collect();
+        assert_eq!(
+            got,
+            vec![err("password_file", "password must not contain NUL")]
+        );
+        std::fs::write(&path, b"pass\n").unwrap();
+        assert!(parse(&o, true).is_ok());
     }
 
     /// What the fake broker does, in order.

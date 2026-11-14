@@ -5,9 +5,10 @@ use std::io;
 use std::time::Instant;
 
 use emfor_plugin::{CheckOutcome, CheckRequest};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use crate::ber::{self, BIND_RESPONSE, EXTENDED_RESPONSE, Response};
+use crate::frame::{Frame, FrameError, FrameReader};
 use crate::net::{self, Stream, io_failure};
 use crate::options::{Settings, read_password};
 
@@ -132,28 +133,43 @@ enum Failure {
     Bad(ber::BerError),
 }
 
-/// Read one whole LDAPMessage and decode it.
+/// Read one whole LDAPMessage and decode it. Reads nothing past the
+/// message: after a StartTLS response the stream goes to the handshake.
 async fn read_response(conn: &mut (impl AsyncRead + Unpin)) -> Result<Response, Failure> {
-    let mut buf = Vec::with_capacity(64);
-    let (header, len) = loop {
-        if let Some(h) = ber::message_header(&buf).map_err(Failure::Bad)? {
-            break h;
+    let mut framer = |buf: &[u8]| match ber::message_header(buf) {
+        Ok(Some((header, len))) => {
+            // message_header caps header + len; saturating all the same,
+            // so an overflow is too large rather than a wrap.
+            let total = header.saturating_add(len);
+            if buf.len() >= total {
+                Frame::Complete(total)
+            } else {
+                Frame::Need(total)
+            }
         }
-        let mut byte = [0u8; 1];
-        match conn.read(&mut byte).await {
-            Ok(0) => return Err(Failure::Closed),
-            Ok(_) => buf.push(byte[0]),
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(Failure::Closed),
-            Err(e) => return Err(Failure::Io(e)),
+        // The tag and length come first and are short: read on bytewise.
+        Ok(None) => Frame::Need(buf.len() + 1),
+        Err(e) => Frame::Invalid(e.0),
+    };
+    let message = match FrameReader::exact(ber::MAX_MESSAGE)
+        .next(conn, &mut framer)
+        .await
+    {
+        Ok(message) => message,
+        Err(FrameError::Io(e)) if e.kind() != io::ErrorKind::UnexpectedEof => {
+            return Err(Failure::Io(e));
+        }
+        Err(FrameError::Closed { .. } | FrameError::Io(_)) => return Err(Failure::Closed),
+        Err(FrameError::Invalid(reason)) => return Err(Failure::Bad(ber::BerError(reason))),
+        // message_header already refuses longer messages.
+        Err(FrameError::TooLarge) => {
+            return Err(Failure::Bad(ber::BerError(format!(
+                "response longer than {} bytes",
+                ber::MAX_MESSAGE
+            ))));
         }
     };
-    buf.resize(header + len, 0);
-    match conn.read_exact(&mut buf[header..]).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(Failure::Closed),
-        Err(e) => return Err(Failure::Io(e)),
-    }
-    ber::decode_response(&buf).map_err(Failure::Bad)
+    ber::decode_response(&message).map_err(Failure::Bad)
 }
 
 #[cfg(test)]
@@ -162,6 +178,7 @@ mod tests {
     use crate::options::TlsSettings;
     use std::net::SocketAddr;
     use std::time::Duration;
+    use tokio::io::AsyncReadExt;
     use tokio::net::TcpListener;
 
     /// What a fake server answers to each request it reads.

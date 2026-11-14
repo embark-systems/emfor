@@ -38,8 +38,8 @@ impl CheckOutcome {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendUpdate {
     pub service: Arc<str>,
-    /// Generation of the service layout this task was spawned for; the writer
-    /// drops updates from tasks of an older generation.
+    /// Generation of the check task that sent it, unique to that task; the
+    /// writer drops updates of any task but the backend's current one.
     pub generation: u64,
     pub backend_id: String,
     pub state: HealthState,
@@ -222,8 +222,15 @@ fn own_reason(result: &CheckResult) -> &str {
     reason.strip_prefix("local: ").unwrap_or(reason)
 }
 
-/// Spawn the check loop of one backend. Settings changes that do not reset
-/// state (timing, thresholds) arrive through `settings`.
+/// Spawn the check loop of one backend as check task `generation`. Settings
+/// changes that do not reset state (timing, thresholds) arrive through
+/// `settings`.
+///
+/// The task owns the backend's health state: it starts from `unknown`, and
+/// the writer's record and the live view change only by what it sends. Whoever
+/// spawns it first makes the writer put the backend at `unknown` under this
+/// generation (a layout naming it, or [`WriterMsg::Restarted`]), so all three
+/// agree from the start.
 pub fn spawn_backend(
     service: Arc<str>,
     backend: Backend,

@@ -245,38 +245,62 @@ pub fn check_server_name(name: &str) -> Result<(), &'static str> {
     }
 }
 
-/// Validate a `ca_file` value by reading it; the error is the option's
-/// message.
+/// Validate a `ca_file` value by reading and parsing it as a check does
+/// ([`parse_ca`]): it must hold a certificate usable as a trust anchor.
+/// The error is the option's message.
 pub fn check_ca_file(path: &Path) -> Result<(), String> {
+    match parse_ca(&read_file_option(path)?)? {
+        (_, Some(_)) => Ok(()),
+        (_, None) => Err("no usable certificate".into()),
+    }
+}
+
+/// Read a file named by an option, with the option's error messages.
+fn read_file_option(path: &Path) -> Result<Vec<u8>, String> {
     if !path.is_absolute() {
         return Err("not an absolute path".into());
     }
-    let bytes = std::fs::read(path).map_err(|e| match e.kind() {
+    std::fs::read(path).map_err(|e| match e.kind() {
         io::ErrorKind::NotFound => "file not found".to_string(),
         kind => format!("cannot read: {kind}"),
-    })?;
-    if load_certificates(&bytes).is_empty() {
-        return Err("no certificate found".into());
-    }
-    Ok(())
+    })
 }
 
 /// Validate a `tls_cert_file` value by reading it; the error is the
 /// option's message.
 pub fn check_cert_file(path: &Path) -> Result<(), String> {
-    check_ca_file(path)
+    if load_certificates(&read_file_option(path)?).is_empty() {
+        return Err("no certificate found".into());
+    }
+    Ok(())
+}
+
+/// Validate `tls_cert_file` and `tls_key_file` together by building the
+/// client configuration a check builds with them, so a key the TLS library
+/// cannot load, or one that does not belong to the certificate, is found
+/// at validation. The error is the message for `tls_key_file`; it never
+/// contains the files' content.
+pub fn check_client_certificate(client: &ClientCertificate) -> Result<(), String> {
+    // Server verification plays no part in loading the client certificate.
+    let tls = TlsSettings {
+        verify: false,
+        server_name: None,
+        ca_file: None,
+    };
+    match client_config_with_client(&tls, Some(client)) {
+        Ok(_) => Ok(()),
+        Err(f) => Err(f
+            .reason
+            .strip_prefix("tls_key_file: ")
+            .unwrap_or(&f.reason)
+            .to_owned()),
+    }
 }
 
 /// Validate a `tls_key_file` value by reading it; the error is the
 /// option's message. It never contains the file's content.
 pub fn check_key_file(path: &Path) -> Result<(), String> {
-    if !path.is_absolute() {
-        return Err("not an absolute path".into());
-    }
-    let bytes = std::fs::read(path).map_err(|e| match e.kind() {
-        io::ErrorKind::NotFound => "file not found".to_string(),
-        kind => format!("cannot read: {kind}"),
-    })?;
+    let bytes = read_file_option(path)?;
     match PrivateKeyDer::from_pem_slice(&bytes) {
         Ok(_) => Ok(()),
         Err(_) => Err("no private key found".into()),
@@ -363,22 +387,34 @@ fn ca_file(path: &Path) -> Result<Arc<CaFile>, TlsFailure> {
         return Ok(Arc::clone(cached));
     }
     let bytes = std::fs::read(path).map_err(unreadable)?;
-    let certs = load_certificates(&bytes);
-    if certs.is_empty() {
-        return Err(TlsFailure::local("ca_file: no certificate found"));
-    }
-    let mut roots = RootCertStore::empty();
-    let (added, _) = roots.add_parsable_certificates(certs.iter().cloned());
+    let (certs, roots) =
+        parse_ca(&bytes).map_err(|m| TlsFailure::local(format!("ca_file: {m}")))?;
     let parsed = Arc::new(CaFile {
         stamp,
         certs,
-        roots: (added > 0).then(|| Arc::new(roots)),
+        roots,
     });
     cache
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(path.to_path_buf(), Arc::clone(&parsed));
     Ok(parsed)
+}
+
+/// The certificates in a `ca_file`'s content, and the trust anchors made of
+/// those usable as one (`None` when none is). Used both by a check and by
+/// [`check_ca_file`], so validation accepts exactly the files a check can
+/// use. The error is the option's message.
+type CaContent = (Vec<CertificateDer<'static>>, Option<Arc<RootCertStore>>);
+
+fn parse_ca(bytes: &[u8]) -> Result<CaContent, String> {
+    let certs = load_certificates(bytes);
+    if certs.is_empty() {
+        return Err("no certificate found".into());
+    }
+    let mut roots = RootCertStore::empty();
+    let (added, _) = roots.add_parsable_certificates(certs.iter().cloned());
+    Ok((certs, (added > 0).then(|| Arc::new(roots))))
 }
 
 /// Load the system's CA certificates into the per-process cache, so the

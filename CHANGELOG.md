@@ -71,6 +71,28 @@
 - Documented: a connection that fails because this host has no route to
   the backend, or its own firewall blocks it, is `down`, not `error`.
   That has always been the behaviour.
+- When a check task is restarted after a bug while its backend is
+  `unknown`, the backend's latency is now cleared and its reason set to
+  `check task restarted`, in the store and in DNS.
+- A late result from the check task of a backend removed by a reload can
+  no longer mark that backend healthy after a later reload adds it back.
+  Each check task now has its own generation, and a backend keeps its
+  state exactly while its task keeps running.
+- `check-config` now refuses an http `path` with `#`, `\` or a control
+  character. The request URL cut or rewrote these, so another path was
+  checked.
+- With `[dns]`, a service name in the zone must leave room for the SRV
+  target name of each backend (`<ip label>.<service>`, at most 253
+  characters). Before, such a service passed `check-config` and every
+  SRV query for it got SERVFAIL.
+- An exec or plugin `command` with a NUL in any element is refused; it
+  could never be started.
+- A tcp `ca_file` with no certificate usable as a CA is refused at
+  validation instead of failing every check with `ca_file: no usable
+  certificate`.
+- On start, state history entries with a state this version does not
+  know (left by a newer one) are dropped instead of discarding that
+  service's whole history.
 
 ### Peers
 
@@ -147,6 +169,21 @@
   printable ASCII. Until then such a service was `error` at every check.
 - `quic`: HTTP/3 response headers are limited to 65536 bytes (h3 allowed
   any size).
+- A `ca_file` with no certificate usable as a CA is refused at
+  validation (`no usable certificate`), as the checks already did.
+- diameter: validation builds the TLS client configuration with
+  `tls_cert_file` and `tls_key_file`, so a key that does not belong to
+  the certificate is reported on `tls_key_file` instead of failing every
+  check.
+- mysql and pgsql `user` and pgsql `database` must not contain NUL. The
+  amqp `user` and password must not contain NUL (PLAIN separates them
+  with NUL).
+- sip `uri` and `from` must not contain `<` or `>`, which ended the
+  To/From value early.
+- sip, diameter, mongodb, amqp and ldap read messages through one shared
+  framed reader (checked lengths, one size cap, EOF handling); reasons
+  are unchanged. The ldap BER length check can no longer overflow on
+  32-bit platforms.
 
 ### emfor status
 
@@ -154,6 +191,9 @@
   exiting 2 silently; other output write errors are printed.
 - `--watch` opens the store again when the file is replaced, instead of
   showing the old file as stale forever.
+- A record from a newer daemon is shown instead of failing: an unknown
+  state as `unrecognized` (red), an unknown `on_all_down` as
+  `on_all_down=unknown`.
 
 ### Clients
 
@@ -173,6 +213,10 @@
   finds, which may be another release's.
 - C API: `emfor_lookup` called from a thread-local destructor during
   thread exit returns a status instead of aborting the process.
+- A backend `state` or `on_all_down` value written by a newer daemon no
+  longer makes the lookup fail with `INCOMPATIBLE`: an unknown state
+  counts as `unhealthy`, an unknown `on_all_down` as `open`, so a later
+  release can add such values without raising the store format version.
 
 ### Deployment
 
@@ -189,6 +233,14 @@
   lookup program, so slow runs earlier in a case cannot make a `fresh`
   store stale. A failure in a run longer than the staleness limit says
   so. An expected error now needs a non-empty message.
+- Fuzz builds keep overflow checks and debug assertions on, and run each
+  input on a 2 MiB stack like a tokio worker's; an integer overflow or a
+  too-deep recursion is now a crash, as it would be in the daemon.
+- New `dns` fuzz target for the DNS server's request handling and
+  response size trimming.
+- `peers.rs` is split into a `peers/` module (wire, crypto, stats,
+  group, targets, task); the peer group's live members have one owner,
+  and service digest lookups go through one function.
 
 ## 0.4.0 — 2026-11-14
 

@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn candidate_sets_example() {
-        use OnAllDown::*;
+        use OnAllDown::{Closed, Open};
         type Row<'a> = (
             &'a [(&'a str, HealthState)],
             OnAllDown,
@@ -454,7 +454,7 @@ mod tests {
     /// sets", the rows with a backup (10.0.1.1).
     #[test]
     fn backup_candidate_sets() {
-        use OnAllDown::*;
+        use OnAllDown::{Closed, Open};
         let two = |a: HealthState, b: HealthState, oad| {
             backup(
                 rec(
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn failover_order_example() {
-        use OnAllDown::*;
+        use OnAllDown::{Closed, Open};
         let rows: &[([HealthState; 3], OnAllDown, Option<&str>)] = &[
             ([Healthy, Healthy, Healthy], Open, Some("10.0.0.1")),
             ([Unhealthy, Healthy, Healthy], Open, Some("10.0.0.2")),
@@ -725,7 +725,7 @@ mod tests {
 
     #[test]
     fn locality_outcomes_example() {
-        use OnAllDown::*;
+        use OnAllDown::{Closed, Open};
         type Row<'a> = (
             Option<&'a str>,
             [(&'a str, &'a str, HealthState); 2],

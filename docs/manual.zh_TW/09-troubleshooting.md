@@ -49,7 +49,7 @@
 | `password_file: `、`ca_file: ` | daemon 的使用者無法讀取該檔案。 |
 | `exit code N`（exec，N 不是 1 或 2） | script 以預期外的方式失敗。 |
 
-`emfor status --history` 裡 reason 為 `check task restarted`、變成 `unknown` 的紀錄不是檢查結果：該 backend 的檢查 task 因為 bug 停止後被重新啟動，log 中會有一行 `check task of backend ... stopped` 的錯誤。請附上那一行回報。
+`emfor status --history` 裡 reason 為 `check task restarted`、變成 `unknown` 的紀錄不是檢查結果：該 backend 的檢查 task 因為 bug 停止後被重新啟動，log 中會有一行 `check task of backend ... stopped` 的錯誤。請附上那一行回報。原本就是 `unknown` 的 backend 不會留下歷史紀錄，但在下一次檢查之前，`emfor status` 會顯示同樣的 reason。
 
 ## DNS 無法解析
 

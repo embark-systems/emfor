@@ -621,10 +621,7 @@ fn services_lines(
             "{}  {}  on_all_down={}",
             svc.name,
             svc.balance.as_str(),
-            match svc.on_all_down {
-                emfor_format::OnAllDown::Open => "open",
-                emfor_format::OnAllDown::Closed => "closed",
-            }
+            svc.on_all_down.as_str()
         );
         if svc.all_down {
             head.push_str("  ");
@@ -644,7 +641,10 @@ fn services_lines(
                 parts.push(if i == 1 {
                     match backend.state {
                         HealthState::Healthy => padded,
-                        HealthState::Unhealthy => paint(style, RED, &padded),
+                        // A state from a newer daemon reads as unhealthy.
+                        HealthState::Unhealthy | HealthState::Unrecognized => {
+                            paint(style, RED, &padded)
+                        }
                         HealthState::Unknown => paint(style, YELLOW, &padded),
                     }
                 } else {
@@ -1383,6 +1383,38 @@ mod tests {
             ]
         );
         assert!(lines.iter().all(|l| !l.contains('\x1b')));
+    }
+
+    /// A record from a newer daemon: a state and an `on_all_down` this
+    /// reader does not know are shown, the state colored like unhealthy.
+    #[test]
+    fn unknown_state_and_on_all_down_values() {
+        let mut v = serde_json::to_value(api()).unwrap();
+        v["on_all_down"] = json!("some-future-mode");
+        v["backends"][1]["state"] = json!("some-future-state");
+        let svc: ServiceRecord = serde_json::from_value(v).unwrap();
+        let lines = render(&snap(Some(400), vec![svc.clone()]));
+        assert_eq!(
+            lines[3..],
+            [
+                "api.svc.emfor  round-robin  on_all_down=unknown",
+                "  10.0.0.11:8080  healthy       0.8s ago  1.2ms",
+                "  10.0.0.12:8080  unrecognized  0.9s ago  -      connect: Connection refused",
+            ]
+        );
+        let colored = text(
+            &snap(Some(400), vec![svc]),
+            Path::new("/s"),
+            NOW,
+            Style { color: true },
+            &HashSet::new(),
+        );
+        assert!(
+            colored
+                .iter()
+                .any(|l| l.contains(&format!("{RED}unrecognized"))),
+            "{colored:?}"
+        );
     }
 
     #[test]

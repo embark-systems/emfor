@@ -7,8 +7,9 @@ use std::time::Instant;
 use emfor_plugin::{CheckOutcome, CheckRequest, OptionError, Options};
 use emfor_tls::TlsSettings;
 use serde_json::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
+use crate::frame::{Frame, FrameError, FrameReader, Framer};
 use crate::net::{self, Stream, io_failure};
 use crate::options::{boolean, string, tls_settings};
 
@@ -117,13 +118,16 @@ pub fn parse(options: &Options, read_files: bool) -> Result<Settings, Vec<Option
     }
 }
 
-/// A `sip:` or `sips:` URI option of at most 256 bytes without whitespace
-/// or control characters.
+/// A `sip:` or `sips:` URI option of at most 256 bytes without whitespace,
+/// control characters, `<` or `>`. The request puts it in `<...>` in the
+/// From and To headers, where a `>` would end it early.
 fn sip_uri(options: &Options, key: &str, errors: &mut Vec<OptionError>) -> Option<String> {
     let s = string(options, key, errors)?;
     let valid = (s.starts_with("sip:") || s.starts_with("sips:"))
         && s.len() <= MAX_URI
-        && !s.chars().any(|c| c.is_whitespace() || c.is_control());
+        && !s
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '<' || c == '>');
     if valid {
         Some(s.to_owned())
     } else {
@@ -427,10 +431,9 @@ async fn tcp(
         .await
         .map_err(|e| io_failure("query: ", &e))?;
 
-    let mut buf: Vec<u8> = Vec::new();
+    let mut reader = FrameReader::read_ahead(MAX_RESPONSE);
     loop {
-        let (response, used) = read_message(&mut conn, &mut buf).await?;
-        buf.drain(..used);
+        let response = read_message(&mut conn, &mut reader).await?;
         if !response.answers(ids) {
             return Err(CheckOutcome::Down(
                 "query: response does not match the request".into(),
@@ -442,60 +445,88 @@ async fn tcp(
     }
 }
 
-/// Read one response from `conn`, with `buf` holding bytes already read;
-/// returns it and how many bytes of `buf` it took.
+/// Finds the end of one response on a stream: the header section, then
+/// Content-Length bytes of body.
+#[derive(Default)]
+struct ResponseFramer {
+    /// The next candidate for the end of the header section.
+    scanned: usize,
+    /// The parsed head and the length of the whole message.
+    head: Option<(Response, usize)>,
+}
+
+impl Framer for ResponseFramer {
+    fn frame(&mut self, buf: &[u8]) -> Frame {
+        if self.head.is_none() {
+            // CRLFs before the start-line (keepalives) are ignored on a
+            // stream (RFC 3261 7.5).
+            let blank = buf
+                .iter()
+                .take_while(|b| matches!(b, b'\r' | b'\n'))
+                .count();
+            if blank > 0 {
+                return Frame::Skip(blank);
+            }
+            // The first end of an empty line, as header_end finds it, but
+            // only looking at bytes that arrived since the last call.
+            let mut end = self.scanned.max(2);
+            let found = loop {
+                if end > buf.len() {
+                    self.scanned = end;
+                    break None;
+                }
+                let head = &buf[..end];
+                if head.ends_with(b"\n\n") || head.ends_with(b"\r\n\r\n") {
+                    break Some(end);
+                }
+                end += 1;
+            };
+            let Some(head_end) = found else {
+                return Frame::Need(buf.len() + 1);
+            };
+            let (response, content_length) = match parse_head(&buf[..head_end]) {
+                Ok(head) => head,
+                Err(reason) => return Frame::Invalid(reason),
+            };
+            // Saturating: a Content-Length near usize::MAX would otherwise
+            // wrap the total below head_end; the reader refuses a total
+            // above MAX_RESPONSE.
+            let total = head_end.saturating_add(content_length.unwrap_or(0));
+            self.head = Some((response, total));
+        }
+        match &self.head {
+            Some((_, total)) if buf.len() >= *total => Frame::Complete(*total),
+            Some((_, total)) => Frame::Need(*total),
+            None => Frame::Need(buf.len() + 1),
+        }
+    }
+}
+
+/// Read one response from `conn`.
 async fn read_message(
     conn: &mut Box<dyn Stream>,
-    buf: &mut Vec<u8>,
-) -> Result<(Response, usize), CheckOutcome> {
-    let too_long = || CheckOutcome::Down("query: response longer than 65536 bytes".into());
-    let mut chunk = [0u8; 4096];
-    let head_end = loop {
-        // CRLFs before the start-line (keepalives) are ignored on a
-        // stream (RFC 3261 7.5).
-        let blank = buf
-            .iter()
-            .take_while(|b| matches!(b, b'\r' | b'\n'))
-            .count();
-        buf.drain(..blank);
-        if let Some(end) = header_end(buf) {
-            break end;
-        }
-        if buf.len() > MAX_RESPONSE {
-            return Err(too_long());
-        }
-        let n = conn
-            .read(&mut chunk)
-            .await
-            .map_err(|e| io_failure("query: ", &e))?;
-        if n == 0 {
+    reader: &mut FrameReader,
+) -> Result<Response, CheckOutcome> {
+    let mut framer = ResponseFramer::default();
+    match reader.next(conn, &mut framer).await {
+        Ok(_) => {}
+        Err(FrameError::Closed { .. }) => {
             return Err(CheckOutcome::Down(
                 "query: connection closed before a response".into(),
             ));
         }
-        buf.extend_from_slice(&chunk[..n]);
-    };
-    let (response, content_length) = parse_head(&buf[..head_end]).map_err(CheckOutcome::Down)?;
-    // Checked: a Content-Length near usize::MAX would otherwise wrap total
-    // below head_end, and the caller would loop over the same buffered
-    // provisional response without ever reading (or timing out).
-    let total = head_end
-        .checked_add(content_length.unwrap_or(0))
-        .filter(|&total| total <= MAX_RESPONSE)
-        .ok_or_else(too_long)?;
-    while buf.len() < total {
-        let n = conn
-            .read(&mut chunk)
-            .await
-            .map_err(|e| io_failure("query: ", &e))?;
-        if n == 0 {
+        Err(FrameError::TooLarge) => {
             return Err(CheckOutcome::Down(
-                "query: connection closed before a response".into(),
+                "query: response longer than 65536 bytes".into(),
             ));
         }
-        buf.extend_from_slice(&chunk[..n]);
+        Err(FrameError::Invalid(reason)) => return Err(CheckOutcome::Down(reason)),
+        Err(FrameError::Io(e)) => return Err(io_failure("query: ", &e)),
     }
-    Ok((response, total))
+    let (response, _) = framer
+        .head
+        .expect("a framer that returned Complete has parsed the head");
+    Ok(response)
 }
 
 /// The result for a final response.
@@ -521,6 +552,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::time::Duration;
+    use tokio::io::AsyncReadExt;
     use tokio::net::{TcpListener, UdpSocket};
 
     fn options(value: Value) -> Options {
@@ -615,6 +647,15 @@ mod tests {
     #[test]
     fn other_option_errors() {
         assert_eq!(errors(json!({ "uri": "sip:a b" })), one("uri", URI_MESSAGE));
+        // Sent inside <...> in To and From, which a > would close early.
+        assert_eq!(
+            errors(json!({ "uri": "sip:a>;tag=x" })),
+            one("uri", URI_MESSAGE)
+        );
+        assert_eq!(
+            errors(json!({ "from": "sip:<b@example.org" })),
+            one("from", URI_MESSAGE)
+        );
         assert_eq!(
             errors(json!({ "uri": format!("sip:{}", "a".repeat(253)) })),
             one("uri", URI_MESSAGE)

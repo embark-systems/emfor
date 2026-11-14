@@ -133,6 +133,9 @@ def sip():
         "sip-udp-200": (0, datagrams(sip_response(b"UDP"))),
         "sip-tcp-200": (1, sip_response(b"TCP")),
         "sip-tcp-503": (2, sip_response(b"TCP", b"503 Service Unavailable")),
+        # A provisional response first: its Content-Length is added to
+        # the head before the final one is read.
+        "sip-tcp-100-200": (1, sip_response(b"TCP", b"100 Trying") + sip_response(b"TCP")),
     }
 
 

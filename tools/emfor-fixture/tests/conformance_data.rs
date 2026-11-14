@@ -84,7 +84,7 @@ fn every_store_writes_and_coverage_is_complete() {
         .is_subset(&balances),
         "{balances:?}"
     );
-    assert_eq!(on_all_down, set(&["closed", "open"]));
+    assert_eq!(on_all_down, set(&["closed", "open", "some-future-mode"]));
     assert!(
         cases.iter().any(|c| c["store"].is_null()),
         "a missing-store case"

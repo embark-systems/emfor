@@ -33,7 +33,7 @@ buffers, memory, local ports) makes it `error`.
 | `tls` | boolean | `false` | Do a TLS handshake right after connecting; never falls back to plaintext. |
 | `tls_verify` | boolean | `true` | `false` accepts any certificate (still encrypted). Needs `tls = true`. |
 | `server_name` | string | the backend IP | Name (or IP) the certificate must match; sent as SNI when it is a name. Needs `tls = true`. |
-| `ca_file` | absolute path | system CAs | PEM file of CA certificates to trust instead. Must exist when the config is loaded. Needs `tls = true`. |
+| `ca_file` | absolute path | system CAs | PEM file of CA certificates to trust instead. When the config is loaded it must exist and hold at least one certificate usable as a CA. Needs `tls = true`. |
 
 ```toml
 [services."smtp.svc.emfor"]
@@ -67,7 +67,7 @@ followed.
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `scheme` | `"http"` or `"https"` | `"http"` | Protocol. |
-| `path` | string starting with `/` | `"/"` | Request path. |
+| `path` | string starting with `/` | `"/"` | Request path. `#`, `\` and control characters are refused, because the request URL would cut or change the path there; a space or other special character is sent percent-encoded. |
 | `host_header` | string | none | `Host` header to send: a host name or IP address with an optional `:port`, IPv6 in brackets (`api.internal`, `api.internal:8443`, `[2001:db8::1]`). The connection still goes to the backend; with `https` a host name is also the TLS server name. |
 | `expect_status` | non-empty list | `["200-399"]` | Status codes that count as `up`: codes (`200` or `"200"`) or inclusive ranges (`"200-299"`), all within 100–599. |
 | `tls_verify` | boolean | `true` | For `https`: `false` accepts any certificate. |
@@ -111,7 +111,7 @@ check_options = { command = ["/usr/local/libexec/check_pg_replication", "--max-l
 | any other code, killed by a signal, or failed to start | `error` |
 | still running at `timeout` | `down` (`timeout`); the program and all its children are killed |
 
-`command` is the only option: a non-empty list whose first element is an
+`command` is the only option: a non-empty list of strings without NUL whose first element is an
 absolute path to an executable. Starting a process per check is costly; for
 frequent checks of many backends, use a plugin.
 
@@ -179,7 +179,11 @@ reason.
 
 `emfor check-config` and every reload start the plugins and have them
 validate each service's `check_options`, so mistakes show up before the
-config is applied.
+config is applied. Validation builds what a check builds: a `ca_file` must
+hold a certificate usable as a CA, a `tls_key_file` must be the key of
+`tls_cert_file`, and a value the protocol sends as a NUL-terminated or
+NUL-separated string (the `mysql` and `pgsql` `user`, the `pgsql`
+`database`, the `amqp` `user` and password) must not contain NUL.
 
 When a plugin exits, its pending checks become `error` (`plugin exited`),
 and the daemon restarts it after 1 s, then 2 s, 4 s … up to 30 s; until
