@@ -29,7 +29,7 @@ of reader slots. Install `libemfor` and the client wrappers from the same
 release as the daemon, and upgrade them together. A mismatch shows up as
 `UNAVAILABLE` with a message that says so; it never returns wrong data.
 
-The shared library's name carries the minor version (`libemfor.so.0.2`),
+The shared library's name carries the minor version (`libemfor.so.0.5` for 0.5),
 so programs linked against one minor release do not silently load another.
 
 ## Interfaces
@@ -40,7 +40,7 @@ so programs linked against one minor release do not silently load another.
 | Commands, options and exit statuses (`emfor server`, `check-config`, `status`) | Yes | New options and subcommands. |
 | `emfor status --json` | Yes | New fields. |
 | `emfor status` text output | No | Layout and wording, at any release. Use `--json` or the exit status in scripts. |
-| Store format (`meta/schema_version` 1) | Yes | New fields in records, new keys. |
+| Store format (`meta/schema_version` 2; clients and `emfor status` also read 1) | Yes | New fields in records, new keys. |
 | Client API (lookup call, the four error codes) | Yes | New functions. |
 | Error messages of clients and the daemon | No | Wording, at any release. Match on the error code, not the message. |
 | Plugin protocol (version 1) | Yes | New optional fields in messages. |

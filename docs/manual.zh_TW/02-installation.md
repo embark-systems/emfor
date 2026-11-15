@@ -116,7 +116,7 @@ pw useradd emfor -d /nonexistent -s /usr/sbin/nologin -c "emfor daemon"
 | --- | --- |
 | Rust | 依賴同一發行版的 `emfor-client` crate（`clients/rust`）。 |
 | C | `cargo install cargo-c`，然後在 `clients/rust` 執行 `cargo cinstall --release --features capi --prefix /usr/local`。這會安裝 `libemfor`、`emfor.h` 與 `emfor.pc`。 |
-| Go | 安裝 `libemfor`，然後 `go get github.com/embark-systems/emfor/clients/go@v0.2.0`（需要 cgo 與 `pkg-config emfor`）。 |
+| Go | 安裝 `libemfor`，然後 `go get github.com/embark-systems/emfor/clients/go@v0.5.0`（需要 cgo 與 `pkg-config emfor`）。 |
 | Python | 安裝 `libemfor`，然後 `pip install clients/python`。函式庫不在標準目錄時，設定 `EMFOR_LIBRARY`。 |
 | Perl | 安裝 `libemfor`，然後在 `clients/perl` 執行 `perl Makefile.PL && make -f Makefile.xs && make -f Makefile.xs install`。 |
 | PHP | 安裝 `libemfor`，然後用 `phpize` 建置 extension（見 [clients/php](../../clients/php/README.md)），並啟用 `extension=emfor`。 |

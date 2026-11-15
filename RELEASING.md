@@ -27,6 +27,8 @@ Change the current version to `X.Y.Z` in each of these:
 | `clients/perl/lib/Emfor.pm` | `our $VERSION` |
 | `clients/php/emfor.c` | `PHP_EMFOR_VERSION` |
 | `clients/go/README.md` | the `go get ...@vX.Y.Z` line |
+| `docs/manual/02-installation.md`, `docs/manual.zh_TW/02-installation.md` | the `go get ...@vX.Y.Z` line in the table of languages |
+| `docs/compatibility.md` | the `libemfor.so.X.Y` example |
 | `examples/freebsd/Makefile` | `DISTVERSION` |
 
 Then run `cargo build` so `Cargo.lock` takes the new version, and

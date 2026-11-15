@@ -27,14 +27,14 @@ ask us not to.
 ## Supported versions
 
 Until 1.0, security fixes go into the latest release only, as a new patch
-release (for example 0.2.1 after 0.2.0). Upgrade every component together:
+release (for example 0.5.1 after 0.5.0). Upgrade every component together:
 `libemfor` and the clients must come from the same release as the daemon
 (see [docs/compatibility.md](docs/compatibility.md)).
 
 | Version | Security fixes |
 | --- | --- |
-| 0.2.x | Yes |
-| 0.1.x and earlier | No |
+| The latest release | Yes |
+| Earlier releases | No |
 
 ## What emfor trusts
 

@@ -155,7 +155,7 @@ and upgrade both together.** A mismatch makes lookups fail with
 | --- | --- |
 | Rust | Depend on the `emfor-client` crate from the same release (`clients/rust`). |
 | C | `cargo install cargo-c`, then in `clients/rust`: `cargo cinstall --release --features capi --prefix /usr/local`. This installs `libemfor`, `emfor.h` and `emfor.pc`. |
-| Go | Install `libemfor`, then `go get github.com/embark-systems/emfor/clients/go@v0.2.0` (needs cgo and `pkg-config emfor`). |
+| Go | Install `libemfor`, then `go get github.com/embark-systems/emfor/clients/go@v0.5.0` (needs cgo and `pkg-config emfor`). |
 | Python | Install `libemfor`, then `pip install clients/python`. Set `EMFOR_LIBRARY` if the library is outside the standard directories. |
 | Perl | Install `libemfor`, then in `clients/perl`: `perl Makefile.PL && make -f Makefile.xs && make -f Makefile.xs install`. |
 | PHP | Install `libemfor`, then build the extension with `phpize` (see [clients/php](../../clients/php/README.md)) and enable `extension=emfor`. |
