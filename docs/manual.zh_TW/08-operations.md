@@ -18,7 +18,7 @@
 
 | Signal | 效果 |
 | --- | --- |
-| `SIGHUP` | 重新載入設定。只有整份檔案都有效時才套用；否則記錄錯誤並繼續使用舊設定。見 [reload 會改變什麼](03-configuration.md#reload-會改變什麼)。 |
+| `SIGHUP` | 重新載入設定（主設定檔與 `include_dir` 的檔案）。只有整份設定都有效時才套用；否則記錄錯誤並繼續使用舊設定。見 [reload 會改變什麼](03-configuration.md#reload-會改變什麼)。 |
 | `SIGTERM`、`SIGINT` | 停止：檢查結束、heartbeat 設為 0（client 立刻看到過期的 store）、停止 plugin、以 0 結束。還在載入設定的 reload 或啟動會被放棄。 |
 
 請透過服務管理工具而不是直接送 signal：`systemctl reload emfor` 與 `service emfor reload` 會先檢查設定，設定無效時不會對 daemon 送 signal。

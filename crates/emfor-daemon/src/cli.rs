@@ -109,10 +109,14 @@ pub fn main() -> ExitCode {
 async fn start(config_path: PathBuf, check_only: bool) -> ExitCode {
     if check_only {
         let mut plugins = PluginSet::default();
-        let (prepared, loaded) = load(&config_path, None, &plugins).await;
+        let (prepared, loaded, read) = load(&config_path, None, &plugins).await;
         // Nothing keeps running after a config check.
         plugins.commit(prepared).await;
         plugins.stop_all().await;
+        // No log subscriber here: the warnings go to stderr.
+        for w in &read.warnings {
+            eprintln!("{w}");
+        }
         return match loaded {
             Ok(c) => {
                 println!(
@@ -120,6 +124,9 @@ async fn start(config_path: PathBuf, check_only: bool) -> ExitCode {
                     c.services.len(),
                     c.backend_count()
                 );
+                for f in &read.files {
+                    println!("read {}", f.display());
+                }
                 ExitCode::from(EXIT_OK)
             }
             Err(errors) => {
@@ -155,10 +162,11 @@ async fn start(config_path: PathBuf, check_only: bool) -> ExitCode {
             _ = signals.int.recv() => None,
         }
     };
-    let Some((prepared, loaded)) = outcome else {
+    let Some((prepared, loaded, read)) = outcome else {
         tracing::info!("stop requested while starting; exiting");
         return ExitCode::from(EXIT_OK);
     };
+    log_read_warnings(&read);
     let config = match loaded {
         Ok(c) => c,
         Err(errors) => {
@@ -168,6 +176,7 @@ async fn start(config_path: PathBuf, check_only: bool) -> ExitCode {
         }
     };
     plugins.commit(prepared).await;
+    log_files_read(&read);
     if let Some(h) = &log
         && let Err(e) = h.reload(log_filter(&config.log.level))
     {
@@ -213,6 +222,29 @@ fn log_filter(level: &str) -> EnvFilter {
     EnvFilter::new(format!(
         "{level},hickory_server={hickory},hickory_proto={hickory},hickory_net={hickory}"
     ))
+}
+
+/// What `load` read besides the main file: the files, only when
+/// `include_dir` is set (empty otherwise), and the warnings about names it
+/// skipped.
+#[derive(Default)]
+struct ReadFiles {
+    files: Vec<PathBuf>,
+    warnings: Vec<String>,
+}
+
+/// Logged whether the load succeeded or not: a skipped file can be the reason
+/// it failed.
+fn log_read_warnings(read: &ReadFiles) {
+    for w in &read.warnings {
+        tracing::warn!("{w}");
+    }
+}
+
+fn log_files_read(read: &ReadFiles) {
+    for f in &read.files {
+        tracing::info!("config file read: {}", f.display());
+    }
 }
 
 fn log_config_errors(path: &Path, errors: &[ConfigError]) {
@@ -452,10 +484,11 @@ async fn run(
                         _ = int.recv() => None,
                     }
                 };
-                let Some((prepared, loaded)) = outcome else {
+                let Some((prepared, loaded, read)) = outcome else {
                     tracing::info!("stop requested while reloading; the reload is abandoned");
                     break;
                 };
+                log_read_warnings(&read);
                 match loaded {
                     Ok(new) => {
                         if new.log != current.log {
@@ -480,6 +513,7 @@ async fn run(
                             h.reload(p, &peer_site(&new));
                         }
                         tracing::info!("config reloaded: {} services, {} backends", new.services.len(), new.backend_count());
+                        log_files_read(&read);
                         current = new;
                     }
                     Err(errors) => {
@@ -577,69 +611,76 @@ fn warn_outside_zone(config: &Config) {
     }
 }
 
-/// Load a config: start its plugins (reusing running ones whose command is
-/// unchanged), then parse and validate with them on a blocking thread. On a
-/// reload (`current` set), a changed `[store]` table, `[dns] listen`,
-/// `[metrics] listen` or `[peers] listen` is an error too. Every error is returned together. The
-/// caller commits or rolls back the returned plugins.
+/// Load a config: read the main file and its `include_dir` fragments, start
+/// the plugins (reusing running ones whose command is unchanged), then
+/// validate the merged config with them on a blocking thread. On a reload
+/// (`current` set), a changed `[store]` table, `[dns] listen`,
+/// `[metrics] listen` or `[peers] listen` is an error too, wherever in the
+/// files it is set. Every error is returned together. The caller commits or
+/// rolls back the returned plugins. The third value lists the files read,
+/// only when `include_dir` is set.
 async fn load(
     path: &Path,
     current: Option<&Config>,
     plugins: &PluginSet,
-) -> (Prepared, Result<Config, Vec<ConfigError>>) {
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) => {
-            let error = ConfigError {
-                path: String::new(),
-                message: format!("cannot read {}: {e}", path.display()),
-            };
-            return (Prepared::default(), Err(vec![error]));
-        }
+) -> (Prepared, Result<Config, Vec<ConfigError>>, ReadFiles) {
+    let layers = match config::read_layers(path) {
+        Ok(l) => l,
+        Err(errors) => return (Prepared::default(), Err(errors), ReadFiles::default()),
     };
-    let (specs, _) = config::parse_plugins(&text);
+    let read = ReadFiles {
+        files: if layers.included {
+            layers.files.clone()
+        } else {
+            Vec::new()
+        },
+        warnings: layers.warnings.clone(),
+    };
+    let (specs, _) = config::plugins_in(&layers.table);
     let mut prepared = plugins.prepare(&specs).await;
     let registry = prepared.registry(tokio::runtime::Handle::current(), current);
+    let layers = std::sync::Arc::new(layers);
     let parsed = {
-        let text = text.clone();
-        tokio::task::spawn_blocking(move || config::parse(&text, &registry))
+        let layers = layers.clone();
+        tokio::task::spawn_blocking(move || config::parse_layers(&layers, &registry))
             .await
             .unwrap_or_else(|e| {
-                Err(vec![ConfigError {
-                    path: String::new(),
-                    message: format!("config validation failed: {e}"),
-                }])
+                Err(vec![ConfigError::new(
+                    "",
+                    format!("config validation failed: {e}"),
+                )])
             })
     };
     let mut errors = std::mem::take(&mut prepared.errors);
     if let Some(current) = current {
-        if config::parse_store(&text).is_some_and(|s| s != current.store) {
-            errors.push(ConfigError {
-                path: "store".into(),
-                message: "store settings require restart".into(),
-            });
+        let table = &layers.table;
+        if config::store_in(table).is_some_and(|s| s != current.store) {
+            errors.push(ConfigError::new("store", "store settings require restart"));
         }
         let current_listen = current.dns.as_ref().map(|d| d.listen.clone());
-        if config::parse_dns_listen(&text).is_some_and(|l| l != current_listen) {
-            errors.push(ConfigError {
-                path: "dns.listen".into(),
-                message: "dns listen settings require restart".into(),
-            });
+        if config::dns_listen_in(table).is_some_and(|l| l != current_listen) {
+            errors.push(ConfigError::new(
+                "dns.listen",
+                "dns listen settings require restart",
+            ));
         }
         let current_listen = current.metrics.as_ref().map(|m| m.listen.clone());
-        if config::parse_metrics_listen(&text).is_some_and(|l| l != current_listen) {
-            errors.push(ConfigError {
-                path: "metrics.listen".into(),
-                message: "metrics listen settings require restart".into(),
-            });
+        if config::metrics_listen_in(table).is_some_and(|l| l != current_listen) {
+            errors.push(ConfigError::new(
+                "metrics.listen",
+                "metrics listen settings require restart",
+            ));
         }
         let current_listen = current.peers.as_ref().map(|p| p.listen);
-        if config::parse_peers_listen(&text).is_some_and(|l| l != current_listen) {
-            errors.push(ConfigError {
-                path: "peers.listen".into(),
-                message: "peers listen settings require restart".into(),
-            });
+        if config::peers_listen_in(table).is_some_and(|l| l != current_listen) {
+            errors.push(ConfigError::new(
+                "peers.listen",
+                "peers listen settings require restart",
+            ));
         }
+    }
+    for e in &mut errors {
+        e.file = config::origin_of(&layers.origins, &e.path);
     }
     let result = match parsed {
         Ok(new) if errors.is_empty() => Ok(new),
@@ -649,7 +690,7 @@ async fn load(
             Err(parse_errors)
         }
     };
-    (prepared, result)
+    (prepared, result, read)
 }
 
 #[cfg(test)]

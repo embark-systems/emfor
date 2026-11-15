@@ -304,6 +304,215 @@ fn check_config_rejects_a_service_of_only_backups() {
     );
 }
 
+/// A `conf.d` next to `dir`'s config, mode 0755 as a package makes it.
+fn conf_d(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let d = dir.join("conf.d");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+    d
+}
+
+/// A fragment in `conf_d`, mode 0644.
+fn fragment(conf_d: &Path, name: &str, text: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let p = conf_d.join(name);
+    std::fs::write(&p, text).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+/// A config that reads `conf.d`, with the fragments `(name, text)`.
+fn with_conf_d(fragments: &'static [(&'static str, &'static str)]) -> impl FnOnce(&Path) -> String {
+    move |dir| {
+        let d = conf_d(dir);
+        for (name, text) in fragments {
+            fragment(&d, name, text);
+        }
+        format!("include_dir = \"conf.d\"\n\n{}", store_header(dir))
+    }
+}
+
+/// Spec service-config "Config directory with ordered fragments" and
+/// "Listing the files read": check-config lists the files, in read order,
+/// only when `include_dir` is set.
+#[test]
+fn check_config_lists_the_files_it_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    let d = conf_d(dir.path());
+    fragment(
+        &d,
+        "20-b.toml",
+        "[services.\"b.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.2:80\"]\n",
+    );
+    fragment(
+        &d,
+        "10-a.toml",
+        "[services.\"a.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
+    );
+    std::fs::write(&cfg, "include_dir = \"conf.d\"\n").unwrap();
+    let out = Command::new(cargo_bin("emfor"))
+        .args(["check-config", "--config"])
+        .arg(&cfg)
+        .output_locked()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let shown = |name: &str| format!("read {}", dir.path().join(name).display());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!(
+            "config ok: 2 services, 2 backends\n{}\n{}\n{}\n",
+            shown("emfor.toml"),
+            shown("conf.d/10-a.toml"),
+            shown("conf.d/20-b.toml")
+        )
+    );
+
+    // Without include_dir the output is the single line it always was.
+    std::fs::write(
+        &cfg,
+        "[services.\"a.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
+    )
+    .unwrap();
+    let out = Command::new(cargo_bin("emfor"))
+        .args(["check-config", "--config"])
+        .arg(&cfg)
+        .output_locked()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "config ok: 1 services, 1 backends\n"
+    );
+}
+
+/// A name that is not UTF-8 is skipped with a warning that `check-config`,
+/// which has no log, prints on stderr. Only Linux can create such a name.
+#[cfg(target_os = "linux")]
+#[test]
+fn check_config_warns_about_a_non_utf8_file_name() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    let d = conf_d(dir.path());
+    std::fs::write(d.join(std::ffi::OsStr::from_bytes(b"b\xff.toml")), "").unwrap();
+    std::fs::write(&cfg, "include_dir = \"conf.d\"\n").unwrap();
+    let out = Command::new(cargo_bin("emfor"))
+        .args(["check-config", "--config"])
+        .arg(&cfg)
+        .output_locked()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not valid UTF-8"));
+}
+
+/// A fragment that changes `[dns] listen` is caught by the reload's restart
+/// check, as the same change in the main file is.
+#[test]
+fn listen_change_in_a_fragment_requires_restart() {
+    let mut d = Daemon::spawn_with(
+        with_conf_d(&[(
+            "10-a.toml",
+            "[services.\"a.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"127.0.0.1:1\"]\n",
+        )]),
+        &[],
+    );
+    d.wait_log("emfor started");
+    let port = free_port();
+    fragment(
+        &d.dir.path().join("conf.d"),
+        "20-dns.toml",
+        &format!("[dns]\nlisten = [\"127.0.0.1:{port}\"]\n"),
+    );
+    d.signal(Signal::SIGHUP);
+    d.wait_log("reload rejected");
+    assert!(
+        d.log().contains("dns listen settings require restart"),
+        "{}",
+        d.log()
+    );
+    assert!(d.running());
+    let (code, _) = d.stop();
+    assert_eq!(code, 0);
+}
+
+/// Spec "Missing config directory": at start it is a config error.
+#[test]
+fn missing_include_dir_at_startup_exits_two_without_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    std::fs::write(
+        &cfg,
+        format!("include_dir = \"conf.d\"\n\n{}", store_header(dir.path())),
+    )
+    .unwrap();
+    let out = Command::new(cargo_bin("emfor"))
+        .arg("server")
+        .arg("--config")
+        .arg(&cfg)
+        .env_remove("RUST_LOG")
+        .output_locked()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("include_dir"));
+    assert!(!dir.path().join("state.mdb").exists());
+}
+
+/// Spec "Fragment merge rules", "Errors name their file" and "Missing
+/// config directory": a reload re-reads the fragments; any error, a missing
+/// directory included, rejects it and the daemon keeps its config.
+#[test]
+fn reload_rereads_fragments_and_rejects_any_error() {
+    let mut d = Daemon::spawn_with(
+        with_conf_d(&[(
+            "10-a.toml",
+            "[services.\"a.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"127.0.0.1:1\"]\n",
+        )]),
+        &[],
+    );
+    d.wait_log("emfor started");
+    let r = Reader::open(&d.store());
+    wait_for(|| r.service("a.svc.emfor").is_some());
+    assert!(d.log().contains("config file read:") && d.log().contains("10-a.toml"));
+
+    let conf = d.dir.path().join("conf.d");
+    fragment(
+        &conf,
+        "20-b.toml",
+        "[services.\"b.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"127.0.0.1:1\"]\n",
+    );
+    d.signal(Signal::SIGHUP);
+    wait_for(|| r.service("b.svc.emfor").is_some());
+
+    fragment(
+        &conf,
+        "30-bad.toml",
+        "[services.\"a.svc.emfor\"]\nrise = 0\n",
+    );
+    fragment(
+        &conf,
+        "25-c.toml",
+        "[services.\"c.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"127.0.0.1:1\"]\n",
+    );
+    d.signal(Signal::SIGHUP);
+    d.wait_log("reload rejected");
+    assert!(d.log().contains("30-bad.toml"), "{}", d.log());
+    assert!(r.service("c.svc.emfor").is_none());
+    assert!(d.running());
+
+    std::fs::remove_dir_all(&conf).unwrap();
+    d.signal(Signal::SIGHUP);
+    wait_for(|| d.log().matches("reload rejected").count() >= 2);
+    assert!(d.running());
+    assert!(r.service("a.svc.emfor").is_some());
+    let (code, _) = d.stop();
+    assert_eq!(code, 0);
+}
+
 #[test]
 fn invalid_config_at_startup_exits_two_without_store() {
     let dir = tempfile::tempdir().unwrap();

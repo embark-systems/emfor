@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+**`include_dir`: the config in several files.** `include_dir = "conf.d"` in
+`emfor.toml` makes the daemon read the main file and then every `*.toml` file
+of that directory in filename order (byte order: write `01-`, `10-`, `99-`),
+a later file overriding an earlier one. Tables merge key by key; anything
+else, lists such as `backends` included, is replaced by the later value. A
+later file cannot remove a service or backend. `[store]` and `include_dir`
+only work in the main file, because `emfor status` and `emfor lookup` read
+only that file. The directory and its files must not be writable by group or
+others (a fragment can declare a plugin command), and the directory must
+exist, or the config is refused: at start the daemon exits 2, on a reload it
+keeps the old config. Errors name their file (`file:line:column` for TOML
+syntax errors, the file that set the key for the others, best effort when two
+files contribute), `emfor check-config` lists the files it read when
+`include_dir` is set, and the daemon logs the list at start and reload. The
+main config file is not permission-checked, as before. Without `include_dir`
+nothing changes. The FreeBSD port creates an empty `etc/emfor/conf.d`. Not
+tested yet: the port build (`make stage check-plist`), macOS and FreeBSD
+test runs.
+
 **A chapter for people who come from HAProxy or Consul.** Chapter 10 of the
 manual (both languages) translates an HAProxy backend and a Consul service
 with an HTTP check into `emfor.toml`, option by option, says what has no

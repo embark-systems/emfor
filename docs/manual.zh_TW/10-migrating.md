@@ -161,6 +161,19 @@ zone = "service.consul"
 | `_api._tcp.service.consul`（SRV） | `_<任意>._tcp.<服務名稱>` | emfor 的 SRV 名稱包含完整的服務名稱，例如 `_http._tcp.api.service.consul`（[第 7 章](07-dns.md)）。 |
 | tag、datacenter | `site` 與 `balance = "locality"` | backend 可以有 `site`，主機會優先選自己 site 的 backend（[第 5 章](05-backend-selection.md)）。 |
 
+Consul 會讀一個放服務檔案的目錄，一個服務一個檔案。emfor 用 `include_dir` 也能這樣做：在 `emfor.toml` 寫 `include_dir = "conf.d"`，再在 `conf.d` 裡一個服務放一個檔案，例如 `/etc/emfor/conf.d/10-web.toml`：
+
+```toml
+[services."web.svc.emfor"]
+check = "http"
+backends = ["10.0.0.21:8080", "10.0.0.22:8080"]
+
+[services."web.svc.emfor".check_options]
+path = "/healthz"
+```
+
+`emfor check-config` 會列出讀過的檔案，reload 會把它們全部重讀（[第 3 章](03-configuration.md#把設定拆到目錄)）。和 Consul 不同，emfor 不做註冊：檔案就是 backend 的清單。
+
 ### 與 Consul 並排試用
 
 步驟和 HAProxy 那節一樣：寫好設定、跑 `emfor check-config`、在 Consul agent 旁邊啟動 daemon、把 `emfor status` 顯示的健康狀態與 `consul catalog` 及 Consul UI 比對，然後一次搬一個應用程式。兩邊不一致的地方正是有用的資訊：它表示這個 backend 從應用程式看過去，與從 Consul agent 看過去是不一樣的。

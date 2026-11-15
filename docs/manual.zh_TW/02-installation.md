@@ -59,7 +59,7 @@ repository 裡有一個加固過的 unit：[examples/systemd/emfor.service](../.
 ```sh
 useradd --system --no-create-home --shell /usr/sbin/nologin emfor
 install -m 0644 examples/systemd/emfor.service /etc/systemd/system/emfor.service
-install -d /etc/emfor
+install -d /etc/emfor /etc/emfor/conf.d
 install -m 0644 examples/emfor.toml /etc/emfor/emfor.toml   # then edit it
 emfor check-config
 systemctl daemon-reload
@@ -78,9 +78,11 @@ emfor status
 
 建置時不要設定 `EMFOR_PREFIX`（或設為 `/usr`），這樣 `emfor status` 與 `emfor check-config` 不用 `--config` 也能找到 `/etc/emfor/emfor.toml`。
 
+`/etc/emfor/conf.d` 放 `include_dir` 用的檔案（[第 3 章](03-configuration.md#把設定拆到目錄)）。範例設定檔把 `include_dir` 註解掉；若你設定它，這個目錄必須存在，且不能讓 group 或其他人寫入。
+
 ## 在 FreeBSD 上執行
 
-[examples/freebsd/](../../examples/freebsd/) 是一個範例 port（`net-mgmt/emfor`），它建置 `emfor` 與 `emfor-check`、安裝 rc.d script 與範例設定檔，並建立 `emfor` 使用者與 `/var/db/emfor`，它的範例設定檔把 store 放在那裡（應用程式要設定 `EMFOR_STORE=/var/db/emfor/state.mdb`）。rc.d script 在 `daemon(8)` 底下執行 daemon；daemon 結束 2 秒後 `daemon(8)` 會再把它啟動。安裝 port 並編輯 `/usr/local/etc/emfor/emfor.toml` 之後：
+[examples/freebsd/](../../examples/freebsd/) 是一個範例 port（`net-mgmt/emfor`），它建置 `emfor` 與 `emfor-check`、安裝 rc.d script 與範例設定檔，並建立 `emfor` 使用者、給 `include_dir` 用的空目錄 `/usr/local/etc/emfor/conf.d` 與 `/var/db/emfor`，它的範例設定檔把 store 放在那裡（應用程式要設定 `EMFOR_STORE=/var/db/emfor/state.mdb`）。rc.d script 在 `daemon(8)` 底下執行 daemon；daemon 結束 2 秒後 `daemon(8)` 會再把它啟動。安裝 port 並編輯 `/usr/local/etc/emfor/emfor.toml` 之後：
 
 ```sh
 sysrc emfor_enable=YES

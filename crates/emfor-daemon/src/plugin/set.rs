@@ -85,10 +85,10 @@ impl PluginSet {
                     prepared.started.push(h.clone());
                     prepared.hosts.insert(spec.name.clone(), h);
                 }
-                Err(e) => prepared.errors.push(ConfigError {
-                    path: key_path(&key_path("plugins", &spec.name), "command"),
-                    message: e,
-                }),
+                Err(e) => prepared.errors.push(ConfigError::new(
+                    key_path(&key_path("plugins", &spec.name), "command"),
+                    e,
+                )),
             }
         }
         prepared

@@ -72,7 +72,7 @@ runs `/usr/local/bin/emfor server --config /etc/emfor/emfor.toml` as user
 ```sh
 useradd --system --no-create-home --shell /usr/sbin/nologin emfor
 install -m 0644 examples/systemd/emfor.service /etc/systemd/system/emfor.service
-install -d /etc/emfor
+install -d /etc/emfor /etc/emfor/conf.d
 install -m 0644 examples/emfor.toml /etc/emfor/emfor.toml   # then edit it
 emfor check-config
 systemctl daemon-reload
@@ -100,12 +100,17 @@ What the unit does for you:
 Build without `EMFOR_PREFIX` (or with `/usr`) so that `emfor status` and
 `emfor check-config` find `/etc/emfor/emfor.toml` without `--config`.
 
+`/etc/emfor/conf.d` is for the files of `include_dir`
+([chapter 3](03-configuration.md#splitting-the-config-over-a-directory)).
+The sample config leaves `include_dir` commented out; if you set it, the
+directory must exist and must not be writable by group or others.
+
 ## Running on FreeBSD
 
 [examples/freebsd/](../../examples/freebsd/) is an example port
 (`net-mgmt/emfor`) that builds `emfor` and `emfor-check`, installs an rc.d
-script and a sample config, and creates the `emfor` user and
-`/var/db/emfor`, where its sample config puts the store (applications set
+script and a sample config, and creates the `emfor` user, the empty
+`/usr/local/etc/emfor/conf.d` for `include_dir` and `/var/db/emfor`, where its sample config puts the store (applications set
 `EMFOR_STORE=/var/db/emfor/state.mdb`). The rc.d script runs the daemon
 under `daemon(8)`, which starts it again 2 seconds after it exits. After
 installing the port and editing `/usr/local/etc/emfor/emfor.toml`:

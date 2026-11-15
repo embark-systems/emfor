@@ -19,7 +19,7 @@ command only prints its usage and exits 2; it never starts a daemon.
 
 | Signal | Effect |
 | --- | --- |
-| `SIGHUP` | Reload the config. Applied only when the whole file is valid; otherwise the errors are logged and the old config keeps running. See [what a reload changes](03-configuration.md#what-a-reload-changes). |
+| `SIGHUP` | Reload the config (the main file and the files of `include_dir`). Applied only when the whole config is valid; otherwise the errors are logged and the old config keeps running. See [what a reload changes](03-configuration.md#what-a-reload-changes). |
 | `SIGTERM`, `SIGINT` | Stop: checks end, the heartbeat is set to 0 (clients see a stale store at once), plugins are stopped, exit 0. A reload or start that is still loading the config is abandoned. |
 
 Use your service manager rather than signals: `systemctl reload emfor` and

@@ -34,12 +34,13 @@ USE_RC_SUBR=	emfor
 PLIST_FILES=	bin/emfor \
 		bin/emfor-check \
 		"@sample etc/emfor/emfor.toml.sample" \
+		"@dir(root,wheel,0755) etc/emfor/conf.d" \
 		"@dir(emfor,emfor,0755) /var/db/emfor"
 
 # The sample config comes from the source's examples/, with the store path
 # changed to /var/db/emfor.
 post-install:
-	${MKDIR} ${STAGEDIR}${PREFIX}/etc/emfor ${STAGEDIR}/var/db/emfor
+	${MKDIR} ${STAGEDIR}${PREFIX}/etc/emfor/conf.d ${STAGEDIR}/var/db/emfor
 	${SED} -e 's|/var/lib/emfor/|/var/db/emfor/|' \
 		${WRKSRC}/examples/emfor.toml > ${WRKDIR}/emfor.toml.sample
 	${INSTALL_DATA} ${WRKDIR}/emfor.toml.sample \

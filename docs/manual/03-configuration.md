@@ -30,6 +30,7 @@ site = "dc1"
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `site` | none | The data centre this host is in. Used by `balance = "locality"`, and required with `[peers]`. 1–63 characters of `a-z`, `0-9` and `-` (lowercased when read). Must come before the first table. |
+| `include_dir` | none | A directory of further `.toml` files that are merged into this config ([below](#splitting-the-config-over-a-directory)). Only allowed in the main file. Must come before the first table. |
 
 ## [store]
 
@@ -279,6 +280,90 @@ The name is 1–63 characters of `a-z`, `0-9`, `_` and `-`, and not `tcp`,
 declared plugin is started, used or not. See
 [chapter 4](04-health-checks.md#plugins-and-emfor-check).
 
+## Splitting the config over a directory
+
+With `include_dir = "conf.d"` in the main file, the daemon reads the main
+file and then every `.toml` file in that directory, and merges them into
+one config before checking it. A relative path is relative to the directory
+of the main file (`/etc/emfor/conf.d` for `/etc/emfor/emfor.toml`). This
+lets a package own `emfor.toml` while each team or configuration tool owns
+the files for its services:
+
+```
+/etc/emfor/emfor.toml            include_dir = "conf.d", [store], [dns]
+/etc/emfor/conf.d/01-plugins.toml
+/etc/emfor/conf.d/10-web.toml
+/etc/emfor/conf.d/99-local.toml
+```
+
+**Which files, in what order.** Regular files, and links to regular
+files, whose name ends in `.toml` and does not start with `.`. They are
+read in the byte order of their names, not the order of your locale, and a
+later file overrides an earlier one; the main file is the lowest layer.
+Write the numbers with leading zeros: `9-a.toml` sorts after `10-a.toml`.
+Everything else is ignored (`web.toml~`, `.web.toml.swp`,
+`web.toml.disabled`, subdirectories), so renaming a file takes it out of
+the config. A name that is not valid UTF-8 is skipped with a warning in
+the log. An empty directory is fine.
+
+**How files merge.** Two tables merge key by key, as deep as they go.
+Anything else is replaced as a whole by the later value: a number, a string,
+a list (including `backends` and `command`), or a value of another type.
+
+```toml
+# emfor.toml
+[services."api.svc.emfor"]
+check = "tcp"
+backends = ["10.0.0.1:80", "10.0.0.2:80"]
+interval = "2s"
+```
+
+```toml
+# conf.d/99-local.toml
+[services."api.svc.emfor"]
+interval = "5s"
+```
+
+The service keeps its `check` and both `backends` and gets `interval =
+"5s"`. To change the backends, give the whole list again. A later file
+cannot remove a service, a plugin or a backend; take it out of the file
+that defines it, or rename that file so it is ignored. A service whose
+merged table has no `check` or no `backends` is an error, as in a single
+file. The merged config is checked, started, reloaded and shared with peers
+exactly like the same text in one file; how it is split does not change
+the service definitions peers compare.
+
+**Only in the main file.** `[store]` and `include_dir` itself. `emfor
+status` and `emfor lookup` read only the main file, so a fragment cannot
+move the store, and a fragment cannot include another directory. Anyone
+who only runs `status` and `lookup` needs to read the main file, not the
+directory. Everything else, including `site`, `[dns]`, `[peers]` and
+`[plugins]`, may be in any file.
+
+**Permissions.** The directory and every file read from it must not be
+writable by group or others (mode `0755` and `0644` are fine, `0775` and
+`0664` are not); otherwise the config is refused and the error names the
+path and mode. A fragment can declare a plugin `command` or an `exec`
+check, so whoever can write there can run programs as the daemon's user.
+The main file is not checked this way, so protect it yourself (`0644`,
+owned by root).
+
+**The directory must exist.** A package creates it. A config whose
+`include_dir` does not exist is an error: the daemon logs it and exits 2 at
+start, and a reload is rejected and the old config keeps running.
+
+**Errors name their file.** A TOML syntax error is reported as
+`file:line:column`, and any other error as its TOML path followed by the
+file that set that key (`services."api.svc.emfor".interval: ... (in
+/etc/emfor/conf.d/99-local.toml)`). When an error comes from values in two
+files, such as a `timeout` in one and an `interval` in another, the file
+named is the later one.
+
+**Writing the files.** Write a file to a temporary name outside the
+directory or ending in something other than `.toml`, then rename it into
+place. A reload that reads a half-written file is rejected and the old
+config stays, but an atomic rename avoids the failed reload.
+
 ## Checking a config
 
 ```sh
@@ -293,6 +378,19 @@ with its TOML path, for example:
 services."api.svc.emfor".timeout: timeout must not exceed interval
 ```
 
+With `include_dir` set, it then lists the files it read, the main file
+first and the others in the order they were merged:
+
+```
+config ok: 8 services, 19 backends
+read /etc/emfor/emfor.toml
+read /etc/emfor/conf.d/10-web.toml
+read /etc/emfor/conf.d/99-local.toml
+```
+
+The daemon logs the same list at start and after each reload. Without
+`include_dir` the output is the single line.
+
 It exits 0 when the config is valid and 2 otherwise. It starts the declared
 plugins so that they can check their services' `check_options`, and stops
 them before it exits. It does not open the store. A daemon started with an
@@ -301,7 +399,9 @@ invalid config logs the same errors and exits 2.
 ## What a reload changes
 
 `SIGHUP` (`systemctl reload emfor`, `service emfor reload`) re-reads the
-file. A config with any error is rejected as a whole: the daemon logs every
+file, and the files of `include_dir` with it. A config with any error, in
+any file, or with an `include_dir` that has gone missing, is rejected as a
+whole: the daemon logs every
 error and keeps running the old config.
 
 | Change | On reload |

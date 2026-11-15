@@ -66,6 +66,7 @@ and the build stops at `no matching package named ...`.
 | `${PREFIX}/bin/emfor-check` | The redis, MySQL/MariaDB, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB, gRPC, QUIC and HTTP/3 checks; point a plugin's `command` at it. |
 | `${PREFIX}/etc/rc.d/emfor` | `files/emfor.in`, installed by `USE_RC_SUBR`. `daemon(8)` restarts `emfor` 2 seconds after it exits. |
 | `${PREFIX}/etc/emfor/emfor.toml.sample` | `examples/emfor.toml` with `[store] path = "/var/db/emfor/state.mdb"`; copied to `emfor.toml` on first install. |
+| `${PREFIX}/etc/emfor/conf.d` | An empty directory (root:wheel, 0755) for `include_dir`; the sample config leaves `include_dir` commented out. Files in it must not be writable by group or others. |
 | `/var/db/emfor` | The store's directory, owned by `emfor`. |
 
 The store is in `/var/db/emfor`, where FreeBSD keeps daemon state, not

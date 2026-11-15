@@ -191,6 +191,25 @@ resolver forwards that zone to emfor instead of to Consul ([chapter 7](07-dns.md
 | `_api._tcp.service.consul` (SRV) | `_<anything>._tcp.<service name>` | emfor's SRV owner names contain the whole service name, for example `_http._tcp.api.service.consul` ([chapter 7](07-dns.md)). |
 | tags, datacenters | `site` and `balance = "locality"` | A backend gets a `site`, and a host prefers the backends of its own site ([chapter 5](05-backend-selection.md)). |
 
+Consul reads a directory of service files, one per service. emfor can do
+the same with `include_dir`: put `include_dir = "conf.d"` in `emfor.toml`
+and one file per service in `conf.d`, for example
+`/etc/emfor/conf.d/10-web.toml`:
+
+```toml
+[services."web.svc.emfor"]
+check = "http"
+backends = ["10.0.0.21:8080", "10.0.0.22:8080"]
+
+[services."web.svc.emfor".check_options]
+path = "/healthz"
+```
+
+`emfor check-config` lists the files it read, and a reload re-reads them
+all ([chapter 3](03-configuration.md#splitting-the-config-over-a-directory)).
+Unlike Consul, emfor does not register anything: the file is the list of
+backends.
+
 ### Trying it next to Consul
 
 The steps are those of the HAProxy section: write the config, run

@@ -25,6 +25,7 @@ site = "dc1"
 | Key | 預設值 | 意義 |
 | --- | --- | --- |
 | `site` | 無 | 這台主機所在的資料中心。`balance = "locality"` 會用到，有 `[peers]` 時必填。1–63 個 `a-z`、`0-9` 與 `-` 字元（讀取時轉為小寫）。必須寫在第一個 table 之前。 |
+| `include_dir` | 無 | 一個目錄，裡面其他 `.toml` 檔會併進這份設定（[見下](#把設定拆到目錄)）。只能寫在主設定檔。必須寫在第一個 table 之前。 |
 
 ## [store]
 
@@ -198,6 +199,47 @@ command = ["/usr/local/libexec/emfor-check", "redis"]
 
 名稱為 1–63 個 `a-z`、`0-9`、`_` 與 `-` 字元，且不可為 `tcp`、`http` 或 `exec`。服務以 `check = "<name>"` 使用 plugin。每個宣告的 plugin 都會被啟動，不論有沒有服務使用。見[第 4 章](04-health-checks.md#plugin-與-emfor-check)。
 
+## 把設定拆到目錄
+
+主設定檔裡寫 `include_dir = "conf.d"`，daemon 會先讀主設定檔，再讀該目錄裡每個 `.toml` 檔，檢查之前先合併成一份設定。相對路徑相對於主設定檔所在的目錄（`/etc/emfor/emfor.toml` 對應 `/etc/emfor/conf.d`）。這樣套件可以管 `emfor.toml`，各團隊或設定管理工具則各管自己服務的檔案：
+
+```
+/etc/emfor/emfor.toml            include_dir = "conf.d"、[store]、[dns]
+/etc/emfor/conf.d/01-plugins.toml
+/etc/emfor/conf.d/10-web.toml
+/etc/emfor/conf.d/99-local.toml
+```
+
+**讀哪些檔、什麼順序。** 名稱以 `.toml` 結尾、不以 `.` 開頭的一般檔案，以及指向一般檔案的連結。依檔名的位元組順序讀取，不看地區語言的排序；後面的檔案蓋掉前面的，主設定檔是最底層。數字請補零：`9-a.toml` 排在 `10-a.toml` 之後。其他東西一律忽略（`web.toml~`、`.web.toml.swp`、`web.toml.disabled`、子目錄），所以把檔案改名就能讓它退出設定。檔名不是 UTF-8 的會略過並在 log 裡警告。空目錄沒有問題。
+
+**怎麼合併。** 兩個 table 逐鍵合併，有多深合多深。其他一律由後面的值整個取代：數字、字串、清單（包含 `backends` 與 `command`），或型別不同的值。
+
+```toml
+# emfor.toml
+[services."api.svc.emfor"]
+check = "tcp"
+backends = ["10.0.0.1:80", "10.0.0.2:80"]
+interval = "2s"
+```
+
+```toml
+# conf.d/99-local.toml
+[services."api.svc.emfor"]
+interval = "5s"
+```
+
+這個服務保有原來的 `check` 與兩個 `backends`，`interval` 變成 `"5s"`。要改 backend，就把整份清單再寫一次。後面的檔案不能刪掉服務、plugin 或 backend；要從定義它的檔案裡拿掉，或把那個檔案改名讓它被忽略。合併後沒有 `check` 或沒有 `backends` 的服務是錯誤，和單一檔案一樣。合併後的設定，其檢查、啟動、reload 與跟 peer 的交換，都和把同樣內容寫在單一檔案裡完全一樣；怎麼拆檔不會改變 peer 比對的服務定義。
+
+**只能放在主設定檔的鍵。** `[store]` 與 `include_dir` 本身。`emfor status` 與 `emfor lookup` 只讀主設定檔，所以片段不能搬動 store，也不能再引入別的目錄。只用 `status` 與 `lookup` 的人只要能讀主設定檔，不需要讀那個目錄。其他東西，包含 `site`、`[dns]`、`[peers]`、`[plugins]`，放在哪個檔案都可以。
+
+**權限。** 目錄與裡面被讀的每個檔案都不能讓 group 或其他人寫入（`0755` 與 `0644` 可以，`0775` 與 `0664` 不行），否則整份設定被拒絕，錯誤會指出路徑與權限。片段可以宣告 plugin 的 `command` 或 `exec` 檢查，能寫那裡的人就能以 daemon 的使用者身分執行程式。主設定檔不做這個檢查，請自己保護好（`0644`，擁有者 root）。
+
+**目錄必須存在。** 套件會建立它。`include_dir` 指向不存在的目錄是錯誤：啟動時 daemon 記錄錯誤並以 2 結束；reload 時這次 reload 被拒絕，舊設定繼續執行。
+
+**錯誤會指出檔案。** TOML 語法錯誤以 `檔案:行:欄` 回報，其他錯誤是 TOML 路徑加上設定該鍵的檔案（`services."api.svc.emfor".interval: ... (in /etc/emfor/conf.d/99-local.toml)`）。錯誤來自兩個檔案的值時（例如一個檔案的 `timeout` 與另一個檔案的 `interval`），指出的是比較後面的那個檔案。
+
+**寫檔的方式。** 先寫成目錄外或不以 `.toml` 結尾的暫存檔名，再改名放進去。reload 讀到寫到一半的檔案會被拒絕，舊設定繼續執行，但用原子改名可以避免這次失敗的 reload。
+
 ## 檢查設定檔
 
 ```sh
@@ -211,11 +253,22 @@ config ok: 8 services, 19 backends
 services."api.svc.emfor".timeout: timeout must not exceed interval
 ```
 
+設定了 `include_dir` 時，它接著列出讀過的檔案，主設定檔在前，其他依合併順序排列：
+
+```
+config ok: 8 services, 19 backends
+read /etc/emfor/emfor.toml
+read /etc/emfor/conf.d/10-web.toml
+read /etc/emfor/conf.d/99-local.toml
+```
+
+daemon 在啟動與每次 reload 之後記錄同一份清單。沒有 `include_dir` 時輸出只有那一行。
+
 設定有效時結束代碼為 0，否則為 2。它會啟動宣告的 plugin，讓它們檢查各服務的 `check_options`，並在結束前停止它們。它不會開啟 store。以無效設定啟動的 daemon 會記錄同樣的錯誤，並以 2 結束。
 
 ## reload 會改變什麼
 
-`SIGHUP`（`systemctl reload emfor`、`service emfor reload`）會重新讀取檔案。只要有任何錯誤，整份設定就被拒絕：daemon 記錄每一個錯誤，繼續用舊的設定執行。
+`SIGHUP`（`systemctl reload emfor`、`service emfor reload`）會重新讀取檔案，連同 `include_dir` 裡的檔案。只要有任何錯誤（不論在哪個檔案），或 `include_dir` 不見了，整份設定就被拒絕：daemon 記錄每一個錯誤，繼續用舊的設定執行。
 
 | 變更 | reload 時 |
 | --- | --- |

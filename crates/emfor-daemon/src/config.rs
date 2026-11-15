@@ -76,14 +76,32 @@ const fn prefix_dir(prefix: Option<&str>) -> Result<&str, &'static str> {
 pub struct ConfigError {
     pub path: String,
     pub message: String,
+    /// The config file the key was last set in, when the config is split
+    /// over `include_dir`. Best effort: an error that combines values from
+    /// two files names the later one.
+    pub file: Option<String>,
+}
+
+impl ConfigError {
+    pub fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
+        ConfigError {
+            path: path.into(),
+            message: message.into(),
+            file: None,
+        }
+    }
 }
 
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.path.is_empty() {
-            f.write_str(&self.message)
+            f.write_str(&self.message)?;
         } else {
-            write!(f, "{}: {}", self.path, self.message)
+            write!(f, "{}: {}", self.path, self.message)?;
+        }
+        match &self.file {
+            Some(file) => write!(f, " (in {file})"),
+            None => Ok(()),
         }
     }
 }
@@ -391,48 +409,338 @@ impl Config {
     }
 }
 
-/// Read and validate a config file.
+/// The main config file and the files of its `include_dir`, merged.
+#[derive(Debug, Default)]
+pub struct Layers {
+    /// The merged config.
+    pub table: toml::Table,
+    /// Key path (as in [`key_path`]) to the file that last set it. Empty
+    /// when `include_dir` is not set, so errors then carry no file.
+    pub origins: HashMap<String, String>,
+    /// Every file read: the main file first, then the fragments in order.
+    pub files: Vec<PathBuf>,
+    /// Problems that do not fail the load, such as a skipped file name.
+    pub warnings: Vec<String>,
+    /// Whether the main file sets `include_dir`.
+    pub included: bool,
+}
+
+/// Keys that only the main config file may set: `emfor status` and
+/// `emfor lookup` read the main file alone, and a fragment must not nest.
+const MAIN_ONLY_KEYS: &[&str] = &["store", "include_dir"];
+
+/// Read and validate a config file, with its `include_dir` fragments.
 pub fn load(path: &Path, registry: &Registry) -> Result<Config, Vec<ConfigError>> {
-    validate(&read_table(path)?, |v, root| v.root(root, registry))
+    parse_layers(&read_layers(path)?, registry)
 }
 
-/// Read only the `[store]` table of a config file, for `emfor status`: the
-/// rest of the file is not validated, so a broken service table does not
-/// hide the store of a daemon still running with an older config.
+/// Validate merged config layers.
+pub fn parse_layers(layers: &Layers, registry: &Registry) -> Result<Config, Vec<ConfigError>> {
+    validate(&layers.table, &layers.origins, |v, root| {
+        v.root(root, registry)
+    })
+}
+
+/// Read only the `[store]` table of the main config file, for `emfor
+/// status` and `emfor lookup`: the rest of the file and the `include_dir`
+/// fragments are not read, so a broken service table does not hide the
+/// store of a daemon still running with an older config.
 pub fn load_store(path: &Path) -> Result<StoreConfig, Vec<ConfigError>> {
-    validate(&read_table(path)?, |v, root| v.store(root))
+    validate(&read_table(path)?, &HashMap::new(), |v, root| v.store(root))
 }
 
-/// Parse and validate config text.
+/// Parse and validate config text (a single file, no `include_dir`).
 pub fn parse(text: &str, registry: &Registry) -> Result<Config, Vec<ConfigError>> {
-    validate(&parse_table(text)?, |v, root| v.root(root, registry))
+    validate(&parse_table(text, "")?, &HashMap::new(), |v, root| {
+        v.root(root, registry)
+    })
 }
 
 fn read_table(path: &Path) -> Result<toml::Table, Vec<ConfigError>> {
     let text = std::fs::read_to_string(path).map_err(|e| {
-        vec![ConfigError {
-            path: String::new(),
-            message: format!("cannot read {}: {e}", path.display()),
-        }]
+        vec![ConfigError::new(
+            "",
+            format!("cannot read {}: {e}", path.display()),
+        )]
     })?;
-    parse_table(&text)
+    parse_table(&text, &path.display().to_string())
 }
 
-fn parse_table(text: &str) -> Result<toml::Table, Vec<ConfigError>> {
+/// Parse one file. A syntax error is located as `name:line:column` when
+/// `name` is not empty.
+fn parse_table(text: &str, name: &str) -> Result<toml::Table, Vec<ConfigError>> {
     text.parse().map_err(|e: toml::de::Error| {
-        vec![ConfigError {
-            path: String::new(),
-            message: format!("invalid TOML: {}", e.message()),
-        }]
+        let place = match (name.is_empty(), e.span()) {
+            (false, Some(span)) => {
+                let before = &text.as_bytes()[..span.start.min(text.len())];
+                let line = before.iter().filter(|&&b| b == b'\n').count() + 1;
+                let col = before.len()
+                    - before
+                        .iter()
+                        .rposition(|&b| b == b'\n')
+                        .map_or(0, |i| i + 1)
+                    + 1;
+                format!("{name}:{line}:{col}: ")
+            }
+            (false, None) => format!("{name}: "),
+            (true, _) => String::new(),
+        };
+        vec![ConfigError::new(
+            "",
+            format!("{place}invalid TOML: {}", e.message()),
+        )]
     })
 }
 
-/// Run one validation over the parsed file; any error fails it.
+/// Read the main config file and, when it sets `include_dir`, the selected
+/// files of that directory in byte-wise filename order, and merge them: the
+/// main file is the lowest layer, a later file overrides an earlier one.
+pub fn read_layers(path: &Path) -> Result<Layers, Vec<ConfigError>> {
+    let main = read_table(path)?;
+    let mut layers = Layers {
+        files: vec![path.to_path_buf()],
+        ..Layers::default()
+    };
+    let Some(dir_value) = main.get("include_dir") else {
+        layers.table = main;
+        return Ok(layers);
+    };
+    let toml::Value::String(dir_str) = dir_value else {
+        return Err(vec![ConfigError::new("include_dir", "must be a string")]);
+    };
+    if dir_str.is_empty() {
+        return Err(vec![ConfigError::new("include_dir", "must not be empty")]);
+    }
+    layers.included = true;
+    let dir = path
+        .parent()
+        .map_or_else(|| PathBuf::from(dir_str), |p| p.join(dir_str));
+
+    let mut errors = Vec::new();
+    let fragments = list_fragments(&dir, &mut layers.warnings, &mut errors);
+    let mut tables = vec![(path.display().to_string(), main)];
+    for file in fragments {
+        let shown = file.display().to_string();
+        let text = match std::fs::read_to_string(&file) {
+            Ok(t) => t,
+            Err(e) => {
+                errors.push(ConfigError::new("", format!("cannot read {shown}: {e}")));
+                continue;
+            }
+        };
+        layers.files.push(file);
+        match parse_table(&text, &shown) {
+            Ok(t) => {
+                for key in MAIN_ONLY_KEYS {
+                    if t.contains_key(*key) {
+                        errors.push(ConfigError::new(
+                            "",
+                            format!("{shown}: {key} is only allowed in the main config file"),
+                        ));
+                    }
+                }
+                tables.push((shown, t));
+            }
+            Err(e) => errors.extend(e),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    for (shown, t) in tables {
+        merge_table(&mut layers.table, t, "", &shown, &mut layers.origins);
+    }
+    Ok(layers)
+}
+
+/// The selected files of the include directory, in byte-wise name order:
+/// regular files and links to regular files whose name ends in `.toml` and
+/// does not start with `.`. The directory and each file must not be
+/// writable by group or others, because a fragment can declare a plugin
+/// command.
+fn list_fragments(
+    dir: &Path,
+    warnings: &mut Vec<String>,
+    errors: &mut Vec<ConfigError>,
+) -> Vec<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let shown = dir.display();
+    let meta = match std::fs::metadata(dir) {
+        Ok(m) if m.is_dir() => m,
+        Ok(_) => {
+            errors.push(ConfigError::new(
+                "include_dir",
+                format!("{shown} is not a directory"),
+            ));
+            return Vec::new();
+        }
+        Err(e) => {
+            errors.push(ConfigError::new(
+                "include_dir",
+                format!("cannot read directory {shown}: {e}"),
+            ));
+            return Vec::new();
+        }
+    };
+    if meta.permissions().mode() & 0o022 != 0 {
+        errors.push(ConfigError::new(
+            "",
+            format!(
+                "{shown}: writable by group or others (mode {:04o}); refusing to load it",
+                meta.permissions().mode() & 0o7777
+            ),
+        ));
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            errors.push(ConfigError::new(
+                "include_dir",
+                format!("cannot read directory {shown}: {e}"),
+            ));
+            return Vec::new();
+        }
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                errors.push(ConfigError::new(
+                    "include_dir",
+                    format!("cannot read directory {shown}: {e}"),
+                ));
+                continue;
+            }
+        };
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            warnings.push(format!(
+                "{shown}: skipping {:?}: the name is not valid UTF-8",
+                entry.file_name()
+            ));
+            continue;
+        };
+        if name.starts_with('.') || !name.ends_with(".toml") {
+            continue;
+        }
+        names.push(name);
+    }
+    names.sort();
+    let mut files = Vec::new();
+    for name in names {
+        let file = dir.join(&name);
+        let m = match std::fs::metadata(&file) {
+            Ok(m) => m,
+            // A dangling link is not a regular file.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                errors.push(ConfigError::new(
+                    "",
+                    format!("cannot read {}: {e}", file.display()),
+                ));
+                continue;
+            }
+        };
+        if !m.is_file() {
+            continue;
+        }
+        if m.permissions().mode() & 0o022 != 0 {
+            errors.push(ConfigError::new(
+                "",
+                format!(
+                    "{}: writable by group or others (mode {:04o}); refusing to load it",
+                    file.display(),
+                    m.permissions().mode() & 0o7777
+                ),
+            ));
+            continue;
+        }
+        files.push(file);
+    }
+    files
+}
+
+/// Merge `over` into `base`: two tables merge key by key; anything else
+/// (a scalar, a list, values of different types) is replaced by the later
+/// value. `origins` records, for each key `over` sets, the file `name`.
+fn merge_table(
+    base: &mut toml::Table,
+    over: toml::Table,
+    parent: &str,
+    name: &str,
+    origins: &mut HashMap<String, String>,
+) {
+    for (key, value) in over {
+        let path = key_path(parent, &key);
+        origins.insert(path.clone(), name.to_string());
+        match (base.get_mut(&key), value) {
+            (Some(toml::Value::Table(b)), toml::Value::Table(o)) => {
+                merge_table(b, o, &path, name, origins);
+            }
+            (_, value) => {
+                record_origins(&value, &path, name, origins);
+                base.insert(key, value);
+            }
+        }
+    }
+}
+
+/// Record `name` for every key below a value that replaces what was there.
+fn record_origins(
+    value: &toml::Value,
+    path: &str,
+    name: &str,
+    origins: &mut HashMap<String, String>,
+) {
+    if let toml::Value::Table(t) = value {
+        for (k, v) in t {
+            let p = key_path(path, k);
+            origins.insert(p.clone(), name.to_string());
+            record_origins(v, &p, name, origins);
+        }
+    }
+}
+
+/// `services."a.b".backends[0]` -> `services."a.b".backends` -> `services."a.b"`
+/// -> `services`: the key an error path hangs from.
+fn parent_path(path: &str) -> Option<&str> {
+    if let Some(stripped) = path.strip_suffix(']') {
+        return stripped.rfind('[').map(|i| &path[..i]);
+    }
+    let mut in_quotes = false;
+    let mut last_dot = None;
+    for (i, b) in path.bytes().enumerate() {
+        match b {
+            b'"' => in_quotes = !in_quotes,
+            b'.' if !in_quotes => last_dot = Some(i),
+            _ => {}
+        }
+    }
+    last_dot.map(|i| &path[..i])
+}
+
+/// The file that last set `path` or, failing that, its nearest parent key.
+pub fn origin_of(origins: &HashMap<String, String>, path: &str) -> Option<String> {
+    let mut at = Some(path);
+    while let Some(p) = at {
+        if let Some(f) = origins.get(p) {
+            return Some(f.clone());
+        }
+        at = parent_path(p);
+    }
+    None
+}
+
+/// Run one validation over the parsed config; any error fails it.
 fn validate<T>(
     root: &toml::Table,
+    origins: &HashMap<String, String>,
     f: impl FnOnce(&mut Validator, &toml::Table) -> T,
 ) -> Result<T, Vec<ConfigError>> {
-    let mut v = Validator::default();
+    let mut v = Validator {
+        origins: origins.clone(),
+        ..Validator::default()
+    };
     let out = f(&mut v, root);
     if v.errors.is_empty() {
         Ok(out)
@@ -461,22 +769,33 @@ fn valid_plugin_name(name: &str) -> bool {
 /// Parse only the `[plugins]` table, without starting anything: the valid
 /// declarations, plus every declaration error. [`parse`] reports the same
 /// errors, so callers that also call `parse` use only the specs.
+#[cfg(test)]
 pub fn parse_plugins(text: &str) -> (Vec<PluginSpec>, Vec<ConfigError>) {
-    let Ok(root) = text.parse::<toml::Table>() else {
-        return (Vec::new(), Vec::new());
-    };
+    match text.parse::<toml::Table>() {
+        Ok(root) => plugins_in(&root),
+        Err(_) => (Vec::new(), Vec::new()),
+    }
+}
+
+/// `parse_plugins` for an already parsed (merged) config.
+pub fn plugins_in(root: &toml::Table) -> (Vec<PluginSpec>, Vec<ConfigError>) {
     let mut v = Validator::default();
-    let specs = v.plugins(&root);
+    let specs = v.plugins(root);
     (specs, v.errors)
 }
 
 /// Parse only the `[store]` table. `None` when the TOML is unreadable or the
 /// table itself is invalid. Used on reload to report a `[store]` change even
 /// when other parts of the file fail validation.
+#[cfg(test)]
 pub fn parse_store(text: &str) -> Option<StoreConfig> {
-    let root: toml::Table = text.parse().ok()?;
+    store_in(&text.parse().ok()?)
+}
+
+/// `parse_store` for an already parsed config.
+pub fn store_in(root: &toml::Table) -> Option<StoreConfig> {
     let mut v = Validator::default();
-    let store = v.store(&root);
+    let store = v.store(root);
     v.errors.is_empty().then_some(store)
 }
 
@@ -484,34 +803,43 @@ pub fn parse_store(text: &str) -> Option<StoreConfig> {
 /// `Some(Some(addrs))` with one, `None` when the TOML is unreadable or the
 /// listen value itself is invalid. Errors in other `[dns]` keys are ignored,
 /// so a listen change is reported together with them on reload.
+#[cfg(test)]
 pub fn parse_dns_listen(text: &str) -> Option<Option<Vec<SocketAddr>>> {
-    let root: toml::Table = text.parse().ok()?;
+    dns_listen_in(&text.parse().ok()?)
+}
+
+/// `parse_dns_listen` for an already parsed config.
+pub fn dns_listen_in(root: &toml::Table) -> Option<Option<Vec<SocketAddr>>> {
     let mut v = Validator::default();
-    let Some(t) = v.table(&root, "dns") else {
+    let Some(t) = v.table(root, "dns") else {
         return v.errors.is_empty().then_some(None);
     };
     let listen = v.listen(t, "dns", DnsConfig::default().listen);
     v.errors.is_empty().then_some(Some(listen))
 }
 
-/// Parse only `[metrics] listen`, like [`parse_dns_listen`].
+/// Parse only `[metrics] listen`, like `parse_dns_listen`.
+#[cfg(test)]
 pub fn parse_metrics_listen(text: &str) -> Option<Option<Vec<SocketAddr>>> {
-    let root: toml::Table = text.parse().ok()?;
+    metrics_listen_in(&text.parse().ok()?)
+}
+
+/// `parse_metrics_listen` for an already parsed config.
+pub fn metrics_listen_in(root: &toml::Table) -> Option<Option<Vec<SocketAddr>>> {
     let mut v = Validator::default();
-    let Some(t) = v.table(&root, "metrics") else {
+    let Some(t) = v.table(root, "metrics") else {
         return v.errors.is_empty().then_some(None);
     };
     let listen = v.listen(t, "metrics", MetricsConfig::default().listen);
     v.errors.is_empty().then_some(Some(listen))
 }
 
-/// Parse only `[peers] listen`, like [`parse_dns_listen`]: `Some(None)`
-/// without a `[peers]` table, `None` when the TOML is unreadable or the
-/// listen value is missing or invalid.
-pub fn parse_peers_listen(text: &str) -> Option<Option<SocketAddr>> {
-    let root: toml::Table = text.parse().ok()?;
+/// Parse only `[peers] listen`, like [`dns_listen_in`]: `Some(None)`
+/// without a `[peers]` table, `None` when the listen value is missing or
+/// invalid.
+pub fn peers_listen_in(root: &toml::Table) -> Option<Option<SocketAddr>> {
     let mut v = Validator::default();
-    let Some(t) = v.table(&root, "peers") else {
+    let Some(t) = v.table(root, "peers") else {
         return v.errors.is_empty().then_some(None);
     };
     let listen = v.socket_addr(t.get("listen")?, "peers.listen", "listen address")?;
@@ -622,13 +950,18 @@ struct Validator {
     /// is not in the registry (its declaration or start failed) gets no
     /// extra error: the plugin's own error explains it.
     declared_plugins: HashSet<String>,
+    /// Key path to the file that last set it; see [`Layers::origins`].
+    origins: HashMap<String, String>,
 }
 
 impl Validator {
     fn err(&mut self, path: impl Into<String>, message: impl Into<String>) {
+        let path = path.into();
+        let file = origin_of(&self.origins, &path);
         self.errors.push(ConfigError {
-            path: path.into(),
+            path,
             message: message.into(),
+            file,
         });
     }
 
@@ -667,7 +1000,15 @@ impl Validator {
             root,
             "",
             &[
-                "site", "store", "log", "dns", "metrics", "peers", "defaults", "plugins",
+                "site",
+                "include_dir",
+                "store",
+                "log",
+                "dns",
+                "metrics",
+                "peers",
+                "defaults",
+                "plugins",
                 "services",
             ],
         );
@@ -2535,5 +2876,400 @@ slow_start = "0s"
         }
         let err = prefix_dir(Some("usr/local")).unwrap_err();
         assert!(err.contains("EMFOR_PREFIX"), "{err}");
+    }
+}
+
+/// Config split over `include_dir`: the spec's "Config directory" requirements.
+#[cfg(test)]
+mod layers_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const MAIN: &str = r#"
+include_dir = "conf.d"
+site = "dc1"
+
+[services."api.svc.emfor"]
+check = "tcp"
+backends = ["10.0.0.1:80", "10.0.0.2:80"]
+interval = "2s"
+"#;
+
+    /// A main file named `emfor.toml` with `main`, and a 0755 `conf.d`
+    /// holding `fragments` (mode 0644).
+    fn setup(main: &str, fragments: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let conf_d = dir.path().join("conf.d");
+        std::fs::create_dir(&conf_d).expect("conf.d");
+        std::fs::set_permissions(&conf_d, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        for (name, text) in fragments {
+            let p = conf_d.join(name);
+            std::fs::write(&p, text).expect("fragment");
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).expect("mode");
+        }
+        let main_path = dir.path().join("emfor.toml");
+        std::fs::write(&main_path, main).expect("main");
+        (dir, main_path)
+    }
+
+    fn names(layers: &Layers) -> Vec<String> {
+        layers
+            .files
+            .iter()
+            .map(|f| f.file_name().expect("name").to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn errs(r: Result<Layers, Vec<ConfigError>>) -> String {
+        r.expect_err("expected errors")
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn merged(base: &str, over: &str) -> toml::Table {
+        let mut t: toml::Table = base.parse().expect("base");
+        merge_table(
+            &mut t,
+            over.parse().expect("over"),
+            "",
+            "f",
+            &mut HashMap::new(),
+        );
+        t
+    }
+
+    #[test]
+    fn tables_merge_key_by_key() {
+        let t = merged(
+            "[s.a]\ncheck = \"tcp\"\ninterval = \"2s\"\n",
+            "[s.a]\ninterval = \"500ms\"\n",
+        );
+        assert_eq!(t["s"]["a"]["check"].as_str(), Some("tcp"));
+        assert_eq!(t["s"]["a"]["interval"].as_str(), Some("500ms"));
+    }
+
+    #[test]
+    fn lists_and_mixed_types_are_replaced() {
+        let t = merged(
+            "b = [\"1\", \"2\"]\nx = 1\n[t]\nk = 1\n",
+            "b = [\"3\"]\nx = [1]\nt = 5\n",
+        );
+        assert_eq!(t["b"].as_array().expect("list").len(), 1);
+        assert!(t["x"].is_array());
+        assert_eq!(t["t"].as_integer(), Some(5));
+    }
+
+    #[test]
+    fn inline_table_merges_like_a_section() {
+        let t = merged("[s.a]\nx = 1\ny = 2\n", "s.a = { y = 3 }\n");
+        assert_eq!(t["s"]["a"]["x"].as_integer(), Some(1));
+        assert_eq!(t["s"]["a"]["y"].as_integer(), Some(3));
+    }
+
+    #[test]
+    fn files_are_read_in_byte_order() {
+        let (_d, main) = setup(
+            MAIN,
+            &[("10-b.toml", ""), ("01-a.toml", ""), ("9-c.toml", "")],
+        );
+        let l = read_layers(&main).expect("layers");
+        assert_eq!(
+            names(&l),
+            ["emfor.toml", "01-a.toml", "10-b.toml", "9-c.toml"]
+        );
+    }
+
+    #[test]
+    fn unselected_entries_are_ignored() {
+        let (d, main) = setup(
+            MAIN,
+            &[
+                ("a.toml", ""),
+                (".hidden.toml", ""),
+                ("b.toml~", ""),
+                ("c.toml.disabled", ""),
+            ],
+        );
+        std::fs::create_dir(d.path().join("conf.d/d.toml")).expect("subdir");
+        let l = read_layers(&main).expect("layers");
+        assert_eq!(names(&l), ["emfor.toml", "a.toml"]);
+    }
+
+    /// macOS file systems refuse a name that is not UTF-8, so only Linux
+    /// and the BSDs can create one.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn non_utf8_file_name_is_skipped_with_a_warning() {
+        use std::os::unix::ffi::OsStrExt;
+        let (d, main) = setup(MAIN, &[("a.toml", "")]);
+        let bad = std::ffi::OsStr::from_bytes(b"b\xff.toml");
+        std::fs::write(d.path().join("conf.d").join(bad), "").expect("bad name");
+        let l = read_layers(&main).expect("layers");
+        assert_eq!(names(&l), ["emfor.toml", "a.toml"]);
+        assert_eq!(l.warnings.len(), 1, "{:?}", l.warnings);
+        assert!(l.warnings[0].contains("not valid UTF-8"));
+    }
+
+    #[test]
+    fn symlink_to_a_regular_file_is_followed() {
+        let (d, main) = setup(MAIN, &[]);
+        let target = d.path().join("elsewhere.txt");
+        std::fs::write(&target, "site = \"dc9\"\n").expect("target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).expect("mode");
+        std::os::unix::fs::symlink(&target, d.path().join("conf.d/10-svc.toml")).expect("link");
+        let l = read_layers(&main).expect("layers");
+        assert_eq!(names(&l), ["emfor.toml", "10-svc.toml"]);
+        assert_eq!(l.table["site"].as_str(), Some("dc9"));
+    }
+
+    #[test]
+    fn relative_include_dir_is_relative_to_the_main_file() {
+        let (_d, main) = setup(MAIN, &[("a.toml", "")]);
+        let l = read_layers(&main).expect("layers");
+        assert_eq!(
+            l.files[1],
+            main.parent().expect("dir").join("conf.d/a.toml")
+        );
+    }
+
+    #[test]
+    fn no_include_dir_reads_the_main_file_only() {
+        let (_d, main) = setup("site = \"dc1\"\n", &[("a.toml", "site = \"x\"\n")]);
+        let l = read_layers(&main).expect("layers");
+        assert!(!l.included && l.origins.is_empty());
+        assert_eq!(l.files.len(), 1);
+        assert_eq!(l.table["site"].as_str(), Some("dc1"));
+    }
+
+    #[test]
+    fn later_fragment_overrides_the_main_file() {
+        let (_d, main) = setup(
+            MAIN,
+            &[(
+                "99-local.toml",
+                "[services.\"api.svc.emfor\"]\ninterval = \"5s\"\n",
+            )],
+        );
+        let l = read_layers(&main).expect("layers");
+        let c = parse_layers(&l, &Registry::builtin()).expect("config");
+        let s = &c.services[0];
+        assert_eq!(s.settings.interval, Duration::from_secs(5));
+        assert_eq!(s.backends.len(), 2);
+    }
+
+    #[test]
+    fn backends_list_is_replaced() {
+        let (_d, main) = setup(
+            MAIN,
+            &[(
+                "99.toml",
+                "[services.\"api.svc.emfor\"]\nbackends = [\"10.0.0.3:80\"]\n",
+            )],
+        );
+        let c = parse_layers(&read_layers(&main).expect("layers"), &Registry::builtin())
+            .expect("config");
+        assert_eq!(c.services[0].backends.len(), 1);
+        assert_eq!(c.services[0].backends[0].id, "10.0.0.3:80");
+    }
+
+    #[test]
+    fn store_and_include_dir_are_main_only() {
+        let (_d, main) = setup(MAIN, &[("10-store.toml", "[store]\npath = \"/x\"\n")]);
+        assert!(errs(read_layers(&main)).contains("10-store.toml: store is only allowed"));
+        let (_d, main) = setup(MAIN, &[("20-inc.toml", "include_dir = \"x\"\n")]);
+        assert!(errs(read_layers(&main)).contains("20-inc.toml: include_dir is only allowed"));
+    }
+
+    #[test]
+    fn load_store_reads_only_the_main_file() {
+        let (d, main) = setup(MAIN, &[("10.toml", "this is not toml")]);
+        std::fs::set_permissions(
+            d.path().join("conf.d/10.toml"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .expect("mode");
+        assert!(load_store(&main).is_ok());
+    }
+
+    #[test]
+    fn group_writable_fragment_is_refused() {
+        let (d, main) = setup(MAIN, &[("10-a.toml", "")]);
+        let f = d.path().join("conf.d/10-a.toml");
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o664)).expect("mode");
+        let e = errs(read_layers(&main));
+        assert!(e.contains("10-a.toml") && e.contains("0664"), "{e}");
+    }
+
+    #[test]
+    fn world_writable_directory_is_refused() {
+        let (d, main) = setup(MAIN, &[]);
+        std::fs::set_permissions(
+            d.path().join("conf.d"),
+            std::fs::Permissions::from_mode(0o777),
+        )
+        .expect("mode");
+        let e = errs(read_layers(&main));
+        assert!(e.contains("conf.d") && e.contains("0777"), "{e}");
+    }
+
+    #[test]
+    fn main_file_mode_is_not_checked() {
+        let (_d, main) = setup("site = \"dc1\"\n", &[]);
+        std::fs::set_permissions(&main, std::fs::Permissions::from_mode(0o664)).expect("mode");
+        assert!(read_layers(&main).is_ok());
+    }
+
+    #[test]
+    fn missing_directory_is_an_error() {
+        let (d, main) = setup(MAIN, &[]);
+        std::fs::remove_dir(d.path().join("conf.d")).expect("remove");
+        let e = errs(read_layers(&main));
+        assert!(e.starts_with("include_dir: "), "{e}");
+    }
+
+    #[test]
+    fn include_dir_that_is_a_file_is_an_error() {
+        let (d, main) = setup(MAIN, &[]);
+        std::fs::remove_dir(d.path().join("conf.d")).expect("remove");
+        std::fs::write(d.path().join("conf.d"), "").expect("file");
+        assert!(errs(read_layers(&main)).contains("not a directory"));
+    }
+
+    #[test]
+    fn empty_include_dir_is_an_error() {
+        let (_d, main) = setup("include_dir = \"\"\n", &[]);
+        assert_eq!(errs(read_layers(&main)), "include_dir: must not be empty");
+    }
+
+    /// A link that points at itself is neither missing nor a file: the error
+    /// must not be swallowed like a dangling link (EACCES cannot be tested
+    /// as root).
+    #[test]
+    fn unreadable_fragment_link_is_an_error() {
+        let (d, main) = setup(MAIN, &[]);
+        let link = d.path().join("conf.d/loop.toml");
+        std::os::unix::fs::symlink(&link, &link).expect("link");
+        assert!(errs(read_layers(&main)).contains("loop.toml"));
+        let dangling = d.path().join("conf.d/loop.toml");
+        std::fs::remove_file(&dangling).expect("remove");
+        std::os::unix::fs::symlink(d.path().join("nowhere"), &dangling).expect("link");
+        assert!(read_layers(&main).is_ok());
+    }
+
+    #[test]
+    fn include_dir_must_be_a_string() {
+        let (_d, main) = setup("include_dir = 3\n", &[]);
+        assert_eq!(errs(read_layers(&main)), "include_dir: must be a string");
+    }
+
+    #[test]
+    fn syntax_error_names_file_line_and_column() {
+        let (_d, main) = setup(MAIN, &[("20-x.toml", "a = 1\nb = 2\nc = = 3\n")]);
+        let e = errs(read_layers(&main));
+        assert!(e.contains("20-x.toml:3:5: invalid TOML"), "{e}");
+    }
+
+    #[test]
+    fn invalid_value_names_key_path_and_file() {
+        let (_d, main) = setup(
+            MAIN,
+            &[(
+                "30-y.toml",
+                "[services.\"api.svc.emfor\"]\ninterval = \"fast\"\n",
+            )],
+        );
+        let l = read_layers(&main).expect("layers");
+        let e = parse_layers(&l, &Registry::builtin()).expect_err("invalid");
+        let text = e[0].to_string();
+        assert!(
+            text.starts_with("services.\"api.svc.emfor\".interval: ") && text.contains("30-y.toml"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn error_in_the_main_file_names_the_main_file() {
+        let (_d, main) = setup(
+            &MAIN.replace("\"tcp\"", "\"nope\""),
+            &[("30-y.toml", "site = \"dc2\"\n")],
+        );
+        let l = read_layers(&main).expect("layers");
+        let e = parse_layers(&l, &Registry::builtin()).expect_err("invalid");
+        assert!(e[0].to_string().contains("emfor.toml"), "{}", e[0]);
+    }
+
+    #[test]
+    fn single_file_errors_carry_no_file() {
+        let e = parse_err_text(
+            "[services.\"a.svc.emfor\"]\ncheck = \"nope\"\nbackends = [\"1.2.3.4:80\"]\n",
+        );
+        assert!(e.iter().all(|e| e.file.is_none()));
+    }
+
+    fn parse_err_text(text: &str) -> Vec<ConfigError> {
+        parse(text, &Registry::builtin()).expect_err("invalid")
+    }
+
+    #[test]
+    fn plugin_in_a_fragment_is_declared() {
+        let (_d, main) = setup(
+            MAIN,
+            &[("10-p.toml", "[plugins.probe]\ncommand = [\"/bin/sh\"]\n")],
+        );
+        let l = read_layers(&main).expect("layers");
+        let (specs, errors) = plugins_in(&l.table);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "probe");
+    }
+
+    #[test]
+    fn listen_change_in_a_fragment_is_seen() {
+        let (_d, main) = setup(
+            MAIN,
+            &[("10-dns.toml", "[dns]\nlisten = [\"127.0.0.1:5353\"]\n")],
+        );
+        let l = read_layers(&main).expect("layers");
+        let listen = dns_listen_in(&l.table).expect("valid").expect("dns table");
+        assert_eq!(listen, vec!["127.0.0.1:5353".parse().expect("addr")]);
+    }
+
+    #[test]
+    fn digest_does_not_depend_on_splitting() {
+        let one = "site = \"dc1\"\ninclude_dir = \"conf.d\"\n[services.\"api.svc.emfor\"]\ncheck = \"http\"\nbackends = [\"10.0.0.1:80\"]\ntimeout = \"500ms\"\n[services.\"api.svc.emfor\".check_options]\npath = \"/h\"\n";
+        let (_d1, m1) = setup(one, &[]);
+        let (_d2, m2) = setup(
+            "site = \"dc1\"\ninclude_dir = \"conf.d\"\n[services.\"api.svc.emfor\"]\ncheck = \"http\"\nbackends = [\"10.0.0.1:80\"]\n",
+            &[
+                (
+                    "10.toml",
+                    "[services.\"api.svc.emfor\"]\ntimeout = \"500ms\"\n",
+                ),
+                (
+                    "20.toml",
+                    "[services.\"api.svc.emfor\".check_options]\npath = \"/h\"\n",
+                ),
+            ],
+        );
+        let r = Registry::builtin();
+        let a = parse_layers(&read_layers(&m1).expect("one"), &r).expect("one");
+        let b = parse_layers(&read_layers(&m2).expect("split"), &r).expect("split");
+        assert_eq!(a.services[0].digest, b.services[0].digest);
+    }
+
+    #[test]
+    fn parent_path_walks_up_keys_and_indexes() {
+        assert_eq!(
+            parent_path("services.\"a.b\".backends[0]"),
+            Some("services.\"a.b\".backends")
+        );
+        assert_eq!(
+            parent_path("services.\"a.b\".backends"),
+            Some("services.\"a.b\"")
+        );
+        assert_eq!(parent_path("services.\"a.b\""), Some("services"));
+        assert_eq!(parent_path("services"), None);
     }
 }
