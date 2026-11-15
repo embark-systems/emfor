@@ -360,6 +360,54 @@ Install the daemon and every client library from the same release, then
 restart the daemon. Applications keep running; they follow the restarted
 daemon's store without a restart of their own.
 
+### What applications see during a restart
+
+A lookup never waits for the daemon: it always gets an answer from the
+store. But around a restart the store cannot tell good backends from bad
+ones for a short time:
+
+- **While the daemon is stopped.** After a clean stop the store is stale at
+  once (the heartbeat is 0); after a kill, clients trust the old states for
+  up to 3 seconds and then treat the store as stale. In a stale store every
+  backend is a candidate: an `open` service returns any of them, a `closed`
+  service fails with `ALL_DOWN`.
+- **For the first 0.2 to 0.4 seconds after the start.** The daemon marks
+  every backend `unknown` and checks each one about every 200 ms. Until the
+  first results are in, all of them are candidates: `open` returns any
+  backend, and `closed` fails with `ALL_DOWN` until one of its backends is
+  healthy.
+
+Measured with the daemon started again at once (after SIGTERM, and after
+SIGKILL): 20 restarts per case, one host in a Debian container, loopback,
+`tcp` checks with the default settings, two services of four backends each
+with two backends down, and a client that looks up every millisecond. The
+last wrong answer came about 0.25 seconds after the signal (median; at most
+about 0.4 seconds). In that window half of the `open` answers were backends that
+were down, and every `closed` lookup failed with `ALL_DOWN`. `emfor
+check-config`, which the example systemd unit runs before every start,
+took about 1 ms. When the daemon stayed down for 2 seconds, the window was
+2.2 to 2.4 seconds. A service whose backends are all up is not affected,
+because any backend is then a good answer. Other hardware, networks,
+intervals and checks give other numbers.
+
+What to do about it:
+
+- If the host is behind a load balancer, take it out of rotation first, let
+  the requests in flight finish, restart, and put it back when `emfor
+  status` exits 0 (the daemon is running and every service shown has a
+  healthy backend; see [emfor status](#emfor-status)). Work that does not
+  come through the load balancer (batch jobs, queue workers, connection
+  pools that reconnect) still looks up during the restart.
+- Services with `on_all_down = "closed"`, with `failover` and a bad first
+  backend, or with backups are the most affected; do this for hosts that
+  use them.
+- Install the new packages first and restart afterwards. Do not stop the
+  daemon, install and start it: the window is then as long as the install.
+- Restart hosts one at a time.
+- A change of the config alone needs no restart: use a reload, which keeps
+  the state of backends whose check did not change (see [what a reload
+  changes](03-configuration.md#what-a-reload-changes)).
+
 **From 0.1.x to 0.2.0**: the daemon is now started with a command. Change
 your service definition before restarting:
 

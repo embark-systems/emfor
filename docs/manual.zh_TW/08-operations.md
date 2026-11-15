@@ -204,6 +204,23 @@ store 裡沒有任何東西需要在重開機後保留，所以可以放在 tmpf
 
 從同一個發行版安裝 daemon 與所有 client 函式庫，然後重新啟動 daemon。應用程式不必停止；它們會跟上重新啟動後 daemon 的 store，不需要自行重新啟動。
 
+### 重新啟動時應用程式會看到什麼
+
+查詢從不等待 daemon：它一定從 store 得到答案。但重新啟動前後有一小段時間，store 分不出好的和壞的 backend：
+
+- **daemon 停止期間。** 正常停止後 store 立刻是 stale（heartbeat 為 0）；被 kill 的話，client 會再相信舊狀態最多 3 秒，之後才視為 stale。stale 的 store 裡每個 backend 都是候選：`open` 服務回任何一個，`closed` 服務以 `ALL_DOWN` 失敗。
+- **啟動後的最初 0.2 到 0.4 秒。** daemon 把每個 backend 標成 `unknown`，並大約每 200 ms 檢查一次。在第一批結果出來之前，它們全都是候選：`open` 回任何一個 backend，`closed` 在它的某個 backend 變成 healthy 之前以 `ALL_DOWN` 失敗。
+
+實測方式是 daemon 立刻再啟動（SIGTERM 之後、SIGKILL 之後各測）：每種情況重複 20 次，一台主機（Debian 容器）、loopback、預設設定的 `tcp` 檢查、兩個服務各有四個 backend 且其中兩個是壞的，client 每毫秒查詢一次。最後一個錯誤答案出現在訊號後約 0.25 秒（中位數；最久約 0.4 秒）。在這段時間裡，`open` 的答案有一半是壞掉的 backend，每次 `closed` 查詢都以 `ALL_DOWN` 失敗。範例 systemd unit 每次啟動前會執行的 `emfor check-config` 約 1 ms。daemon 停了 2 秒的話，這段時間是 2.2 到 2.4 秒。backend 全部正常的服務不受影響，因為這時任何一個 backend 都是好答案。其他硬體、網路、interval 與檢查會得到不同的數字。
+
+可以這樣處理：
+
+- 主機在 load balancer 後面時，先把它移出 rotation，等進行中的請求結束再重新啟動，等 `emfor status` 的結束代碼為 0（daemon 正在執行，且顯示的每個服務都有健康的 backend；見 [emfor status](#emfor-status)）再放回去。不經過 load balancer 的工作（批次工作、queue worker、會重新連線的連線池）在重新啟動期間仍會查詢。
+- 設定 `on_all_down = "closed"` 的服務、使用 `failover` 而第一個 backend 是壞的服務，以及有備援 backend 的服務，受影響最大；使用它們的主機請照上面的方式做。
+- 先安裝新的套件，再重新啟動。不要「停止 daemon、安裝、再啟動」：那樣空窗就和安裝一樣長。
+- 一次只重新啟動一台主機。
+- 只改設定不需要重新啟動：用 reload，檢查沒有改變的 backend 會保留狀態（見 [reload 會改變什麼](03-configuration.md#reload-會改變什麼)）。
+
 **從 0.1.x 升級到 0.2.0**：daemon 現在要用指令啟動。重新啟動前先修改服務定義：
 
 | 0.1.x | 0.2.0 |
