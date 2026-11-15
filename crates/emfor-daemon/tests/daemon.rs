@@ -471,6 +471,72 @@ fn check_config_show_prints_the_merged_config() {
     assert!(String::from_utf8_lossy(&bad.stderr).contains("intervall"));
 }
 
+/// A write error on standard output is reported with a status, not a panic
+/// (101): `emfor check-config > /dev/full`. Only Linux has /dev/full.
+#[cfg(target_os = "linux")]
+#[test]
+fn check_config_reports_a_full_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    std::fs::write(
+        &cfg,
+        "[services.\"a.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
+    )
+    .unwrap();
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let out = Command::new(cargo_bin("emfor"))
+        .args(["check-config", "--config"])
+        .arg(&cfg)
+        .stdin(Stdio::null())
+        .stdout(full)
+        .stderr(Stdio::piped())
+        .spawn_locked()
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot write the output"));
+}
+
+/// A reader that has gone away is not a failure: `emfor check-config | head`.
+/// The read end is closed before the child writes, so it gets EPIPE.
+#[test]
+fn check_config_ignores_a_closed_pipe() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    std::fs::write(
+        &cfg,
+        "[services.\"a.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
+    )
+    .unwrap();
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let out = Command::new(cargo_bin("emfor"))
+        .args(["check-config", "--config"])
+        .arg(&cfg)
+        .stdin(Stdio::null())
+        .stdout(writer)
+        .stderr(Stdio::piped())
+        .spawn_locked()
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// A name that is not UTF-8 is skipped with a warning that `check-config`,
 /// which has no log, prints on stderr. Only Linux can create such a name.
 #[cfg(target_os = "linux")]

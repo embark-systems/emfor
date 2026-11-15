@@ -71,7 +71,7 @@ fn now_ms() -> u64 {
 }
 
 impl Client {
-    pub fn new(path: PathBuf, max_staleness_ms: Result<u64, String>) -> Self {
+    pub(crate) fn new(path: PathBuf, max_staleness_ms: Result<u64, String>) -> Self {
         Client {
             path,
             max_staleness_ms,
@@ -88,6 +88,11 @@ impl Client {
     /// A client for the store at `path`, with the staleness limit of
     /// `EMFOR_MAX_STALENESS` (default 3 seconds). Unlike [`Client::from_env`]
     /// it does not read `EMFOR_STORE`: the caller names the store.
+    ///
+    /// Not part of the public API (the clients are configured by environment
+    /// variables only): built only with the `daemon-internal` feature, which
+    /// `emfor lookup` enables and `libemfor` does not.
+    #[cfg(feature = "daemon-internal")]
     pub fn for_store(path: PathBuf) -> Self {
         let (_, max) = crate::config::from_env();
         Client::new(path, max)

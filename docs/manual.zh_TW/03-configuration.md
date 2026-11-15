@@ -90,7 +90,7 @@ secret_file = "/etc/emfor/peers.key"
 | --- | --- | --- |
 | `listen` | 必填 | 這個 daemon 在群組中的 UDP 位址，必須是 `members` 之一。要寫具體位址，不能是 `0.0.0.0` 或 `::`；其他成員會檢查訊息是否來自這個位址。慣用的 port 是 5302。 |
 | `members` | 必填 | 每個成員的 `listen`，包含這個 daemon 自己：2 到 64 個位址，不可重複，和 `listen` 一樣全是 IPv4 或全是 IPv6。同一個機房的每台主機可以用同一份清單。 |
-| `secret_file` | 必填 | 共用密鑰的絕對路徑，用來驗證並加密每則訊息：去掉一個結尾換行後至少 32 bytes，其他使用者不能讀取（`chmod 600` 或 `640`）。 |
+| `secret_file` | 必填 | 共用密鑰的絕對路徑，用來驗證並加密每則訊息：去掉一個結尾換行後至少 32 bytes，其他使用者不能讀取、group 與其他人不能寫入（`chmod 600` 或 `640`）。 |
 | `previous_secret_file` | 無 | 選用。`secret_file` 上次改變前那把密鑰的絕對路徑，條件與 `secret_file` 相同。只在啟動時讀取，讓更換密鑰期間重新啟動的 daemon 仍像沒有重新啟動一樣，用舊密鑰簽署並接受它（見下文）。 |
 | `encrypt` | `true` | `true` 時每則訊息都加密送出，金鑰由密鑰導出：送給執行這個版本的成員用 `EMP3`（XChaCha20-Poly1305，24 bytes 隨機 nonce），送給其他成員用 `EMP2`（ChaCha20-Poly1305，12 bytes 隨機 nonce），依成員各自選擇，見下文。`false` 時只簽署（`EMP1`：HMAC-SHA256），網路上看得到 backend 名稱、位址與原因。三種格式都一律接受；`true` 時，對仍送 `EMP1` 的每個成員，daemon 每分鐘記一行警告。 |
 | `accept_plaintext` | `true` | `false` 時丟棄所有 `EMP1` 訊息（在 `emfor_peer_messages_rejected_total` 算成 `plaintext`），所以就算有人拿到密鑰，也無法讓這個 daemon 接受只簽署、未加密的訊息。必須搭配 `encrypt = true`。等每個成員都送 `EMP2` 或 `EMP3` 之後再設。 |
@@ -232,7 +232,7 @@ interval = "5s"
 
 **只能放在主設定檔的鍵。** `[store]` 與 `include_dir` 本身。`emfor status` 與 `emfor lookup` 只讀主設定檔，所以片段不能搬動 store，也不能再引入別的目錄。只用 `status` 與 `lookup` 的人只要能讀主設定檔，不需要讀那個目錄。其他東西，包含 `site`、`[dns]`、`[peers]`、`[plugins]`，放在哪個檔案都可以。
 
-**權限。** 目錄與裡面被讀的每個檔案都不能讓 group 或其他人寫入（`0755` 與 `0644` 可以，`0775` 與 `0664` 不行），否則整份設定被拒絕，錯誤會指出路徑與權限。片段可以宣告 plugin 的 `command` 或 `exec` 檢查，能寫那裡的人就能以 daemon 的使用者身分執行程式。主設定檔不做這個檢查，請自己保護好（`0644`，擁有者 root）。
+**權限。** 目錄與裡面被讀的每個檔案都不能讓 group 或其他人寫入（`0755` 與 `0644` 可以，`0775` 與 `0664` 不行），否則整份設定被拒絕，錯誤會指出路徑與權限。擁有者必須是 root 或執行 emfor 的使用者（符號連結看它指向的檔案的擁有者），否則同樣被拒絕，因為其他人擁有的檔案，那個人可以隨時改。請以 daemon 執行的使用者身分跑 `emfor check-config`（systemd unit 與 FreeBSD 的 `configtest` 就是這樣）；手動以 root 執行時，只接受 root 擁有的檔案。片段可以宣告 plugin 的 `command` 或 `exec` 檢查，能寫那裡的人就能以 daemon 的使用者身分執行程式。主設定檔不做這個檢查，請自己保護好（`0644`，擁有者 root）。
 
 **目錄必須存在。** 套件會建立它。`include_dir` 指向不存在的目錄是錯誤：啟動時 daemon 記錄錯誤並以 2 結束；reload 時這次 reload 被拒絕，舊設定繼續執行。
 
@@ -277,7 +277,7 @@ interval = "5s" # /etc/emfor/conf.d/99-local.toml
 
 `backends` 這類清單是整個一起設定的，所以它的註解寫的是設定這份清單的檔案。`config ok` 與 `read` 行會寫到標準錯誤，所以 `emfor check-config --show > merged.toml` 存下來的檔案在哪裡都可以再被檢查，因為 `include_dir` 那一行只以註解寫出（它的檔案已經合併進來了）；除了註解，內容相同。設定裡除了 `include_dir` 之外的相對路徑，都不依設定檔所在的目錄而變。無效的設定在標準輸出不印任何東西，並以 2 結束。沒有 `include_dir` 時，輸出開頭有一行註解寫明檔案，沒有其他註解。內建預設值不會加進去：你沒寫的鍵不會出現。沒有任何值被遮蔽；設定裡放的是密碼檔的路徑，不是密碼，但 plugin 的 `command` 會照原樣印出，所以不要把祕密寫在那裡。註解的格式是給人看的，不要用程式解析它。
 
-設定有效時結束代碼為 0，否則為 2。它會啟動宣告的 plugin，讓它們檢查各服務的 `check_options`，並在結束前停止它們。它不會開啟 store。以無效設定啟動的 daemon 會記錄同樣的錯誤，並以 2 結束。
+設定有效時結束代碼為 0，否則為 2（輸出寫不出去時，例如磁碟滿了，為 1；管線被關掉不算錯誤）。它會啟動宣告的 plugin，讓它們檢查各服務的 `check_options`，並在結束前停止它們。它不會開啟 store。以無效設定啟動的 daemon 會記錄同樣的錯誤，並以 2 結束。
 
 ## reload 會改變什麼
 

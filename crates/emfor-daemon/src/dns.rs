@@ -76,6 +76,13 @@ pub struct RateLimiter {
     #[cfg(test)]
     frozen: Option<u64>,
     nets: std::sync::Mutex<HashMap<IpAddr, (u64, u32)>>,
+    /// The second of the last sweep of expired networks. A full table is swept
+    /// at most once a second: a flood of new networks would otherwise scan the
+    /// whole table for every packet.
+    swept: std::sync::atomic::AtomicU64,
+    /// Sweeps run, for the test of the once-a-second rule.
+    #[cfg(test)]
+    sweeps: std::sync::atomic::AtomicU64,
     /// Over-limit responses of unknown networks while the table was full.
     overflow: std::sync::atomic::AtomicU64,
     truncated: std::sync::atomic::AtomicU64,
@@ -90,6 +97,9 @@ impl Default for RateLimiter {
             #[cfg(test)]
             frozen: None,
             nets: std::sync::Mutex::new(HashMap::new()),
+            swept: std::sync::atomic::AtomicU64::new(u64::MAX),
+            #[cfg(test)]
+            sweeps: Default::default(),
             overflow: Default::default(),
             truncated: Default::default(),
             dropped: Default::default(),
@@ -126,7 +136,13 @@ impl RateLimiter {
         let net = client_network(client);
         let over = {
             let mut nets = self.nets.lock().unwrap_or_else(|e| e.into_inner());
-            if !nets.contains_key(&net) && nets.len() >= MAX_RATE_LIMITED_NETWORKS {
+            if !nets.contains_key(&net)
+                && nets.len() >= MAX_RATE_LIMITED_NETWORKS
+                && self.swept.swap(now, std::sync::atomic::Ordering::Relaxed) != now
+            {
+                #[cfg(test)]
+                self.sweeps
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 nets.retain(|_, (second, _)| *second == now);
             }
             if !nets.contains_key(&net) && nets.len() >= MAX_RATE_LIMITED_NETWORKS {
@@ -1692,6 +1708,30 @@ mod tests {
             ..l
         };
         assert_eq!(l.check(new, 5), Verdict::Answer);
+    }
+
+    /// A full table is swept for expired networks once a second, not for
+    /// every packet from a new network: a flood of spoofed sources would
+    /// otherwise scan all entries per packet.
+    #[test]
+    fn full_table_is_swept_once_a_second() {
+        use std::sync::atomic::Ordering;
+        let l = limiter(false, 1);
+        for i in 0..MAX_RATE_LIMITED_NETWORKS {
+            let ip = IpAddr::from([10, (i >> 8) as u8, i as u8, 1]);
+            assert_eq!(l.check(ip, 5), Verdict::Answer);
+        }
+        for i in 0..50u8 {
+            assert_ne!(l.check(IpAddr::from([11, 0, i, 1]), 5), Verdict::Answer);
+        }
+        assert_eq!(l.sweeps.load(Ordering::Relaxed), 1);
+        // The next second sweeps again.
+        let l = RateLimiter {
+            frozen: Some(2),
+            ..l
+        };
+        assert_eq!(l.check(IpAddr::from([12, 0, 0, 1]), 5), Verdict::Answer);
+        assert_eq!(l.sweeps.load(Ordering::Relaxed), 2);
     }
 
     /// Spec dns-server "Rate limit" over the wire: past the limit a UDP

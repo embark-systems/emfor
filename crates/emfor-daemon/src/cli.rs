@@ -144,23 +144,19 @@ async fn start(config_path: PathBuf, check_only: bool, show: bool) -> ExitCode {
                         for f in &files {
                             eprintln!("{f}");
                         }
-                        use std::io::Write;
-                        let text = config::show_layers(layers);
-                        match std::io::stdout().lock().write_all(text.as_bytes()) {
-                            Ok(()) => {}
-                            // The reader closing the pipe early (`| head`)
-                            // is not a failure, as for `emfor status`.
-                            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
-                            Err(e) => {
-                                eprintln!("cannot write the output: {e}");
-                                return ExitCode::from(EXIT_STARTUP);
-                            }
+                        if let Err(code) = write_stdout(&config::show_layers(layers), EXIT_STARTUP)
+                        {
+                            return code;
                         }
                     }
                     None => {
-                        println!("{ok}");
+                        let mut text = format!("{ok}\n");
                         for f in &files {
-                            println!("{f}");
+                            text.push_str(f);
+                            text.push('\n');
+                        }
+                        if let Err(code) = write_stdout(&text, EXIT_STARTUP) {
+                            return code;
                         }
                     }
                 }
@@ -259,6 +255,21 @@ fn log_filter(level: &str) -> EnvFilter {
     EnvFilter::new(format!(
         "{level},hickory_server={hickory},hickory_proto={hickory},hickory_net={hickory}"
     ))
+}
+
+/// Write `text` to standard output. The reader closing the pipe early
+/// (`| head`) is not a failure, as for `emfor status`; any other write error
+/// is reported and gives `fail`. `println!` would panic and exit with 101.
+pub(crate) fn write_stdout(text: &str, fail: u8) -> Result<(), ExitCode> {
+    use std::io::Write;
+    match std::io::stdout().lock().write_all(text.as_bytes()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => {
+            eprintln!("cannot write the output: {e}");
+            Err(ExitCode::from(fail))
+        }
+    }
 }
 
 /// What `load` read besides the main file: the files, only when

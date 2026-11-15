@@ -92,10 +92,10 @@ pub fn main(config_path: &Path, args: &LookupArgs) -> ExitCode {
     let key = args.key.as_deref();
     if !explain && !args.json {
         return match client.lookup(&args.service, key) {
-            Ok(address) => {
-                println!("{address}");
-                ExitCode::from(EXIT_ANSWER)
-            }
+            Ok(address) => match crate::cli::write_stdout(&format!("{address}\n"), EXIT_STORE) {
+                Ok(()) => ExitCode::from(EXIT_ANSWER),
+                Err(code) => code,
+            },
             Err(e) => {
                 eprintln!("{e}");
                 ExitCode::from(exit_for(e.code))
@@ -211,18 +211,24 @@ pub fn print_result(
     answer: &Result<Option<String>, Error>,
     explanation: Option<&Explanation>,
 ) -> ExitCode {
-    if args.json {
-        println!(
-            "{:#}",
+    let out = if args.json {
+        format!(
+            "{:#}\n",
             json_result(args, explain, store_path, via, family, answer, explanation)
-        );
+        )
     } else {
-        for line in text_result(explain, store_path, via, family, answer, explanation) {
-            println!("{line}");
-        }
-        if let Err(e) = answer {
-            eprintln!("{e}");
-        }
+        text_result(explain, store_path, via, family, answer, explanation)
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect()
+    };
+    if let Err(code) = crate::cli::write_stdout(&out, EXIT_STORE) {
+        return code;
+    }
+    if !args.json
+        && let Err(e) = answer
+    {
+        eprintln!("{e}");
     }
     ExitCode::from(match answer {
         Ok(_) => EXIT_ANSWER,

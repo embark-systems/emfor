@@ -225,7 +225,7 @@ The server answers only `GET /metrics` (a query string is ignored): other paths 
 | `emfor_plugin_up` | gauge | `plugin` | 1 while the plugin runs and has answered the handshake, 0 while it is down or restarting; only with `[plugins]` |
 | `emfor_plugin_restarts_total` | counter | `plugin` | Times the plugin was started again after it exited; from 0 when the plugin is started for a config |
 | `emfor_peer_up` | gauge | `peer` | With `[peers]`: one per other member, 1 while a message from it was accepted in the last 3 seconds; a member removed on reload loses its series |
-| `emfor_peer_messages_rejected_total` | counter | `reason` | With `[peers]`: dropped peer messages by the first check they failed: `malformed`, `auth` (wrong secret, or a message that does not decrypt), `sender`, `site`, `stale`, `replay`; all six from 0 |
+| `emfor_peer_messages_rejected_total` | counter | `reason` | With `[peers]`: dropped peer messages by the first check they failed: `malformed`, `auth` (wrong secret, or a message that does not decrypt), `sender`, `site`, `stale`, `replay`, `plaintext` (an unencrypted datagram while `accept_plaintext` is `false`); all seven from 0 |
 | `emfor_peer_notifications_total` | counter | `direction` | With `[peers]`: backend failure reports `sent` (one per receiving member) and `received` (accepted, whether acted on or not) |
 | `emfor_peer_results_total` | counter | `direction` | With `[peers]`: check results of assigned checkers `sent` (one per receiving member) and `received` (accepted, whether counted or not) |
 | `emfor_peer_disagreements` | gauge | | With `[peers]`: backends the group votes down while this daemon's own check passes |

@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+**Fixes from a review of the whole system.** (1) `include_dir`: a
+directory or fragment owned by anyone but root or the user running emfor is
+refused (a link is judged by the file it points to), as one writable by
+group or others already was; the file is checked after it is opened, not by
+name. Run `emfor check-config` as the user the daemon runs as, or keep the
+files owned by root. (2) A reload or shutdown no longer counts the plugin
+requests it cancels as "no answer", so a healthy plugin shared by several
+services is not killed and restarted when one of them is reloaded away. (3)
+`emfor check-config` (exit 1) and `emfor lookup` (exit 3) report a write
+error on standard output with a status instead of panicking (exit 101); a
+closed pipe is not an error. (4) A `peers` `secret_file` that group or others can write is refused.
+(5) A plugin's `validate` answer is bounded in bytes of its JSON line, so that a rejected reload cannot
+make the daemon kill the running plugin. (6) The `check-config --show`
+comments escape control characters in file names. (7) `boot` in a peer
+message must be lowercase hex, as specified; a peer's `down` reason is cut
+and escaped before it is logged; `meta/peers` writes no longer pile up while
+commits fail; the DNS rate limiter sweeps a full table once a second, not
+once per packet. (8) The metrics documentation lists the seventh peer reject
+reason, `plaintext`. (9) `Client::for_store` (new in this release, for `emfor lookup`) exists only
+with the `daemon-internal` feature, and `Client::new` is not public (the Rust
+`Client` type itself was not exported before this release). Not changed, on purpose: the RADIUS `secret_file`,
+`password_file` and `tls_key_file` still have no permission check (adding one
+would stop installs that work today from starting); the Perl client hashes a
+byte-string affinity key as Latin-1 text (documented: decode it first).
+
 **`emfor check-config --show`: the merged config and where each value
 comes from.** With `include_dir` the config is in several files; `--show`
 checks it as `check-config` does and prints the merged config as TOML on

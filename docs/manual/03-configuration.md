@@ -122,7 +122,7 @@ secret_file = "/etc/emfor/peers.key"
 | --- | --- | --- |
 | `listen` | required | This daemon's UDP address in the group, one of `members`. A specific address, not `0.0.0.0` or `::`; other members check that messages come from it. 5302 is the usual port. |
 | `members` | required | Every member's `listen`, this daemon included: 2 to 64 addresses, no repeats, all IPv4 or all IPv6 like `listen`. The same list can go on every host of the site. |
-| `secret_file` | required | Absolute path to the shared secret that authenticates and encrypts every message: at least 32 bytes after one trailing line feed is removed, not readable by other users (`chmod 600` or `640`). |
+| `secret_file` | required | Absolute path to the shared secret that authenticates and encrypts every message: at least 32 bytes after one trailing line feed is removed, not readable by other users and not writable by group or others (`chmod 600` or `640`). |
 | `previous_secret_file` | none | Optional. Absolute path to the secret `secret_file` held before its last change, with the same conditions. Read only at start, so that a daemon restarted during a secret change keeps signing with and accepting the previous secret as if it had not restarted (see below). |
 | `encrypt` | `true` | `true` sends every message encrypted, with keys derived from the secret: `EMP3` (XChaCha20-Poly1305, 24-byte random nonce) to members that run this release, `EMP2` (ChaCha20-Poly1305, 12-byte random nonce) to the others, picked per member as described below. `false` sends them only signed (`EMP1`: HMAC-SHA256), so backend names, addresses and reasons can be read on the network. All three are accepted either way; with `true` the daemon logs a warning, once a minute per member, for each member that still sends `EMP1`. |
 | `accept_plaintext` | `true` | `false` drops every `EMP1` message (counted as `plaintext` in `emfor_peer_messages_rejected_total`), so nobody who learns the secret can make this daemon read a signed but unencrypted message. Needs `encrypt = true`. Set it once every member sends `EMP2` or `EMP3`. |
@@ -343,8 +343,14 @@ directory. Everything else, including `site`, `[dns]`, `[peers]` and
 **Permissions.** The directory and every file read from it must not be
 writable by group or others (mode `0755` and `0644` are fine, `0775` and
 `0664` are not); otherwise the config is refused and the error names the
-path and mode. A fragment can declare a plugin `command` or an `exec`
-check, so whoever can write there can run programs as the daemon's user.
+path and mode. The owner must be root or the user running emfor (for a
+link, the owner of the file it points to); otherwise the config is refused
+too, because a file owned by anyone else can be changed by that user. A
+fragment can declare a plugin `command` or an `exec` check, so whoever can
+write there can run programs as the daemon's user. Run
+`emfor check-config` as the user the daemon runs as (the systemd unit and
+the FreeBSD `configtest` do); run by hand as root, it accepts only files
+owned by root.
 The main file is not checked this way, so protect it yourself (`0644`,
 owned by root).
 
@@ -418,7 +424,7 @@ redacted; the config holds password file paths, not passwords, but a plugin
 `command` is printed as written, so do not put a secret there. The comment
 format is for people; do not parse it.
 
-It exits 0 when the config is valid and 2 otherwise. It starts the declared
+It exits 0 when the config is valid and 2 otherwise (1 when it cannot write its output, for example to a full disk; a closed pipe is not an error). It starts the declared
 plugins so that they can check their services' `check_options`, and stops
 them before it exits. It does not open the store. A daemon started with an
 invalid config logs the same errors and exits 2.

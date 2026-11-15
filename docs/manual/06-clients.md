@@ -195,7 +195,7 @@ are not explained.
 | 0 | An address was printed (with `--dns`: the service has candidates for the family) |
 | 1 | No backend can be chosen: `ALL_DOWN`, or no backend of the family with `--dns` |
 | 2 | No such service, an invalid command line, or a config that cannot be read |
-| 3 | The store cannot be used (`UNAVAILABLE`) or has a format this command does not read (`INCOMPATIBLE`) |
+| 3 | The store cannot be used (`UNAVAILABLE`) or has a format this command does not read (`INCOMPATIBLE`), or the output cannot be written (a full disk; a closed pipe is not an error) |
 
 `--explain` does not change the exit status, and a failed lookup still prints
 what is known.

@@ -262,7 +262,20 @@ async fn read_requests<P: Plugin, R: AsyncBufRead + Unpin>(
                 }
             }
             Request::Validate { id, options } => {
-                let errors = plugin.validate(&options);
+                let mut errors = plugin.validate(&options);
+                // The answer is one line, and the daemon refuses lines over
+                // 64 KiB (and then kills the plugin): bound it.
+                errors.truncate(VALIDATE_ERRORS_MAX);
+                for e in &mut errors {
+                    e.key = cap_reason(std::mem::take(&mut e.key));
+                    e.message = cap_reason(std::mem::take(&mut e.message));
+                }
+                // The limit is on the bytes of the JSON line, where one
+                // control character takes six (`\u0001`): drop errors until
+                // the line is well under it.
+                while errors.len() > 1 && validate_line_len(id, &errors) > VALIDATE_LINE_MAX {
+                    errors.pop();
+                }
                 send(tx, &Response::Validate { id, errors });
             }
             Request::Check {
@@ -334,6 +347,21 @@ fn task_failure(e: tokio::task::JoinError) -> String {
 /// (spec health-checking, reason normalization), so the result is the same.
 pub const REASON_MAX_CHARS: usize = 512;
 
+/// Most `check_options` errors one `validate` answer carries.
+const VALIDATE_ERRORS_MAX: usize = 12;
+
+/// Longest `validate` answer line the plugin sends, in bytes; the daemon
+/// refuses lines of 64 KiB and over.
+const VALIDATE_LINE_MAX: usize = 48 * 1024;
+
+fn validate_line_len(id: u64, errors: &[OptionError]) -> usize {
+    serde_json::to_string(&Response::Validate {
+        id,
+        errors: errors.to_vec(),
+    })
+    .map_or(0, |line| line.len())
+}
+
 /// `reason` cut to its first [`REASON_MAX_CHARS`] characters, followed by
 /// `…` when it was longer. A backend's error text can be any length, and a
 /// line over the daemon's 65536-byte limit would get the plugin restarted.
@@ -385,7 +413,19 @@ mod tests {
             "9.9.9"
         }
         fn validate(&self, options: &Options) -> Vec<OptionError> {
-            if options.contains_key("bad") {
+            if options.contains_key("many") {
+                // Control characters take six bytes each in JSON.
+                (0..100)
+                    .map(|i| {
+                        let fill = if options["many"] == "control" {
+                            "\u{1}"
+                        } else {
+                            "x"
+                        };
+                        OptionError::new(format!("k{i}"), fill.repeat(2000))
+                    })
+                    .collect()
+            } else if options.contains_key("bad") {
                 vec![OptionError::new("bad", "unknown key")]
             } else {
                 Vec::new()
@@ -457,6 +497,44 @@ mod tests {
                 json!({"type":"validate","id":2,"errors":[{"key":"bad","message":"unknown key"}]}),
             ]
         );
+    }
+
+    /// The `validate` answer is one line that the daemon reads up to 64 KiB:
+    /// it is bounded, whatever the options give.
+    #[tokio::test]
+    async fn validate_answer_is_bounded() {
+        let (answers, result) = exchange(concat!(
+            r#"{"type":"validate","id":1,"options":{"many":true}}"#,
+            "\n",
+        ))
+        .await;
+        result.unwrap();
+        let errors = answers[0]["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), VALIDATE_ERRORS_MAX);
+        assert!(answers[0].to_string().len() < 60_000);
+        // Each key and message is its first 512 characters, then `…`.
+        for e in errors {
+            let message = e["message"].as_str().unwrap();
+            assert_eq!(message.chars().count(), REASON_MAX_CHARS + 1);
+            assert!(message.ends_with('…'));
+        }
+    }
+
+    /// The limit is on the bytes of the line the daemon reads (64 KiB), and
+    /// a control character is six bytes of it.
+    #[tokio::test]
+    async fn validate_answer_is_bounded_in_bytes() {
+        let (answers, result) = exchange(concat!(
+            r#"{"type":"validate","id":1,"options":{"many":"control"}}"#,
+            "\n",
+        ))
+        .await;
+        result.unwrap();
+        // The test harness re-serializes the answer; the plugin's own line is
+        // the same JSON.
+        let line = serde_json::to_string(&answers[0]).unwrap();
+        assert!(line.len() < 64 * 1024, "{} bytes", line.len());
+        assert!(!answers[0]["errors"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

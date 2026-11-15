@@ -154,7 +154,7 @@ answer: 10.0.0.11:8080
 | 0 | 印出了位址（用 `--dns` 時：服務在該 family 有候選） |
 | 1 | 沒有 backend 可選：`ALL_DOWN`，或用 `--dns` 時沒有該 family 的 backend |
 | 2 | 沒有這個服務、命令列無效，或讀不到設定檔 |
-| 3 | store 無法使用（`UNAVAILABLE`），或格式這個指令讀不了（`INCOMPATIBLE`） |
+| 3 | store 無法使用（`UNAVAILABLE`），或格式這個指令讀不了（`INCOMPATIBLE`），或輸出寫不出去（磁碟滿了；管線被關掉不算錯誤） |
 
 `--explain` 不會改變結束代碼，查詢失敗時仍會印出已知的內容。
 

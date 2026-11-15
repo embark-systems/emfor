@@ -210,7 +210,23 @@ impl PluginHost {
 
     /// Send a request built from a fresh id and wait for its answer. The
     /// caller enforces any timeout; dropping the future forgets the request.
+    ///
+    /// For callers that do not know how long they wait (tests): every drop
+    /// counts as unanswered. Production callers use [`PluginHost::call_waiting`].
+    #[doc(hidden)]
     pub async fn call(&self, build: impl FnOnce(u64) -> Request) -> Result<Response, CallError> {
+        self.call_waiting(Duration::ZERO, build).await
+    }
+
+    /// [`PluginHost::call`] for a caller that gives up after `wait`. A call
+    /// dropped before `wait` has passed was cancelled (its task was aborted
+    /// by a reload or at shutdown), not abandoned by a plugin that does not
+    /// answer, so it does not count towards [`STALL_UNANSWERED`].
+    pub async fn call_waiting(
+        &self,
+        wait: Duration,
+        build: impl FnOnce(u64) -> Request,
+    ) -> Result<Response, CallError> {
         let (tx, rx) = oneshot::channel();
         let guard = {
             let conn = self.shared.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -231,6 +247,12 @@ impl PluginHost {
             let guard = PendingGuard {
                 pending: Some(conn.pending.clone()),
                 id,
+                started: Instant::now(),
+                // Timers fire a little late, never early: a margin for the
+                // clock's granularity, at most half the wait (the shortest
+                // check timeout is 10 ms, and a zero wait would count every
+                // cancellation).
+                wait: wait.saturating_sub(Duration::from_millis(20).min(wait / 2)),
             };
             match conn.tx.try_send(line) {
                 Ok(()) => {}
@@ -270,6 +292,10 @@ impl PluginHost {
 struct PendingGuard {
     pending: Option<Pending>,
     id: u64,
+    started: Instant,
+    /// How long the caller waits before it gives up; a drop earlier than
+    /// that is a cancellation.
+    wait: Duration,
 }
 
 impl PendingGuard {
@@ -287,7 +313,10 @@ impl Drop for PendingGuard {
             return;
         };
         let mut waiters = lock(&p);
-        if waiters.map.remove(&self.id).is_some() && !waiters.closed {
+        if waiters.map.remove(&self.id).is_some()
+            && !waiters.closed
+            && self.started.elapsed() >= self.wait
+        {
             waiters.unanswered += 1;
             if waiters.unanswered == STALL_UNANSWERED {
                 waiters.stalled.notify_one();

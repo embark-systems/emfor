@@ -149,7 +149,7 @@ pub struct Group {
 /// Entries older than [`WARN_EVERY`] are dropped once `warned` holds
 /// [`MAX_WARN_ENTRIES`], so a flood of sources cannot grow it further.
 /// A `member` key (from a configured member's address, at most
-/// [`crate::config::MAX_MEMBERS`] × 6 of them) always has room, so such a
+/// [`crate::config::MAX_MEMBERS`] × 7 of them) always has room, so such a
 /// flood cannot hide the warnings about real members.
 fn should_warn<K: Hash + Eq>(
     warned: &mut HashMap<K, Instant>,

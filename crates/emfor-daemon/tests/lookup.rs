@@ -120,6 +120,37 @@ fn round_robin_prints_a_candidate() {
     );
 }
 
+/// Spec lookup-command "Lookup output errors": a standard output that cannot
+/// be written gives exit 3 and a message, not a panic (101). Only Linux has
+/// /dev/full. The store is good, so the lookup reaches the write.
+#[cfg(target_os = "linux")]
+#[test]
+fn lookup_reports_a_full_disk() {
+    use std::process::Stdio;
+    let f = fixture("fresh", "2", service(json!({}), &three()));
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let out = Command::new(cargo_bin("emfor"))
+        .args(["lookup", "api.svc.emfor", "--config"])
+        .arg(&f.config)
+        .env_remove("EMFOR_MAX_STALENESS")
+        .env_remove("EMFOR_STORE")
+        .stdin(Stdio::null())
+        .stdout(full)
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot write the output"));
+}
+
 /// Scenario "Lookup does not write the store": the data file is the same
 /// after a lookup, with and without `--explain`.
 #[test]

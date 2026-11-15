@@ -262,7 +262,12 @@ fn string(v: Option<serde_json::Value>) -> Option<String> {
 /// Parse a JSON payload; `None` when it is malformed.
 pub(super) fn parse_payload(payload: &[u8]) -> Option<Message> {
     let wire: WireIn = serde_json::from_slice(payload).ok()?;
-    if wire.boot.len() != 16 || !wire.boot.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if wire.boot.len() != 16
+        || !wire
+            .boot
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
         return None;
     }
     let kind = match wire.kind.as_str() {
@@ -313,6 +318,24 @@ mod tests {
     use super::*;
     use crate::peers::crypto::{Secret, encode, encode_encrypted, encode_encrypted_v3, open_with};
     use crate::peers::test_support::*;
+
+    /// Spec peer-group: `boot` is 16 lowercase hex digits.
+    #[test]
+    fn boot_is_lowercase_hex() {
+        let msg = |boot: &str| {
+            format!(
+                r#"{{"from":"10.0.0.1:5302","site":"dc1","boot":"{boot}","seq":1,"ts":1,"kind":"hb"}}"#
+            )
+        };
+        assert!(
+            parse_payload(msg("0123456789abcdef").as_bytes()).is_some(),
+            "the lowercase message parses"
+        );
+        assert!(
+            parse_payload(msg("0123456789ABCDEF").as_bytes()).is_none(),
+            "uppercase hex is not accepted"
+        );
+    }
 
     #[test]
     fn encode_then_decode() {

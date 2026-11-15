@@ -450,12 +450,15 @@ pub fn spawn_backend(
                         let Some(report) = peers.recheck.take() else { continue };
                         let s = *settings.borrow();
                         if starts_fast_run(health.state, fast_left > 0, last_run_end, Instant::now(), &s) {
+                            // The reason comes from another host: escape it and
+                            // cut it, so it cannot forge or flood log lines.
+                            let reason = peer_reason_for_log(&report.reason);
                             tracing::info!(
                                 service = %service,
                                 backend = %backend.id,
                                 peer = %report.from,
                                 "peer {} reports backend {} of {} down ({}); checking now",
-                                report.from, backend.id, service, report.reason,
+                                report.from, backend.id, service, reason,
                             );
                             fast_left = s.fall;
                             break;
@@ -475,8 +478,30 @@ pub fn spawn_backend(
     })
 }
 
+/// A failure reason received from a peer, for the log: cut to 256
+/// characters and escaped, so that it cannot add log lines or fill the log.
+fn peer_reason_for_log(reason: &str) -> String {
+    reason
+        .chars()
+        .take(256)
+        .collect::<String>()
+        .escape_debug()
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn peer_reason_is_one_bounded_line() {
+        let reason = format!("line one\nline two\r\u{1b}[31m{}", "x".repeat(1000));
+        let shown = super::peer_reason_for_log(&reason);
+        assert!(!shown.contains(['\n', '\r', '\u{1b}']), "{shown:?}");
+        assert!(shown.contains("line one\\nline two"), "{shown}");
+        // 256 characters in, at most six bytes each out.
+        assert!(shown.len() <= 256 * 6, "{} bytes", shown.len());
+        assert_eq!(super::peer_reason_for_log("plain"), "plain");
+    }
+
     use super::*;
     use crate::checker::CheckResult;
     use futures::future::BoxFuture;

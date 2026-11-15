@@ -506,6 +506,10 @@ impl<S: Sink> Writer<S> {
                 *value = Some(json.clone());
             }
         }
+        // Only the latest value matters: while commits fail, older ones
+        // would pile up.
+        self.pending
+            .retain(|op| !matches!(op, Op::Put(k, _) if k == KEY_PEERS));
         self.pending.push(Op::Put(KEY_PEERS.into(), json));
     }
 
@@ -781,8 +785,12 @@ impl<S: Sink> Writer<S> {
                             .into_iter()
                             .filter(|op| {
                                 !matches!(op, Op::Put(k, _) if k.starts_with(SERVICE_KEY_PREFIX)
-                                    || k.starts_with(HIST_KEY_PREFIX)
-                                    || k == KEY_HEARTBEAT)
+                                || k.starts_with(HIST_KEY_PREFIX)
+                                || k == KEY_HEARTBEAT
+                                || (k == KEY_PEERS
+                                    && self.pending.iter().any(
+                                        |p| matches!(p, Op::Put(pk, _) if pk == KEY_PEERS),
+                                    )))
                             })
                             .collect();
                         kept.append(&mut self.pending);

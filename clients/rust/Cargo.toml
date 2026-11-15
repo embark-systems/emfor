@@ -11,6 +11,11 @@ name = "emfor_client"
 [features]
 # Test entry point (explicit store path and staleness); not public API.
 testing = []
+# `Client::for_store`, for `emfor lookup` to name the store itself. Not public
+# API: the clients are configured by environment variables only. libemfor is
+# built from this package alone (`cargo cinstall --features capi` here), so
+# the daemon's request for this feature is not part of that build.
+daemon-internal = []
 # C API, built into libemfor with cargo-c.
 capi = []
 

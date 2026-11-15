@@ -213,6 +213,35 @@ async fn dropped_request_is_forgotten() {
     host.stop().await;
 }
 
+/// Spec checker-plugins: a plugin that answers within the timeout is never
+/// killed. Calls whose tasks are aborted (a reload, shutdown) were not given
+/// up on after the timeout and do not count as unanswered.
+#[tokio::test]
+async fn aborted_requests_do_not_restart_the_plugin() {
+    let host = Arc::new(PluginHost::start("fake", &command(&[])).await.unwrap());
+    let pid = host.pid().unwrap();
+    let tasks: Vec<_> = (0..4)
+        .map(|_| {
+            let h = host.clone();
+            tokio::spawn(
+                async move { h.call_waiting(Duration::from_secs(30), check("hang")).await },
+            )
+        })
+        .collect();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    for t in &tasks {
+        t.abort();
+    }
+    for t in tasks {
+        assert!(t.await.unwrap_err().is_cancelled());
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(host.pid(), Some(pid), "the plugin was restarted");
+    let (_, result, _) = result_of(host.call(check("up")).await.unwrap());
+    assert_eq!(result, "up");
+    host.stop().await;
+}
+
 #[tokio::test]
 async fn plugin_that_stops_answering_is_restarted() {
     let host = PluginHost::start("fake", &command(&[])).await.unwrap();
@@ -235,6 +264,29 @@ async fn plugin_that_stops_answering_is_restarted() {
     assert_eq!(result, "up");
     host.stop().await;
     assert!(!alive(new_pid));
+}
+
+/// The production path: callers that wait a real time and give up when it
+/// passes (`run_check`'s timeout) are counted, so a plugin that never answers
+/// is restarted. Without this, stall detection could silently never fire.
+#[tokio::test]
+async fn plugin_that_never_answers_waiting_callers_is_restarted() {
+    let host = PluginHost::start("fake", &command(&[])).await.unwrap();
+    let first_pid = host.pid().unwrap();
+    for _ in 0..3 {
+        let wait = Duration::from_millis(100);
+        let r = tokio::time::timeout(wait, host.call_waiting(wait, check("hang"))).await;
+        assert!(r.is_err());
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if host.pid().is_some_and(|p| p != first_pid) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "stuck plugin not restarted");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    host.stop().await;
 }
 
 #[tokio::test]

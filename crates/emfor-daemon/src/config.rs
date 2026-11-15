@@ -231,6 +231,12 @@ pub fn read_secret(path: &Path) -> Result<Vec<u8>, String> {
             path.display()
         ));
     }
+    if meta.permissions().mode() & 0o022 != 0 {
+        return Err(format!(
+            "{} must not be writable by group or other users (chmod go-w)",
+            path.display()
+        ));
+    }
     let mut bytes =
         std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     if bytes.last() == Some(&b'\n') {
@@ -440,7 +446,7 @@ pub fn show_layers(layers: &Layers) -> String {
             .files
             .first()
             .map_or_else(String::new, |f| f.display().to_string());
-        out.push_str(&format!("# merged from {main}\n"));
+        out.push_str(&format!("# merged from {}\n", comment_safe(&main)));
     }
     if let Some(toml::Value::String(dir)) = layers.table.get("include_dir") {
         out.push_str(&format!(
@@ -450,6 +456,20 @@ pub fn show_layers(layers: &Layers) -> String {
     }
     show_table(&layers.table, "", "", layers, &mut out);
     out
+}
+
+/// `text` for a comment: a line break or other control character in a file
+/// name would end the comment and leave the rest as TOML.
+fn comment_safe(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() {
+                format!("\\u{:04x}", u32::from(c))
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 /// A key as TOML writes it: bare when it can be, else a quoted, escaped string.
@@ -474,7 +494,7 @@ fn show_table(table: &toml::Table, path: &str, shown: &str, layers: &Layers, out
         }
         out.push_str(&format!("{} = {value}", toml_key(key)));
         if let Some(file) = layers.origins.get(&key_path(path, key)) {
-            out.push_str(&format!(" # {file}"));
+            out.push_str(&format!(" # {}", comment_safe(file)));
         }
         out.push('\n');
     }
@@ -609,10 +629,10 @@ pub fn read_layers_with(
     let mut tables = vec![(path.display().to_string(), main)];
     for file in fragments {
         let shown = file.display().to_string();
-        let text = match std::fs::read_to_string(&file) {
+        let text = match read_trusted(&file) {
             Ok(t) => t,
             Err(e) => {
-                errors.push(ConfigError::new("", format!("cannot read {shown}: {e}")));
+                errors.push(ConfigError::new("", e));
                 continue;
             }
         };
@@ -670,14 +690,12 @@ fn list_fragments(
             return Vec::new();
         }
     };
-    if meta.permissions().mode() & 0o022 != 0 {
-        errors.push(ConfigError::new(
-            "",
-            format!(
-                "{shown}: writable by group or others (mode {:04o}); refusing to load it",
-                meta.permissions().mode() & 0o7777
-            ),
-        ));
+    if let Some(why) = untrusted(
+        meta.permissions().mode(),
+        std::os::unix::fs::MetadataExt::uid(&meta),
+        nix::unistd::geteuid().as_raw(),
+    ) {
+        errors.push(ConfigError::new("", format!("{shown}: {why}")));
     }
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -732,20 +750,49 @@ fn list_fragments(
         if !m.is_file() {
             continue;
         }
-        if m.permissions().mode() & 0o022 != 0 {
-            errors.push(ConfigError::new(
-                "",
-                format!(
-                    "{}: writable by group or others (mode {:04o}); refusing to load it",
-                    file.display(),
-                    m.permissions().mode() & 0o7777
-                ),
-            ));
-            continue;
-        }
         files.push(file);
     }
     files
+}
+
+/// Why a config directory or file cannot be trusted, or `None`. A fragment
+/// can declare a plugin `command`, which runs with the daemon's rights, so
+/// whoever can write the directory or the file, or owns it, decides what the
+/// daemon runs: group and others must not write it, and its owner must be
+/// root or the user the daemon runs as (`euid`). For a link, the arguments
+/// describe the file it points to.
+fn untrusted(mode: u32, uid: u32, euid: u32) -> Option<String> {
+    if mode & 0o022 != 0 {
+        return Some(format!(
+            "writable by group or others (mode {:04o}); refusing to load it",
+            mode & 0o7777
+        ));
+    }
+    if uid != 0 && uid != euid {
+        return Some(format!(
+            "owned by uid {uid}, not root or the user running emfor (uid {euid}); refusing to load it"
+        ));
+    }
+    None
+}
+
+/// Open a fragment and check the file that was opened (not the name, which
+/// could be pointed at another file in between), then read it.
+fn read_trusted(file: &Path) -> Result<String, String> {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    let shown = file.display();
+    let mut f = std::fs::File::open(file).map_err(|e| format!("cannot read {shown}: {e}"))?;
+    let meta = f
+        .metadata()
+        .map_err(|e| format!("cannot read {shown}: {e}"))?;
+    if let Some(why) = untrusted(meta.mode(), meta.uid(), nix::unistd::geteuid().as_raw()) {
+        return Err(format!("{shown}: {why}"));
+    }
+    let mut text = String::new();
+    f.read_to_string(&mut text)
+        .map_err(|e| format!("cannot read {shown}: {e}"))?;
+    Ok(text)
 }
 
 /// Merge `over` into `base`: two tables merge key by key; anything else
@@ -1892,6 +1939,32 @@ backends = ["10.0.0.1:80"]
             "{site}[peers]\n{peers}secret_file = \"{}\"\n{SVC}",
             secret.display()
         )
+    }
+
+    /// A peer secret that group or others can write is refused, as one that
+    /// others can read is.
+    #[test]
+    fn writable_peer_secret_is_refused() {
+        for mode in [0o620, 0o602, 0o660] {
+            let (_d, key) = secret_file(&[b'k'; 64], mode);
+            let site = "site = \"dc1\"\n\n";
+            let e = parse_err(&peers_conf(
+                site,
+                "listen = \"10.0.0.5:5302\"\nmembers = [\"10.0.0.5:5302\", \"10.0.0.6:5302\"]\n",
+                &key,
+            ));
+            assert!(
+                e.iter().any(|e| e.message.contains("must not be writable")),
+                "mode {mode:o}: {e:?}"
+            );
+        }
+        let (_d, key) = secret_file(&[b'k'; 64], 0o640);
+        let site = "site = \"dc1\"\n\n";
+        parse_ok(&peers_conf(
+            site,
+            "listen = \"10.0.0.5:5302\"\nmembers = [\"10.0.0.5:5302\", \"10.0.0.6:5302\"]\n",
+            &key,
+        ));
     }
 
     const LISTEN_MEMBERS: &str =
@@ -3203,6 +3276,64 @@ interval = "2s"
         assert!(e.contains("10-a.toml") && e.contains("0664"), "{e}");
     }
 
+    /// A link is judged by the file it points to, not by the link.
+    #[test]
+    fn symlink_to_a_group_writable_file_is_refused() {
+        let (d, main) = setup(MAIN, &[]);
+        let target = d.path().join("elsewhere.txt");
+        std::fs::write(&target, "site = \"dc9\"\n").expect("target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o664)).expect("mode");
+        std::os::unix::fs::symlink(&target, d.path().join("conf.d/10-svc.toml")).expect("link");
+        let e = errs(read_layers(&main));
+        assert!(e.contains("10-svc.toml") && e.contains("0664"), "{e}");
+    }
+
+    /// A fragment owned by someone else is refused, whatever its mode. Only
+    /// root can give a file away, so this runs in the Debian container.
+    #[test]
+    fn foreign_owner_is_refused() {
+        if nix::unistd::geteuid().as_raw() != 0 {
+            return;
+        }
+        let (d, main) = setup(MAIN, &[("10-a.toml", "")]);
+        let frag = d.path().join("conf.d/10-a.toml");
+        std::os::unix::fs::chown(&frag, Some(12345), None).expect("chown");
+        let e = errs(read_layers(&main));
+        assert!(
+            e.contains("10-a.toml") && e.contains("owned by uid 12345"),
+            "{e}"
+        );
+        // A link to such a file is refused too.
+        std::fs::remove_file(&frag).expect("remove");
+        let target = d.path().join("elsewhere.txt");
+        std::fs::write(&target, "").expect("target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).expect("mode");
+        std::os::unix::fs::chown(&target, Some(12345), None).expect("chown");
+        std::os::unix::fs::symlink(&target, &frag).expect("link");
+        assert!(errs(read_layers(&main)).contains("owned by uid 12345"));
+        // And a directory owned by someone else.
+        std::fs::remove_file(&frag).expect("remove");
+        std::os::unix::fs::chown(d.path().join("conf.d"), Some(12345), None).expect("chown");
+        assert!(errs(read_layers(&main)).contains("conf.d"));
+    }
+
+    /// Spec "Config directory permissions": the owner must be root or the
+    /// user running emfor, whatever the mode.
+    #[test]
+    fn owner_must_be_root_or_the_daemon_user() {
+        assert_eq!(untrusted(0o100644, 0, 1000), None);
+        assert_eq!(untrusted(0o100644, 1000, 1000), None);
+        assert_eq!(untrusted(0o100640, 0, 0), None);
+        let why = untrusted(0o100644, 1001, 1000).expect("foreign owner");
+        assert!(
+            why.contains("owned by uid 1001") && why.contains("uid 1000"),
+            "{why}"
+        );
+        let why = untrusted(0o100664, 0, 0).expect("group writable");
+        assert!(why.contains("0664"), "{why}");
+        assert!(untrusted(0o040777, 0, 0).is_some());
+    }
+
     #[test]
     fn world_writable_directory_is_refused() {
         let (d, main) = setup(MAIN, &[]);
@@ -3446,6 +3577,20 @@ interval = "2s"
             )]
         );
         assert!(text.starts_with("# merged from "));
+    }
+
+    /// A file name with a line break must not turn the rest of the name into
+    /// TOML (Linux and the BSDs allow it in a name).
+    #[test]
+    fn show_escapes_control_characters_in_comments() {
+        assert_eq!(
+            comment_safe("a\nsite = \"x\"\n#"),
+            "a\\u000asite = \"x\"\\u000a#"
+        );
+        assert_eq!(
+            comment_safe("/etc/emfor/emfor.toml"),
+            "/etc/emfor/emfor.toml"
+        );
     }
 
     #[test]

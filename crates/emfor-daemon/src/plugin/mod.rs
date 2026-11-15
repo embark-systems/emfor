@@ -105,10 +105,11 @@ impl CheckerFactory for PluginFactory {
         let request = json.clone();
         let answer = self.handle.block_on(tokio::time::timeout(
             VALIDATE_TIMEOUT,
-            self.host.call(|id| Request::Validate {
-                id,
-                options: request,
-            }),
+            self.host
+                .call_waiting(VALIDATE_TIMEOUT, |id| Request::Validate {
+                    id,
+                    options: request,
+                }),
         ));
         match answer {
             Err(_) => {
@@ -163,7 +164,7 @@ impl Checker for PluginChecker {
         Box::pin(async move {
             let answer = self
                 .host
-                .call(|id| Request::Check {
+                .call_waiting(req.timeout, |id| Request::Check {
                     id,
                     service: req.service.to_string(),
                     target: Target {
