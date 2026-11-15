@@ -10,3 +10,9 @@ __pycache__/
 # Claude Code settings, skills and instructions (local only)
 .claude/
 CLAUDE.md
+
+# Local todo list (never committed)
+docs/TODO.md
+
+# graphify output (knowledge graph, cache)
+graphify-out/
