@@ -3,7 +3,8 @@
 
 Each seed is one byte that picks the input's form (see
 emfor_daemon::peers::fuzz_decode), then the input: 0, an EMP1 datagram;
-1, an EMP2 datagram; 2, a payload that the target encrypts itself. All are
+1, an EMP2 or EMP3 datagram; 2 and 3, a payload that the target encrypts
+itself as EMP2 (2) or EMP3 (3). All are
 signed or encrypted with the target's secret, 32 bytes of 0x5a. Run from
 fuzz/: python3 seeds/peers.py
 """
@@ -13,7 +14,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "crates", "emfor-daemon", "tests"))
-from emp2_kat import hkdf, seal  # noqa: E402  (plain-Python RFC 5869 / RFC 8439)
+from emp2_kat import hkdf, seal, xseal  # noqa: E402  (plain-Python RFC 5869 / RFC 8439 / XChaCha)
 
 SECRET = bytes([0x5A] * 32)
 T = 1763000000000
@@ -26,11 +27,20 @@ PAYLOADS = {
 out = os.path.join(os.path.dirname(__file__), "peers")
 os.makedirs(out, exist_ok=True)
 key = hkdf(b"emfor peers", SECRET, b"EMP2 chacha20-poly1305", 32)
+key3 = hkdf(b"emfor peers", SECRET, b"EMP3 xchacha20-poly1305", 32)
 for name, text in PAYLOADS.items():
     p = text.encode()
     emp1 = b"EMP1" + hmac.new(SECRET, b"EMP1" + p, hashlib.sha256).digest() + p
     nonce = bytes(range(12))
     emp2 = b"EMP2" + nonce + seal(key, nonce, p, b"EMP2")
-    for prefix, body, suffix in [(0, emp1, "emp1"), (1, emp2, "emp2"), (2, p, "payload")]:
+    nonce3 = bytes(range(24))
+    emp3 = b"EMP3" + nonce3 + xseal(key3, nonce3, p, b"EMP3")
+    for prefix, body, suffix in [
+        (0, emp1, "emp1"),
+        (1, emp2, "emp2"),
+        (1, emp3, "emp3"),
+        (2, p, "payload"),
+        (3, p, "payload-emp3"),
+    ]:
         with open(os.path.join(out, f"{name}-{suffix}"), "wb") as f:
             f.write(bytes([prefix]) + body)

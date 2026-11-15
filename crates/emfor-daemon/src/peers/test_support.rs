@@ -31,6 +31,7 @@ pub(super) fn msg(from: &str, boot: u64, seq: u64, ts: u64, kind: Kind) -> Messa
         seq,
         ts,
         kind,
+        emp3: false,
     }
 }
 
@@ -80,6 +81,13 @@ pub(super) fn raw(json: &str) -> Vec<u8> {
 pub(super) fn open_v2(data: &[u8], key: &[u8]) -> Option<Message> {
     Keys::new(key.to_vec())
         .open(data, Instant::now())
+        .and_then(|p| parse_payload(&p))
+}
+
+/// The message in an `EMP3` datagram encrypted with `key`.
+pub(super) fn open_v3(data: &[u8], key: &[u8]) -> Option<Message> {
+    Keys::new(key.to_vec())
+        .open_v3(data, Instant::now())
         .and_then(|p| parse_payload(&p))
 }
 

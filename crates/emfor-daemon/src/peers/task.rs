@@ -14,7 +14,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use super::crypto::{ACCEPT_PREVIOUS_FOR, Keys, SIGN_PREVIOUS_FOR};
-use super::group::{Group, WARN_EVERY};
+use super::group::{Group, Outgoing, WARN_EVERY};
 use super::stats::PeerStats;
 use super::targets::{DIGEST_DIFFERS, Targets};
 use super::wire::{Down, Kind, MAX_DATAGRAM, Message, Outcome, ResultMsg};
@@ -311,10 +311,13 @@ fn apply_secret(
     }
 }
 
-async fn send_all(socket: &UdpSocket, to: &[SocketAddr], data: &[u8]) {
-    for addr in to {
-        if let Err(e) = socket.send_to(data, addr).await {
-            tracing::debug!("cannot send peer message to {addr}: {e}");
+/// Send each datagram of a message to its members.
+async fn send_all(socket: &UdpSocket, batches: &[Outgoing]) {
+    for batch in batches {
+        for addr in &batch.to {
+            if let Err(e) = socket.send_to(&batch.data, addr).await {
+                tracing::debug!("cannot send peer message to {addr}: {e}");
+            }
         }
     }
 }
@@ -420,8 +423,8 @@ async fn run(
                     .checks_skipped
                     .store(quorum.skipped(), Ordering::Relaxed);
                 state.publish(quorum.summary(&group.members_live(), now));
-                let data = group.encode(Kind::Heartbeat(quorum.off_tags()), unix_ms(), now);
-                send_all(&socket, &group.others(), &data).await;
+                let batches = group.encode(Kind::Heartbeat(quorum.off_tags()), unix_ms(), now);
+                send_all(&socket, &batches).await;
             }
             Some(ev) = out.recv() => {
                 let (service, digest) = match &ev {
@@ -457,10 +460,9 @@ async fn run(
                         &group.stats().results_sent,
                     ),
                 };
-                let others = group.others();
-                counter.fetch_add(others.len() as u64, Ordering::Relaxed);
-                let data = group.encode(kind, unix_ms(), Instant::now());
-                send_all(&socket, &others, &data).await;
+                counter.fetch_add(group.others().len() as u64, Ordering::Relaxed);
+                let batches = group.encode(kind, unix_ms(), Instant::now());
+                send_all(&socket, &batches).await;
             }
             changed = settings.changed() => {
                 if changed.is_err() {
@@ -612,7 +614,7 @@ mod tests {
         );
         let from_b = encode(&msg(B, 1, 1, t, Kind::Heartbeat(Vec::new())), KEY);
         assert!(a.accept(&from_b, addr(B), t, now).is_ok(), "B to A");
-        let from_a = a.encode(Kind::Heartbeat(Vec::new()), t, now);
+        let from_a = a.encode_one(Kind::Heartbeat(Vec::new()), t, now);
         let to_b = Group::new(
             addr(B),
             "dc1".into(),

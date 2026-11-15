@@ -123,8 +123,8 @@ secret_file = "/etc/emfor/peers.key"
 | `members` | required | Every member's `listen`, this daemon included: 2 to 64 addresses, no repeats, all IPv4 or all IPv6 like `listen`. The same list can go on every host of the site. |
 | `secret_file` | required | Absolute path to the shared secret that authenticates and encrypts every message: at least 32 bytes after one trailing line feed is removed, not readable by other users (`chmod 600` or `640`). |
 | `previous_secret_file` | none | Optional. Absolute path to the secret `secret_file` held before its last change, with the same conditions. Read only at start, so that a daemon restarted during a secret change keeps signing with and accepting the previous secret as if it had not restarted (see below). |
-| `encrypt` | `true` | `true` sends every message encrypted (`EMP2`: ChaCha20-Poly1305 with a key derived from the secret); `false` sends them only signed (`EMP1`: HMAC-SHA256), so backend names, addresses and reasons can be read on the network. Both are accepted either way; with `true` the daemon logs a warning, once a minute per member, for each member that still sends `EMP1`. |
-| `accept_plaintext` | `true` | `false` drops every `EMP1` message (counted as `plaintext` in `emfor_peer_messages_rejected_total`), so nobody who learns the secret can make this daemon read a signed but unencrypted message. Needs `encrypt = true`. Set it once every member sends `EMP2`. |
+| `encrypt` | `true` | `true` sends every message encrypted, with keys derived from the secret: `EMP3` (XChaCha20-Poly1305, 24-byte random nonce) to members that run this release, `EMP2` (ChaCha20-Poly1305, 12-byte random nonce) to the others, picked per member as described below. `false` sends them only signed (`EMP1`: HMAC-SHA256), so backend names, addresses and reasons can be read on the network. All three are accepted either way; with `true` the daemon logs a warning, once a minute per member, for each member that still sends `EMP1`. |
+| `accept_plaintext` | `true` | `false` drops every `EMP1` message (counted as `plaintext` in `emfor_peer_messages_rejected_total`), so nobody who learns the secret can make this daemon read a signed but unencrypted message. Needs `encrypt = true`. Set it once every member sends `EMP2` or `EMP3`. |
 
 Members only share reports for a service when its check is defined the
 same way on both: the same `check`, `check_options` and `timeout`. Other
@@ -157,10 +157,27 @@ starts ignore `previous_secret_file`, so it can stay in the config.
 Messages more than 5 seconds off the receiver's clock are dropped, so keep
 the hosts' clocks in sync (NTP).
 
-Encryption is new in this release. Members running 0.3.0 send and accept
+With `encrypt = true` the format is picked per member. Every `EMP2`
+message this release sends carries `"emp3": true` in its encrypted
+payload; a member is sent `EMP3` once the latest encrypted message accepted
+from it is `EMP3` or such an `EMP2`, and `EMP2` otherwise: before any
+message from it was accepted, after a start or a reload that added it, and
+when it sends `EMP2` without the field (0.4.0) or `EMP1`. Each change is logged at
+`info` ("sending EMP3 to peer ... from now on"). `EMP3` exists because a
+12-byte random nonce is safe for about 2^32 messages per secret, which a
+large group can send within days; a 24-byte one has no such limit. A
+group running 0.4.0 needs no configuration change to upgrade: upgrade the
+hosts one at a time, and members of this release use `EMP3` between each
+other after their first message, `EMP2` with 0.4.0 members. Going back to
+0.4.0 needs no change either, with `encrypt` on or off: the other members
+send the host `EMP2` again once they accept its first message. Until then,
+about one second after it starts, it drops their `EMP3` messages (counted
+as `malformed`).
+
+Encryption was added in 0.4.0. Members running 0.3.0 send and accept
 only `EMP1` and drop encrypted messages (counted as `malformed`), so to
-upgrade a group, set `encrypt = false` on each host as it is upgraded;
-once every member runs this release, remove the line (or set
+upgrade a group from 0.3.0, set `encrypt = false` on each host as it is
+upgraded; once every member runs this release, remove the line (or set
 `encrypt = true`) and reload each daemon. Once no member logs the
 plaintext warning, you can set `accept_plaintext = false` everywhere and
 reload. The encryption has no forward

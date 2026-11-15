@@ -11,11 +11,11 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use super::crypto::{Keys, encode, encode_encrypted};
+use super::crypto::{Keys, encode, encode_encrypted, encode_encrypted_v3};
 use super::stats::{PeerStats, Reject};
 use super::wire::{
-    Format, HEADER_LEN, Kind, MAGIC, MAGIC_V2, MAX_DATAGRAM, MIN_DATAGRAM_V2, Message,
-    parse_payload,
+    Format, HEADER_LEN, Kind, MAGIC, MAGIC_V2, MAGIC_V3, MAX_DATAGRAM, MIN_DATAGRAM_V2,
+    MIN_DATAGRAM_V3, Message, parse_payload,
 };
 use crate::quorum::Quorum;
 
@@ -102,6 +102,18 @@ struct PeerState {
     last: Option<Last>,
     seen: Option<Instant>,
     live: bool,
+    /// Send it `EMP3` rather than `EMP2` when encrypting: whether the
+    /// latest encrypted message accepted from it was `EMP3`, or `EMP2` with
+    /// `emp3` set. In memory only, so `EMP2` after a start and for a member
+    /// just added, until a message from it is accepted.
+    v3: bool,
+}
+
+/// One datagram of a message and the members it goes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outgoing {
+    pub data: Vec<u8>,
+    pub to: Vec<SocketAddr>,
 }
 
 /// The peer group as this daemon sees it: members, secrets, replay state
@@ -234,8 +246,12 @@ impl Group {
     }
 
     /// The next message of `kind`, numbered and signed with the secret for
-    /// `now`.
-    pub fn encode(&mut self, kind: Kind, now_ms: u64, now: Instant) -> Vec<u8> {
+    /// `now`, as one datagram per format needed and the members it goes
+    /// to: with `encrypt`, an `EMP2` one, with `emp3` set, for the members
+    /// not chosen for `EMP3` and an `EMP3` one for the others; without, one
+    /// `EMP1` datagram for all. Every datagram has the
+    /// same `seq`, and a format no member needs is not encrypted.
+    pub fn encode(&mut self, kind: Kind, now_ms: u64, now: Instant) -> Vec<Outgoing> {
         self.seq += 1;
         let msg = Message {
             from: self.me,
@@ -244,13 +260,48 @@ impl Group {
             seq: self.seq,
             ts: now_ms,
             kind,
+            emp3: false,
         };
         let secret = self.keys.signing(now);
-        if self.encrypt {
-            encode_encrypted(&msg, secret)
-        } else {
-            encode(&msg, secret.raw())
+        let others = self.others();
+        if !self.encrypt {
+            return vec![Outgoing {
+                data: encode(&msg, secret.raw()),
+                to: others,
+            }];
         }
+        let (v3, v2): (Vec<_>, Vec<_>) = others
+            .into_iter()
+            .partition(|m| self.peers.get(m).is_some_and(|p| p.v3));
+        let mut out = Vec::with_capacity(2);
+        if !v2.is_empty() {
+            out.push(Outgoing {
+                data: encode_encrypted(
+                    &Message {
+                        emp3: true,
+                        ..msg.clone()
+                    },
+                    secret,
+                ),
+                to: v2,
+            });
+        }
+        if !v3.is_empty() {
+            out.push(Outgoing {
+                data: encode_encrypted_v3(&msg, secret),
+                to: v3,
+            });
+        }
+        out
+    }
+
+    /// The datagram of the next message of `kind`, for tests where every
+    /// other member is sent the same format.
+    #[cfg(test)]
+    pub(super) fn encode_one(&mut self, kind: Kind, now_ms: u64, now: Instant) -> Vec<u8> {
+        let mut out = self.encode(kind, now_ms, now);
+        assert_eq!(out.len(), 1, "one format for every member");
+        out.remove(0).data
     }
 
     /// Check a received datagram. An accepted message marks its sender as
@@ -270,6 +321,22 @@ impl Group {
                 if let Some(p) = self.peers.get_mut(&msg.from) {
                     p.last = Some(Last::after(p.last, &msg));
                     p.seen = Some(now);
+                    let v3 = match format {
+                        // Its sender may be 0.4.0 with `encrypt = false`.
+                        Format::Plain => false,
+                        Format::Encrypted => msg.emp3,
+                        Format::EncryptedV3 => true,
+                    };
+                    if v3 != p.v3 {
+                        p.v3 = v3;
+                        let name = if v3 { "EMP3" } else { "EMP2" };
+                        tracing::info!(
+                            peer = %msg.from,
+                            format = name,
+                            "sending {name} to peer {} from now on",
+                            msg.from
+                        );
+                    }
                     if !p.live {
                         p.live = true;
                         tracing::info!(peer = %msg.from, "peer {} is live", msg.from);
@@ -321,6 +388,14 @@ impl Group {
                 let payload = self.keys.open(data, now).ok_or(Reject::Auth)?;
                 let msg = parse_payload(&payload).ok_or(Reject::Malformed)?;
                 (msg, Format::Encrypted)
+            }
+            Some(m) if m == MAGIC_V3 => {
+                if !(MIN_DATAGRAM_V3..=MAX_DATAGRAM).contains(&data.len()) {
+                    return Err(Reject::Malformed);
+                }
+                let payload = self.keys.open_v3(data, now).ok_or(Reject::Auth)?;
+                let msg = parse_payload(&payload).ok_or(Reject::Malformed)?;
+                (msg, Format::EncryptedV3)
             }
             _ => return Err(Reject::Malformed),
         };
@@ -420,11 +495,11 @@ impl Group {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::peers::crypto::{Secret, seal};
+    use crate::peers::crypto::{Secret, seal, seal_v3};
     use crate::peers::test_support::*;
     use crate::peers::wire::{TAG_LEN, decode};
-    use chacha20poly1305::Nonce;
     use chacha20poly1305::aead::Aead;
+    use chacha20poly1305::{Nonce, XNonce};
 
     /// Spec peer-group "Assigned checkers and check results": a `result`
     /// that lacks a field or has an invalid value is malformed.
@@ -510,8 +585,8 @@ mod tests {
                 .expect("encrypting a short payload works");
             [MAGIC_V2.as_slice(), nonce.as_slice(), &sealed].concat()
         };
-        let mut emp3 = hb(1);
-        emp3[3] = b'3';
+        let mut emp4 = hb(1);
+        emp4[3] = b'4';
         let cases: Vec<(&str, Vec<u8>, Result<(), Reject>)> = vec![
             ("valid", hb(1), Ok(())),
             ("33 bytes", sized(33), Err(Reject::Malformed)),
@@ -539,12 +614,313 @@ mod tests {
                 Err(Reject::Auth),
             ),
             ("decrypts to non-JSON", not_json, Err(Reject::Malformed)),
-            ("EMP3", emp3, Err(Reject::Malformed)),
+            ("EMP4", emp4, Err(Reject::Malformed)),
         ];
         for (name, data, want) in cases {
             let mut g = group(now);
             assert_eq!(g.accept(&data, addr(B), t, now).map(|_| ()), want, "{name}");
         }
+    }
+
+    /// Spec peer-group "acceptance checks", the `EMP3` rows.
+    #[test]
+    fn emp3_acceptance_checks() {
+        let now = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let secret = Secret::new(KEY.to_vec());
+        let hb =
+            |seq| encode_encrypted_v3(&msg(B, 1, seq, t, Kind::Heartbeat(Vec::new())), &secret);
+        let sized = |n: usize| {
+            let mut d = MAGIC_V3.to_vec();
+            d.resize(n, 0x41);
+            d
+        };
+        let mut nonce_changed = hb(1);
+        nonce_changed[4 + 23] ^= 1;
+        let cases: Vec<(&str, Vec<u8>, Result<(), Reject>)> = vec![
+            ("valid", hb(1), Ok(())),
+            ("45 bytes", sized(45), Err(Reject::Malformed)),
+            ("46 bytes that do not decrypt", sized(46), Err(Reject::Auth)),
+            ("1200 bytes of garbage", sized(1200), Err(Reject::Auth)),
+            ("1201 bytes", sized(1201), Err(Reject::Malformed)),
+            ("nonce changed", nonce_changed, Err(Reject::Auth)),
+            (
+                "other secret",
+                encode_encrypted_v3(
+                    &msg(B, 1, 1, t, Kind::Heartbeat(Vec::new())),
+                    &Secret::new(vec![8u8; 32]),
+                ),
+                Err(Reject::Auth),
+            ),
+            (
+                "decrypts to non-JSON",
+                seal_v3(b"not json at all", &secret, &XNonce::from([9; 24])),
+                Err(Reject::Malformed),
+            ),
+        ];
+        for (name, data, want) in cases {
+            let mut g = group(now);
+            assert_eq!(g.accept(&data, addr(B), t, now).map(|_| ()), want, "{name}");
+        }
+        // Replaced secret: accepted 90 seconds after, not 130.
+        let mut g = group(now);
+        assert!(g.keys.rotate(vec![9u8; 32], now));
+        let at = |s| now + Duration::from_secs(s);
+        assert!(g.accept(&hb(2), addr(B), t, at(90)).is_ok());
+        assert_eq!(
+            g.accept(&hb(3), addr(B), t, at(130)).map(|_| ()),
+            Err(Reject::Auth)
+        );
+    }
+
+    /// The first byte of each datagram sent to `member`.
+    fn magic_to(g: &mut Group, member: &str) -> Vec<u8> {
+        let out = g.encode(Kind::Heartbeat(Vec::new()), 1, Instant::now());
+        let batch = out
+            .iter()
+            .find(|o| o.to.contains(&addr(member)))
+            .expect("every other member is sent the message");
+        batch.data[..4].to_vec()
+    }
+
+    /// Spec peer-group "Format follows the member": `EMP2` until an `EMP3`
+    /// message is accepted from the member, then `EMP3`, and `EMP2` again
+    /// after an `EMP2` or `EMP1` one; dropped messages change nothing; one
+    /// `info` line per change.
+    #[test]
+    #[tracing_test::traced_test]
+    fn format_follows_the_member() {
+        let now = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let secret = Secret::new(KEY.to_vec());
+        let hb = |seq| msg(B, 1, seq, t, Kind::Heartbeat(Vec::new()));
+        let mut g = group(now);
+        assert_eq!(magic_to(&mut g, B), MAGIC_V2);
+        // A forged EMP3 is dropped and changes nothing.
+        let forged = encode_encrypted_v3(&hb(1), &Secret::new(vec![8u8; 32]));
+        assert!(g.accept(&forged, addr(B), t, now).is_err());
+        assert_eq!(magic_to(&mut g, B), MAGIC_V2);
+        assert!(
+            g.accept(&encode_encrypted_v3(&hb(2), &secret), addr(B), t, now)
+                .is_ok()
+        );
+        assert_eq!(magic_to(&mut g, B), MAGIC_V3);
+        // A replayed EMP2 message is dropped and changes nothing; an
+        // accepted EMP1 goes back to EMP2.
+        let old = encode_encrypted(&hb(2), &secret);
+        assert_eq!(
+            g.accept(&old, addr(B), t, now).map(|_| ()),
+            Err(Reject::Replay)
+        );
+        assert_eq!(magic_to(&mut g, B), MAGIC_V3);
+        assert!(g.accept(&encode(&hb(3), KEY), addr(B), t, now).is_ok());
+        assert_eq!(magic_to(&mut g, B), MAGIC_V2);
+        assert!(
+            g.accept(&encode_encrypted_v3(&hb(4), &secret), addr(B), t, now)
+                .is_ok()
+        );
+        assert_eq!(magic_to(&mut g, B), MAGIC_V3);
+        assert!(
+            g.accept(&encode_encrypted(&hb(5), &secret), addr(B), t, now)
+                .is_ok()
+        );
+        assert_eq!(magic_to(&mut g, B), MAGIC_V2);
+        // Removed and added again: EMP2.
+        assert!(
+            g.accept(&encode_encrypted_v3(&hb(6), &secret), addr(B), t, now)
+                .is_ok()
+        );
+        g.set_members(vec![addr(ME)]);
+        g.set_members(vec![addr(ME), addr(B)]);
+        assert_eq!(magic_to(&mut g, B), MAGIC_V2);
+        // encrypt = false: EMP1 whatever the member sent.
+        assert!(
+            g.accept(&encode_encrypted_v3(&hb(7), &secret), addr(B), t, now)
+                .is_ok()
+        );
+        g.set_encrypt(false);
+        assert_eq!(magic_to(&mut g, B), MAGIC);
+        logs_assert(|lines: &[&str]| {
+            let count = |s: &str| lines.iter().filter(|l| l.contains(s)).count();
+            match (
+                count("sending EMP3 to peer 10.0.0.6:5302 from now on"),
+                count("sending EMP2 to peer 10.0.0.6:5302 from now on"),
+            ) {
+                (4, 2) => Ok(()),
+                n => Err(format!("{n:?} info lines")),
+            }
+        });
+    }
+
+    /// Spec peer-group "EMP2 messages announce EMP3": an `EMP2` message
+    /// with `"emp3":true` moves the member to `EMP3`, one without it (or
+    /// with another value) back to `EMP2`.
+    #[test]
+    fn emp2_with_emp3_field_moves_the_member_to_emp3() {
+        let now = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let secret = Secret::new(KEY.to_vec());
+        let mut g = group(now);
+        let hb = |seq, emp3| Message {
+            emp3,
+            ..msg(B, 1, seq, t, Kind::Heartbeat(Vec::new()))
+        };
+        let accepted = g.accept(&encode_encrypted(&hb(1, true), &secret), addr(B), t, now);
+        assert!(accepted.is_ok_and(|m| m.emp3));
+        assert_eq!(magic_to(&mut g, B), MAGIC_V3);
+        assert!(
+            g.accept(&encode_encrypted(&hb(2, false), &secret), addr(B), t, now)
+                .is_ok()
+        );
+        assert_eq!(magic_to(&mut g, B), MAGIC_V2);
+        let json = |seq, emp3: &str| {
+            format!(
+                r#"{{"from":"{B}","site":"dc1","boot":"0000000000000001","seq":{seq},"ts":{t},"kind":"heartbeat","emp3":{emp3}}}"#
+            )
+        };
+        let nonce = Nonce::from([4; 12]);
+        for (seq, value, want) in [
+            (3, "true", MAGIC_V3),
+            (4, r#""yes""#, MAGIC_V2),
+            (5, "true", MAGIC_V3),
+            (6, "1", MAGIC_V2),
+        ] {
+            let data = seal(json(seq, value).as_bytes(), &secret, &nonce);
+            assert!(g.accept(&data, addr(B), t, now).is_ok(), "{value}");
+            assert_eq!(magic_to(&mut g, B), want, "emp3 = {value}");
+        }
+        // Ignored in EMP1: a plaintext message goes back to EMP2 with it
+        // too.
+        let data = seal(json(7, "true").as_bytes(), &secret, &nonce);
+        assert!(g.accept(&data, addr(B), t, now).is_ok());
+        assert_eq!(magic_to(&mut g, B), MAGIC_V3);
+        let plain = raw(&json(8, "true"));
+        assert!(g.accept(&plain, addr(B), t, now).is_ok());
+        assert_eq!(magic_to(&mut g, B), MAGIC_V2);
+    }
+
+    /// Spec peer-group "Member rolled back with encryption off": B is sent
+    /// `EMP3`, then restarts as 0.4.0 with `encrypt = false`; after A
+    /// accepts B's first `EMP1` message it sends `EMP2`, which B accepts.
+    #[test]
+    #[tracing_test::traced_test]
+    fn member_rolled_back_with_encryption_off() {
+        let now = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let secret = Secret::new(KEY.to_vec());
+        let mut a = group(now);
+        let from_b = encode_encrypted_v3(&msg(B, 1, 1, t, Kind::Heartbeat(Vec::new())), &secret);
+        assert!(a.accept(&from_b, addr(B), t, now).is_ok());
+        assert_eq!(magic_to(&mut a, B), MAGIC_V3);
+        // B restarted (another boot), sending EMP1.
+        let plain = encode(&msg(B, 2, 1, t + 1, Kind::Heartbeat(Vec::new())), KEY);
+        assert!(a.accept(&plain, addr(B), t, now).is_ok());
+        let data = a.encode_one(Kind::Heartbeat(Vec::new()), t, now);
+        assert_eq!(&data[..4], MAGIC_V2);
+        let mut b = Group::new(
+            addr(B),
+            "dc1".into(),
+            vec![addr(ME), addr(B)],
+            Keys::new(KEY.to_vec()),
+            2,
+            Arc::new(PeerStats::default()),
+        );
+        b.set_encrypt(false);
+        assert!(b.accept(&data, addr(ME), t, now).is_ok());
+        assert!(b.is_live(addr(ME)));
+        assert!(logs_contain(
+            "sending EMP2 to peer 10.0.0.6:5302 from now on"
+        ));
+    }
+
+    /// `emp3` is written in the `EMP2` datagram only.
+    #[test]
+    fn only_emp2_carries_the_emp3_field() {
+        let now = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let secret = Secret::new(KEY.to_vec());
+        let mut g = group(now);
+        let data = g.encode_one(Kind::Heartbeat(Vec::new()), t, now);
+        assert_eq!(&data[..4], MAGIC_V2);
+        assert!(open_v2(&data, KEY).is_some_and(|m| m.emp3));
+        let from_b = encode_encrypted_v3(&msg(B, 1, 1, t, Kind::Heartbeat(Vec::new())), &secret);
+        assert!(g.accept(&from_b, addr(B), t, now).is_ok());
+        let data = g.encode_one(Kind::Heartbeat(Vec::new()), t, now);
+        assert_eq!(&data[..4], MAGIC_V3);
+        let payload = Keys::new(KEY.to_vec())
+            .open_v3(&data, now)
+            .expect("the EMP3 datagram opens");
+        assert!(!String::from_utf8_lossy(&payload).contains("emp3"));
+        g.set_encrypt(false);
+        let data = g.encode_one(Kind::Heartbeat(Vec::new()), t, now);
+        assert_eq!(&data[..4], MAGIC);
+        assert!(!String::from_utf8_lossy(&data).contains("emp3"));
+    }
+
+    /// Spec peer-group "One message for members with different formats":
+    /// an `EMP2` datagram for B, an `EMP3` one for C, same `seq`; only
+    /// one datagram when every member takes the same format.
+    #[test]
+    fn one_message_for_members_with_different_formats() {
+        let now = Instant::now();
+        let t = 1_763_000_000_000u64;
+        const C: &str = "10.0.0.7:5302";
+        let secret = Secret::new(KEY.to_vec());
+        let mut g = Group::new(
+            addr(ME),
+            "dc1".into(),
+            vec![addr(ME), addr(B), addr(C)],
+            Keys::new(KEY.to_vec()),
+            1,
+            Arc::new(PeerStats::default()),
+        );
+        let out = g.encode(down("refused"), t, now);
+        assert_eq!(out.len(), 1, "EMP2 for both: one datagram");
+        assert_eq!(out[0].to, vec![addr(B), addr(C)]);
+        let from_c = encode_encrypted_v3(&msg(C, 1, 1, t, Kind::Heartbeat(Vec::new())), &secret);
+        assert!(g.accept(&from_c, addr(C), t, now).is_ok());
+        let out = g.encode(down("refused"), t, now);
+        assert_eq!(out.len(), 2);
+        let (v2, v3) = (&out[0], &out[1]);
+        assert_eq!(
+            (v2.to.as_slice(), &v2.data[..4]),
+            ([addr(B)].as_slice(), MAGIC_V2.as_slice())
+        );
+        assert_eq!(
+            (v3.to.as_slice(), &v3.data[..4]),
+            ([addr(C)].as_slice(), MAGIC_V3.as_slice())
+        );
+        let a = open_v2(&v2.data, KEY).expect("B's datagram is EMP2");
+        let b = open_v3(&v3.data, KEY).expect("C's datagram is EMP3");
+        assert!(a.emp3 && !b.emp3, "only the EMP2 datagram has emp3");
+        assert_eq!(
+            Message {
+                emp3: false,
+                ..a.clone()
+            },
+            b,
+            "the same message, same seq"
+        );
+        assert_eq!(a.seq, 2);
+        // Each member accepts its datagram.
+        for (to, data) in [(B, &v2.data), (C, &v3.data)] {
+            let mut r = Group::new(
+                addr(to),
+                "dc1".into(),
+                vec![addr(ME), addr(B), addr(C)],
+                Keys::new(KEY.to_vec()),
+                2,
+                Arc::new(PeerStats::default()),
+            );
+            assert!(r.accept(data, addr(ME), t, now).is_ok(), "{to}");
+        }
+        // All on EMP3: one EMP3 datagram.
+        let from_b = encode_encrypted_v3(&msg(B, 1, 1, t, Kind::Heartbeat(Vec::new())), &secret);
+        assert!(g.accept(&from_b, addr(B), t, now).is_ok());
+        let out = g.encode(down("refused"), t, now);
+        assert_eq!(out.len(), 1);
+        assert_eq!(&out[0].data[..4], MAGIC_V3);
+        assert_eq!(out[0].to, vec![addr(B), addr(C)]);
     }
 
     /// `encrypt` picks the format sent.
@@ -553,11 +929,11 @@ mod tests {
         let now = Instant::now();
         let mut g = group(now);
         assert_eq!(
-            &g.encode(Kind::Heartbeat(Vec::new()), 1, now)[..4],
+            &g.encode_one(Kind::Heartbeat(Vec::new()), 1, now)[..4],
             MAGIC_V2
         );
         g.set_encrypt(false);
-        let data = g.encode(Kind::Heartbeat(Vec::new()), 1, now);
+        let data = g.encode_one(Kind::Heartbeat(Vec::new()), 1, now);
         assert_eq!(&data[..4], MAGIC);
         assert!(decode(&data).is_some());
     }
@@ -630,6 +1006,8 @@ mod tests {
         assert_eq!(g.stats().rejected(Reject::Plaintext), 2);
         let enc = encode_encrypted(&msg(B, 1, 3, t, Kind::Heartbeat(Vec::new())), &secret);
         assert!(g.accept(&enc, addr(B), t, now).is_ok());
+        let enc = encode_encrypted_v3(&msg(B, 1, 5, t, Kind::Heartbeat(Vec::new())), &secret);
+        assert!(g.accept(&enc, addr(B), t, now).is_ok(), "EMP3");
         // Accepted again once the option is back on (a reload).
         g.set_accept_plaintext(true);
         let again = encode(&msg(B, 1, 4, t, Kind::Heartbeat(Vec::new())), KEY);

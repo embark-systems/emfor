@@ -17,6 +17,14 @@ const AEAD_TAG_LEN: usize = 16;
 pub(super) const OVERHEAD_V2: usize = MAGIC_V2.len() + NONCE_LEN + AEAD_TAG_LEN;
 /// Shortest `EMP2` datagram: the overhead and a payload of `{}`.
 pub(super) const MIN_DATAGRAM_V2: usize = OVERHEAD_V2 + 2;
+/// First four bytes of a message encrypted with XChaCha20-Poly1305: magic
+/// and format version 3.
+pub const MAGIC_V3: &[u8; 4] = b"EMP3";
+pub(super) const XNONCE_LEN: usize = 24;
+/// Bytes of an `EMP3` datagram besides the payload: magic, nonce, tag.
+pub(super) const OVERHEAD_V3: usize = MAGIC_V3.len() + XNONCE_LEN + AEAD_TAG_LEN;
+/// Shortest `EMP3` datagram: the overhead and a payload of `{}`.
+pub(super) const MIN_DATAGRAM_V3: usize = OVERHEAD_V3 + 2;
 
 /// Largest datagram sent or accepted; small enough not to be fragmented.
 pub const MAX_DATAGRAM: usize = 1200;
@@ -33,6 +41,9 @@ pub struct Message {
     /// Unix milliseconds when sent.
     pub ts: u64,
     pub kind: Kind,
+    /// The `emp3` field: the sender also accepts `EMP3`. Written only when
+    /// true; read as true only from the JSON value `true`.
+    pub emp3: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,8 +91,10 @@ pub enum Outcome {
 pub enum Format {
     /// `EMP1`: authenticated, payload in plaintext.
     Plain,
-    /// `EMP2`: payload encrypted.
+    /// `EMP2`: payload encrypted with ChaCha20-Poly1305.
     Encrypted,
+    /// `EMP3`: payload encrypted with XChaCha20-Poly1305.
+    EncryptedV3,
 }
 
 /// The JSON payload as sent.
@@ -108,6 +121,8 @@ struct Wire {
     /// Service tags of a heartbeat, as 8 lowercase hex digits each.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     off: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    emp3: bool,
 }
 
 /// The longest prefix of `s` of at most `max` bytes that ends on a
@@ -140,6 +155,7 @@ pub(super) fn payload_for(msg: &Message, overhead: usize) -> Vec<u8> {
         outcome: None,
         interval_ms: None,
         off: None,
+        emp3: msg.emp3,
     };
     match &msg.kind {
         Kind::Heartbeat(tags) => {
@@ -231,6 +247,8 @@ struct WireIn {
     interval_ms: Option<serde_json::Value>,
     #[serde(default)]
     off: Option<serde_json::Value>,
+    #[serde(default)]
+    emp3: Option<serde_json::Value>,
 }
 
 /// A string field of a known kind; `None` when absent or not a string.
@@ -286,13 +304,14 @@ pub(super) fn parse_payload(payload: &[u8]) -> Option<Message> {
         seq: wire.seq,
         ts: wire.ts,
         kind,
+        emp3: wire.emp3 == Some(serde_json::Value::Bool(true)),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::peers::crypto::{Secret, encode, encode_encrypted, open_with};
+    use crate::peers::crypto::{Secret, encode, encode_encrypted, encode_encrypted_v3, open_with};
     use crate::peers::test_support::*;
 
     #[test]
@@ -374,6 +393,14 @@ mod tests {
                     .is_some(),
                 "the shortened EMP2 message still decrypts and parses"
             );
+            let data = encode_encrypted_v3(&m, &secret);
+            assert!(data.len() <= MAX_DATAGRAM, "EMP3: {} bytes", data.len());
+            assert!(
+                open_with(&data, KEY)
+                    .and_then(|p| parse_payload(&p))
+                    .is_some(),
+                "the shortened EMP3 message still decrypts and parses"
+            );
         }
     }
 
@@ -413,12 +440,16 @@ mod tests {
             seq: u64::MAX,
             ts: u64::MAX,
             kind: Kind::Heartbeat(tags),
+            emp3: true,
         };
         let data = encode(&m, KEY);
         assert!(data.len() <= MAX_DATAGRAM, "{} bytes", data.len());
         assert_eq!(decode(&data), Some(m.clone()));
         let data = encode_encrypted(&m, &Secret::new(KEY.to_vec()));
         assert!(data.len() <= MAX_DATAGRAM, "EMP2: {} bytes", data.len());
-        assert_eq!(open_v2(&data, KEY), Some(m));
+        assert_eq!(open_v2(&data, KEY), Some(m.clone()));
+        let data = encode_encrypted_v3(&m, &Secret::new(KEY.to_vec()));
+        assert!(data.len() <= MAX_DATAGRAM, "EMP3: {} bytes", data.len());
+        assert_eq!(open_v3(&data, KEY), Some(m));
     }
 }

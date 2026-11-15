@@ -9,7 +9,9 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use assert_cmd::cargo::cargo_bin;
-use emfor_daemon::peers::{Kind, Message, encode, open_with};
+use emfor_daemon::peers::{
+    Kind, Message, Secret, encode, encode_encrypted, encode_encrypted_v3, open_with,
+};
 use nix::sys::signal::Signal;
 
 mod common;
@@ -308,6 +310,7 @@ fn reload_rejects_peers_listen_change() {
                 .map(|d| d.as_millis() as u64)
                 .expect("the clock is after 1970"),
             kind: Kind::Heartbeat(Vec::new()),
+            emp3: false,
         },
         SECRET.trim_end().as_bytes(),
     );
@@ -755,6 +758,7 @@ fn services_another_member_leaves_out() {
                     .map(|d| d.as_millis() as u64)
                     .expect("the clock is after 1970"),
                 kind: Kind::Heartbeat(tags.clone()),
+                emp3: false,
             },
             SECRET.trim_end().as_bytes(),
         );
@@ -967,9 +971,9 @@ fn heartbeats_are_encrypted_by_default() {
     assert_eq!(payload(&data)["site"], "dc1");
 }
 
-/// Two members that both set `encrypt = true` read each other's `EMP2`
-/// messages: both are live, none is rejected, and neither warns about
-/// plaintext.
+/// Two members that both set `encrypt = true` read each other's messages:
+/// both are live, none is rejected, neither warns about plaintext, and each
+/// moves the other to `EMP3` after its first message.
 #[test]
 fn encrypting_members_are_live() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
@@ -996,6 +1000,71 @@ fn encrypting_members_are_live() {
         }
         assert!(!d.log().contains("sends plaintext messages"));
     }
+    da.wait_log(&format!("sending EMP3 to peer {b} from now on"));
+    db.wait_log(&format!("sending EMP3 to peer {a} from now on"));
+}
+
+/// Spec peer-group "Format follows the member": a member that sent nothing
+/// yet gets `EMP2` with `emp3`; after one valid `EMP3` heartbeat from it,
+/// `EMP3`; after a valid `EMP2` one without `emp3` (an earlier version),
+/// `EMP2` again; one `info` line each time.
+#[test]
+fn format_follows_the_member() {
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
+    let backend = held.local_addr().expect("the backend has an address");
+    let other =
+        sockets(|| UdpSocket::bind("127.0.0.1:0")).expect("the other member's address is free");
+    other
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("a read timeout can be set");
+    let peer = other.local_addr().expect("the other member has an address");
+    let a = free_udp();
+    let d = spawn(|dir, m| config(dir, m, a, &[a, peer], backend, ""));
+    let first = next_datagram(&other);
+    assert_eq!(&first[..4], b"EMP2");
+    assert_eq!(payload(&first)["emp3"], true);
+    let secret = Secret::new(SECRET.trim_end().as_bytes().to_vec());
+    let heartbeat = |seq| Message {
+        from: peer,
+        site: "dc1".into(),
+        boot: 0x1234,
+        seq,
+        ts: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("the clock is after 1970")
+            .as_millis() as u64,
+        kind: Kind::Heartbeat(Vec::new()),
+        emp3: false,
+    };
+    other
+        .send_to(&encode_encrypted_v3(&heartbeat(1), &secret), a)
+        .expect("the heartbeat can be sent");
+    d.wait_log(&format!("sending EMP3 to peer {peer} from now on"));
+    wait_within(
+        "EMP3 after an EMP3 heartbeat",
+        Duration::from_secs(3),
+        || next_datagram(&other)[..4] == *b"EMP3",
+    );
+    other
+        .send_to(&encode_encrypted(&heartbeat(2), &secret), a)
+        .expect("the heartbeat can be sent");
+    d.wait_log(&format!("sending EMP2 to peer {peer} from now on"));
+    wait_within(
+        "EMP2 after an EMP2 heartbeat",
+        Duration::from_secs(3),
+        || next_datagram(&other)[..4] == *b"EMP2",
+    );
+    // Live at A throughout: each heartbeat was accepted.
+    assert!(
+        d.has_line(&format!("emfor_peer_up{{peer=\"{peer}\"}} 1")),
+        "{}",
+        d.log()
+    );
+    assert!(
+        d.has_line("emfor_peer_messages_rejected_total{reason=\"auth\"} 0"),
+        "{}",
+        d.log()
+    );
 }
 
 /// Spec peer-group "Mixed formats during an upgrade": A encrypts, B does

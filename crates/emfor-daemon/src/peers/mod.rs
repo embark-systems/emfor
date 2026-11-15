@@ -9,11 +9,15 @@
 //! the payload, then the payload in plaintext. `EMP2`: the magic, a 12-byte
 //! random nonce, then the payload encrypted with ChaCha20-Poly1305 and its
 //! 16-byte tag, with the magic as additional data and a key derived from
-//! the secret with HKDF-SHA256. `[peers] encrypt` picks the format sent;
-//! both are accepted.
+//! the secret with HKDF-SHA256. `EMP3`: the same with XChaCha20-Poly1305,
+//! a 24-byte random nonce and a key of its own. `[peers] encrypt` picks
+//! plaintext or encryption; when encrypting, each member is sent `EMP3`
+//! while the latest encrypted message accepted from it is `EMP3`, or `EMP2`
+//! with `"emp3": true` (which every `EMP2` this version sends has), and
+//! `EMP2` otherwise. All three are accepted.
 //!
 //! The parts: `wire` (messages and their JSON payload), `crypto`
-//! (secrets, their rotation, and the `EMP1`/`EMP2` datagrams), `stats`
+//! (secrets, their rotation, and the `EMP1`/`EMP2`/`EMP3` datagrams), `stats`
 //! (counters read by `/metrics`), `group` (the [`Group`] state machine:
 //! acceptance checks, replay state and liveness), `targets` (the backend
 //! tasks peers can reach, by service digest) and `task` (the async task).
@@ -28,9 +32,10 @@ mod test_support;
 mod wire;
 
 pub use crypto::{
-    ACCEPT_PREVIOUS_FOR, Keys, SIGN_PREVIOUS_FOR, Secret, encode, encode_encrypted, open_with,
+    ACCEPT_PREVIOUS_FOR, Keys, SIGN_PREVIOUS_FOR, Secret, encode, encode_encrypted,
+    encode_encrypted_v3, open_with,
 };
-pub use group::{Group, LIVE_WINDOW, MAX_SKEW_MS};
+pub use group::{Group, LIVE_WINDOW, MAX_SKEW_MS, Outgoing};
 pub use stats::{PeerStats, Reject};
 pub use targets::{PeerReport, Recheck, ServiceTargets, Targets};
 pub use task::{
@@ -38,8 +43,8 @@ pub use task::{
     PeersHandle, start, start_on,
 };
 pub use wire::{
-    Down, Format, Kind, MAGIC, MAGIC_V2, MAX_DATAGRAM, MAX_REASON_BYTES, Message, Outcome,
-    ResultMsg, truncate_utf8,
+    Down, Format, Kind, MAGIC, MAGIC_V2, MAGIC_V3, MAX_DATAGRAM, MAX_REASON_BYTES, Message,
+    Outcome, ResultMsg, truncate_utf8,
 };
 
 /// The secret of the `peers` fuzz target and its seeds
@@ -48,26 +53,31 @@ pub use wire::{
 pub const FUZZ_SECRET: &[u8] = &[0x5a; 32];
 
 /// Fuzzing entry point (`fuzz/fuzz_targets/peers.rs`). The first byte picks
-/// what the rest is: 0, an `EMP1` datagram; 1, an `EMP2` datagram, opened
-/// with [`FUZZ_SECRET`]; 2, a payload, encrypted with [`FUZZ_SECRET`] and
-/// then received as an `EMP2` datagram, so that mutations reach the JSON
-/// parsing behind the decryption, which a mutated datagram almost never
-/// passes.
+/// what the rest is (modulo 4): 0, an `EMP1` datagram; 1, an `EMP2` or
+/// `EMP3` datagram, opened with [`FUZZ_SECRET`]; 2 and 3, a payload,
+/// encrypted with [`FUZZ_SECRET`] and then received as an `EMP2` (2) or
+/// `EMP3` (3) datagram, so that mutations reach the JSON parsing behind the
+/// decryption, which a mutated datagram almost never passes.
 #[cfg(fuzzing)]
 pub fn fuzz_decode(data: &[u8]) {
     let Some((&mode, rest)) = data.split_first() else {
         return;
     };
-    let datagram = match mode % 3 {
+    let datagram = match mode % 4 {
         0 => {
             let _ = wire::decode(rest);
             return;
         }
         1 => rest.to_vec(),
-        _ => crypto::seal(
+        2 => crypto::seal(
             rest,
             &Secret::new(FUZZ_SECRET.to_vec()),
             &chacha20poly1305::Nonce::from([0; wire::NONCE_LEN]),
+        ),
+        _ => crypto::seal_v3(
+            rest,
+            &Secret::new(FUZZ_SECRET.to_vec()),
+            &chacha20poly1305::XNonce::from([0; wire::XNONCE_LEN]),
         ),
     };
     if let Some(payload) = open_with(&datagram, FUZZ_SECRET) {
@@ -112,7 +122,7 @@ mod tests {
             }
         }
         for kind in ["heartbeat", "down", "result"] {
-            for form in ["emp1", "emp2", "payload"] {
+            for form in ["emp1", "emp2", "emp3", "payload", "payload-emp3"] {
                 let name = format!("{kind}-{form}");
                 assert!(seen.contains(&name), "seed {name} is missing");
             }

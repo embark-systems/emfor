@@ -702,6 +702,7 @@ mod tests {
                     seq,
                     ts: t,
                     kind: Kind::Heartbeat(Vec::new()),
+                    emp3: false,
                 },
                 key,
             )

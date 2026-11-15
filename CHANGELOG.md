@@ -4,6 +4,19 @@
 
 ### Daemon
 
+- Peer messages have a new encrypted format, `EMP3`: XChaCha20-Poly1305
+  with a 24-byte random nonce and a key of its own derived from the
+  secret. `EMP2`'s 12-byte random nonce is safe for about 2^32 messages
+  per secret, which a large group can send within days; a repeated nonce
+  would let an observer read and forge messages. With `encrypt = true` the
+  format is picked per member: every `EMP2` message now carries
+  `"emp3": true` in its encrypted payload, and a member is sent `EMP3` once
+  the latest message accepted from it is `EMP3` or such an `EMP2`, and
+  `EMP2` otherwise (also after it sends `EMP1`), so members of this
+  release use `EMP3` between each other and `EMP2` with 0.4.0 members. A
+  group needs no configuration change to upgrade or to go back; a host
+  going back to 0.4.0 drops `EMP3` messages for about its first second (see
+  [Peer group](docs/manual/03-configuration.md#peers)).
 - A store file shorter than LMDB records it (changed in place, or its
   tail lost in a power loss) is moved to `<path>.corrupt` at start like
   other damage, with a warning saying `truncated`. Before, reading it to

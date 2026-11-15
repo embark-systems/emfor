@@ -27,13 +27,13 @@ sets another size to tell such a case from a real one.
 `seeds/plugins/` holds well-formed answers for each plugin, written by
 `seeds/plugins.py`; the first directory is where the fuzzer keeps what it
 finds. `seeds/peers/` holds a `heartbeat`, a `down` and a `result` message
-as `EMP1` and `EMP2` datagrams and as bare payloads, written by
+as `EMP1`, `EMP2` and `EMP3` datagrams and as bare payloads, written by
 `seeds/peers.py`; the first byte of a `peers` input picks which (see
 `peers::fuzz_decode`). `seeds/dns/` holds the queries of the DNS server's
 tests, written by `seeds/dns.py`; the first byte of a `dns` input picks UDP
 or TCP, `svc.emfor` or the longest zone allowed, and before or after the
 first layout (see `dns::fuzz_request`, which also lists the services it
-answers for). A mutated `EMP2` datagram almost never passes the
+answers for). A mutated `EMP2` or `EMP3` datagram almost never passes the
 decryption, so bare payloads are encrypted by the target itself to reach
 the JSON parsing behind it. Without the seeds the fuzzer rarely gets past
 a length field and an identifier that must match, and without
@@ -53,7 +53,7 @@ seeds/plugins/*`.
 | Target | Input |
 | --- | --- |
 | `plugins` | What a backend answers to an `emfor-check` plugin: redis, ldap, dns, radius, sip, diameter, smtp, amqp, mongodb and grpc, each with a few sets of options |
-| `peers` | A datagram from another member of a peer group, `EMP1` or `EMP2`, or a payload to encrypt as `EMP2` |
+| `peers` | A datagram from another member of a peer group, `EMP1`, `EMP2` or `EMP3`, or a payload to encrypt as `EMP2` or `EMP3` |
 | `dns` | A request to the DNS server, over UDP or TCP, through the same handler, answer and size trimming as the daemon; a one-question response that does not fit its transport's limit is a crash |
 | `metrics` | A request to the metrics listener |
 | `plugin_line` | A line a plugin writes to stdout |

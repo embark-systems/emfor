@@ -1,23 +1,26 @@
 //! Peer secrets and their rotation (spec peer-group "Peer secret reload"),
-//! and the two datagram formats: `EMP1`, signed with HMAC-SHA256, and
-//! `EMP2`, encrypted with ChaCha20-Poly1305 under a key derived with HKDF.
+//! and the three datagram formats: `EMP1`, signed with HMAC-SHA256; `EMP2`,
+//! encrypted with ChaCha20-Poly1305; and `EMP3`, encrypted with
+//! XChaCha20-Poly1305. Each encrypted format has its own key, derived from
+//! the secret with HKDF.
 
 use std::time::Duration;
 
 use chacha20poly1305::aead::{Aead, Generate, Payload};
-use chacha20poly1305::{ChaCha20Poly1305, Nonce};
+use chacha20poly1305::{ChaCha20Poly1305, Nonce, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use tokio::time::Instant;
 
 use super::wire::{
-    HEADER_LEN, MAGIC, MAGIC_V2, MAX_DATAGRAM, MIN_DATAGRAM_V2, Message, NONCE_LEN, OVERHEAD_V2,
-    payload_for,
+    HEADER_LEN, MAGIC, MAGIC_V2, MAGIC_V3, MAX_DATAGRAM, MIN_DATAGRAM_V2, MIN_DATAGRAM_V3, Message,
+    NONCE_LEN, OVERHEAD_V2, OVERHEAD_V3, XNONCE_LEN, payload_for,
 };
 
 const HKDF_SALT: &[u8] = b"emfor peers";
 const HKDF_INFO: &[u8] = b"EMP2 chacha20-poly1305";
+const HKDF_INFO_V3: &[u8] = b"EMP3 xchacha20-poly1305";
 
 /// How long messages are still signed with a replaced secret, so members
 /// whose file has not changed yet keep accepting them.
@@ -27,11 +30,12 @@ pub const SIGN_PREVIOUS_FOR: Duration = Duration::from_secs(60);
 /// that time, no message between any two of them is dropped.
 pub const ACCEPT_PREVIOUS_FOR: Duration = Duration::from_secs(120);
 
-/// A peer secret and the `EMP2` key derived from it.
+/// A peer secret and the `EMP2` and `EMP3` keys derived from it.
 #[derive(Clone)]
 pub struct Secret {
     raw: Vec<u8>,
     aead: [u8; 32],
+    aead_v3: [u8; 32],
 }
 
 impl std::fmt::Debug for Secret {
@@ -42,11 +46,18 @@ impl std::fmt::Debug for Secret {
 
 impl Secret {
     pub fn new(raw: Vec<u8>) -> Secret {
-        let mut aead = [0u8; 32];
-        Hkdf::<Sha256>::new(Some(HKDF_SALT), &raw)
-            .expand(HKDF_INFO, &mut aead)
-            .expect("32 bytes is far below HKDF-SHA256's limit of 255 * 32 bytes of output");
-        Secret { raw, aead }
+        let hkdf = Hkdf::<Sha256>::new(Some(HKDF_SALT), &raw);
+        let key = |info: &[u8]| {
+            let mut key = [0u8; 32];
+            hkdf.expand(info, &mut key)
+                .expect("32 bytes is far below HKDF-SHA256's limit of 255 * 32 bytes of output");
+            key
+        };
+        Secret {
+            aead: key(HKDF_INFO),
+            aead_v3: key(HKDF_INFO_V3),
+            raw,
+        }
     }
 
     /// The secret as read from the file.
@@ -56,6 +67,10 @@ impl Secret {
 
     pub(super) fn cipher(&self) -> ChaCha20Poly1305 {
         ChaCha20Poly1305::new(&self.aead.into())
+    }
+
+    pub(super) fn cipher_v3(&self) -> XChaCha20Poly1305 {
+        XChaCha20Poly1305::new(&self.aead_v3.into())
     }
 }
 
@@ -108,9 +123,37 @@ pub(super) fn seal(payload: &[u8], secret: &Secret, nonce: &Nonce) -> Vec<u8> {
     out
 }
 
-/// The JSON payload of a datagram of either format that `secret` signed
-/// (`EMP1`) or encrypted (`EMP2`); `None` otherwise. For tests and tools
-/// that read what members send.
+/// The `EMP3` datagram for `msg`, encrypted with the `EMP3` key of
+/// `secret` and a nonce from the operating system's random generator.
+/// Reasons are cut as for [`encode`].
+pub fn encode_encrypted_v3(msg: &Message, secret: &Secret) -> Vec<u8> {
+    seal_v3(&payload_for(msg, OVERHEAD_V3), secret, &XNonce::generate())
+}
+
+/// `EMP3`, the nonce, then `payload` encrypted under `nonce`.
+pub(super) fn seal_v3(payload: &[u8], secret: &Secret, nonce: &XNonce) -> Vec<u8> {
+    let sealed = secret
+        .cipher_v3()
+        .encrypt(
+            nonce,
+            Payload {
+                msg: payload,
+                aad: MAGIC_V3,
+            },
+        )
+        .expect(
+            "XChaCha20-Poly1305 encrypts any payload below 256 GiB, and ours is at most 1200 bytes",
+        );
+    let mut out = Vec::with_capacity(MAGIC_V3.len() + XNONCE_LEN + sealed.len());
+    out.extend_from_slice(MAGIC_V3);
+    out.extend_from_slice(nonce.as_slice());
+    out.extend_from_slice(&sealed);
+    out
+}
+
+/// The JSON payload of a datagram of any format that `secret` signed
+/// (`EMP1`) or encrypted (`EMP2`, `EMP3`); `None` otherwise. For tests and
+/// tools that read what members send.
 pub fn open_with(data: &[u8], secret: &[u8]) -> Option<Vec<u8>> {
     let keys = Keys::new(secret.to_vec());
     let now = Instant::now();
@@ -120,6 +163,9 @@ pub fn open_with(data: &[u8], secret: &[u8]) -> Option<Vec<u8>> {
             .then(|| data[HEADER_LEN..].to_vec()),
         Some(m) if m == MAGIC_V2 && (MIN_DATAGRAM_V2..=MAX_DATAGRAM).contains(&data.len()) => {
             keys.open(data, now)
+        }
+        Some(m) if m == MAGIC_V3 && (MIN_DATAGRAM_V3..=MAX_DATAGRAM).contains(&data.len()) => {
+            keys.open_v3(data, now)
         }
         _ => None,
     }
@@ -253,6 +299,24 @@ impl Keys {
                 .ok()
         })
     }
+
+    /// The payload of an `EMP3` datagram of a valid length, or `None` when
+    /// no accepted secret decrypts it.
+    pub(super) fn open_v3(&self, data: &[u8], now: Instant) -> Option<Vec<u8>> {
+        let nonce = XNonce::try_from(&data[MAGIC_V3.len()..MAGIC_V3.len() + XNONCE_LEN]).ok()?;
+        let sealed = &data[MAGIC_V3.len() + XNONCE_LEN..];
+        self.accepted(now).find_map(|k| {
+            k.cipher_v3()
+                .decrypt(
+                    &nonce,
+                    Payload {
+                        msg: sealed,
+                        aad: MAGIC_V3,
+                    },
+                )
+                .ok()
+        })
+    }
 }
 
 #[cfg(test)]
@@ -286,6 +350,99 @@ mod tests {
         assert_ne!(encode_encrypted(&m, &secret), encode_encrypted(&m, &secret));
     }
 
+    /// `EMP3`: every kind survives the trip, the payload is not readable
+    /// on the wire, and every message has a new nonce.
+    #[test]
+    fn emp3_round_trip() {
+        let secret = Secret::new(KEY.to_vec());
+        assert_ne!(secret.aead, secret.aead_v3, "EMP2 and EMP3 keys differ");
+        for kind in [
+            Kind::Heartbeat(vec![1, 0xdeadbeef]),
+            down("refused"),
+            result(Outcome::Up),
+            Kind::Unknown("assign".into()),
+        ] {
+            let m = msg(B, 0xabc, 7, 1_763_000_000_000, kind);
+            let data = encode_encrypted_v3(&m, &secret);
+            assert_eq!(&data[..4], MAGIC_V3);
+            assert!(!data.windows(3).any(|w| w == b"dc1"), "site in plaintext");
+            assert_eq!(open_v3(&data, KEY), Some(m));
+        }
+        let m = msg(B, 1, 1, 1, Kind::Heartbeat(Vec::new()));
+        assert_ne!(
+            encode_encrypted_v3(&m, &secret),
+            encode_encrypted_v3(&m, &secret)
+        );
+    }
+
+    /// `EMP3`: changing any byte, the magic (the AAD) and the nonce
+    /// included, makes the datagram not decrypt; and the `EMP2` key does
+    /// not open it.
+    #[test]
+    fn emp3_tampered_does_not_open() {
+        let secret = Secret::new(KEY.to_vec());
+        let data = encode_encrypted_v3(&msg(B, 1, 1, 1, Kind::Heartbeat(Vec::new())), &secret);
+        assert!(open_with(&data, KEY).is_some());
+        for i in 0..data.len() {
+            let mut d = data.clone();
+            d[i] ^= 1;
+            assert!(open_with(&d, KEY).is_none(), "byte {i} changed");
+        }
+        let mut as_v2 = data.clone();
+        as_v2[3] = b'2';
+        assert!(open_with(&as_v2, KEY).is_none(), "read as EMP2");
+        // Sealed without the magic as AAD.
+        let nonce = XNonce::from([5; XNONCE_LEN]);
+        let sealed = secret
+            .cipher_v3()
+            .encrypt(&nonce, br#"{"from":"10.0.0.6:5302"}"#.as_ref())
+            .expect("encrypting a short payload works");
+        let no_aad = [MAGIC_V3.as_slice(), nonce.as_slice(), &sealed].concat();
+        assert!(open_with(&no_aad, KEY).is_none(), "no AAD");
+    }
+
+    /// `EMP3` is 46 to 1200 bytes: a valid datagram of 46 or 1200 bytes
+    /// opens, one of 45 or 1201 bytes does not.
+    #[test]
+    fn emp3_length_bounds() {
+        let secret = Secret::new(KEY.to_vec());
+        let nonce = XNonce::from([3; XNONCE_LEN]);
+        let sized = |n: usize| seal_v3(&vec![b' '; n - OVERHEAD_V3], &secret, &nonce);
+        for n in [MIN_DATAGRAM_V3, MAX_DATAGRAM] {
+            let d = sized(n);
+            assert_eq!(d.len(), n);
+            assert!(open_with(&d, KEY).is_some(), "{n} bytes");
+        }
+        assert_eq!(MIN_DATAGRAM_V3, 46);
+        let d = sized(MAX_DATAGRAM + 1);
+        assert_eq!(d.len(), 1201);
+        assert!(open_with(&d, KEY).is_none(), "1201 bytes");
+        // 45 bytes: a 1-byte payload, which no valid message has.
+        let d = seal_v3(b" ", &secret, &nonce);
+        assert_eq!(d.len(), 45);
+        assert!(open_with(&d, KEY).is_none(), "45 bytes");
+    }
+
+    /// The replaced secret decrypts `EMP3` for 120 seconds.
+    #[test]
+    fn previous_secret_decrypts_emp3_for_120_seconds() {
+        let start = Instant::now();
+        let mut keys = Keys::new(KEY.to_vec());
+        assert!(keys.rotate(vec![9u8; 32], start));
+        let old = encode_encrypted_v3(
+            &msg(B, 1, 1, 1, Kind::Heartbeat(Vec::new())),
+            &Secret::new(KEY.to_vec()),
+        );
+        for secs in [30, 90] {
+            let at = start + Duration::from_secs(secs);
+            assert!(keys.open_v3(&old, at).is_some(), "{secs}s");
+        }
+        assert!(
+            keys.open_v3(&old, start + Duration::from_secs(130))
+                .is_none()
+        );
+    }
+
     /// `EMP2` bytes for a fixed secret, nonce and payload, computed apart
     /// from this code by `crates/emfor-daemon/tests/emp2_kat.py`: a
     /// plain-Python HKDF (RFC 5869) and ChaCha20-Poly1305 (RFC 8439), itself
@@ -311,6 +468,32 @@ mod tests {
             g.accept(&data, addr(B), 1_763_000_000_000, Instant::now())
                 .is_ok()
         );
+    }
+
+    /// `EMP3` bytes for a fixed secret, nonce and payload, computed apart
+    /// from this code by `crates/emfor-daemon/tests/emp2_kat.py`: a
+    /// plain-Python HKDF, HChaCha20 and XChaCha20-Poly1305, checked against
+    /// the test vectors of draft-irtf-cfrg-xchacha-03 (2.2.1 and A.3.1):
+    /// key = HKDF-SHA256(salt "emfor peers", ikm 32 bytes of 7,
+    /// info "EMP3 xchacha20-poly1305"), nonce 01..18, AAD "EMP3".
+    #[test]
+    fn emp3_known_answer() {
+        let secret = Secret::new(KEY.to_vec());
+        assert_eq!(
+            hex(&secret.aead_v3),
+            "780b1054085e43cae11b4b51d331cbfacc511926f3e97d0a4dc95fdea0396a48"
+        );
+        let payload = br#"{"from":"10.0.0.6:5302","site":"dc1","boot":"0000000000000001","seq":1,"ts":1763000000000,"kind":"heartbeat"}"#;
+        let mut nonce = [0u8; XNONCE_LEN];
+        for (i, b) in nonce.iter_mut().enumerate() {
+            *b = i as u8 + 1;
+        }
+        let data = seal_v3(payload, &secret, &XNonce::from(nonce));
+        assert_eq!(
+            hex(&data),
+            "454d50330102030405060708090a0b0c0d0e0f1011121314151617183c2d23cdef44cbd6f26312bce8878f12b1b1de854524875c2c223dd4c15895ca067ea94197a9f3854c8cb52c5a745e248366dda966af381056ddc1d6693c8009fc503aa3133f7c72a7b6ed7dace76b55ba70c167f9a9e07620b530398bda988097c8d4b185e0f1684c37d890f0fd71e086d7ef66ff0d42074c7113c506"
+        );
+        assert_eq!(open_with(&data, KEY).as_deref(), Some(payload.as_slice()));
     }
 
     fn hex(b: &[u8]) -> String {
@@ -397,30 +580,31 @@ mod tests {
             if secs == 40 {
                 b.keys.rotate(new.clone(), now);
             }
-            let from_a = a.encode(Kind::Heartbeat(Vec::new()), t, now);
+            let from_a = a.encode_one(Kind::Heartbeat(Vec::new()), t, now);
             assert!(
                 b.accept(&from_a, addr(ME), t, now).is_ok(),
                 "A to B at {secs}s"
             );
-            let from_b = b.encode(Kind::Heartbeat(Vec::new()), t, now);
+            let from_b = b.encode_one(Kind::Heartbeat(Vec::new()), t, now);
             assert!(
                 a.accept(&from_b, addr(B), t, now).is_ok(),
                 "B to A at {secs}s"
             );
         }
         // Signing switches to the new secret 60 seconds after the change.
-        let mine = a.encode(
+        let mine = a.encode_one(
             Kind::Heartbeat(Vec::new()),
             t,
             start + Duration::from_secs(59),
         );
-        assert!(Keys::new(KEY.to_vec()).open(&mine, start).is_some());
-        let mine = a.encode(
+        assert_eq!(&mine[..4], MAGIC_V3, "A and B moved each other to EMP3");
+        assert!(open_with(&mine, KEY).is_some());
+        let mine = a.encode_one(
             Kind::Heartbeat(Vec::new()),
             t,
             start + Duration::from_secs(60),
         );
-        assert!(Keys::new(new).open(&mine, start).is_some());
+        assert!(open_with(&mine, &new).is_some());
     }
 
     /// Spec peer-group "Secret changed twice": a second change while the
