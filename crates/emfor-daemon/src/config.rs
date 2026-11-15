@@ -496,6 +496,19 @@ fn parse_table(text: &str, name: &str) -> Result<toml::Table, Vec<ConfigError>> 
 /// files of that directory in byte-wise filename order, and merge them: the
 /// main file is the lowest layer, a later file overrides an earlier one.
 pub fn read_layers(path: &Path) -> Result<Layers, Vec<ConfigError>> {
+    let mut warnings = Vec::new();
+    read_layers_with(path, &mut warnings).map(|mut l| {
+        l.warnings = warnings;
+        l
+    })
+}
+
+/// [`read_layers`] that also hands back the warnings when the load fails: a
+/// skipped file can be the reason it failed.
+pub fn read_layers_with(
+    path: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<Layers, Vec<ConfigError>> {
     let main = read_table(path)?;
     let mut layers = Layers {
         files: vec![path.to_path_buf()],
@@ -517,7 +530,7 @@ pub fn read_layers(path: &Path) -> Result<Layers, Vec<ConfigError>> {
         .map_or_else(|| PathBuf::from(dir_str), |p| p.join(dir_str));
 
     let mut errors = Vec::new();
-    let fragments = list_fragments(&dir, &mut layers.warnings, &mut errors);
+    let fragments = list_fragments(&dir, warnings, &mut errors);
     let mut tables = vec![(path.display().to_string(), main)];
     for file in fragments {
         let shown = file.display().to_string();
@@ -3010,6 +3023,19 @@ interval = "2s"
         assert_eq!(names(&l), ["emfor.toml", "a.toml"]);
         assert_eq!(l.warnings.len(), 1, "{:?}", l.warnings);
         assert!(l.warnings[0].contains("not valid UTF-8"));
+    }
+
+    /// A failed load still hands back the warnings (Linux only: the name).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn warnings_survive_a_failed_load() {
+        use std::os::unix::ffi::OsStrExt;
+        let (d, main) = setup(MAIN, &[("a.toml", "this is not toml")]);
+        let bad = std::ffi::OsStr::from_bytes(b"b\xff.toml");
+        std::fs::write(d.path().join("conf.d").join(bad), "").expect("bad name");
+        let mut warnings = Vec::new();
+        assert!(read_layers_with(&main, &mut warnings).is_err());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
 
     #[test]

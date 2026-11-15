@@ -624,9 +624,16 @@ async fn load(
     current: Option<&Config>,
     plugins: &PluginSet,
 ) -> (Prepared, Result<Config, Vec<ConfigError>>, ReadFiles) {
-    let layers = match config::read_layers(path) {
+    let mut warnings = Vec::new();
+    let layers = match config::read_layers_with(path, &mut warnings) {
         Ok(l) => l,
-        Err(errors) => return (Prepared::default(), Err(errors), ReadFiles::default()),
+        Err(errors) => {
+            let read = ReadFiles {
+                files: Vec::new(),
+                warnings,
+            };
+            return (Prepared::default(), Err(errors), read);
+        }
     };
     let read = ReadFiles {
         files: if layers.included {
@@ -634,7 +641,7 @@ async fn load(
         } else {
             Vec::new()
         },
-        warnings: layers.warnings.clone(),
+        warnings,
     };
     let (specs, _) = config::plugins_in(&layers.table);
     let mut prepared = plugins.prepare(&specs).await;
