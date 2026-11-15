@@ -31,7 +31,7 @@ emfor 是在每一台應用程式主機上執行的健康檢查 daemon。它檢�
 | DNS server | 選用。為某個 zone 內的服務名稱回答 A、AAAA 與 SRV 查詢，資料來自 daemon 的記憶體，給無法使用 client 函式庫的程式用。 |
 | `emfor status` | 顯示 daemon 發布的內容，也可以當作監控檢查。 |
 | `/metrics` | 選用的 Prometheus endpoint。 |
-| `emfor-check` | 一個 plugin 程式，提供 redis、MySQL/MariaDB、PostgreSQL 與 LDAP 的檢查。 |
+| `emfor-check` | 一個 plugin 程式，提供 redis、MySQL/MariaDB、PostgreSQL、LDAP、DNS、RADIUS、SIP、Diameter、SMTP、AMQP、MongoDB、gRPC、QUIC 與 HTTP/3 的檢查。 |
 
 ## 服務與 backend
 

@@ -10,7 +10,7 @@ deployment platforms; macOS works for development.
 | Host | Install |
 | --- | --- |
 | Every application host | The daemon `emfor`, its config, and a service definition (systemd or rc.d). |
-| Hosts that check redis, MySQL, PostgreSQL or LDAP | Also `emfor-check`. |
+| Hosts that use a check of `emfor-check` (redis, MySQL/MariaDB, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB, gRPC, QUIC or HTTP/3) | Also `emfor-check`. |
 | Hosts whose applications use a client library | `libemfor`, and the wrapper for the application's language. |
 | Hosts whose programs use DNS only | Nothing more; forward the zone from the host resolver ([chapter 7](07-dns.md)). |
 

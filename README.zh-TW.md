@@ -2,7 +2,7 @@
 
 [English](README.md) | 繁體中文
 
-emfor 是在每台應用程式主機上執行的健康檢查 daemon。它檢查各服務的後端（TCP、HTTP、腳本，以及 redis、MySQL、PostgreSQL、LDAP 的外掛），把健康狀態寫進本機的狀態儲存（state store）。應用程式透過小型 client 函式庫取得一個健康的後端；答案來自本機檔案，查詢不經過網路，其他主機故障時也照常運作。
+emfor 是在每台應用程式主機上執行的健康檢查 daemon。它檢查各服務的後端（TCP、HTTP、腳本，以及 redis、MySQL/MariaDB、PostgreSQL、LDAP、DNS、RADIUS、SIP、Diameter、SMTP、AMQP、MongoDB、gRPC、QUIC 與 HTTP/3 的外掛），把健康狀態寫進本機的狀態儲存（state store）。應用程式透過小型 client 函式庫取得一個健康的後端；答案來自本機檔案，查詢不經過網路，其他主機故障時也照常運作。
 
 ```
               經網路檢查
@@ -17,7 +17,7 @@ emfor 是在每台應用程式主機上執行的健康檢查 daemon。它檢查�
                 Go、Python、Perl、PHP）
 ```
 
-- **健康檢查**：`tcp`（可選 TLS、送出與比對回應）、`http`/`https`、執行 Nagios 風格腳本的 `exec`，以及常駐的外掛。隨附的 `emfor-check` 提供 redis、MySQL/MariaDB、PostgreSQL 與 LDAP 外掛。後端連續通過 `rise` 次轉為 healthy，連續失敗 `fall` 次轉為 unhealthy。
+- **健康檢查**：`tcp`（可選 TLS、送出與比對回應）、`http`/`https`、執行 Nagios 風格腳本的 `exec`，以及常駐的外掛。隨附的 `emfor-check` 提供 redis、MySQL/MariaDB、PostgreSQL、LDAP、DNS、RADIUS、SIP、Diameter、SMTP、AMQP、MongoDB、gRPC、QUIC 與 HTTP/3 外掛。後端連續通過 `rise` 次轉為 healthy，連續失敗 `fall` 次轉為 unhealthy。
 - **挑選後端**：每個服務以 `balance` 指定 `round-robin`、`sticky`（依 affinity key）、`failover`、`weighted`、`locality`（同站點優先）或 `fastest`。`on_all_down` 決定沒有健康後端時怎麼處理。
 - **Client**：只有一份 Rust 實作，同時編成 C 函式庫 `libemfor`，Go、Python、Perl、PHP 的 client 都包裝它。每種語言都回傳 `ip:port`，錯誤代碼也相同。
 - **DNS**：可選的 DNS 伺服器，給沒有 client 的程式用；只回答自己的網域（預設 `svc.emfor`），放在主機的 resolver 後面。
@@ -107,7 +107,7 @@ C 函式庫以及所有建立在它之上的 client，必須和 daemon 來自同
 | 使用手冊：概念、安裝、設定、健康檢查、client、DNS、維運、疑難排解 | [docs/manual.zh_TW/](docs/manual.zh_TW/README.md)（[English](docs/manual/README.md)） |
 | 安裝、`emfor status`、systemd、指標與告警 | [docs/deploy/daemon.md](docs/deploy/daemon.md) |
 | 從 dnsmasq、unbound、systemd-resolved 或 macOS 轉發 DNS 網域 | [docs/deploy/dns-resolver.md](docs/deploy/dns-resolver.md) |
-| 用 `emfor-check` 檢查 redis、MySQL、PostgreSQL 與 LDAP | [docs/deploy/plugins.md](docs/deploy/plugins.md) |
+| 用 `emfor-check` 檢查 redis、MySQL/MariaDB、PostgreSQL、LDAP、DNS、RADIUS、SIP、Diameter、SMTP、AMQP、MongoDB、gRPC、QUIC 與 HTTP/3 | [docs/deploy/plugins.md](docs/deploy/plugins.md) |
 | 查詢延遲與吞吐量的實測數據 | [docs/performance.md](docs/performance.md) |
 | 撰寫檢查外掛 | [docs/plugins/protocol-v1.md](docs/plugins/protocol-v1.md) |
 | 所有設定選項 | [examples/emfor.toml](examples/emfor.toml) |

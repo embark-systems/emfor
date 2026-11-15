@@ -40,7 +40,7 @@ and to vote on each backend; lookups still read only the local store.
 | DNS server | Optional. Answers A, AAAA and SRV queries for service names in one zone, from the daemon's memory, for programs that cannot use a client library. |
 | `emfor status` | Shows what the daemon has published. Also usable as a monitoring check. |
 | `/metrics` | Optional Prometheus endpoint. |
-| `emfor-check` | A plugin program with checks for redis, MySQL/MariaDB, PostgreSQL, LDAP, DNS, RADIUS, SIP and Diameter. |
+| `emfor-check` | A plugin program with checks for redis, MySQL/MariaDB, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB, gRPC, QUIC and HTTP/3. |
 
 ## Services and backends
 

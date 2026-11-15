@@ -63,7 +63,7 @@ and the build stops at `no matching package named ...`.
 | Path | |
 | --- | --- |
 | `${PREFIX}/bin/emfor` | The daemon and `emfor status`. Built with `EMFOR_PREFIX=${PREFIX}`, so its default config is `${PREFIX}/etc/emfor/emfor.toml`. |
-| `${PREFIX}/bin/emfor-check` | The redis, MySQL, PostgreSQL and LDAP checks; point a plugin's `command` at it. |
+| `${PREFIX}/bin/emfor-check` | The redis, MySQL/MariaDB, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB, gRPC, QUIC and HTTP/3 checks; point a plugin's `command` at it. |
 | `${PREFIX}/etc/rc.d/emfor` | `files/emfor.in`, installed by `USE_RC_SUBR`. `daemon(8)` restarts `emfor` 2 seconds after it exits. |
 | `${PREFIX}/etc/emfor/emfor.toml.sample` | `examples/emfor.toml` with `[store] path = "/var/db/emfor/state.mdb"`; copied to `emfor.toml` on first install. |
 | `/var/db/emfor` | The store's directory, owned by `emfor`. |

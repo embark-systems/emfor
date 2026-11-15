@@ -2,7 +2,7 @@
 
 English | [繁體中文](README.zh-TW.md)
 
-emfor is a health-check daemon that runs on every application host. It checks the backends of your services (TCP, HTTP, scripts, plugins for redis, MySQL, PostgreSQL and LDAP) and publishes their health in a local state store. Applications ask a small client library for a healthy backend; the answer comes from a local file, so a lookup sends nothing over the network and keeps working when another host is down.
+emfor is a health-check daemon that runs on every application host. It checks the backends of your services (TCP, HTTP, scripts, plugins for redis, MySQL/MariaDB, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB, gRPC, QUIC and HTTP/3) and publishes their health in a local state store. Applications ask a small client library for a healthy backend; the answer comes from a local file, so a lookup sends nothing over the network and keeps working when another host is down.
 
 ```
               checks over the network
@@ -17,7 +17,7 @@ emfor is a health-check daemon that runs on every application host. It checks th
                   Go, Python, Perl, PHP)
 ```
 
-- **Health checks**: `tcp` (with optional TLS, send and expect), `http`/`https`, `exec` for Nagios-style scripts, and long-running plugins. `emfor-check` ships plugins for redis, MySQL/MariaDB, PostgreSQL and LDAP. A backend turns healthy after `rise` passes and unhealthy after `fall` failures.
+- **Health checks**: `tcp` (with optional TLS, send and expect), `http`/`https`, `exec` for Nagios-style scripts, and long-running plugins. `emfor-check` ships plugins for redis, MySQL/MariaDB, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB, gRPC, QUIC and HTTP/3. A backend turns healthy after `rise` passes and unhealthy after `fall` failures.
 - **Choosing a backend**: per service, `balance` is `round-robin`, `sticky` (by an affinity key), `failover`, `weighted`, `locality` (same site first) or `fastest`. `on_all_down` decides what happens when no backend is healthy.
 - **Clients**: one implementation in Rust, also built as the C library `libemfor` that the Go, Python, Perl and PHP clients wrap. Every client returns `ip:port` or the same error codes.
 - **DNS**: an optional server for programs without a client, answering only its own zone (default `svc.emfor`) behind the host's resolver.
@@ -105,7 +105,7 @@ The C library, and every client built on it, must come from the same emfor relea
 | User manual: concepts, installation, configuration, checks, clients, DNS, operations, troubleshooting | [docs/manual/](docs/manual/README.md) |
 | Installing, `emfor status`, systemd, metrics and alerting | [docs/deploy/daemon.md](docs/deploy/daemon.md) |
 | Forwarding the DNS zone from dnsmasq, unbound, systemd-resolved or macOS | [docs/deploy/dns-resolver.md](docs/deploy/dns-resolver.md) |
-| redis, MySQL, PostgreSQL and LDAP checks with `emfor-check` | [docs/deploy/plugins.md](docs/deploy/plugins.md) |
+| redis, MySQL/MariaDB, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB, gRPC, QUIC and HTTP/3 checks with `emfor-check` | [docs/deploy/plugins.md](docs/deploy/plugins.md) |
 | Lookup latency and throughput, measured | [docs/performance.md](docs/performance.md) |
 | Writing a checker plugin | [docs/plugins/protocol-v1.md](docs/plugins/protocol-v1.md) |
 | Every config option | [examples/emfor.toml](examples/emfor.toml) |

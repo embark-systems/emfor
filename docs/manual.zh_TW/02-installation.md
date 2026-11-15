@@ -9,7 +9,7 @@ emfor 用 Cargo 從原始碼建置。Linux 與 FreeBSD 是部署平台；macOS �
 | 主機 | 安裝 |
 | --- | --- |
 | 每一台應用程式主機 | daemon `emfor`、它的設定檔，以及服務定義（systemd 或 rc.d）。 |
-| 需要檢查 redis、MySQL、PostgreSQL 或 LDAP 的主機 | 另外安裝 `emfor-check`。 |
+| 使用 `emfor-check` 檢查（redis、MySQL/MariaDB、PostgreSQL、LDAP、DNS、RADIUS、SIP、Diameter、SMTP、AMQP、MongoDB、gRPC、QUIC 或 HTTP/3）的主機 | 另外安裝 `emfor-check`。 |
 | 應用程式使用 client 函式庫的主機 | `libemfor`，以及應用程式所用語言的包裝。 |
 | 程式只用 DNS 的主機 | 不需要其他東西；從主機的 resolver 轉送 zone 即可（[第 7 章](07-dns.md)）。 |
 
