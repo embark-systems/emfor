@@ -1,9 +1,10 @@
 # FreeBSD libthr: fork() with process-shared mutexes in other threads
 
-Status: a draft. The patch has **not been built or run** (a libthr build needs
-the FreeBSD source tree, which the test VM does not have), and this has **not
-been reported to FreeBSD yet**. What was measured and what was only read from
-the source is marked below.
+Status: the patch was built and tested on one system, FreeBSD 15.1-RELEASE
+(arm64, a VM with 4 cores), and fixes both problems there; see
+[Results](#results). It has **not been reported to FreeBSD yet**, and it was
+not tried on 14.x, 13.x, amd64 or main. Measured and read-from-source
+statements are marked.
 
 | File | What it is |
 | --- | --- |
@@ -34,7 +35,7 @@ from the author's own runs.
 
 | Parent threads | Child | Hung children |
 | --- | --- | --- |
-| lock and unlock an existing process-shared mutex in a loop | maps the file again, then locks | 36 of 300 |
+| lock and unlock an existing process-shared mutex in a loop | maps the file again, then locks | 36 of 300 (41 to 61 in five later runs, see [Results](#results)) |
 | the same | locks through the mapping it inherited | 0 of 300 |
 | do not touch the mutex | maps the file again, then locks | 0 of 300 |
 
@@ -94,19 +95,52 @@ lock prefers, starve the fork.
 `git apply --check` passes on freebsd-src `main`, `stable/15` and `stable/14`
 (`thr_pshared.c` differs between them, the changed part does not).
 
-## Testing it (not done)
+## Results
 
-1. Build libthr from the patched source (`make -C lib/libthr` in the source
-   tree) and install it, or run the repro with
-   `LD_LIBRARY_PATH` set to the directory of the freshly built `libthr.so.3`.
-2. `cc -O2 -o repro libthr-pshared-fork-repro.c -lpthread`.
-3. `./repro /tmp/m.dat r new 4 300`: before the patch `hung` is above 0 (it
-   needs enough runs and cores), after it should be 0. `r old` and `n new`
-   should stay 0.
-4. `./repro /tmp/m.dat w new 4 50`: before the patch the parent can stop
-   (`procstat -t` shows `urdlck`; `kill -9` it); after it should finish.
-5. Run it on 14.x, 13.x and amd64 too: the code is the same, and only the hit
-   rate depends on cores and timing.
+Tested on FreeBSD 15.1-RELEASE-p6, arm64, a VM with 4 cores. libthr was built
+from the source of 15.1-RELEASE (`src.txz`; the base system is p6) twice, once
+unpatched (the control) and once with this patch (`git apply`, one hunk with an
+offset of 70 lines in `thr_pshared.c`), and each program ran against it through
+`LD_LIBRARY_PATH`, without installing it. The repro is
+`libthr-pshared-fork-repro.c` (4 threads unless noted).
+
+| Test | libthr in the base system | Built from source, unpatched | Built from source, patched |
+| --- | --- | --- | --- |
+| `r new`, 300 forks, 5 runs: hung children per run | 41, 42, 41, 47, 61 | 40, 45, 53, 47, 55 | 0, 0, 0, 0, 0 |
+| `r new`, 8 threads, 600 forks, 3 runs | not run | not run | 0, 0, 0 |
+| `r old` and `n new` (controls) | not run | not run | 0 and 0 |
+| `w new`, 50 forks, 60 s limit: the parent finishes | not run | 0 of 3 runs (killed at the limit) | 5 of 5 runs, 0 hung |
+| `w new`, 8 threads, 100 forks, 3 runs | not run | not run | finishes, 0 hung |
+| LMDB client (emfor's C test: 300 forks while other threads look up, no atfork workaround in the client) | hangs in 3 of 3 runs (children 1, 7, 3) | not run | passes 5 of 5 runs |
+| the same client, 3 stress scenarios (900 and 1000 forks, the store replaced meanwhile) | not run | not run | 0 hung children in all three |
+
+The client with its own atfork workaround (emfor's current client) also passes
+on the patched libthr: its C test 3 of 3 and its Rust fork tests 10 of 10, so
+the two do not get in each other's way.
+
+Not tested: freebsd-src `main`, 14.x, 13.x, amd64 or other architectures; the
+libthr test suite; the patched library installed in the base system for other
+programs. The base system is p6 and the source is 15.1-RELEASE: the repro
+behaves the same on both unpatched libraries (41 to 61 and 40 to 55 hung
+children per 300), but the two were not compared line by line.
+
+## Repeating it
+
+1. Get the source of the release (the `lib/libthr`, `lib/libc/include`,
+   `lib/libc/<arch>`, `lib/libsys`, `lib/libthread_db`, `libexec/rtld-elf`,
+   `share/mk` and `tools/build` directories are enough), apply the patch with
+   `git apply` in the top directory.
+2. Build libthr, for example
+   `MAKEOBJDIRPREFIX=/tmp/obj SRCTOP=$PWD WITHOUT_TESTS=yes make -m $PWD/share/mk -C lib/libthr obj all`
+   (the release's own `/usr/share/mk` has no `src.opts.mk`, hence `-m`).
+3. `cc -O2 -o repro libthr-pshared-fork-repro.c -lpthread`, then run it with
+   `LD_LIBRARY_PATH` set to the directory of the built `libthr.so.3`:
+   `./repro /tmp/m.dat r new 4 300` (`hung` above 0 unpatched, 0 patched) and
+   `timeout 60 ./repro /tmp/m.dat w new 4 50` (unpatched it does not finish:
+   `procstat -t` shows the forking thread in `urdlck`; patched it finishes).
+   `r old` and `n new` stay at 0 either way.
+4. On other releases and architectures the code is the same and only the hit
+   rate depends on cores and timing; run enough forks.
 
 The emfor client works around both problems without a libthr change
 (`clients/rust/src/fork.rs`); a fixed libthr would also help every other
