@@ -113,6 +113,7 @@ C 函式庫以及所有建立在它之上的 client，必須和 daemon 來自同
 | 所有設定選項 | [examples/emfor.toml](examples/emfor.toml) |
 | systemd 單元檔、FreeBSD rc.d 腳本與 port、Prometheus 告警規則 | [examples/](examples/) |
 | 升級時哪些介面保持相容 | [docs/compatibility.md](docs/compatibility.md)（英文） |
+| FreeBSD libthr 在 fork() 與 process-shared mutex 上的問題：報告草稿、patch、重現程式 | [docs/freebsd/libthr-pshared-fork.md](docs/freebsd/libthr-pshared-fork.md) |
 | 發布新版本 | [RELEASING.md](RELEASING.md) |
 | 需求規格（spec） | [docs/spectra/specs/](docs/spectra/specs/) |
 
@@ -128,7 +129,7 @@ C 函式庫以及所有建立在它之上的 client，必須和 daemon 來自同
 - 只讀過 libthr 原始碼（沒有跑）：FreeBSD 12.4 到 15.1 與 main 的相關程式碼相同；main 另外為每個執行緒快取最近一次的查表結果，所以卡住的機率低很多。13.x、14.x、amd64、main 都沒有測，emfor 0.4.0 也沒有測。
 - emfor 從 0.4.0 之後的版本起繞過這個問題：在 FreeBSD 上 client 會讓 `fork` 等到沒有查詢在 store 裡（`pthread_atfork` handler），而且 `libemfor` 在 FreeBSD 上不能被卸載。查詢吞吐量有無這個繞法時量到的一樣。
 - 沒有涵蓋：同一個行程裡其他使用 process-shared mutex 的程式（例如另一個 LMDB environment）；在 signal handler 裡 fork，而被中斷的正是同一個執行緒正在進行的查詢（fork 會回傳，但子行程仍可能和以前一樣卡住）；把 `libemfor.a` 靜態連進會被卸載的模組（需要自行加 `-Wl,-z,nodelete`）。會 fork 出要查詢的子行程的應用程式，可以在啟動做查詢的執行緒之前先 fork，或在子行程裡呼叫 `exec`，避開這個問題。
-- 還沒有向 FreeBSD 回報。
+- 還沒有向 FreeBSD 回報。給 libthr 的 patch 草稿（還沒有建置或執行過）和一個小的重現程式，放在 [docs/freebsd/](docs/freebsd/libthr-pshared-fork.md)。
 
 ## 目錄結構
 

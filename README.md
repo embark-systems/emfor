@@ -111,6 +111,7 @@ The C library, and every client built on it, must come from the same emfor relea
 | Every config option | [examples/emfor.toml](examples/emfor.toml) |
 | systemd unit, FreeBSD rc.d script and port, Prometheus alerting rules | [examples/](examples/) |
 | What stays compatible across upgrades | [docs/compatibility.md](docs/compatibility.md) |
+| A FreeBSD libthr problem with fork() and process-shared mutexes: draft report, patch, reproduction | [docs/freebsd/libthr-pshared-fork.md](docs/freebsd/libthr-pshared-fork.md) |
 | Making a release | [RELEASING.md](RELEASING.md) |
 | Requirements (specs) | [docs/spectra/specs/](docs/spectra/specs/) |
 
@@ -126,7 +127,7 @@ On FreeBSD, a process that forks while another of its threads is inside a lookup
 - From libthr's source only (not run): the same code is in FreeBSD 12.4 to 15.1 and in main; main also caches the last lookup per thread, which makes a hang much rarer. 13.x, 14.x, amd64 and main were not tested, and neither was emfor 0.4.0.
 - emfor works around it from the release after 0.4.0: on FreeBSD the client makes `fork` wait until no lookup is inside the store (a `pthread_atfork` handler), and `libemfor` cannot be unloaded there. Lookup throughput measured the same with and without it.
 - Not covered: other users of process-shared mutexes in the same process (another LMDB environment, say), a `fork` from a signal handler that interrupted a lookup of the same thread (it returns, but the child can hang as before), and a `libemfor.a` linked statically into a module that is unloaded (that needs `-Wl,-z,nodelete`). An application that forks children which look up can avoid the problem by forking before it starts the threads that look up, or by calling `exec` in the child.
-- Not reported to FreeBSD yet.
+- Not reported to FreeBSD yet. A draft report with a patch for libthr (not built or run) and a small reproduction is in [docs/freebsd/](docs/freebsd/libthr-pshared-fork.md).
 
 ## Repository layout
 

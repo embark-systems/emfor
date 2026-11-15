@@ -1,0 +1,116 @@
+From e646945f576f35bdff8fb838d1bd6a9029d6932f Mon Sep 17 00:00:00 2001
+From: emfor <noreply@example.invalid>
+Date: Sun, 15 Nov 2026 12:14:00 +0800
+Subject: [PATCH] libthr: make fork() safe against process-shared mutexes used
+ by other threads
+
+A fork() in a multithreaded process whose other threads use process-shared
+mutexes (the reader mutex in the lock file of an LMDB environment is one)
+has two problems.
+
+1. __thr_pshared_atfork_pre() takes pshared_lock for reading, and the lock
+   prefers readers, so it does not wait for other readers.  A thread that
+   is inside __thr_pshared_offpage() when another thread forks leaves its
+   read hold in the child, where that thread does not exist.  The first
+   thread in the child that wants pshared_lock for writing, for example to
+   map the process-shared mutex of a newly mapped file, then waits for ever.
+   Measured on a hung child (15.1-RELEASE): rw_state 0x40000001 (a writer
+   waiting, one reader left), rw_blocked_writers 1, stuck in
+   __thr_pshared_offpage() <- check_and_init_mutex() <- pthread_mutex_lock().
+
+   Start pshared_lock over in the child, as the child does for its other
+   locks.  The fork holds the lock for reading, so no writer was changing
+   the hash and it is consistent.
+
+2. fork() took the allocator's locks before pshared_lock, while
+   __thr_pshared_offpage() calls malloc() holding pshared_lock for writing.
+   The forking thread holds the allocator's locks and waits for the read
+   lock, the other thread holds the write lock and waits in malloc(): the
+   parent deadlocks.  Take pshared_lock first, the order the other path
+   uses.
+
+Test: lib/libthr is not covered by a test for this.  A small program, with
+no LMDB, that locks a process-shared mutex from several threads while the
+main thread forks children that map the file again and lock it, shows
+both: children that never finish (1), a parent that stops forking (2).
+
+Draft: not built or run yet.
+---
+ lib/libthr/thread/thr_fork.c    | 12 ++++++++++--
+ lib/libthr/thread/thr_private.h |  1 +
+ lib/libthr/thread/thr_pshared.c | 18 ++++++++++++++++++
+ 3 files changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/lib/libthr/thread/thr_fork.c b/lib/libthr/thread/thr_fork.c
+index aa54b04..2b5a60a 100644
+--- a/lib/libthr/thread/thr_fork.c
++++ b/lib/libthr/thread/thr_fork.c
+@@ -192,9 +192,17 @@ thr_fork_impl(const struct thr_fork_args *a)
+ 	 */
+ 	if (_thr_isthreaded() != 0) {
+ 		was_threaded = 1;
++		/*
++		 * pshared_lock must be taken before the allocator's locks:
++		 * __thr_pshared_offpage() calls malloc() while it holds
++		 * pshared_lock for writing, so the opposite order lets
++		 * this thread hold the allocator's locks and wait for
++		 * pshared_lock while the thread that holds it waits for
++		 * malloc().
++		 */
++		__thr_pshared_atfork_pre();
+ 		__thr_malloc_prefork(curthread);
+ 		_malloc_prefork();
+-		__thr_pshared_atfork_pre();
+ 		_rtld_atfork_pre(rtld_locks);
+ 	} else {
+ 		was_threaded = 0;
+@@ -249,7 +257,7 @@ thr_fork_impl(const struct thr_fork_args *a)
+ 			_thr_after_fork = true;
+ 			_rtld_atfork_post(rtld_locks);
+ 			_thr_after_fork = false;
+-			__thr_pshared_atfork_post();
++			__thr_pshared_atfork_child();
+ 		}
+ 		_thr_setthreaded(0);
+ 
+diff --git a/lib/libthr/thread/thr_private.h b/lib/libthr/thread/thr_private.h
+index 2a9592c..c472881 100644
+--- a/lib/libthr/thread/thr_private.h
++++ b/lib/libthr/thread/thr_private.h
+@@ -1073,6 +1073,7 @@ void *__thr_pshared_offpage(void *key, int doalloc) __hidden;
+ void __thr_pshared_destroy(void *key) __hidden;
+ void __thr_pshared_atfork_pre(void) __hidden;
+ void __thr_pshared_atfork_post(void) __hidden;
++void __thr_pshared_atfork_child(void) __hidden;
+ 
+ void *__thr_aligned_alloc_offset(size_t align, size_t size, size_t offset);
+ void *__thr_calloc(size_t num, size_t size);
+diff --git a/lib/libthr/thread/thr_pshared.c b/lib/libthr/thread/thr_pshared.c
+index 24b9899..4635fc1 100644
+--- a/lib/libthr/thread/thr_pshared.c
++++ b/lib/libthr/thread/thr_pshared.c
+@@ -350,3 +350,21 @@ __thr_pshared_atfork_post(void)
+ 
+ 	_thr_rwl_unlock(&pshared_lock);
+ }
++
++/*
++ * Only the thread that called fork() exists in the child.  Another
++ * thread of the parent may have held pshared_lock for reading when the
++ * parent forked (__thr_pshared_atfork_pre() takes the lock for reading
++ * too, which does not wait for readers): that read hold would stay in
++ * the child for ever, and the first thread to want the lock for
++ * writing, for instance to map a process-shared mutex it has not used
++ * yet, would never get it.  The fork holds the lock for reading, so no
++ * writer was in the middle of changing the hash, which is consistent:
++ * start the lock over, as the child does for its other locks.
++ */
++void
++__thr_pshared_atfork_child(void)
++{
++
++	_thr_urwlock_init(&pshared_lock);
++}
+-- 
+2.54.0 (Apple Git-157)
+
