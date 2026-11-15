@@ -391,6 +391,33 @@ read /etc/emfor/conf.d/99-local.toml
 The daemon logs the same list at start and after each reload. Without
 `include_dir` the output is the single line.
 
+**Seeing the merged config.** `emfor check-config --show` checks the config
+the same way, and then prints the merged config as TOML on standard output,
+each value followed by the file that last set it:
+
+```
+# include_dir = "conf.d" (its files are merged below)
+
+[services."api.svc.emfor"]
+backends = ["10.0.0.1:80", "10.0.0.2:80"] # /etc/emfor/emfor.toml
+check = "tcp" # /etc/emfor/emfor.toml
+interval = "5s" # /etc/emfor/conf.d/99-local.toml
+```
+
+A list such as `backends` is set as a whole, so its comment names the file
+that set the list. The `config ok` and `read` lines go to standard error, so
+`emfor check-config --show > merged.toml` saves a file that checks again
+anywhere, because the `include_dir` line is written as a comment (its files
+are merged already); comments aside the file has the same content. Relative
+paths in the config other than `include_dir` do not depend on the file's
+directory. An invalid config prints nothing
+on standard output and exits 2. Without `include_dir` the output starts with
+one comment naming the file and has no other comments. The built-in defaults
+are not added: a key you did not write does not appear. Nothing is
+redacted; the config holds password file paths, not passwords, but a plugin
+`command` is printed as written, so do not put a secret there. The comment
+format is for people; do not parse it.
+
 It exits 0 when the config is valid and 2 otherwise. It starts the declared
 plugins so that they can check their services' `check_options`, and stops
 them before it exits. It does not open the store. A daemon started with an

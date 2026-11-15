@@ -7,7 +7,7 @@
 | 指令 | 作用 |
 | --- | --- |
 | `emfor server` | 在前景執行 daemon。 |
-| `emfor check-config` | 驗證設定檔，有效時結束代碼為 0，無效時為 2。 |
+| `emfor check-config [--show]` | 驗證設定檔，有效時結束代碼為 0，無效時為 2。加 `--show` 時印出合併後的設定與每個值的來源檔案（[第 3 章](03-configuration.md#檢查設定檔)）。 |
 | `emfor status` | 顯示執行中的 daemon 發布了什麼。 |
 | `emfor lookup <service>` | 印出 client 會得到的 backend，加上 `--explain` 說明原因（[第 6 章](06-clients.md#從-shell-查詢emfor-lookup)）。 |
 | `emfor --help` | 列出指令與預設設定檔路徑。 |

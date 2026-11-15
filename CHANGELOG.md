@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+**`emfor check-config --show`: the merged config and where each value
+comes from.** With `include_dir` the config is in several files; `--show`
+checks it as `check-config` does and prints the merged config as TOML on
+standard output, each value followed by `# <file>`, the file that last set
+it (a list is set as a whole). The `config ok` and `read` lines go to
+standard error, and `include_dir` is written as a comment (its files are
+merged already), so the output can be saved anywhere and checked again; an invalid
+config prints nothing on standard output and exits 2. Without `include_dir`
+the output starts with one comment naming the main file. Built-in defaults
+are not added and nothing is redacted (a plugin `command` is printed as
+written). Without `--show` nothing changes. The comment format is for
+people, not for scripts.
+
 **`include_dir`: the config in several files.** `include_dir = "conf.d"` in
 `emfor.toml` makes the daemon read the main file and then every `*.toml` file
 of that directory in filename order (byte order: write `01-`, `10-`, `99-`),

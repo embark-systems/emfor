@@ -425,6 +425,81 @@ pub struct Layers {
     pub included: bool,
 }
 
+/// The merged config as TOML, for `emfor check-config --show`. With
+/// `include_dir` set, every value is followed by a comment naming the file
+/// that last set it (a list or inline table is set as a whole); without it,
+/// one first comment names the main file. Plain scalars and lists come before
+/// sub-tables, so the text is valid TOML. `include_dir` itself is written as
+/// a comment only, since its files are merged already and a saved copy must
+/// check without a `conf.d` next to it; comments aside, the text parses to
+/// [`Layers::table`] without `include_dir`.
+pub fn show_layers(layers: &Layers) -> String {
+    let mut out = String::new();
+    if !layers.included {
+        let main = layers
+            .files
+            .first()
+            .map_or_else(String::new, |f| f.display().to_string());
+        out.push_str(&format!("# merged from {main}\n"));
+    }
+    if let Some(toml::Value::String(dir)) = layers.table.get("include_dir") {
+        out.push_str(&format!(
+            "# include_dir = {} (its files are merged below)\n",
+            toml::Value::String(dir.clone())
+        ));
+    }
+    show_table(&layers.table, "", "", layers, &mut out);
+    out
+}
+
+/// A key as TOML writes it: bare when it can be, else a quoted, escaped string.
+fn toml_key(key: &str) -> String {
+    let bare = !key.is_empty()
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    if bare {
+        key.to_string()
+    } else {
+        toml::Value::String(key.to_string()).to_string()
+    }
+}
+
+/// `path` is the lookup path ([`key_path`], as in `origins`); `shown` is the
+/// same path with TOML-escaped keys, for headers.
+fn show_table(table: &toml::Table, path: &str, shown: &str, layers: &Layers, out: &mut String) {
+    for (key, value) in table {
+        if matches!(value, toml::Value::Table(_)) || (path.is_empty() && key == "include_dir") {
+            continue;
+        }
+        out.push_str(&format!("{} = {value}", toml_key(key)));
+        if let Some(file) = layers.origins.get(&key_path(path, key)) {
+            out.push_str(&format!(" # {file}"));
+        }
+        out.push('\n');
+    }
+    for (key, value) in table {
+        if let toml::Value::Table(sub) = value {
+            let at = key_path(path, key);
+            let name = if shown.is_empty() {
+                toml_key(key)
+            } else {
+                format!("{shown}.{}", toml_key(key))
+            };
+            // A table that holds only sub-tables needs no header of its own.
+            let only_tables =
+                !sub.is_empty() && sub.values().all(|v| matches!(v, toml::Value::Table(_)));
+            if !only_tables {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&format!("[{name}]\n"));
+            }
+            show_table(sub, &at, &name, layers, out);
+        }
+    }
+}
+
 /// Keys that only the main config file may set: `emfor status` and
 /// `emfor lookup` read the main file alone, and a fragment must not nest.
 const MAIN_ONLY_KEYS: &[&str] = &["store", "include_dir"];
@@ -3283,6 +3358,105 @@ interval = "2s"
         let a = parse_layers(&read_layers(&m1).expect("one"), &r).expect("one");
         let b = parse_layers(&read_layers(&m2).expect("split"), &r).expect("split");
         assert_eq!(a.services[0].digest, b.services[0].digest);
+    }
+
+    fn shown(main: &str, fragments: &[(&str, &str)]) -> (String, Layers, tempfile::TempDir) {
+        let (d, path) = setup(main, fragments);
+        let l = read_layers(&path).expect("layers");
+        (show_layers(&l), l, d)
+    }
+
+    /// Spec "Showing the merged config", scenario "Round trip": the text
+    /// parses to the merged table without `include_dir`, whatever the keys and
+    /// values look like.
+    #[test]
+    fn show_round_trips_the_merged_table() {
+        let main = "include_dir = \"conf.d\"\nsite = \"dc#1\"\n\n[dns]\n\n[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\", { addr = \"10.0.0.2:80\", weight = 3 }]\n[services.\"api.svc.emfor\".check_options]\npath = \"/a # b\"\nnote = \"line one\\nline two\"\n\"a\\\"b\" = 1\n\"c\\\\d\" = 2\n[services.\"api.svc.emfor\".check_options.\"q\\\"r\"]\nx = 1\n";
+        let (text, l, _d) = shown(
+            main,
+            &[(
+                "10.toml",
+                "[services.\"api.svc.emfor\"]\ninterval = \"5s\"\n",
+            )],
+        );
+        let parsed: toml::Table = text.parse().unwrap_or_else(|e| panic!("{e}\n{text}"));
+        let mut merged = l.table.clone();
+        merged.remove("include_dir");
+        assert_eq!(parsed, merged, "{text}");
+        assert!(!parsed.contains_key("include_dir"));
+        // A value with a line break is a multi-line string; its comment follows
+        // the closing quotes.
+        assert!(text.contains("line two\"\"\" # "), "{text}");
+        assert!(text.contains("# include_dir = \"conf.d\" (its files are merged below)"));
+        let (text, l, _d) = shown(
+            "site = \"dc1\"\n[services.a]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
+            &[],
+        );
+        assert_eq!(
+            text.parse::<toml::Table>().expect("valid"),
+            l.table,
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn show_names_the_file_that_set_each_value() {
+        let (text, _l, d) = shown(
+            MAIN,
+            &[(
+                "99-local.toml",
+                "[services.\"api.svc.emfor\"]\ninterval = \"5s\"\nbackends = [\"10.0.0.3:80\"]\n",
+            )],
+        );
+        let main = d.path().join("emfor.toml");
+        let frag = d.path().join("conf.d/99-local.toml");
+        let line = |key: &str| {
+            text.lines()
+                .find(|l| l.starts_with(key))
+                .unwrap_or_else(|| panic!("{key}\n{text}"))
+                .to_string()
+        };
+        assert_eq!(
+            line("interval"),
+            format!("interval = \"5s\" # {}", frag.display())
+        );
+        assert_eq!(
+            line("backends"),
+            format!("backends = [\"10.0.0.3:80\"] # {}", frag.display())
+        );
+        assert_eq!(
+            line("check"),
+            format!("check = \"tcp\" # {}", main.display())
+        );
+        assert!(text.contains("[services.\"api.svc.emfor\"]"), "{text}");
+    }
+
+    #[test]
+    fn show_without_include_dir_has_one_comment() {
+        let (text, _l, d) = shown(
+            "site = \"dc1\"\n[services.a]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
+            &[],
+        );
+        let comments: Vec<&str> = text.lines().filter(|l| l.contains('#')).collect();
+        assert_eq!(
+            comments,
+            [format!(
+                "# merged from {}",
+                d.path().join("emfor.toml").display()
+            )]
+        );
+        assert!(text.starts_with("# merged from "));
+    }
+
+    #[test]
+    fn show_has_no_defaults() {
+        let (text, _l, _d) = shown(MAIN, &[]);
+        assert!(
+            !text
+                .lines()
+                .any(|l| l.starts_with("timeout") || l.starts_with("rise")),
+            "{text}"
+        );
     }
 
     #[test]

@@ -390,6 +390,87 @@ fn check_config_lists_the_files_it_read() {
     );
 }
 
+/// Spec service-config "Showing the merged config": the merged TOML alone on
+/// standard output, the usual lines on standard error, and the saved output
+/// checks again.
+#[test]
+fn check_config_show_prints_the_merged_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    let d = conf_d(dir.path());
+    fragment(
+        &d,
+        "99-local.toml",
+        "[services.\"a.svc.emfor\"]\ninterval = \"5s\"\n",
+    );
+    std::fs::write(&cfg, "include_dir = \"conf.d\"\n\n[services.\"a.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\ninterval = \"2s\"\n").unwrap();
+    let out = Command::new(cargo_bin("emfor"))
+        .args(["check-config", "--show", "--config"])
+        .arg(&cfg)
+        .output_locked()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.starts_with("config ok: 1 services, 1 backends\nread "),
+        "{stderr}"
+    );
+    assert!(!stdout.contains("config ok"), "{stdout}");
+    let frag = d.join("99-local.toml");
+    assert!(
+        stdout.contains(&format!("interval = \"5s\" # {}", frag.display())),
+        "{stdout}"
+    );
+
+    // Round trip: the output, saved as it is in another directory (no
+    // `conf.d` there), is a config that checks, and `--show` of it gives the
+    // same TOML without the comments.
+    let other = tempfile::tempdir().unwrap();
+    let saved = other.path().join("merged.toml");
+    std::fs::write(&saved, &stdout).unwrap();
+    let again = Command::new(cargo_bin("emfor"))
+        .args(["check-config", "--config"])
+        .arg(&saved)
+        .output_locked()
+        .unwrap();
+    assert_eq!(
+        again.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&again.stdout),
+        "config ok: 1 services, 1 backends\n"
+    );
+    let shown_again = Command::new(cargo_bin("emfor"))
+        .args(["check-config", "--show", "--config"])
+        .arg(&saved)
+        .output_locked()
+        .unwrap();
+    let first: toml::Table = stdout.parse().unwrap();
+    let second: toml::Table = String::from_utf8_lossy(&shown_again.stdout)
+        .parse()
+        .unwrap();
+    assert_eq!(first, second);
+    assert!(
+        String::from_utf8_lossy(&shown_again.stdout)
+            .starts_with(&format!("# merged from {}", saved.display()))
+    );
+
+    // An invalid config prints nothing on standard output.
+    std::fs::write(&cfg, "intervall = 1\n").unwrap();
+    let bad = Command::new(cargo_bin("emfor"))
+        .args(["check-config", "--show", "--config"])
+        .arg(&cfg)
+        .output_locked()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(bad.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("intervall"));
+}
+
 /// A name that is not UTF-8 is skipped with a warning that `check-config`,
 /// which has no log, prints on stderr. Only Linux can create such a name.
 #[cfg(target_os = "linux")]

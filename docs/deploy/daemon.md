@@ -7,7 +7,7 @@ The `emfor` executable takes a subcommand; `--config <path>` goes before or afte
 | Command | What it does |
 | --- | --- |
 | `emfor server` | Runs the daemon in the foreground until `SIGTERM` or `SIGINT`; `SIGHUP` reloads the config. |
-| `emfor check-config` | Validates the config, starting and stopping any plugins it declares; prints `config ok: ...` and exits 0, or prints each error and exits 2. |
+| `emfor check-config [--show]` | Validates the config, starting and stopping any plugins it declares; prints `config ok: ...` and exits 0, or prints each error and exits 2. With `--show` it prints the merged config (the main file and its `include_dir` files) as TOML on standard output, each value followed by the file that set it, and the `config ok` lines go to standard error; defaults are not added and nothing is redacted. |
 | `emfor status` | Shows what the running daemon publishes (see [emfor status](#emfor-status)). |
 
 `emfor` with no subcommand only prints this list and exits 2: it never starts a daemon. In 0.1.1 and earlier, `emfor` without a subcommand started the daemon and `--check-config` checked the config; `--check-config` now only prints `--check-config was replaced by "emfor check-config"` and exits 2.

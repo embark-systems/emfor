@@ -58,7 +58,14 @@ pub enum Command {
     /// Run the daemon.
     Server,
     /// Validate the config file, then exit: 0 when it is valid, 2 when not.
-    CheckConfig,
+    CheckConfig {
+        /// Print the merged config (the main file and its `include_dir`
+        /// files) as TOML on standard output, each value followed by the file
+        /// that set it. The usual `config ok` lines go to standard error.
+        /// Built-in defaults are not added and nothing is redacted.
+        #[arg(long)]
+        show: bool,
+    },
     /// Show the health state the running daemon publishes, then exit.
     ///
     /// Exits 1 when the daemon is not updating the store or a shown service
@@ -79,7 +86,7 @@ pub fn main() -> ExitCode {
         eprintln!("--check-config was replaced by \"emfor check-config\"");
         return ExitCode::from(EXIT_CONFIG);
     }
-    let check_only = match &cli.command {
+    let (check_only, show) = match &cli.command {
         None => {
             // Never start a daemon by accident: only `server` does.
             use clap::CommandFactory;
@@ -88,8 +95,8 @@ pub fn main() -> ExitCode {
         }
         Some(Command::Status(args)) => return crate::status::main(&cli.config, args),
         Some(Command::Lookup(args)) => return crate::lookup::main(&cli.config, args),
-        Some(Command::CheckConfig) => true,
-        Some(Command::Server) => false,
+        Some(Command::CheckConfig { show }) => (true, *show),
+        Some(Command::Server) => (false, false),
     };
     // Loading a config starts plugins, so the runtime comes first.
     let runtime = match tokio::runtime::Runtime::new() {
@@ -99,14 +106,14 @@ pub fn main() -> ExitCode {
             return ExitCode::from(EXIT_STARTUP);
         }
     };
-    let code = runtime.block_on(start(cli.config, check_only));
+    let code = runtime.block_on(start(cli.config, check_only, show));
     // A reload abandoned at shutdown can leave a config validation running
     // on a blocking thread, waiting up to 5s per plugin; do not wait for it.
     runtime.shutdown_timeout(Duration::from_secs(1));
     code
 }
 
-async fn start(config_path: PathBuf, check_only: bool) -> ExitCode {
+async fn start(config_path: PathBuf, check_only: bool, show: bool) -> ExitCode {
     if check_only {
         let mut plugins = PluginSet::default();
         let (prepared, loaded, read) = load(&config_path, None, &plugins).await;
@@ -119,13 +126,43 @@ async fn start(config_path: PathBuf, check_only: bool) -> ExitCode {
         }
         return match loaded {
             Ok(c) => {
-                println!(
+                let ok = format!(
                     "config ok: {} services, {} backends",
                     c.services.len(),
                     c.backend_count()
                 );
-                for f in &read.files {
-                    println!("read {}", f.display());
+                let files: Vec<String> = read
+                    .files
+                    .iter()
+                    .map(|f| format!("read {}", f.display()))
+                    .collect();
+                match read.layers.as_deref().filter(|_| show) {
+                    // The merged TOML alone on standard output, so that it
+                    // can be saved and checked again.
+                    Some(layers) => {
+                        eprintln!("{ok}");
+                        for f in &files {
+                            eprintln!("{f}");
+                        }
+                        use std::io::Write;
+                        let text = config::show_layers(layers);
+                        match std::io::stdout().lock().write_all(text.as_bytes()) {
+                            Ok(()) => {}
+                            // The reader closing the pipe early (`| head`)
+                            // is not a failure, as for `emfor status`.
+                            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+                            Err(e) => {
+                                eprintln!("cannot write the output: {e}");
+                                return ExitCode::from(EXIT_STARTUP);
+                            }
+                        }
+                    }
+                    None => {
+                        println!("{ok}");
+                        for f in &files {
+                            println!("{f}");
+                        }
+                    }
                 }
                 ExitCode::from(EXIT_OK)
             }
@@ -231,6 +268,8 @@ fn log_filter(level: &str) -> EnvFilter {
 struct ReadFiles {
     files: Vec<PathBuf>,
     warnings: Vec<String>,
+    /// The merged config, for `check-config --show`.
+    layers: Option<std::sync::Arc<config::Layers>>,
 }
 
 /// Logged whether the load succeeded or not: a skipped file can be the reason
@@ -631,6 +670,7 @@ async fn load(
             let read = ReadFiles {
                 files: Vec::new(),
                 warnings,
+                layers: None,
             };
             return (Prepared::default(), Err(errors), read);
         }
@@ -642,6 +682,7 @@ async fn load(
             Vec::new()
         },
         warnings,
+        layers: None,
     };
     let (specs, _) = config::plugins_in(&layers.table);
     let mut prepared = plugins.prepare(&specs).await;
@@ -697,7 +738,14 @@ async fn load(
             Err(parse_errors)
         }
     };
-    (prepared, result, read)
+    (
+        prepared,
+        result,
+        ReadFiles {
+            layers: Some(layers),
+            ..read
+        },
+    )
 }
 
 #[cfg(test)]

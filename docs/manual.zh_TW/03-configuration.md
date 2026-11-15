@@ -264,6 +264,19 @@ read /etc/emfor/conf.d/99-local.toml
 
 daemon 在啟動與每次 reload 之後記錄同一份清單。沒有 `include_dir` 時輸出只有那一行。
 
+**看合併後的設定。** `emfor check-config --show` 以同樣的方式檢查設定，接著把合併後的設定以 TOML 印到標準輸出，每個值後面寫明最後設定它的檔案：
+
+```
+# include_dir = "conf.d" (its files are merged below)
+
+[services."api.svc.emfor"]
+backends = ["10.0.0.1:80", "10.0.0.2:80"] # /etc/emfor/emfor.toml
+check = "tcp" # /etc/emfor/emfor.toml
+interval = "5s" # /etc/emfor/conf.d/99-local.toml
+```
+
+`backends` 這類清單是整個一起設定的，所以它的註解寫的是設定這份清單的檔案。`config ok` 與 `read` 行會寫到標準錯誤，所以 `emfor check-config --show > merged.toml` 存下來的檔案在哪裡都可以再被檢查，因為 `include_dir` 那一行只以註解寫出（它的檔案已經合併進來了）；除了註解，內容相同。設定裡除了 `include_dir` 之外的相對路徑，都不依設定檔所在的目錄而變。無效的設定在標準輸出不印任何東西，並以 2 結束。沒有 `include_dir` 時，輸出開頭有一行註解寫明檔案，沒有其他註解。內建預設值不會加進去：你沒寫的鍵不會出現。沒有任何值被遮蔽；設定裡放的是密碼檔的路徑，不是密碼，但 plugin 的 `command` 會照原樣印出，所以不要把祕密寫在那裡。註解的格式是給人看的，不要用程式解析它。
+
 設定有效時結束代碼為 0，否則為 2。它會啟動宣告的 plugin，讓它們檢查各服務的 `check_options`，並在結束前停止它們。它不會開啟 store。以無效設定啟動的 daemon 會記錄同樣的錯誤，並以 2 結束。
 
 ## reload 會改變什麼
