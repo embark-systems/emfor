@@ -632,7 +632,7 @@ tests:
 ---
 ### Requirement: Clients are safe across threads and fork
 
-The client SHALL open the store read-only once per process and reuse it for later lookups. When a lookup finds the store stale, or fails with an error other than `ALL_DOWN` from a fresh store, the client SHALL check whether the file at the store path is now a different file (device and inode) than the open one, at most once every 100 ms in a process; a missing file SHALL NOT count as a different file. When it is different, the client SHALL switch to it once no lookup in the process uses the open store, and repeat the lookup once. When the lock file (`<path>-lock`) is also a different file or missing, the client SHALL open the new store before closing the open one and SHALL keep using the open one when the new one cannot be opened; when the lock file is the same, it SHALL close the open store first, since LMDB allows one environment per lock file in a process. Lookups from several threads at once SHALL each return a valid result. When a lookup runs in a process whose pid differs from the pid that opened the store (after `fork`), the client SHALL discard the inherited handle without closing it, open the store again, re-read the environment variables, and reset the round-robin counters; no lock that another thread of the parent held at the fork SHALL keep the child's lookup waiting. Each lookup SHALL end its read transaction before returning. When the store has grown past the size the client mapped it with (the daemon was restarted with a larger `map_size`), the client SHALL map it with the new size once no lookup in the process uses it, and read again. When the store file exists but cannot be opened, the client SHALL try to open it again at most once a second, and SHALL fail lookups in between with the error of the last attempt; a missing store file SHALL be tried on every lookup.
+The client SHALL open the store read-only once per process and reuse it for later lookups. When a lookup finds the store stale, or fails with an error other than `ALL_DOWN` from a fresh store, the client SHALL check whether the file at the store path is now a different file (device and inode) than the open one, at most once every 100 ms in a process; a missing file SHALL NOT count as a different file. When it is different, the client SHALL switch to it once no lookup in the process uses the open store, and repeat the lookup once. When the lock file (`<path>-lock`) is also a different file or missing, the client SHALL open the new store before closing the open one and SHALL keep using the open one when the new one cannot be opened; when the lock file is the same, it SHALL close the open store first, since LMDB allows one environment per lock file in a process. Lookups from several threads at once SHALL each return a valid result. When a lookup runs in a process whose pid differs from the pid that opened the store (after `fork`), the client SHALL discard the inherited handle without closing it, open the store again, re-read the environment variables, and reset the round-robin counters; no lock that another thread of the parent held at the fork SHALL keep the child's lookup waiting. On FreeBSD, whose threading library keeps the process-shared mutexes of LMDB's lock file in a table that stays locked in the child when a thread of the parent was inside one at the fork, the client SHALL make `fork` wait until no lookup of the process is inside the store, SHALL keep lookups from entering it until `fork` has returned in the parent and in the child, and SHALL do the same for a first lookup that is opening the store; this holds for lookups through the C library, and so for the Go, Python, PHP and Perl clients, as for the Rust client. A `fork` from a signal handler that interrupted a lookup of the same thread SHALL return in the parent, even though the child is then not guarded. Each lookup SHALL end its read transaction before returning. When the store has grown past the size the client mapped it with (the daemon was restarted with a larger `map_size`), the client SHALL map it with the new size once no lookup in the process uses it, and read again. When the store file exists but cannot be opened, the client SHALL try to open it again at most once a second, and SHALL fail lookups in between with the error of the last attempt; a missing store file SHALL be tried on every lookup.
 
 #### Scenario: Lookup after fork
 
@@ -642,7 +642,22 @@ The client SHALL open the store read-only once per process and reuse it for late
 #### Scenario: Fork while other threads look up
 
 - **WHEN** a process has 4 threads looking up a service in a loop, and another thread forks 300 times while they run
-- **THEN** each child's lookup of that service returns within 5 seconds
+- **THEN** each child's lookup of that service returns within 5 seconds, on Linux and on FreeBSD
+
+#### Scenario: Fork while other threads look up through the C library
+
+- **WHEN** a process has 4 threads calling `emfor_lookup` for a service in a loop, and another thread forks 300 times while they run
+- **THEN** each child's `emfor_lookup` of that service returns `EMFOR_OK` within 5 seconds
+
+#### Scenario: Fork from a signal handler during a lookup
+
+- **WHEN** a thread looks up a service in a loop for 3 seconds, and a signal handler running on that thread runs the fork handlers (prepare, then release) about every 2 milliseconds
+- **THEN** every call returns, and the thread's lookups go on returning an address
+
+#### Scenario: Fork during the first lookup
+
+- **WHEN** a process has not looked up yet, one thread starts its first lookup, and another thread forks while that lookup opens the store
+- **THEN** the child's lookup of the service returns an address within 5 seconds, and so does the lookup of the parent
 
 #### Scenario: Store grown past the client's map size
 
@@ -671,57 +686,28 @@ The client SHALL open the store read-only once per process and reuse it for late
 
 
 <!-- @trace
-source: emfor-clients
-updated: 2026-11-12
+source: emfor-client-fork-freebsd
+updated: 2026-11-15
 code:
-  - clients/c/example.c
-  - clients/rust/src/capi.rs
-  - tests/conformance/v1/sticky-v1.json
-  - clients/rust/src/store.rs
-  - clients/rust/README.md
-  - clients/c/README.md
+  - CHANGELOG.md
   - clients/rust/src/client.rs
-  - clients/rust/examples/lookup.rs
-  - tests/conformance/v1/cases.json
+  - clients/rust/src/fork.rs
   - clients/c/Makefile
-  - clients/rust/src/select.rs
-  - tools/emfor-fixture/Cargo.toml
-  - tools/emfor-fixture/src/lib.rs
-  - tests/conformance/v1/README.md
-  - tests/spike/probe_read.py
-  - tests/spike/RESULTS.md
-  - clients/rust/src/config.rs
-  - tests/spike/probe/Cargo.toml
-  - clients/rust/src/lib.rs
-  - Cargo.toml
-  - tests/spike/probe/cbindgen.toml
-  - tools/emfor-fixture/src/main.rs
-  - clients/rust/cbindgen.toml
-  - tests/spike/probe_read.php
-  - .github/workflows/ci.yml
+  - clients/rust/build.rs
+  - docs/manual.zh_TW/06-clients.md
   - clients/rust/Cargo.toml
-  - tests/spike/probe_read.c
-  - tests/spike/run.sh
-  - tests/spike/probe/src/lib.rs
-  - tests/spike/check_symbols.sh
+  - clients/rust/src/lib.rs
+  - README.md
+  - docs/manual/06-clients.md
+  - README.zh-TW.md
 tests:
-  - clients/rust/tests/conformance_capi.rs
-  - clients/rust/tests/fork.rs
-  - clients/rust/tests/lock_format.rs
-  - clients/c/tests/check_symbols.sh
-  - clients/c/tests/test_fork.c
-  - clients/rust/tests/env_default.rs
-  - clients/rust/tests/env_invalid.rs
-  - clients/rust/tests/threads.rs
-  - clients/rust/tests/support/mod.rs
-  - clients/c/tests/test_threads.c
-  - clients/c/tests/common.h
-  - clients/rust/tests/conformance.rs
-  - clients/rust/tests/same_lmdb.rs
-  - clients/c/tests/fixture.json
-  - clients/rust/tests/env_retry.rs
-  - tools/emfor-fixture/tests/conformance_data.rs
-  - clients/c/tests/test_lookup.c
+  - clients/c/tests/test_fork_threads.c
+  - clients/rust/tests/fork_guard_concurrent.rs
+  - clients/rust/tests/fork_guard_signal.rs
+  - clients/rust/tests/fork_threads.rs
+  - clients/rust/tests/fork_guard_first.rs
+  - clients/rust/tests/fork_guard_register.rs
+  - clients/rust/tests/fork_guard.rs
 -->
 
 ---
