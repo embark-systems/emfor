@@ -25,9 +25,15 @@ case "$spike" in
         $(pkg-config --cflags --libs lmdb) || exit 1
     ;;
 2)
+    # The output is kept, and shown when the build fails: a bare exit 1 left
+    # nothing to go on in CI.
     (cd tests/spike/probe && cargo cinstall --release --features capi \
         --prefix "$work/prefix" --libdir "$work/prefix/lib" \
-        --pkgconfigdir "$work/prefix/lib/pkgconfig" >/dev/null 2>&1) || exit 1
+        --pkgconfigdir "$work/prefix/lib/pkgconfig") >"$work/cinstall.log" 2>&1 || {
+        echo "cargo cinstall of the probe library failed:"
+        cat "$work/cinstall.log"
+        exit 1
+    }
     export PKG_CONFIG_PATH="$work/prefix/lib/pkgconfig"
     libdir=$(pkg-config --variable=libdir emforprobe)
     if [ "$(uname)" = Darwin ]; then so="$libdir/libemforprobe.dylib"; else so="$libdir/libemforprobe.so"; fi
