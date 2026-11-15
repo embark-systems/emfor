@@ -17,6 +17,7 @@
 | [7. DNS](07-dns.md) | DNS server、它的回答、SRV 記錄，以及從主機 resolver 轉送 |
 | [8. 維運](08-operations.md) | 指令、signal 與 reload、`emfor status`、`emfor lookup`、metrics、log、結束代碼、磁碟上的 store、升級 |
 | [9. 疑難排解](09-troubleshooting.md) | 症狀、原因與處理方式 |
+| [10. 從 HAProxy 或 Consul 搬過來](10-migrating.md) | 同樣的設定在 emfor 裡長什麼樣子、哪些東西沒有對應，以及如何與現有方案並排試用 emfor |
 
 第一次接觸 emfor？先讀第 1 章，接著照 [README](../../README.zh-TW.md#快速上手) 的快速上手操作一次，再讀第 3 章。
 

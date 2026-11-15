@@ -1,6 +1,6 @@
 # 9. 疑難排解
 
-[手冊](README.md) · 上一章：[8. 維運](08-operations.md)
+[手冊](README.md) · 上一章：[8. 維運](08-operations.md) · 下一章：[10. 從 HAProxy 或 Consul 搬過來](10-migrating.md)
 
 先執行 `emfor status`：它顯示 daemon 是否在執行、每個 backend 的狀態，以及最近一次失敗檢查的 reason。接著看 daemon 的 log（`journalctl -u emfor`，FreeBSD 上看 syslog）。
 

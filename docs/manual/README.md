@@ -20,6 +20,7 @@ The manual describes emfor 0.5.
 | [7. DNS](07-dns.md) | The DNS server, its answers, SRV records, and forwarding from the host resolver |
 | [8. Operations](08-operations.md) | Commands, signals and reload, `emfor status`, `emfor lookup`, metrics, logs, exit codes, the store on disk, upgrading |
 | [9. Troubleshooting](09-troubleshooting.md) | Symptoms, their causes, and what to do |
+| [10. Moving from HAProxy or Consul](10-migrating.md) | What the same configuration looks like in emfor, what has no equivalent, and how to try emfor next to what you have |
 
 New to emfor? Read chapter 1, then follow the quick start in the
 [README](../../README.md#quick-start), then chapter 3.

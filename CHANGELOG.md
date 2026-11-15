@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+**A chapter for people who come from HAProxy or Consul.** Chapter 10 of the
+manual (both languages) translates an HAProxy backend and a Consul service
+with an HTTP check into `emfor.toml`, option by option, says what has no
+equivalent (least connections, retries, passive checks, taking a backend out
+for maintenance, registration), and describes how to try emfor next to what
+is running. The configuration examples were checked with
+`emfor check-config`; the HAProxy and Consul options were checked against
+their documentation as far as it could be read (the HAProxy `weight` range and
+the `server` option defaults beyond `inter`, `rise` and `fall` were not).
+
 **`emfor lookup`: what an application would get, and why.** A new command,
 `emfor lookup <service> [--key <k>] [--explain] [--json] [--dns A|AAAA]`,
 prints the backend a client library would give, for shell scripts and cron

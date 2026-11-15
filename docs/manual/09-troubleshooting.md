@@ -1,6 +1,6 @@
 # 9. Troubleshooting
 
-[Manual](README.md) · Previous: [8. Operations](08-operations.md)
+[Manual](README.md) · Previous: [8. Operations](08-operations.md) · Next: [10. Moving from HAProxy or Consul](10-migrating.md)
 
 Start with `emfor status`: it shows whether the daemon is running, each
 backend's state, and the reason of the last failed check. Then look at the
