@@ -497,12 +497,19 @@ The `diameter` plugin SHALL accept these `check_options` keys and SHALL report e
 - `tls`, `tls_verify`, `server_name` and `ca_file` with the rules they have for the other `emfor-check` plugins, including `requires tls = true`.
 - `tls_cert_file` and `tls_key_file`: absolute paths of a PEM client certificate chain and of its PEM private key, set together and only with `tls = true` (otherwise `requires tls = true`). When only one is set, the error is on that key: `requires tls_key_file` or `requires tls_cert_file`. A path that is not absolute is `not an absolute path`; when options are validated, a file that cannot be read is `file not found` or `cannot read: <kind>`, a certificate file without a PEM certificate is `no certificate found`, and a key file without a PEM private key is `no private key found`. When both files pass, validation SHALL build the TLS client configuration a check builds with them; a key that cannot be used or does not belong to the certificate SHALL be an error on `tls_key_file`. During checks, both files SHALL be handled like `ca_file` (spec health-checking): a replaced or rewritten file takes effect at the next check without a reload, an unchanged one is kept parsed and costs one `stat` per check, and one no check used for 10 minutes is released.
 
+When the other options are valid, validation SHALL build the Capabilities-Exchange-Request a check sends, with `host_ip_address` or, when it is not set, an IPv6 Host-IP-Address (the longer form). When that request is longer than 16777215 bytes, the largest value the 24-bit Message Length holds, the plugin SHALL report an error on the longest of `auth_application_ids`, `acct_application_ids`, `vendor_specific_application_ids` and `supported_vendor_ids`: `too many entries: the Capabilities-Exchange-Request would be <n> bytes, above Diameter's 16777215-byte message limit`, where `<n>` is the length.
+
 When `auth_application_ids`, `acct_application_ids` and `vendor_specific_application_ids` are all empty or absent, the plugin SHALL report an error on `auth_application_ids`: `at least one application is required`. A missing `origin_host` or `origin_realm` SHALL be `missing required key`; type errors SHALL be `must be a string` and `must be a boolean`.
 
 #### Scenario: Gx peer options
 
 - **WHEN** a service with `check = "diameter"` sets `check_options = { origin_host = "emfor-app01.example.org", origin_realm = "example.org", vendor_specific_application_ids = [{ vendor_id = 10415, auth_application_id = 16777238 }], supported_vendor_ids = [10415] }`
 - **THEN** the plugin reports no errors
+
+#### Scenario: Request longer than the Message Length
+
+- **WHEN** a service with `check = "diameter"` sets `origin_host = "emfor.example.org"`, `origin_realm = "example.org"`, `auth_application_ids = [4]` and the most `supported_vendor_ids` for which the Capabilities-Exchange-Request, counted with an IPv6 Host-IP-Address, is at most 16777215 bytes
+- **THEN** the plugin reports no errors, and with one entry more it reports `supported_vendor_ids`: `too many entries: the Capabilities-Exchange-Request would be <n> bytes, above Diameter's 16777215-byte message limit`, where `<n>` is the length with that entry
 
 ##### Example: Diameter option validation
 
@@ -519,32 +526,6 @@ When `auth_application_ids`, `acct_application_ids` and `vendor_specific_applica
 | `{ origin_host = "emfor.example.org", origin_realm = "example.org", acct_application_ids = [3], tls = true, tls_cert_file = "/etc/emfor/diameter.crt" }` | `tls_cert_file`: requires tls_key_file |
 | `{ origin_host = "emfor.example.org", origin_realm = "example.org", acct_application_ids = [3], tls_cert_file = "/etc/emfor/diameter.crt", tls_key_file = "/etc/emfor/diameter.key" }` | `tls_cert_file`: requires tls = true; `tls_key_file`: requires tls = true |
 | `{ origin_host = "emfor.example.org", origin_realm = "example.org", acct_application_ids = [3], tls = true, tls_cert_file = "/etc/emfor/diameter.crt", tls_key_file = "/etc/emfor/other.key" }`, the key of another certificate | `tls_key_file`: the TLS library's message |
-
-
-<!-- @trace
-source: emfor-check-diameter
-updated: 2026-11-13
-code:
-  - examples/emfor.toml
-  - tests/plugins/run.sh
-  - crates/emfor-check/src/options.rs
-  - docs/manual.zh_TW/04-health-checks.md
-  - crates/emfor-tls/src/testing.rs
-  - tests/plugins/Dockerfile
-  - docs/deploy/plugins.md
-  - crates/emfor-check/src/diameter.rs
-  - crates/emfor-check/src/main.rs
-  - crates/emfor-check/src/lib.rs
-  - crates/emfor-check/Cargo.toml
-  - crates/emfor-tls/src/tests.rs
-  - tests/plugins/inside.sh
-  - CHANGELOG.md
-  - crates/emfor-tls/src/lib.rs
-  - docs/manual/04-health-checks.md
-tests:
-  - crates/emfor-check/tests/cli.rs
-  - crates/emfor-check/tests/live.rs
--->
 
 ---
 ### Requirement: Diameter check
@@ -774,7 +755,7 @@ tests:
 The `amqp` plugin SHALL accept these `check_options` keys and SHALL report every other key as `unknown key`:
 
 - `user`: required, a string of 1 to 255 bytes without NUL. A missing key is `missing required key`; an empty or longer string is `must be 1 to 255 bytes`; one with NUL is `must not contain NUL`, since PLAIN separates the user from the password with NUL.
-- `password_file`: required, with the rules it has for the other `emfor-check` plugins; when options are validated, a password with NUL is `password must not contain NUL`.
+- `password_file`: required, with the rules it has for the other `emfor-check` plugins; when options are validated, a password with NUL is `password must not contain NUL`. Start-Ok carries the password and is sent before Connection.Tune sets the frame size, so it SHALL fit in AMQP 0-9-1's frame-min-size of 4096 bytes: when options are validated, a password for which the Start-Ok frame (header, method, arguments and frame end) with this `user` is longer than 4096 bytes is `password too long: Start-Ok must fit in AMQP's 4096-byte first frame, at most <n> bytes with this user`, where `<n>` is the longest password that fits. A password read during a check that does not fit SHALL make the result `error` with that message after `password_file: `, before the plugin connects.
 - `vhost`: a string of 1 to 255 bytes, default `/`. Otherwise the error is `must be 1 to 255 bytes`.
 - `tls`, `tls_verify`, `server_name` and `ca_file`: the rules they have for the `redis`, `mysql` and `pgsql` plugins, including the error `requires tls = true`.
 
@@ -784,6 +765,16 @@ Type errors SHALL be `must be a string` and `must be a boolean`.
 
 - **WHEN** a service with `check = "amqp"` sets `check_options = { user = "emfor", password_file = "/etc/emfor/amqp.pass" }`
 - **THEN** the plugin reports no errors and opens vhost `/`
+
+#### Scenario: Password too long for the first frame
+
+- **WHEN** a service with `check = "amqp"` sets a `user` and a `password_file` whose password is one byte longer than the longest one whose Start-Ok frame with that user is 4096 bytes
+- **THEN** the plugin reports `password_file`: `password too long: Start-Ok must fit in AMQP's 4096-byte first frame, at most <n> bytes with this user`, and a password of `<n>` bytes is accepted, and a check with it against RabbitMQ is `up` when the broker knows that user and password
+
+#### Scenario: Password file grows after validation
+
+- **WHEN** the `password_file` of an `amqp` service is rewritten after the config was applied with a 5000-byte password
+- **THEN** checks of that service are `error` with a reason starting `password_file: password too long`, and no connection is opened
 
 ##### Example: AMQP option validation
 
@@ -797,40 +788,6 @@ Type errors SHALL be `must be a string` and `must be a boolean`.
 | `{ user = "em\u0000for", password_file = "/etc/emfor/amqp.pass" }` | `user`: must not contain NUL |
 | `{ user = "emfor", password_file = "/etc/emfor/amqp.pass", server_name = "mq.internal" }` | `server_name`: requires tls = true |
 | `{ user = "emfor", password_file = "/etc/emfor/amqp.pass", password = "x" }` | `password`: unknown key |
-
-
-<!-- @trace
-source: emfor-check-amqp
-updated: 2026-11-14
-code:
-  - crates/emfor-check/Cargo.toml
-  - crates/emfor-check/src/grpc.rs
-  - examples/freebsd/Makefile.crates
-  - crates/emfor-check/src/amqp.rs
-  - docs/deploy/plugins.md
-  - tests/plugins/run.sh
-  - crates/emfor-check/src/main.rs
-  - examples/emfor.toml
-  - docs/manual.zh_TW/04-health-checks.md
-  - crates/emfor-check/src/lib.rs
-  - crates/emfor-check/src/pgsql.rs
-  - crates/emfor-check/src/mongodb.rs
-  - crates/emfor-check/src/mysql.rs
-  - docs/manual/04-health-checks.md
-  - crates/emfor-check/src/redis.rs
-  - tests/plugins/grpc_server.py
-  - crates/emfor-check/src/radius.rs
-  - crates/emfor-check/src/smtp.rs
-  - crates/emfor-daemon/src/checker/http.rs
-  - CHANGELOG.md
-  - tests/plugins/Dockerfile
-  - tests/plugins/inside.sh
-  - crates/emfor-check/src/replica.rs
-  - crates/emfor-check/src/options.rs
-tests:
-  - crates/emfor-check/tests/cli.rs
-  - crates/emfor-check/tests/live.rs
--->
 
 ---
 ### Requirement: AMQP check
