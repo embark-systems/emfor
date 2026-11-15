@@ -98,6 +98,13 @@ impl Plugin {
         serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line:?}"))
     }
 
+    /// Validate only; returns the errors.
+    fn validate(&mut self, options: Value) -> Value {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.ask(json!({"type":"validate","id":id,"options":options}))["errors"].clone()
+    }
+
     /// Validate, then check `127.0.0.1:<port>`; returns (result, reason).
     fn check(&mut self, port: u16, options: Value) -> (String, String) {
         let id = self.next_id;
@@ -547,6 +554,16 @@ fn diameter_live() {
         ("down".into(), "cea: 5010 DIAMETER_NO_COMMON_APPLICATION".into())
     );
     down(p.check(3999, peer("emfor.test", json!({}))), "connect: ");
+    // A large Capabilities-Exchange-Request (about 60 KB) is sent whole.
+    // freeDiameter takes messages up to 65535 bytes only: one of 66128
+    // bytes is a "suspect header" and it closes the connection.
+    up(p.check(
+        3868,
+        peer(
+            "emfor.test",
+            json!({ "supported_vendor_ids": (1..=5000).collect::<Vec<u32>>() }),
+        ),
+    ));
 }
 
 #[test]
@@ -597,6 +614,44 @@ fn amqp_live() {
         "tls: ",
     );
     down(p.check(5699, login("good.pass", json!({}))), "connect: ");
+
+    // Start-Ok goes out before Tune, in a frame of at most 4096 bytes: the
+    // longest password validation allows for a user still logs in. The
+    // refusal of a longer one names that length.
+    let long = dir().join("long.pass");
+    std::fs::write(&long, "p".repeat(5000)).unwrap();
+    let options = json!({"user": "emfor-long", "password_file": long, "vhost": "app"});
+    let errors = p.validate(options.clone());
+    let message = errors[0]["message"].as_str().unwrap_or_default();
+    let most: usize = message
+        .rsplit("at most ")
+        .next()
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no length in {errors}"));
+    let password = "p".repeat(most);
+    std::fs::write(&long, format!("{password}\n")).unwrap();
+    for args in [
+        vec!["add_user", "emfor-long", password.as_str()],
+        vec![
+            "set_permissions",
+            "-p",
+            "app",
+            "emfor-long",
+            ".*",
+            ".*",
+            ".*",
+        ],
+    ] {
+        let status = Command::new("runuser")
+            .args(["-u", "rabbitmq", "--", "rabbitmqctl", "-q"])
+            .args(&args)
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "rabbitmqctl {}", args[0]);
+    }
+    up(p.check(5672, options));
 }
 
 #[test]
