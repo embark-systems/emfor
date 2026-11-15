@@ -32,45 +32,180 @@ pub fn healthy_or_all<'a, T: Copy>(
     trust_health: bool,
     backend: impl Fn(T) -> &'a BackendRecord,
 ) -> Option<Vec<T>> {
-    let healthy: Vec<T> = list
-        .iter()
-        .copied()
-        .filter(|&t| trust_health && backend(t).state == HealthState::Healthy)
-        .collect();
-    let tiers: [(bool, bool); 4] = [(true, false), (true, true), (false, false), (false, true)];
-    for (passing_only, backup) in tiers {
-        let tier: Vec<T> = healthy
-            .iter()
-            .copied()
-            .filter(|&t| {
-                let b = backend(t);
-                b.backup == backup && (!passing_only || b.reason.is_none())
-            })
-            .collect();
-        if !tier.is_empty() {
-            return Some(tier);
+    let found = explain_tiers(on_all_down, list, trust_health, backend);
+    (found.tier != Tier::None).then_some(found.candidates)
+}
+
+/// Which set of backends [`explain_tiers`] chose (spec lookup-command,
+/// "Explain shows the tier and the reason of every backend"). The order is
+/// the order of the tiers in [`healthy_or_all`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    /// Healthy primary backends whose last check passed.
+    PrimaryPassing,
+    /// Healthy backup backends whose last check passed.
+    BackupPassing,
+    /// Healthy primary backends, failing ones included.
+    PrimaryFailing,
+    /// Healthy backup backends, failing ones included.
+    BackupFailing,
+    /// `unknown` backends whose last check passed (`on_all_down` `open`).
+    UnknownPassing,
+    /// Every `unknown` backend (`on_all_down` `open`).
+    Unknown,
+    /// Every backend (`on_all_down` `open`).
+    All,
+    /// No backend may be chosen: `closed`, or an empty list.
+    None,
+}
+
+impl Tier {
+    /// The name used in `--json` output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tier::PrimaryPassing => "primary-passing",
+            Tier::BackupPassing => "backup-passing",
+            Tier::PrimaryFailing => "primary-failing",
+            Tier::BackupFailing => "backup-failing",
+            Tier::UnknownPassing => "unknown-passing",
+            Tier::Unknown => "unknown",
+            Tier::All => "all",
+            Tier::None => "none",
         }
     }
-    if !on_all_down.is_open() || list.is_empty() {
-        return None;
+
+    /// The tier in words, for the text output.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Tier::PrimaryPassing => "healthy primary backends whose last check passed",
+            Tier::BackupPassing => "healthy backup backends whose last check passed",
+            Tier::PrimaryFailing => {
+                "healthy primary backends including those whose last check failed"
+            }
+            Tier::BackupFailing => {
+                "healthy backup backends including those whose last check failed"
+            }
+            Tier::UnknownPassing => "unknown backends whose last check passed",
+            Tier::Unknown => "every unknown backend",
+            Tier::All => "every backend",
+            Tier::None => "none",
+        }
     }
-    let unknown: Vec<T> = list
-        .iter()
-        .copied()
-        .filter(|&t| trust_health && backend(t).state == HealthState::Unknown)
-        .collect();
-    let unknown_passing: Vec<T> = unknown
-        .iter()
-        .copied()
-        .filter(|&t| backend(t).reason.is_none())
-        .collect();
-    if !unknown_passing.is_empty() {
-        return Some(unknown_passing);
+}
+
+/// Why an entry is not among the candidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exclusion {
+    /// The store is stale, so no backend counts as healthy or unknown.
+    Stale,
+    /// `unhealthy` (or a state this reader does not know).
+    Unhealthy,
+    /// `unknown`, and a better tier has candidates.
+    Unknown,
+    /// Healthy (or unknown) with a `reason`: its last check failed, and a
+    /// passing backend of the tier above exists.
+    LastCheckFailed,
+    /// A backup backend while a primary backend is a candidate.
+    BackupHeldBack,
+}
+
+impl Exclusion {
+    /// The words used in the output and in `--json`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Exclusion::Stale => "stale",
+            Exclusion::Unhealthy => "unhealthy",
+            Exclusion::Unknown => "unknown",
+            Exclusion::LastCheckFailed => "last check failed",
+            Exclusion::BackupHeldBack => "backup held back",
+        }
     }
-    if !unknown.is_empty() {
-        return Some(unknown);
+}
+
+/// What [`explain_tiers`] found.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TierExplanation<T> {
+    pub tier: Tier,
+    /// The entries that may be chosen, in the order of `list`.
+    pub candidates: Vec<T>,
+    /// Every other entry, in the order of `list`, with the reason.
+    pub excluded: Vec<(T, Exclusion)>,
+}
+
+/// The tiers of [`healthy_or_all`], with the reason for every entry that is
+/// left out. `candidates` is what [`healthy_or_all`] returns, and `tier` is
+/// [`Tier::None`] exactly when it returns `None`.
+pub fn explain_tiers<'a, T: Copy>(
+    on_all_down: OnAllDown,
+    list: &[T],
+    trust_health: bool,
+    backend: impl Fn(T) -> &'a BackendRecord,
+) -> TierExplanation<T> {
+    let is_healthy = |t: T| trust_health && backend(t).state == HealthState::Healthy;
+    let is_unknown = |t: T| trust_health && backend(t).state == HealthState::Unknown;
+    let pick = |keep: &dyn Fn(T) -> bool| -> Vec<usize> {
+        (0..list.len()).filter(|&i| keep(list[i])).collect()
+    };
+    let mut chosen: Option<(Tier, Vec<usize>)> = None;
+    let healthy_tiers = [
+        (Tier::PrimaryPassing, true, false),
+        (Tier::BackupPassing, true, true),
+        (Tier::PrimaryFailing, false, false),
+        (Tier::BackupFailing, false, true),
+    ];
+    for (tier, passing_only, backup) in healthy_tiers {
+        let idx = pick(&|t| {
+            let b = backend(t);
+            is_healthy(t) && b.backup == backup && (!passing_only || b.reason.is_none())
+        });
+        if !idx.is_empty() {
+            chosen = Some((tier, idx));
+            break;
+        }
     }
-    Some(list.to_vec())
+    if chosen.is_none() && on_all_down.is_open() && !list.is_empty() {
+        let unknown_passing = pick(&|t| is_unknown(t) && backend(t).reason.is_none());
+        let unknown = pick(&|t| is_unknown(t));
+        chosen = Some(if !unknown_passing.is_empty() {
+            (Tier::UnknownPassing, unknown_passing)
+        } else if !unknown.is_empty() {
+            (Tier::Unknown, unknown)
+        } else {
+            (Tier::All, (0..list.len()).collect())
+        });
+    }
+    let (tier, idx) = chosen.unwrap_or((Tier::None, Vec::new()));
+    let why = |t: T| -> Exclusion {
+        if !trust_health {
+            return Exclusion::Stale;
+        }
+        let b = backend(t);
+        match b.state {
+            HealthState::Healthy => {
+                if b.backup && matches!(tier, Tier::PrimaryPassing | Tier::PrimaryFailing) {
+                    Exclusion::BackupHeldBack
+                } else {
+                    Exclusion::LastCheckFailed
+                }
+            }
+            HealthState::Unknown => {
+                if tier == Tier::UnknownPassing && b.reason.is_some() {
+                    Exclusion::LastCheckFailed
+                } else {
+                    Exclusion::Unknown
+                }
+            }
+            HealthState::Unhealthy | HealthState::Unrecognized => Exclusion::Unhealthy,
+        }
+    };
+    TierExplanation {
+        tier,
+        candidates: idx.iter().map(|&i| list[i]).collect(),
+        excluded: (0..list.len())
+            .filter(|i| !idx.contains(i))
+            .map(|i| (list[i], why(list[i])))
+            .collect(),
+    }
 }
 
 /// Steps of slow start: a ramping backend gets 1 to 9 tenths of its base
@@ -453,5 +588,213 @@ mod tests {
     fn subset_falls_back_to_all() {
         assert_eq!(subset_or_all(&[1, 2, 3], |x| x > 1), [2, 3]);
         assert_eq!(subset_or_all(&[1, 2, 3], |x| x > 5), [1, 2, 3]);
+    }
+
+    /// The original `healthy_or_all`, kept to guard the rewrite that calls
+    /// [`explain_tiers`] (task 1.2): same candidates for every input.
+    fn reference_healthy_or_all<'a, T: Copy>(
+        on_all_down: OnAllDown,
+        list: &[T],
+        trust_health: bool,
+        backend: impl Fn(T) -> &'a BackendRecord,
+    ) -> Option<Vec<T>> {
+        let healthy: Vec<T> = list
+            .iter()
+            .copied()
+            .filter(|&t| trust_health && backend(t).state == HealthState::Healthy)
+            .collect();
+        let tiers: [(bool, bool); 4] = [(true, false), (true, true), (false, false), (false, true)];
+        for (passing_only, backup) in tiers {
+            let tier: Vec<T> = healthy
+                .iter()
+                .copied()
+                .filter(|&t| {
+                    let b = backend(t);
+                    b.backup == backup && (!passing_only || b.reason.is_none())
+                })
+                .collect();
+            if !tier.is_empty() {
+                return Some(tier);
+            }
+        }
+        if !on_all_down.is_open() || list.is_empty() {
+            return None;
+        }
+        let unknown: Vec<T> = list
+            .iter()
+            .copied()
+            .filter(|&t| trust_health && backend(t).state == HealthState::Unknown)
+            .collect();
+        let unknown_passing: Vec<T> = unknown
+            .iter()
+            .copied()
+            .filter(|&t| backend(t).reason.is_none())
+            .collect();
+        if !unknown_passing.is_empty() {
+            return Some(unknown_passing);
+        }
+        if !unknown.is_empty() {
+            return Some(unknown);
+        }
+        Some(list.to_vec())
+    }
+
+    fn rec(id: &str, state: HealthState, reason: bool, backup: bool) -> BackendRecord {
+        let mut r = b(id, state, None);
+        r.reason = reason.then(|| "connect: Connection refused".to_string());
+        r.backup = backup;
+        r
+    }
+
+    /// Every list of up to three backends over every state, reason and
+    /// backup combination, with fresh and stale stores and both
+    /// `on_all_down` values: `explain_tiers` gives the candidates
+    /// `healthy_or_all` gave, `tier` is `None` exactly when there are none,
+    /// and every entry is a candidate or has a reason.
+    #[test]
+    fn explain_tiers_matches_the_candidates_of_healthy_or_all() {
+        use HealthState::*;
+        let kinds: Vec<(HealthState, bool, bool)> = [Healthy, Unhealthy, Unknown, Unrecognized]
+            .into_iter()
+            .flat_map(|s| [false, true].map(move |r| (s, r)))
+            .flat_map(|(s, r)| [false, true].map(move |bk| (s, r, bk)))
+            .collect();
+        let mut lists: Vec<Vec<BackendRecord>> = vec![vec![]];
+        for n in 1..=3usize {
+            let mut idx = vec![0usize; n];
+            loop {
+                lists.push(
+                    idx.iter()
+                        .enumerate()
+                        .map(|(i, &k)| {
+                            let (s, r, bk) = kinds[k];
+                            rec(&format!("10.0.0.{}:80", i + 1), s, r, bk)
+                        })
+                        .collect(),
+                );
+                let mut pos = 0;
+                while pos < n {
+                    idx[pos] += 1;
+                    if idx[pos] < kinds.len() {
+                        break;
+                    }
+                    idx[pos] = 0;
+                    pos += 1;
+                }
+                if pos == n {
+                    break;
+                }
+            }
+        }
+        let mut checked = 0;
+        for list in &lists {
+            let refs: Vec<&BackendRecord> = list.iter().collect();
+            for trust in [true, false] {
+                for oad in [OnAllDown::Open, OnAllDown::Closed, OnAllDown::Unknown] {
+                    let want = reference_healthy_or_all(oad, &refs, trust, |b| b);
+                    let got = explain_tiers(oad, &refs, trust, |b| b);
+                    let ids =
+                        |v: &[&BackendRecord]| v.iter().map(|b| b.id.clone()).collect::<Vec<_>>();
+                    assert_eq!(
+                        want.as_deref().map(ids),
+                        (got.tier != Tier::None).then(|| ids(&got.candidates)),
+                        "{list:?} trust={trust} {oad:?}"
+                    );
+                    assert_eq!(
+                        got.candidates.len() + got.excluded.len(),
+                        refs.len(),
+                        "{list:?}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 1000, "{checked}");
+    }
+
+    /// Spec lookup-command, example "tier of the candidates".
+    #[test]
+    fn tier_of_the_candidates_table() {
+        use HealthState::*;
+        let primary_ok = rec("10.0.0.1:80", Healthy, false, false);
+        let primary_failing = rec("10.0.0.2:80", Healthy, true, false);
+        let backup_ok = rec("10.0.0.3:80", Healthy, false, true);
+        let down = rec("10.0.0.4:80", Unhealthy, true, false);
+        let unknown_ok = rec("10.0.0.5:80", Unknown, false, false);
+        let rows: [(Vec<&BackendRecord>, OnAllDown, Tier); 6] = [
+            (
+                vec![&primary_ok, &down],
+                OnAllDown::Open,
+                Tier::PrimaryPassing,
+            ),
+            (
+                vec![&primary_failing, &backup_ok],
+                OnAllDown::Open,
+                Tier::BackupPassing,
+            ),
+            (
+                vec![&primary_failing, &down],
+                OnAllDown::Open,
+                Tier::PrimaryFailing,
+            ),
+            (
+                vec![&down, &unknown_ok],
+                OnAllDown::Open,
+                Tier::UnknownPassing,
+            ),
+            (vec![&down], OnAllDown::Open, Tier::All),
+            (vec![&down], OnAllDown::Closed, Tier::None),
+        ];
+        for (list, oad, want) in rows {
+            let got = explain_tiers(oad, &list, true, |b| b);
+            assert_eq!(got.tier, want, "{list:?} {oad:?}");
+        }
+    }
+
+    /// Spec scenario "Primary and backup backends" and "Stale store".
+    #[test]
+    fn explain_tiers_gives_the_reason_of_every_excluded_entry() {
+        use HealthState::*;
+        let a = rec("10.0.0.11:8080", Healthy, false, false);
+        let b2 = rec("10.0.0.12:8080", Healthy, true, false);
+        let c = rec("10.0.0.13:8080", Healthy, false, true);
+        let d = rec("10.0.0.14:8080", Unhealthy, true, false);
+        let list = [&a, &b2, &c, &d];
+        let got = explain_tiers(OnAllDown::Open, &list, true, |b| b);
+        assert_eq!(got.tier, Tier::PrimaryPassing);
+        assert_eq!(got.candidates.len(), 1);
+        assert_eq!(got.candidates[0].id, "10.0.0.11:8080");
+        let why: Vec<(&str, &str)> = got
+            .excluded
+            .iter()
+            .map(|(b, e)| (b.id.as_str(), e.as_str()))
+            .collect();
+        assert_eq!(
+            why,
+            [
+                ("10.0.0.12:8080", "last check failed"),
+                ("10.0.0.13:8080", "backup held back"),
+                ("10.0.0.14:8080", "unhealthy"),
+            ]
+        );
+        // A stale store: nothing counts as healthy; open uses every backend,
+        // closed has none and every entry is excluded as stale.
+        let stale_open = explain_tiers(OnAllDown::Open, &list, false, |b| b);
+        assert_eq!(stale_open.tier, Tier::All);
+        assert_eq!(stale_open.candidates.len(), 4);
+        let stale_closed = explain_tiers(OnAllDown::Closed, &list, false, |b| b);
+        assert_eq!(stale_closed.tier, Tier::None);
+        assert!(
+            stale_closed
+                .excluded
+                .iter()
+                .all(|(_, e)| *e == Exclusion::Stale)
+        );
+        // A passing unknown beats a failing unknown.
+        let u1 = rec("10.0.0.21:80", Unknown, true, false);
+        let u2 = rec("10.0.0.22:80", Unknown, false, false);
+        let got = explain_tiers(OnAllDown::Open, &[&u1, &u2], true, |b| b);
+        assert_eq!(got.tier, Tier::UnknownPassing);
+        assert_eq!(got.excluded[0].1, Exclusion::LastCheckFailed);
     }
 }

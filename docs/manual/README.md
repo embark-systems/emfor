@@ -18,7 +18,7 @@ The manual describes emfor 0.5.
 | [5. Choosing a backend](05-backend-selection.md) | The `balance` methods, `on_all_down`, and a stale store |
 | [6. Client libraries](06-clients.md) | Looking up a backend from Rust, C, Go, Python, Perl and PHP |
 | [7. DNS](07-dns.md) | The DNS server, its answers, SRV records, and forwarding from the host resolver |
-| [8. Operations](08-operations.md) | Commands, signals and reload, `emfor status`, metrics, logs, exit codes, the store on disk, upgrading |
+| [8. Operations](08-operations.md) | Commands, signals and reload, `emfor status`, `emfor lookup`, metrics, logs, exit codes, the store on disk, upgrading |
 | [9. Troubleshooting](09-troubleshooting.md) | Symptoms, their causes, and what to do |
 
 New to emfor? Read chapter 1, then follow the quick start in the

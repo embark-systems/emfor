@@ -7,6 +7,7 @@ pub mod cli;
 pub mod config;
 pub mod dns;
 pub mod live;
+pub mod lookup;
 pub mod metrics;
 pub mod peers;
 pub mod plugin;

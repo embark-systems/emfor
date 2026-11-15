@@ -126,6 +126,80 @@ Each client's README covers installing it and its exact API:
 [Go](../../clients/go/README.md), [Python](../../clients/python/README.md),
 [Perl](../../clients/perl/README.md), [PHP](../../clients/php/README.md).
 
+## From the shell: emfor lookup
+
+`emfor lookup` answers from the shell what a client library would answer,
+for scripts and cron jobs that have no client, and with `--explain` why.
+
+```console
+$ emfor lookup api.svc.emfor
+10.0.0.11:8080
+$ emfor lookup api.svc.emfor --key user-42
+```
+
+It reads the store at the `[store] path` of the config (`--config`, as
+`emfor status` does) and applies `EMFOR_MAX_STALENESS` like a client. It
+never writes the store. `--key` is the affinity key of a `sticky` service.
+
+Every run is a new process, so a rotating `balance` (`round-robin`,
+`weighted`, `locality`, `fastest`, and `sticky` without a key) gives one of
+the candidates, starting at a random point: two runs can print different
+backends. A script that needs the same answer every time uses a `failover`
+service, or a `sticky` one with `--key`.
+
+`--explain` says why: whether the store is stale, which tier the candidates
+come from (the tiers of [chapter 5](05-backend-selection.md)), every backend
+that is out and the reason, and how `balance` chooses.
+
+```console
+$ emfor lookup api.svc.emfor --explain
+service: api.svc.emfor
+answering: as a client library answers
+store: /var/lib/emfor/state.mdb (heartbeat 0.4s ago, fresh)
+balance: round-robin  on_all_down: open
+tier: healthy primary backends whose last check passed
+candidates:
+  10.0.0.11:8080
+excluded:
+  10.0.0.12:8080  last check failed
+  10.0.0.13:8080  backup held back
+  10.0.0.14:8080  unhealthy
+selection: round-robin: the candidates in turn
+  the actual choice depends on the rotation start of the process, which is random in a new process
+answer: 10.0.0.11:8080
+```
+
+The reasons are `stale` (a stale store makes no backend healthy or
+`unknown`), `unhealthy`, `unknown` (a better tier has candidates), `last check
+failed`, `backup held back`, `not in the pool` (`fastest`) and `not at this
+site` (`locality`). A candidate in slow start shows its step and effective
+weight. `failover` and `sticky` with a key name the backend they choose; the
+other methods list the candidates and the rule, because the choice depends
+on the rotation of the process. `--explain` does not advance any rotation.
+
+`--json` prints one JSON object (`service`, `via`, `family`, `store`,
+`balance`, `on_all_down`, `result`, and with `--explain` also `explain`);
+later releases only add fields. The text is not a stable interface.
+
+`--dns A` and `--dns AAAA` (these imply `--explain`) explain what the DNS
+server of the daemon answers to an A or an AAAA query: only the backends of
+that family are looked at, the store counts as fresh, `sticky` has no key,
+and `weighted` is the daemon's smooth weighted round-robin. It reads the
+store, which gets a new `reason` up to about one second after the daemon
+decides it, so for that second it can differ from the live DNS answer; the
+rotation counters are in the daemon's memory and are not shown. SRV answers
+are not explained.
+
+| Exit status | Meaning |
+| --- | --- |
+| 0 | An address was printed (with `--dns`: the service has candidates for the family) |
+| 1 | No backend can be chosen: `ALL_DOWN`, or no backend of the family with `--dns` |
+| 2 | No such service, an invalid command line, or a config that cannot be read |
+| 3 | The store cannot be used (`UNAVAILABLE`) or has a format this command does not read (`INCOMPATIBLE`) |
+
+`--explain` does not change the exit status, and a failed lookup still prints
+what is known.
+
 ## Threads, processes and fork
 
 - Lookups are safe from many threads at once.

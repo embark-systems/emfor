@@ -64,6 +64,13 @@ pub enum Command {
     /// Exits 1 when the daemon is not updating the store or a shown service
     /// has no healthy backend, 2 when the store cannot be read.
     Status(crate::status::StatusArgs),
+    /// Print the backend an application would get for a service, and with
+    /// `--explain` why.
+    ///
+    /// Exits 0 with an answer, 1 when no backend can be chosen, 2 when the
+    /// service does not exist or the command line is invalid, 3 when the
+    /// store cannot be used.
+    Lookup(crate::lookup::LookupArgs),
 }
 
 pub fn main() -> ExitCode {
@@ -80,6 +87,7 @@ pub fn main() -> ExitCode {
             return ExitCode::from(EXIT_CONFIG);
         }
         Some(Command::Status(args)) => return crate::status::main(&cli.config, args),
+        Some(Command::Lookup(args)) => return crate::lookup::main(&cli.config, args),
         Some(Command::CheckConfig) => true,
         Some(Command::Server) => false,
     };

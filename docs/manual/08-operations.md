@@ -9,6 +9,7 @@
 | `emfor server` | Runs the daemon in the foreground. |
 | `emfor check-config` | Validates the config and exits 0 (valid) or 2 (invalid). |
 | `emfor status` | Shows what the running daemon has published. |
+| `emfor lookup <service>` | Prints the backend a client would get, and with `--explain` why ([chapter 6](06-clients.md#from-the-shell-emfor-lookup)). |
 | `emfor --help` | Lists the commands and the default config path. |
 
 `--config <path>` goes before or after the command. `emfor` with no

@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 use emfor_format::{READABLE_SCHEMA_VERSIONS, ServiceRecord, readable_schema, service_key};
 
-use crate::select::{candidates, is_stale, normalize, pick_at, pool_candidates};
+use crate::select::{
+    Explanation, candidates, describe, is_stale, normalize, pick_at, pool_candidates,
+};
 use crate::store::{Env, Snapshot, SnapshotError};
 use crate::{Error, ErrorCode};
 
@@ -81,6 +83,14 @@ impl Client {
             open_retry: OPEN_RETRY,
             seed: RandomState::new(),
         }
+    }
+
+    /// A client for the store at `path`, with the staleness limit of
+    /// `EMFOR_MAX_STALENESS` (default 3 seconds). Unlike [`Client::from_env`]
+    /// it does not read `EMFOR_STORE`: the caller names the store.
+    pub fn for_store(path: PathBuf) -> Self {
+        let (_, max) = crate::config::from_env();
+        Client::new(path, max)
     }
 
     pub fn from_env() -> Self {
@@ -257,12 +267,91 @@ impl Client {
         }
     }
 
+    /// Why a lookup of `name` gives the answer it gives (spec lookup-command,
+    /// "Explain shows the tier and the reason of every backend"). It reads
+    /// the store like [`Client::lookup`] and does not advance any rotation
+    /// counter, so a later lookup is unaffected. `Ok` also when no backend may
+    /// be chosen: the failure is then in [`Explanation::error`].
+    pub fn explain(&self, name: &str, affinity_key: Option<&str>) -> Result<Explanation, Error> {
+        let prepared = self.prepare_retrying(name)?;
+        Ok(self.explanation(&prepared, affinity_key))
+    }
+
+    /// [`Client::lookup`] and its explanation, from one reading of the store.
+    /// Advances the rotation counter like a lookup.
+    pub fn lookup_explained(
+        &self,
+        name: &str,
+        affinity_key: Option<&str>,
+    ) -> Result<(Result<String, Error>, Explanation), Error> {
+        let prepared = self.prepare_retrying(name)?;
+        let explanation = self.explanation(&prepared, affinity_key);
+        let answer = self.pick(&prepared, affinity_key);
+        Ok((answer, explanation))
+    }
+
+    /// [`Client::prepare`], reading again once when the store file was
+    /// replaced, as [`Client::lookup`] does.
+    fn prepare_retrying(&self, name: &str) -> Result<Prepared, Error> {
+        match self.prepare(name, true) {
+            Err(e) if e.code != ErrorCode::AllDown && self.reopen_if_replaced() => {
+                self.prepare(name, false)
+            }
+            r => r,
+        }
+    }
+
+    fn explanation(&self, prepared: &Prepared, affinity_key: Option<&str>) -> Explanation {
+        let mut e = describe(
+            &prepared.record,
+            prepared.stale,
+            affinity_key,
+            prepared.site.as_deref(),
+            prepared.now,
+            false,
+        );
+        e.store_path = self.path.display().to_string();
+        e.heartbeat_age_ms = prepared.now.saturating_sub(prepared.heartbeat);
+        e.max_staleness_ms = prepared.max_staleness_ms;
+        e
+    }
+
     fn lookup_once(
         &self,
         name: &str,
         affinity_key: Option<&str>,
         may_reopen: bool,
     ) -> Result<String, Error> {
+        let prepared = self.prepare(name, may_reopen)?;
+        self.pick(&prepared, affinity_key)
+    }
+
+    /// Choose one backend of a prepared service; advances the rotation
+    /// counter of rotating methods.
+    fn pick(&self, prepared: &Prepared, affinity_key: Option<&str>) -> Result<String, Error> {
+        let record = &prepared.record;
+        let cands = pool_candidates(record, candidates(record, prepared.stale)?, prepared.stale);
+        // A stale store has no slow start: its recovery times may be old.
+        let slow_start_ms = if prepared.stale {
+            0
+        } else {
+            record.slow_start_ms
+        };
+        Ok(pick_at(
+            record.balance,
+            &cands,
+            affinity_key,
+            prepared.site.as_deref(),
+            slow_start_ms,
+            prepared.now,
+            || self.next(&prepared.service),
+        ))
+    }
+
+    /// Everything a lookup and an explanation share: read the store, check
+    /// its format and heartbeat, judge staleness, and parse the service
+    /// record.
+    fn prepare(&self, name: &str, may_reopen: bool) -> Result<Prepared, Error> {
         let max = self
             .max_staleness_ms
             .clone()
@@ -299,7 +388,7 @@ impl Client {
         let now = now_ms();
         let stale = is_stale(heartbeat, now, max);
         if stale && may_reopen && self.reopen_if_replaced() {
-            return self.lookup_once(name, affinity_key, false);
+            return self.prepare(name, false);
         }
         let record = snap.record.ok_or_else(|| {
             Error::new(ErrorCode::NotFound, format!("no service named {service:?}"))
@@ -310,19 +399,29 @@ impl Client {
                 format!("record of service {service:?} cannot be parsed: {e}"),
             )
         })?;
-        let cands = pool_candidates(&record, candidates(&record, stale)?, stale);
-        // A stale store has no slow start: its recovery times may be old.
-        let slow_start_ms = if stale { 0 } else { record.slow_start_ms };
-        Ok(pick_at(
-            record.balance,
-            &cands,
-            affinity_key,
-            snap.site.as_deref(),
-            slow_start_ms,
+        Ok(Prepared {
+            service,
+            record,
+            site: snap.site,
+            heartbeat,
+            max_staleness_ms: max,
             now,
-            || self.next(&service),
-        ))
+            stale,
+        })
     }
+}
+
+/// A service read from the store, ready to be looked up or explained.
+struct Prepared {
+    /// The normalized service name.
+    service: String,
+    record: ServiceRecord,
+    /// `meta/site`: the host's site, for `locality`.
+    site: Option<String>,
+    heartbeat: u64,
+    max_staleness_ms: u64,
+    now: u64,
+    stale: bool,
 }
 
 #[cfg(test)]
@@ -938,5 +1037,243 @@ mod tests {
             ),
             m(&[(a, 1), (c, 1)])
         );
+    }
+
+    /// A service record with `backends` given as (id, state, reason, backup).
+    fn explain_store(
+        heartbeat: &str,
+        extra: serde_json::Value,
+        backends: &[(&str, &str, Option<&str>, bool)],
+    ) -> serde_json::Value {
+        let bes: Vec<serde_json::Value> = backends
+            .iter()
+            .map(|(id, state, reason, backup)| {
+                let (ip, port) = id.split_once(':').unwrap();
+                serde_json::json!({"id": id, "ip": ip, "port": port.parse::<u16>().unwrap(),
+                    "state": state, "checked_at": 1, "reason": reason, "backup": backup})
+            })
+            .collect();
+        let mut s = svc("api.svc.emfor", extra);
+        s["backends"] = serde_json::Value::Array(bes);
+        serde_json::json!({"schema_version": "2", "heartbeat": heartbeat, "services": [s]})
+    }
+
+    /// Spec lookup-command, scenario "Primary and backup backends".
+    #[test]
+    fn explain_gives_the_tier_and_the_reason_of_every_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = explain_store(
+            "fresh",
+            serde_json::json!({"balance": "round-robin", "on_all_down": "open"}),
+            &[
+                ("10.0.0.11:8080", "healthy", None, false),
+                (
+                    "10.0.0.12:8080",
+                    "healthy",
+                    Some("connect: Connection refused"),
+                    false,
+                ),
+                ("10.0.0.13:8080", "healthy", None, true),
+                (
+                    "10.0.0.14:8080",
+                    "unhealthy",
+                    Some("connect: Connection refused"),
+                    false,
+                ),
+            ],
+        );
+        let c = Client::new(write(dir.path(), store), Ok(FRESH_FOR_TESTS_MS));
+        let e = c.explain("api.svc.emfor", None).unwrap();
+        assert_eq!(e.tier, emfor_format::rules::Tier::PrimaryPassing);
+        assert!(!e.stale);
+        assert_eq!(e.max_staleness_ms, FRESH_FOR_TESTS_MS);
+        assert_eq!(e.candidates, ["10.0.0.11:8080"]);
+        assert_eq!(
+            e.excluded,
+            [
+                (
+                    "10.0.0.12:8080".to_string(),
+                    "last check failed".to_string()
+                ),
+                ("10.0.0.13:8080".to_string(), "backup held back".to_string()),
+                ("10.0.0.14:8080".to_string(), "unhealthy".to_string()),
+            ]
+        );
+        assert!(!e.selection.deterministic);
+        assert_eq!(e.selection.chosen, None);
+        assert!(e.error.is_none());
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
+    }
+
+    /// `failover` and `sticky` with a key give a fixed answer, the one a
+    /// lookup gives; without a key `sticky` is not fixed.
+    #[test]
+    fn explain_of_failover_and_sticky() {
+        let dir = tempfile::tempdir().unwrap();
+        let bes = [
+            ("10.0.0.11:8080", "unhealthy", None, false),
+            ("10.0.0.12:8080", "healthy", None, false),
+            ("10.0.0.13:8080", "healthy", None, false),
+        ];
+        let c = Client::new(
+            write(
+                dir.path(),
+                explain_store("fresh", serde_json::json!({"balance": "failover"}), &bes),
+            ),
+            Ok(FRESH_FOR_TESTS_MS),
+        );
+        let e = c.explain("api.svc.emfor", None).unwrap();
+        assert!(e.selection.deterministic);
+        assert_eq!(e.selection.chosen.as_deref(), Some("10.0.0.12:8080"));
+        assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.12:8080");
+
+        let dir = tempfile::tempdir().unwrap();
+        let c = Client::new(
+            write(
+                dir.path(),
+                explain_store("fresh", serde_json::json!({"balance": "sticky"}), &bes),
+            ),
+            Ok(FRESH_FOR_TESTS_MS),
+        );
+        let e = c.explain("api.svc.emfor", Some("user-42")).unwrap();
+        assert!(e.selection.deterministic);
+        let want = c.lookup("api.svc.emfor", Some("user-42")).unwrap();
+        assert_eq!(e.selection.chosen.as_deref(), Some(want.as_str()));
+        let no_key = c.explain("api.svc.emfor", None).unwrap();
+        assert!(!no_key.selection.deterministic);
+        let empty_key = c.explain("api.svc.emfor", Some("")).unwrap();
+        assert!(!empty_key.selection.deterministic);
+    }
+
+    /// Spec "Closed service with no healthy backend" and "Stale store".
+    #[test]
+    fn explain_when_no_backend_can_be_chosen() {
+        let dir = tempfile::tempdir().unwrap();
+        let down = [
+            ("10.0.0.11:8080", "unhealthy", Some("refused"), false),
+            ("10.0.0.12:8080", "unhealthy", Some("refused"), false),
+        ];
+        let c = Client::new(
+            write(
+                dir.path(),
+                explain_store("fresh", serde_json::json!({"on_all_down": "closed"}), &down),
+            ),
+            Ok(FRESH_FOR_TESTS_MS),
+        );
+        let e = c.explain("api.svc.emfor", None).unwrap();
+        assert_eq!(e.tier, emfor_format::rules::Tier::None);
+        assert!(e.candidates.is_empty());
+        assert_eq!(e.excluded.len(), 2);
+        assert_eq!(e.error.as_ref().unwrap().code, ErrorCode::AllDown);
+        assert_eq!(code(&c, "api.svc.emfor"), ErrorCode::AllDown);
+
+        // A stale store: an open service uses every backend.
+        let dir = tempfile::tempdir().unwrap();
+        let healthy = [
+            ("10.0.0.11:8080", "healthy", None, false),
+            ("10.0.0.12:8080", "healthy", None, false),
+        ];
+        let c = Client::new(
+            write(
+                dir.path(),
+                explain_store(
+                    "stale",
+                    serde_json::json!({"on_all_down": "open"}),
+                    &healthy,
+                ),
+            ),
+            Ok(3000),
+        );
+        let e = c.explain("api.svc.emfor", None).unwrap();
+        assert!(e.stale);
+        assert_eq!(e.tier, emfor_format::rules::Tier::All);
+        assert_eq!(e.candidates.len(), 2);
+    }
+
+    /// Failures that are not "no backend" stay failures of `explain`.
+    #[test]
+    fn explain_fails_like_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Client::new(dir.path().join("none.mdb"), Ok(3000));
+        assert_eq!(
+            c.explain("api.svc.emfor", None).unwrap_err().code,
+            ErrorCode::Unavailable
+        );
+        let store = explain_store(
+            "fresh",
+            serde_json::json!({}),
+            &[("10.0.0.11:8080", "healthy", None, false)],
+        );
+        let c = Client::new(write(dir.path(), store), Ok(FRESH_FOR_TESTS_MS));
+        assert_eq!(
+            c.explain("other.svc.emfor", None).unwrap_err().code,
+            ErrorCode::NotFound
+        );
+    }
+
+    /// Spec "Explain between two lookups": explain does not advance the
+    /// rotation, so lookups with explains in between still go round the
+    /// candidates one after the other.
+    #[test]
+    fn explain_does_not_advance_the_rotation() {
+        let dir = tempfile::tempdir().unwrap();
+        let ids = ["10.0.0.11:8080", "10.0.0.12:8080", "10.0.0.13:8080"];
+        let bes: Vec<_> = ids.iter().map(|id| (*id, "healthy", None, false)).collect();
+        let store = explain_store("fresh", serde_json::json!({"balance": "round-robin"}), &bes);
+        let c = Client::new(write(dir.path(), store), Ok(FRESH_FOR_TESTS_MS));
+        let mut seen = Vec::new();
+        for _ in 0..7 {
+            c.explain("api.svc.emfor", None).unwrap();
+            c.explain("api.svc.emfor", None).unwrap();
+            let got = c.lookup("api.svc.emfor", None).unwrap();
+            seen.push(ids.iter().position(|id| *id == got).unwrap());
+        }
+        for w in seen.windows(2) {
+            assert_eq!(w[1], (w[0] + 1) % 3, "{seen:?}");
+        }
+    }
+
+    /// `lookup_explained` answers from the same reading as its explanation,
+    /// and the answer is one of the candidates.
+    #[test]
+    fn lookup_explained_answers_with_a_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let bes = [
+            ("10.0.0.11:8080", "healthy", None, false),
+            ("10.0.0.12:8080", "healthy", None, false),
+        ];
+        let store = explain_store("fresh", serde_json::json!({"balance": "round-robin"}), &bes);
+        let c = Client::new(write(dir.path(), store), Ok(FRESH_FOR_TESTS_MS));
+        let (answer, e) = c.lookup_explained("api.svc.emfor", None).unwrap();
+        assert!(e.candidates.contains(&answer.unwrap()));
+    }
+
+    /// Spec "Explain between two lookups", as written: two clients with the
+    /// same rotation start (the counter of a service starts at a hash of its
+    /// name and a seed that is random per client, so the second client takes
+    /// the first one's seed), and explain called on one of them between its
+    /// first and second lookup: both return the same addresses in the same
+    /// order.
+    #[test]
+    fn explain_between_lookups_leaves_the_sequence_of_a_client_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let ids = ["10.0.0.11:8080", "10.0.0.12:8080", "10.0.0.13:8080"];
+        let bes: Vec<_> = ids.iter().map(|id| (*id, "healthy", None, false)).collect();
+        let store = explain_store("fresh", serde_json::json!({"balance": "round-robin"}), &bes);
+        let path = write(dir.path(), store);
+        let a = Client::new(path.clone(), Ok(FRESH_FOR_TESTS_MS));
+        let mut b = Client::new(path, Ok(FRESH_FOR_TESTS_MS));
+        b.seed = a.seed.clone();
+        let first = |c: &Client| c.lookup("api.svc.emfor", None).unwrap();
+        let from_a = [first(&a), first(&a), first(&a)];
+        let from_b = [
+            first(&b),
+            {
+                b.explain("api.svc.emfor", None).unwrap();
+                first(&b)
+            },
+            first(&b),
+        ];
+        assert_eq!(from_a, from_b);
     }
 }

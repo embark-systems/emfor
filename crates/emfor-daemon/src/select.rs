@@ -2,7 +2,9 @@
 //!
 //! This is the reference for the selection rules that every language client
 //! must follow: candidates per address family, per-family all-down handling,
-//! then `balance`. No I/O.
+//! then `balance`. Plain functions over a record, with no I/O: the rotation
+//! counters and the weighted state they advance are those of the
+//! [`FamilyChoice`] they are given.
 
 use std::net::IpAddr;
 use std::sync::Mutex;

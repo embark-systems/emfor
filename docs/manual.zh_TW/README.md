@@ -15,7 +15,7 @@
 | [5. 選擇 backend](05-backend-selection.md) | 各種 `balance` 方式、`on_all_down`，以及過期的 store |
 | [6. Client 函式庫](06-clients.md) | 從 Rust、C、Go、Python、Perl、PHP 查詢 backend |
 | [7. DNS](07-dns.md) | DNS server、它的回答、SRV 記錄，以及從主機 resolver 轉送 |
-| [8. 維運](08-operations.md) | 指令、signal 與 reload、`emfor status`、metrics、log、結束代碼、磁碟上的 store、升級 |
+| [8. 維運](08-operations.md) | 指令、signal 與 reload、`emfor status`、`emfor lookup`、metrics、log、結束代碼、磁碟上的 store、升級 |
 | [9. 疑難排解](09-troubleshooting.md) | 症狀、原因與處理方式 |
 
 第一次接觸 emfor？先讀第 1 章，接著照 [README](../../README.zh-TW.md#快速上手) 的快速上手操作一次，再讀第 3 章。

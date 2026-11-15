@@ -1,6 +1,9 @@
 //! Choosing a backend from a service record: staleness, candidates and the
-//! balance methods. Pure functions, so every rule is unit-tested.
+//! balance methods. Plain functions over a record, so every rule is
+//! unit-tested; the rotation counter of the rotating methods is a parameter
+//! (`next`), advanced by the caller.
 
+use emfor_format::rules::Tier;
 use emfor_format::{BackendRecord, Balance, OnAllDown, ServiceRecord, rules};
 use md5::{Digest, Md5};
 
@@ -28,12 +31,17 @@ pub fn candidates(rec: &ServiceRecord, stale: bool) -> Result<Vec<&BackendRecord
     if let Some(c) = rules::healthy_or_all(rec.on_all_down, &all, !stale, |b| b) {
         return Ok(c);
     }
+    Err(all_down_error(rec, stale))
+}
+
+/// The `ALL_DOWN` failure of a service with nothing to choose from.
+fn all_down_error(rec: &ServiceRecord, stale: bool) -> Error {
     let why = if stale {
         "the store is stale (emfor daemon not updating it)"
     } else {
         "no backend is healthy"
     };
-    Err(Error::new(
+    Error::new(
         ErrorCode::AllDown,
         match rec.on_all_down {
             OnAllDown::Closed => {
@@ -44,7 +52,7 @@ pub fn candidates(rec: &ServiceRecord, stale: bool) -> Result<Vec<&BackendRecord
                 format!("service {} has no backends", rec.name)
             }
         },
-    ))
+    )
 }
 
 /// `fastest`: the candidates listed in the daemon's `pool`, when the store
@@ -209,6 +217,246 @@ fn cumulative_index(weights: &[u64], counter: u64) -> usize {
         }
     }
     weights.len() - 1
+}
+
+/// How the balance method chooses among the candidates (spec lookup-command,
+/// "Explain shows the tier and the reason of every backend").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selection {
+    /// The rule in words.
+    pub rule: String,
+    /// True for `failover` and for `sticky` with a key: the choice does not
+    /// depend on a rotation counter.
+    pub deterministic: bool,
+    /// The backend chosen, when `deterministic` and there is a candidate.
+    pub chosen: Option<String>,
+}
+
+/// Why a lookup of one service would give the answer it gives: the part of
+/// [`crate::Client::explain`] that comes from the service record. The
+/// store fields are filled in by the client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Explanation {
+    pub service: String,
+    /// The store that was read.
+    pub store_path: String,
+    /// Milliseconds since the last heartbeat (0 for a heartbeat in the future).
+    pub heartbeat_age_ms: u64,
+    pub stale: bool,
+    /// `EMFOR_MAX_STALENESS` in milliseconds.
+    pub max_staleness_ms: u64,
+    pub balance: Balance,
+    pub on_all_down: OnAllDown,
+    pub tier: Tier,
+    /// Ids of the backends that may be chosen, in config order.
+    pub candidates: Vec<String>,
+    /// Every other backend with the reason, in config order.
+    pub excluded: Vec<(String, String)>,
+    /// Candidates in slow start: id, step (1 to 10) and effective weight.
+    pub slow_start: Vec<(String, u32, u32)>,
+    pub selection: Selection,
+    /// The failure a lookup gives when there is no candidate.
+    pub error: Option<Error>,
+}
+
+/// Record in `excluded` the entries of `before` that `kept` left out.
+fn leave_out<'a>(
+    before: &[&'a BackendRecord],
+    kept: &[&'a BackendRecord],
+    why: &'static str,
+    excluded: &mut Vec<(&'a BackendRecord, &'static str)>,
+) {
+    for b in before {
+        if !kept.iter().any(|k| std::ptr::eq(*k, *b)) {
+            excluded.push((*b, why));
+        }
+    }
+}
+
+/// Explain the lookup of `rec` the way [`candidates`], [`pool_candidates`] and
+/// [`pick_at`] decide it, without advancing any counter. `smooth` says that
+/// the weighted choices are made by the daemon's smooth weighted round-robin
+/// (the DNS server) instead of the client's counter over cumulative weights.
+pub fn describe(
+    rec: &ServiceRecord,
+    stale: bool,
+    affinity_key: Option<&str>,
+    site: Option<&str>,
+    now_ms: u64,
+    smooth: bool,
+) -> Explanation {
+    let all: Vec<&BackendRecord> = rec.backends.iter().collect();
+    let found = rules::explain_tiers(rec.on_all_down, &all, !stale, |b| b);
+    let tier = found.tier;
+    let mut excluded: Vec<(&BackendRecord, &'static str)> = found
+        .excluded
+        .iter()
+        .map(|(b, e)| (*b, e.as_str()))
+        .collect();
+    let mut cands: Vec<&BackendRecord> = found.candidates;
+    if tier != Tier::None && rec.balance == Balance::Fastest && !stale {
+        let kept = pool_candidates(rec, cands.clone(), stale);
+        leave_out(&cands, &kept, "not in the pool", &mut excluded);
+        cands = kept;
+    }
+    let mut at_site = false;
+    if tier != Tier::None && rec.balance == Balance::Locality {
+        let kept = rules::subset_or_all(&cands, |b| {
+            rules::preferred(Balance::Locality, b, site, None)
+        });
+        at_site = kept.len() < cands.len()
+            || kept
+                .iter()
+                .any(|b| rules::preferred(Balance::Locality, b, site, None));
+        leave_out(&cands, &kept, "not at this site", &mut excluded);
+        cands = kept;
+    }
+    // In config order, as the candidates are.
+    let position = |b: &BackendRecord| all.iter().position(|a| std::ptr::eq(*a, b));
+    excluded.sort_by_key(|(b, _)| position(b));
+
+    let key = affinity_key.filter(|k| !k.is_empty());
+    let fixed = matches!(rec.balance, Balance::Failover)
+        || (rec.balance == Balance::Sticky && key.is_some());
+    let slow_start_ms = if stale { 0 } else { rec.slow_start_ms };
+    let ramping = !fixed && rules::any_ramping(&cands, slow_start_ms, now_ms, |b| b);
+    let slow_start: Vec<(String, u32, u32)> = if ramping {
+        cands
+            .iter()
+            .filter_map(|b| {
+                let step = rules::slow_start_step(b, slow_start_ms, now_ms);
+                let base = rules::base_weight(rec.balance, b);
+                (step < rules::SLOW_START_STEPS).then(|| {
+                    (
+                        b.id.clone(),
+                        step,
+                        rules::effective_weight(b, base, slow_start_ms, now_ms),
+                    )
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let ratio = |weights: &[u64]| {
+        weights
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(":")
+    };
+    let selection = if cands.is_empty() {
+        Selection {
+            rule: "no backend can be chosen".into(),
+            deterministic: false,
+            chosen: None,
+        }
+    } else if rec.balance == Balance::Failover {
+        Selection {
+            rule: "failover: the first candidate in config order".into(),
+            deterministic: true,
+            chosen: Some(cands[0].id.clone()),
+        }
+    } else if let (Balance::Sticky, Some(k)) = (rec.balance, key) {
+        let i = rendezvous_index(k, cands.iter().map(|b| (b.id.as_str(), b.weight)));
+        Selection {
+            rule: "sticky: weighted rendezvous hashing of the key over the candidates".into(),
+            deterministic: true,
+            chosen: Some(cands[i].id.clone()),
+        }
+    } else {
+        let weights: Vec<u64> = if ramping {
+            cands
+                .iter()
+                .map(|b| {
+                    let base = rules::base_weight(rec.balance, b);
+                    u64::from(rules::effective_weight(b, base, slow_start_ms, now_ms))
+                })
+                .collect()
+        } else if rec.balance == Balance::Weighted {
+            cands.iter().map(|b| u64::from(b.weight)).collect()
+        } else {
+            Vec::new()
+        };
+        let rule = match rec.balance {
+            Balance::Weighted => {
+                let how = if smooth {
+                    "smooth weighted round-robin"
+                } else {
+                    "the candidates in turn"
+                };
+                format!(
+                    "weighted: {how} in proportion to their weights ({})",
+                    ratio(&weights)
+                )
+            }
+            Balance::Locality => {
+                if at_site {
+                    format!(
+                        "locality: round-robin over the candidates at this site ({})",
+                        site.unwrap_or("-")
+                    )
+                } else {
+                    "locality: round-robin over all candidates (none is at this site)".into()
+                }
+            }
+            Balance::Fastest => {
+                let pool_used = !stale
+                    && rec
+                        .pool
+                        .as_ref()
+                        .is_some_and(|p| !p.is_empty() && cands.iter().all(|b| p.contains(&b.id)));
+                if pool_used {
+                    "fastest: round-robin over the daemon's pool".into()
+                } else {
+                    "fastest: round-robin over the candidates (the daemon's pool is not used)"
+                        .into()
+                }
+            }
+            Balance::Sticky => "sticky: no key, so round-robin over the candidates".into(),
+            Balance::Unknown => {
+                "a balance this client does not know: round-robin over the candidates".into()
+            }
+            Balance::RoundRobin | Balance::Failover => "round-robin: the candidates in turn".into(),
+        };
+        let rule = if ramping && rec.balance != Balance::Weighted {
+            let how = if smooth {
+                "smooth weighted round-robin"
+            } else {
+                "the candidates in turn"
+            };
+            format!(
+                "{rule}; slow start: {how} in proportion to the weights {}",
+                ratio(&weights)
+            )
+        } else {
+            rule
+        };
+        Selection {
+            rule,
+            deterministic: false,
+            chosen: None,
+        }
+    };
+    let error = (tier == Tier::None).then(|| all_down_error(rec, stale));
+    Explanation {
+        service: rec.name.clone(),
+        store_path: String::new(),
+        heartbeat_age_ms: 0,
+        stale,
+        max_staleness_ms: 0,
+        balance: rec.balance,
+        on_all_down: rec.on_all_down,
+        tier,
+        candidates: cands.iter().map(|b| b.id.clone()).collect(),
+        excluded: excluded
+            .into_iter()
+            .map(|(b, why)| (b.id.clone(), why.to_string()))
+            .collect(),
+        slow_start,
+        selection,
+        error,
+    }
 }
 
 #[cfg(test)]
@@ -827,5 +1075,172 @@ mod tests {
                 runs[1]
             );
         }
+    }
+
+    fn record(balance: &str, extra: serde_json::Value, bes: serde_json::Value) -> ServiceRecord {
+        let mut v = serde_json::json!({"name": "api.svc.emfor", "on_all_down": "open",
+            "balance": balance, "all_down": false, "backends": bes});
+        for (k, x) in extra.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn backend_json(id: &str, extra: serde_json::Value) -> serde_json::Value {
+        let (ip, port) = id.split_once(':').unwrap();
+        let mut v = serde_json::json!({"id": id, "ip": ip, "port": port.parse::<u16>().unwrap(),
+            "state": "healthy", "checked_at": 1, "reason": null});
+        for (k, x) in extra.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        v
+    }
+
+    /// Spec lookup-command, "Explain shows the tier ...": the rules of the
+    /// balance methods, in words.
+    #[test]
+    fn describe_names_the_rule_of_every_balance() {
+        let bes = || {
+            serde_json::json!([
+                backend_json(
+                    "10.0.0.11:80",
+                    serde_json::json!({"weight": 3, "site": "tpe1"})
+                ),
+                backend_json(
+                    "10.0.0.12:80",
+                    serde_json::json!({"weight": 1, "site": "khh1"})
+                ),
+            ])
+        };
+        let now = 1_700_000_000_000;
+        let ex = |balance: &str, extra, key, site| {
+            describe(&record(balance, extra, bes()), false, key, site, now, false)
+        };
+        let none = serde_json::json!({});
+        let e = ex("failover", none.clone(), None, None);
+        assert!(e.selection.deterministic);
+        assert_eq!(e.selection.chosen.as_deref(), Some("10.0.0.11:80"));
+        let e = ex("weighted", none.clone(), None, None);
+        assert!(!e.selection.deterministic);
+        assert!(e.selection.rule.contains("(3:1)"), "{}", e.selection.rule);
+        let e = ex("locality", none.clone(), None, Some("khh1"));
+        assert_eq!(e.candidates, ["10.0.0.12:80"]);
+        assert_eq!(
+            e.excluded,
+            [("10.0.0.11:80".to_string(), "not at this site".to_string())]
+        );
+        assert!(e.selection.rule.contains("khh1"), "{}", e.selection.rule);
+        let e = ex("locality", none.clone(), None, Some("other"));
+        assert_eq!(e.candidates.len(), 2);
+        assert!(e.selection.rule.contains("none is at this site"));
+        let e = ex(
+            "fastest",
+            serde_json::json!({"pool": ["10.0.0.12:80"]}),
+            None,
+            None,
+        );
+        assert_eq!(e.candidates, ["10.0.0.12:80"]);
+        assert_eq!(
+            e.excluded,
+            [("10.0.0.11:80".to_string(), "not in the pool".to_string())]
+        );
+        assert!(e.selection.rule.contains("pool"));
+        let e = ex("fastest", serde_json::json!({}), None, None);
+        assert_eq!(e.candidates.len(), 2);
+        assert!(
+            e.selection.rule.contains("not used"),
+            "{}",
+            e.selection.rule
+        );
+        let e = ex("sticky", none.clone(), None, None);
+        assert!(!e.selection.deterministic);
+        assert!(e.selection.rule.contains("no key"));
+        let e = ex("something-new", none, None, None);
+        assert!(
+            e.selection.rule.contains("does not know"),
+            "{}",
+            e.selection.rule
+        );
+    }
+
+    /// Spec "Slow start in lookups": a candidate in slow start shows its
+    /// step and effective weight.
+    #[test]
+    fn describe_shows_slow_start() {
+        let now = 1_700_000_100_000;
+        let bes = serde_json::json!([
+            backend_json("10.0.0.11:80", serde_json::json!({"weight": 10})),
+            backend_json(
+                "10.0.0.12:80",
+                serde_json::json!({"weight": 10, "recovered_at": now - 10_000})
+            ),
+        ]);
+        let rec = record(
+            "weighted",
+            serde_json::json!({"slow_start_ms": 30_000}),
+            bes,
+        );
+        let e = describe(&rec, false, None, None, now, false);
+        assert_eq!(e.slow_start.len(), 1);
+        assert_eq!(e.slow_start[0].0, "10.0.0.12:80");
+        assert_eq!(e.slow_start[0].1, 4);
+        assert_eq!(e.slow_start[0].2, 40);
+        // A stale store has no slow start.
+        let e = describe(&rec, true, None, None, now, false);
+        assert!(e.slow_start.is_empty());
+    }
+
+    /// The daemon's DNS server picks by smooth weighted round-robin whenever
+    /// a backend is in slow start, whatever the `balance`: the rule says so
+    /// with `smooth`, and the client's rule does not.
+    #[test]
+    fn describe_names_the_rotation_style() {
+        let now = 1_700_000_100_000;
+        let bes = serde_json::json!([
+            backend_json("10.0.0.11:80", serde_json::json!({})),
+            backend_json(
+                "10.0.0.12:80",
+                serde_json::json!({"recovered_at": now - 10_000})
+            ),
+        ]);
+        let rec = record(
+            "round-robin",
+            serde_json::json!({"slow_start_ms": 30_000}),
+            bes,
+        );
+        let client = describe(&rec, false, None, None, now, false);
+        assert!(
+            client
+                .selection
+                .rule
+                .contains("slow start: the candidates in turn"),
+            "{}",
+            client.selection.rule
+        );
+        let dns = describe(&rec, false, None, None, now, true);
+        assert!(
+            dns.selection
+                .rule
+                .contains("slow start: smooth weighted round-robin"),
+            "{}",
+            dns.selection.rule
+        );
+        let weighted = record(
+            "weighted",
+            serde_json::json!({}),
+            serde_json::json!([backend_json("10.0.0.11:80", serde_json::json!({})),]),
+        );
+        assert!(
+            describe(&weighted, false, None, None, now, true)
+                .selection
+                .rule
+                .contains("smooth weighted round-robin in proportion")
+        );
+        assert!(
+            describe(&weighted, false, None, None, now, false)
+                .selection
+                .rule
+                .contains("the candidates in turn in proportion")
+        );
     }
 }

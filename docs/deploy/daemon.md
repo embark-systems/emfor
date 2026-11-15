@@ -179,6 +179,17 @@ api.svc.emfor
 
 A backend with 5 or more changes between `healthy` and `unhealthy` in the last 10 minutes is flapping: `emfor status` marks its line with `FLAPPING (<n> changes in 10m)` and `--json` lists it under `flapping`. This is for display only; it changes neither the exit status nor what the daemon does.
 
+## emfor lookup
+
+`emfor lookup <service> [--key <k>] [--explain] [--json] [--dns A|AAAA]` prints the backend a client library would give for a service, and with `--explain` why: whether the store is stale, the tier the candidates come from, the reason every other backend is out, and how `balance` chooses. It reads the store at the `[store] path` of the config and applies `EMFOR_MAX_STALENESS`; it never writes the store. The command is part of `emfor`: nothing else is installed.
+
+```console
+$ emfor lookup api.svc.emfor
+10.0.0.11:8080
+```
+
+Each run is a new process, so a rotating `balance` gives one of the candidates from a random start; use a `failover` service, or `sticky` with `--key`, for an answer that stays the same. `--json` prints one JSON object (fields only ever added), `--dns A|AAAA` explains what the DNS server of the daemon would answer, from the store (it can differ for about a second after a `reason` changes). Exit status: 0 an address (or, with `--dns`, candidates), 1 no backend can be chosen, 2 no such service, bad command line or unreadable config, 3 the store cannot be used. The details, with an example, are in [the manual](../manual/06-clients.md#from-the-shell-emfor-lookup).
+
 ## Metrics
 
 With a `[metrics]` table the daemon serves Prometheus metrics at `http://<listen>/metrics`. Without the table it opens no metrics socket.

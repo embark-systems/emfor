@@ -29,6 +29,7 @@ async-trait = "0.1.92"
 chacha20poly1305 = "=0.11.0"
 clap = { version = "4.6.7", features = ["derive"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
+emfor-client = { path = "../../clients/rust" }
 emfor-format.workspace = true
 emfor-tls = { path = "../emfor-tls" }
 futures = "0.3.34"
@@ -55,6 +56,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 [dev-dependencies]
 assert_cmd = "2.2.2"
 emfor-daemon = { path = ".", features = ["test-plugin", "test-hooks"] }
+emfor-fixture = { path = "../../tools/emfor-fixture" }
 emfor-tls = { path = "../emfor-tls", features = ["testing"] }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["test-util", "full"] }

@@ -31,7 +31,8 @@ pub mod capi;
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-use client::Client;
+pub use client::Client;
+pub use select::{Explanation, Selection, describe as explain_record};
 
 /// Why a lookup failed. The names ([`ErrorCode::as_str`]) are shared by every
 /// emfor client language.

@@ -109,6 +109,55 @@ try {
 
 各 client 的 README 說明如何安裝以及完整的 API（英文）：[Rust](../../clients/rust/README.md)、[C](../../clients/c/README.md)、[Go](../../clients/go/README.md)、[Python](../../clients/python/README.md)、[Perl](../../clients/perl/README.md)、[PHP](../../clients/php/README.md)。
 
+## 從 shell 查詢：emfor lookup
+
+`emfor lookup` 讓沒有 client 函式庫的 script 與 cron 工作，在 shell 裡得到 client 函式庫會給的答案，加上 `--explain` 還能知道為什麼。
+
+```console
+$ emfor lookup api.svc.emfor
+10.0.0.11:8080
+$ emfor lookup api.svc.emfor --key user-42
+```
+
+它讀設定檔（`--config`，與 `emfor status` 相同）`[store] path` 的 store，並像 client 一樣套用 `EMFOR_MAX_STALENESS`，從不寫入 store。`--key` 是 `sticky` 服務的黏著鍵。
+
+每次執行都是新的行程，所以輪流類的 `balance`（`round-robin`、`weighted`、`locality`、`fastest`，以及沒有 key 的 `sticky`）會從隨機的起點給出其中一個候選：兩次執行可能印出不同的 backend。需要每次都得到同一個答案的 script，請用 `failover` 服務，或 `sticky` 加 `--key`。
+
+`--explain` 說明原因：store 是否 stale、候選來自哪一層（[第 5 章](05-backend-selection.md)的層級）、每個被排除的 backend 與原因，以及 `balance` 怎麼挑。
+
+```console
+$ emfor lookup api.svc.emfor --explain
+service: api.svc.emfor
+answering: as a client library answers
+store: /var/lib/emfor/state.mdb (heartbeat 0.4s ago, fresh)
+balance: round-robin  on_all_down: open
+tier: healthy primary backends whose last check passed
+candidates:
+  10.0.0.11:8080
+excluded:
+  10.0.0.12:8080  last check failed
+  10.0.0.13:8080  backup held back
+  10.0.0.14:8080  unhealthy
+selection: round-robin: the candidates in turn
+  the actual choice depends on the rotation start of the process, which is random in a new process
+answer: 10.0.0.11:8080
+```
+
+原因有 `stale`（stale 的 store 裡沒有 backend 算 healthy 或 `unknown`）、`unhealthy`、`unknown`（有更好的層級有候選）、`last check failed`、`backup held back`、`not in the pool`（`fastest`）與 `not at this site`（`locality`）。慢啟動中的候選會顯示步數與有效權重。`failover` 與有 key 的 `sticky` 會指出它選的 backend；其他方法因為答案取決於行程的輪流位置，只列出候選與規則。`--explain` 不會推進任何輪流位置。
+
+`--json` 輸出一個 JSON 物件（`service`、`via`、`family`、`store`、`balance`、`on_all_down`、`result`，加上 `--explain` 時還有 `explain`）；之後的版本只會增加欄位。文字輸出不是穩定的介面。
+
+`--dns A` 與 `--dns AAAA`（兩者都隱含 `--explain`）說明 daemon 的 DNS server 對 A 或 AAAA 查詢會怎麼回答：只看該 family 的 backend、store 一律視為 fresh、`sticky` 沒有 key、`weighted` 用 daemon 的 smooth weighted round-robin。它讀的是 store，而 store 在 daemon 決定新的 `reason` 之後最多晚約一秒才寫入，所以在那一秒內可能與真正的 DNS 答案不同；daemon 的輪流計數器在它的記憶體裡，不會顯示。SRV 的回答不做 explain。
+
+| 結束代碼 | 意義 |
+| --- | --- |
+| 0 | 印出了位址（用 `--dns` 時：服務在該 family 有候選） |
+| 1 | 沒有 backend 可選：`ALL_DOWN`，或用 `--dns` 時沒有該 family 的 backend |
+| 2 | 沒有這個服務、命令列無效，或讀不到設定檔 |
+| 3 | store 無法使用（`UNAVAILABLE`），或格式這個指令讀不了（`INCOMPATIBLE`） |
+
+`--explain` 不會改變結束代碼，查詢失敗時仍會印出已知的內容。
+
 ## 執行緒、行程與 fork
 
 - 可以從多個執行緒同時查詢。

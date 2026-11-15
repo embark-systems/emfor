@@ -32,6 +32,7 @@
 | 標準用語 | 英文 / 識別字 | 定義 | 避免使用 |
 | --- | --- | --- | --- |
 | 查詢 | `emfor_lookup(名稱, affinity_key?)` | client 唯一的對外呼叫，傳入服務名稱，回傳一個後端的 `ip:port` 字串（即 LMDB 後端記錄的 `id`，IPv6 為 `[ip]:port`）。設定只透過環境變數 `EMFOR_STORE`、`EMFOR_MAX_STALENESS` 覆寫預設值。 | pick、resolve |
+| 候選層 | tier（`rules::Tier`、`explain_tiers`） | 查詢（與 DNS 回答）挑選前，後端依序落入的層級，取第一個不空的：通過檢查的主要後端、通過檢查的備援後端、含失敗中的主要後端、含失敗中的備援後端，以及（`on_all_down` 為 `open` 時）通過檢查的 `unknown`、全部 `unknown`、全部後端。`emfor lookup --explain` 說明候選來自哪一層與每個被排除後端的原因。 | 層、優先級（`priority` 只指 SRV 的 priority） |
 | 錯誤碼 | `UNAVAILABLE` / `INCOMPATIBLE` / `NOT_FOUND` / `ALL_DOWN` | 查詢失敗的原因，各語言共用：LMDB 打不開或 lock 格式不符（`libemfor` 與 daemon 版本不同）／格式版本或記錄無法解析（不認得的 `balance` 字串不算，改用 `round-robin`）／查無服務／沒有健康後端且 `on_all_down = "closed"`。各語言依自身慣例回報（回傳碼、`Result`、`error`、exception）。 | `STALE`（心跳過期不是獨立錯誤） |
 | 黏著鍵 | `affinity_key` | 由應用程式從 cookie、header 等處取出的值；同一個 key 在後端健康時永遠分到同一台後端。無狀態：原本的後端恢復健康後，key 會回到它身上。 | **`weight_condition`**（已棄用，容易誤解為權重比例） |
 | 分配方式 | `balance` | 每個服務在設定檔指定的挑選後端方式，daemon 寫進 LMDB 服務記錄，client 與 DNS 都依它挑選。值見下表「分配方式的值」。 | 分配規則、策略、algorithm |

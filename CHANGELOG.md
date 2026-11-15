@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+**`emfor lookup`: what an application would get, and why.** A new command,
+`emfor lookup <service> [--key <k>] [--explain] [--json] [--dns A|AAAA]`,
+prints the backend a client library would give, for shell scripts and cron
+jobs without a client. `--explain` shows whether the store is stale, the tier
+the candidates come from, the reason of every backend that is out
+(`unhealthy`, `unknown`, `last check failed`, `backup held back`, `not in the
+pool`, `not at this site`, `stale`), slow start steps, and how `balance`
+chooses; it does not advance any rotation. `failover` and `sticky` with a key
+name their backend; the other methods list the candidates, since each run is
+a new process with a random rotation start. `--dns A|AAAA` explains the
+answer of the daemon's DNS server from the store (up to about a second
+behind the daemon). `--json` is stable and only gains fields; exit status 0
+answer, 1 no backend, 2 no such service or bad usage, 3 store unusable.
+SRV answers are not explained.
+
+Inside: the tiers of `healthy_or_all` are now computed by
+`emfor_format::rules::explain_tiers`, which also gives the reasons (the
+candidates are unchanged); `emfor-client` makes `Client` public with
+`Client::for_store`, `explain` and `lookup_explained`; `emfor-daemon` depends
+on `emfor-client`. No file is installed that was not before. The lookup
+call, its error codes, `libemfor` and the other language clients are
+unchanged.
+
 **`emfor status` shows more of what decides a lookup.** The text output
 (which is not a stable interface; `--json` and the exit status are
 unchanged) has three additions:
