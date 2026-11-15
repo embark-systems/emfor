@@ -136,7 +136,7 @@ pub fn is_fast(latency_us: u64, min_us: u64, fast_before: bool) -> bool {
 /// empty exactly when nothing is in scope.
 pub fn fast_pool(backends: &[BackendRecord], previous: &[String]) -> Vec<String> {
     let in_scope = |b: &BackendRecord| {
-        if b.state == HealthState::Healthy {
+        if b.state == HealthState::Healthy && !b.drain {
             b.latency_us
         } else {
             None
@@ -333,6 +333,8 @@ mod tests {
             reason: None,
             latency_us,
             backup: false,
+            drain: false,
+            checked_state: None,
             recovered_at: None,
         }
     }
@@ -381,6 +383,17 @@ mod tests {
         assert_eq!(fast_pool(&backends, &[]), ["a", "c"]);
         let none = [backend("a", Unhealthy, None), backend("b", Healthy, None)];
         assert!(fast_pool(&none, &["a".into()]).is_empty());
+    }
+
+    /// Spec backend-selection "Fast membership decided by the daemon": a
+    /// drained backend is not in the pool and does not set the lowest
+    /// latency the others are compared with.
+    #[test]
+    fn drained_backend_is_not_in_the_pool() {
+        let mut a = backend("a", Healthy, Some(1_000));
+        a.drain = true;
+        let backends = [a, backend("b", Healthy, Some(50_000))];
+        assert_eq!(fast_pool(&backends, &[]), ["b"]);
     }
 
     #[test]

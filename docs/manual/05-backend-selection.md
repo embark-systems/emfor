@@ -150,6 +150,40 @@ DNS answers follow the same order; SRV records list only the chosen set.
 Backups need clients that read store format version 2 ([chapter
 6](06-clients.md#store-format-version)).
 
+## Draining a backend
+
+`drain = true` on a backend ([chapter 3](03-configuration.md#servicesname))
+takes it out of every choice, for an upgrade, a reboot or an investigation,
+without removing it from the config. Edit the file and reload
+(`systemctl reload emfor`); there is no command that drains at run time.
+
+- A drained backend is never chosen: not by any `balance` (`sticky` and
+  `failover` included, so a sticky key moves to another backend until the
+  drain is removed), not in the last tier of an open service, not in DNS
+  A, AAAA and SRV answers, and not in the pool of a `fastest` service.
+  emfor is not in the data path, so connections that are already open are
+  not affected; only new lookups skip it.
+- Its checks keep running. `emfor status` shows `drained (checks: healthy)`
+  with the state the checks give, so you see at once whether it is ready;
+  when you remove `drain` and reload, it is back in the choice at once,
+  with that state, without counting `rise` again. Draining and undraining never start slow start by themselves; a backend that recovered while it was drained ramps from that recovery as usual, so if you undrain it within `slow_start` of coming back, it ramps.
+- When every backend of a service is drained, nothing can be chosen: the
+  lookup fails with `ALL_DOWN` and DNS answers `SERVFAIL`, whatever
+  `on_all_down` is, because `open` means "choose among the failing
+  ones" and a drained backend is not one of them.
+- `drain` is a setting of this host. It is not sent to the peers of a peer
+  group and does not change the service definition they compare, so hosts
+  can drain different backends.
+- Older clients read a drained backend as an unhealthy one (the store
+  holds `unhealthy` with the reason `drained`). They skip it too, except in
+  the last tier of an open service, when every backend is down: then an
+  older client can still choose it. Upgrade `libemfor` on the hosts before
+  you rely on `drain` for an open service.
+
+This is not HAProxy's `DRAIN`, which lets existing sessions continue:
+emfor has no sessions, and a lookup that skips the backend is the whole
+effect.
+
 ## Slow start
 
 A backend that comes back may have cold caches or connection pools. With

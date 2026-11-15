@@ -10,7 +10,7 @@
 
 - 設定：backend 表格新增 `drain = true`（預設 `false`，寫法與 `backup`、`weight` 相同：`{ addr = "10.0.0.11:8080", drain = true }`）。只能用設定檔加 reload 來開關；reload 套用它時不重置 backend 的狀態。
 - 選擇：已 drain 的 backend 不會被任何分配方式挑到，包含 `sticky` 與 `failover`，也不會出現在 `on_all_down = "open"` 的最後一層；DNS 的 A、AAAA 與 SRV 答案、`fastest` 的快組也都排除它。其餘 backend 照現有規則挑；沒有任何 backend 可挑時，`lookup` 回 `ALL_DOWN`、DNS 回 SERVFAIL，即使 `on_all_down` 是 `open`，因為沒有東西可以「照樣挑」。
-- 檢查照跑：drain 期間仍檢查這台 backend，所以取消 drain 時馬上知道它能不能用，不用重新累計 `rise`，也不會觸發 slow start（它的真實狀態沒有轉換）。
+- 檢查照跑：drain 期間仍檢查這台 backend，所以取消 drain 時馬上知道它能不能用，不用重新累計 `rise`。drain 本身不會啟動 slow start（它的真實狀態沒有轉換）；drain 期間才恢復健康的 backend，仍照平常從那次恢復起慢啟動。
 - 存放：schema 不升版。backend 記錄新增選用欄位 `drain`（布林，缺少時讀作 `false`）。已 drain 的 backend 寫成 `state = "unhealthy"`、`reason = "drained"`、`drain = true`，並新增選用欄位 `checked_state`（只在 `drain` 為真時寫，是檢查得出的真實狀態）。舊 client 看到的是一台不健康的 backend；新 client 看到 `drain` 就在每一層都排除它。已知代價：舊 client 在「全部不健康且 `on_all_down = "open"`」的最後一層仍可能挑到它。
 - 範圍：`all_down` 不把已 drain 的 backend 算作健康。
 - 只在本機：drain 不傳給 peers、不進服務定義的 digest（`check_digest`），所以各台主機可以各自 drain；聯防群組對這台 backend 的投票照常進行。

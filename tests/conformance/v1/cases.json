@@ -3655,5 +3655,260 @@
         "expect_error": "ALL_DOWN"
       }
     ]
+  },
+  {
+    "case": "a drained backend is never chosen, whatever the balance",
+    "store": {
+      "heartbeat": "fresh",
+      "services": [
+        {
+          "name": "rr.svc.emfor",
+          "on_all_down": "open",
+          "balance": "round-robin",
+          "all_down": false,
+          "backends": [
+            {
+              "id": "10.0.0.11:8080",
+              "ip": "10.0.0.11",
+              "port": 8080,
+              "state": "unhealthy",
+              "checked_at": 1794455158107,
+              "reason": "drained",
+              "drain": true,
+              "checked_state": "healthy"
+            },
+            {
+              "id": "10.0.0.12:8080",
+              "ip": "10.0.0.12",
+              "port": 8080,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null
+            },
+            {
+              "id": "10.0.0.13:8080",
+              "ip": "10.0.0.13",
+              "port": 8080,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null
+            }
+          ]
+        },
+        {
+          "name": "fo.svc.emfor",
+          "on_all_down": "open",
+          "balance": "failover",
+          "all_down": false,
+          "backends": [
+            {
+              "id": "10.0.0.11:8080",
+              "ip": "10.0.0.11",
+              "port": 8080,
+              "state": "unhealthy",
+              "checked_at": 1794455158107,
+              "reason": "drained",
+              "drain": true,
+              "checked_state": "healthy"
+            },
+            {
+              "id": "10.0.0.12:8080",
+              "ip": "10.0.0.12",
+              "port": 8080,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null
+            },
+            {
+              "id": "10.0.0.13:8080",
+              "ip": "10.0.0.13",
+              "port": 8080,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null
+            }
+          ]
+        },
+        {
+          "name": "st.svc.emfor",
+          "on_all_down": "open",
+          "balance": "sticky",
+          "all_down": false,
+          "backends": [
+            {
+              "id": "10.0.0.11:8080",
+              "ip": "10.0.0.11",
+              "port": 8080,
+              "state": "unhealthy",
+              "checked_at": 1794455158107,
+              "reason": "drained",
+              "drain": true,
+              "checked_state": "healthy"
+            },
+            {
+              "id": "10.0.0.12:8080",
+              "ip": "10.0.0.12",
+              "port": 8080,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null
+            },
+            {
+              "id": "10.0.0.13:8080",
+              "ip": "10.0.0.13",
+              "port": 8080,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null
+            }
+          ]
+        }
+      ],
+      "raw": {},
+      "schema_version": "2"
+    },
+    "max_staleness_ms": 3000,
+    "lookups": [
+      {
+        "name": "rr.svc.emfor",
+        "expect_counts": {
+          "10.0.0.12:8080": 2,
+          "10.0.0.13:8080": 2
+        }
+      },
+      {
+        "name": "fo.svc.emfor",
+        "expect": "10.0.0.12:8080"
+      },
+      {
+        "name": "st.svc.emfor",
+        "expect_all_of": [
+          "10.0.0.12:8080",
+          "10.0.0.13:8080"
+        ]
+      }
+    ]
+  },
+  {
+    "case": "a drained backend is not chosen in the last tier of an open service",
+    "store": {
+      "heartbeat": "fresh",
+      "services": [
+        {
+          "name": "last.svc.emfor",
+          "on_all_down": "open",
+          "balance": "round-robin",
+          "all_down": true,
+          "backends": [
+            {
+              "id": "10.0.0.11:8080",
+              "ip": "10.0.0.11",
+              "port": 8080,
+              "state": "unhealthy",
+              "checked_at": 1794455158107,
+              "reason": "drained",
+              "drain": true,
+              "checked_state": "healthy"
+            },
+            {
+              "id": "10.0.0.12:8080",
+              "ip": "10.0.0.12",
+              "port": 8080,
+              "state": "unhealthy",
+              "checked_at": 1794455158107,
+              "reason": "refused"
+            }
+          ]
+        }
+      ],
+      "raw": {},
+      "schema_version": "2"
+    },
+    "max_staleness_ms": 3000,
+    "lookups": [
+      {
+        "name": "last.svc.emfor",
+        "expect_counts": {
+          "10.0.0.12:8080": 3
+        }
+      }
+    ]
+  },
+  {
+    "case": "every backend drained is ALL_DOWN, an open service too",
+    "store": {
+      "heartbeat": "fresh",
+      "services": [
+        {
+          "name": "open.svc.emfor",
+          "on_all_down": "open",
+          "balance": "round-robin",
+          "all_down": true,
+          "backends": [
+            {
+              "id": "10.0.0.11:8080",
+              "ip": "10.0.0.11",
+              "port": 8080,
+              "state": "unhealthy",
+              "checked_at": 1794455158107,
+              "reason": "drained",
+              "drain": true,
+              "checked_state": "healthy"
+            },
+            {
+              "id": "10.0.0.12:8080",
+              "ip": "10.0.0.12",
+              "port": 8080,
+              "state": "unhealthy",
+              "checked_at": 1794455158107,
+              "reason": "drained",
+              "drain": true,
+              "checked_state": "healthy"
+            }
+          ]
+        },
+        {
+          "name": "closed.svc.emfor",
+          "on_all_down": "closed",
+          "balance": "failover",
+          "all_down": true,
+          "backends": [
+            {
+              "id": "10.0.0.11:8080",
+              "ip": "10.0.0.11",
+              "port": 8080,
+              "state": "unhealthy",
+              "checked_at": 1794455158107,
+              "reason": "drained",
+              "drain": true,
+              "checked_state": "healthy"
+            },
+            {
+              "id": "10.0.0.12:8080",
+              "ip": "10.0.0.12",
+              "port": 8080,
+              "state": "unhealthy",
+              "checked_at": 1794455158107,
+              "reason": "drained",
+              "drain": true,
+              "checked_state": "healthy"
+            }
+          ]
+        }
+      ],
+      "raw": {},
+      "schema_version": "2"
+    },
+    "max_staleness_ms": 3000,
+    "lookups": [
+      {
+        "name": "open.svc.emfor",
+        "expect_error": "ALL_DOWN"
+      },
+      {
+        "name": "closed.svc.emfor",
+        "expect_error": "ALL_DOWN"
+      }
+    ]
   }
 ]

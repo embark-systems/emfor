@@ -213,6 +213,7 @@ The server answers only `GET /metrics` (a query string is ignored): other paths 
 | `emfor_backend_check_latency_seconds` | gauge | `service`, `backend` | Smoothed check latency; only while the backend has one (healthy) |
 | `emfor_backend_last_check_timestamp_seconds` | gauge | `service`, `backend` | Unix time the last check finished; after the first check |
 | `emfor_backend_in_pool` | gauge | `service`, `backend` | 1 in the pool of a `fastest` service, else 0; other services have none |
+| `emfor_backend_drain` | gauge | `service`, `backend` | 1 for a backend with `drain = true`, else 0; `emfor_backend_state` keeps the state the checks give |
 | `emfor_service_all_down` | gauge | `service` | 1 when no backend is healthy |
 | `emfor_backend_checks_total` | counter | `service`, `backend`, `result` | Checks by result: `up`, `down`, `error` |
 | `emfor_backend_transitions_total` | counter | `service`, `backend`, `to` | State changes by new state: `unknown`, `healthy`, `unhealthy` |
@@ -233,7 +234,7 @@ The server answers only `GET /metrics` (a query string is ignored): other paths 
 
 The two counters start at 0 when a backend first appears in the running daemon, keep counting across reloads (also when `check` or `check_options` change), and start again from 0 if the backend is removed and added back. They restart with the daemon; Prometheus handles that as a counter reset.
 
-Services are listed by name and backends in config order. Measured with one service of 10 unreachable backends: 107 series and 11.6 KB per scrape, that is 10 series per backend plus 7 for the daemon and the service (the test `series_for_ten_backends` in `crates/emfor-daemon/tests/metrics.rs` keeps it so). A backend has no last-check series before its first check, a healthy backend adds the latency series, and a backend of a `fastest` service adds `in_pool`, so a backend has 9 to 12 series.
+Services are listed by name and backends in config order. One service of 10 unreachable backends gives 117 series, that is 11 series per backend plus 7 for the daemon and the service (the test `series_for_ten_backends` in `crates/emfor-daemon/tests/metrics.rs` keeps it so). The size was measured at 11.6 KB per scrape for 107 series, before `emfor_backend_drain` added one series per backend; the 10 new lines add about 1 KB (estimated, not measured again). A backend has no last-check series before its first check, a healthy backend adds the latency series, and a backend of a `fastest` service adds `in_pool`, so a backend has 10 to 13 series.
 
 ## Peer groups
 
@@ -288,12 +289,12 @@ The default address is loopback only, for a Prometheus or agent on the same host
 | `EmforMetricsDown` | The endpoint cannot be scraped for 2 minutes | critical |
 | `EmforServiceAllDown` | A service is `ALL DOWN` for 1 minute | critical |
 | `EmforStoreCommitFailing` | A store commit failed in the last 5 minutes; clients soon see a stale heartbeat | critical |
-| `EmforBackendUnhealthy` | A backend is unhealthy for 10 minutes | warning |
+| `EmforBackendUnhealthy` | A backend is unhealthy for 10 minutes, unless it is drained (`drain = true`, for maintenance: `unless on(instance, service, backend) emfor_backend_drain == 1`) | warning |
 | `EmforBackendFlapping` | 5 or more changes between `healthy` and `unhealthy` in 10 minutes, like the `FLAPPING` mark of `emfor status` | warning |
 | `EmforBackendCheckErrors` | More than half of a backend's checks in 10 minutes end in `error` (the check could not decide), for 10 minutes | warning |
 | `EmforBackendNotChecked` | A backend's last check is over 5 minutes old, for 5 minutes | warning |
 
-The durations are starting points; set them from the services' `interval`, `rise` and `fall`. `EmforBackendNotChecked` fires on services whose `interval` is close to 5 minutes, so raise its threshold if you have any. [`emfor-rules.test.yml`](../../examples/prometheus/emfor-rules.test.yml) next to it holds unit tests for the rules. After you change the rules, run both commands below; they were last checked with promtool 3.5.0:
+Draining every backend of a service makes it `ALL DOWN`: `emfor_service_all_down` is 1, `EmforServiceAllDown` fires, and `emfor status` exits 1. The other rules still count a drained backend by the state its checks give, so `EmforBackendFlapping` and `EmforBackendCheckErrors` can fire during maintenance. The durations are starting points; set them from the services' `interval`, `rise` and `fall`. `EmforBackendNotChecked` fires on services whose `interval` is close to 5 minutes, so raise its threshold if you have any. [`emfor-rules.test.yml`](../../examples/prometheus/emfor-rules.test.yml) next to it holds unit tests for the rules. After you change the rules, run both commands below; they were last checked with promtool 3.5.0:
 
 ```sh
 promtool check rules examples/prometheus/emfor-rules.yml

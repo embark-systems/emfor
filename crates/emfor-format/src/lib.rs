@@ -211,6 +211,16 @@ pub struct BackendRecord {
     /// passes its checks; missing (read as `false`) in version 1 stores.
     #[serde(default)]
     pub backup: bool,
+    /// `true` for a backend drained in the config (`drain = true`): never
+    /// chosen. Its `state` is then `unhealthy` and its `reason` `drained`,
+    /// which is what an older reader sees; missing (read as `false`) in
+    /// records without drain and from older daemons.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub drain: bool,
+    /// The state the checks gave a drained backend, which `state` hides from
+    /// older readers; only present when `drain` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_state: Option<HealthState>,
     pub state: HealthState,
     /// Unix milliseconds when the last check finished; `None` before the first check.
     pub checked_at: Option<u64>,
@@ -240,7 +250,7 @@ pub struct ServiceRecord {
     /// Missing in records written before this field existed; reads as round-robin.
     #[serde(default)]
     pub balance: Balance,
-    /// `true` when no backend is [`HealthState::Healthy`].
+    /// `true` when no backend is [`HealthState::Healthy`] and not drained.
     pub all_down: bool,
     /// The service's `slow_start` in milliseconds; 0 when slow start is off
     /// and in records from older daemons.
@@ -260,7 +270,7 @@ impl ServiceRecord {
         self.all_down = !self
             .backends
             .iter()
-            .any(|b| b.state == HealthState::Healthy);
+            .any(|b| b.state == HealthState::Healthy && !b.drain);
     }
 }
 
@@ -310,6 +320,85 @@ impl ServiceHistory {
 mod tests {
     use super::*;
 
+    fn backend_json(extra: &str) -> String {
+        format!(
+            r#"{{"id":"10.0.0.1:80","ip":"10.0.0.1","port":80,"state":"healthy","checked_at":1,"reason":null{extra}}}"#
+        )
+    }
+
+    /// Spec state-store "Drained backend record": a record without the new
+    /// fields reads as not drained, writes back without them, and a drained
+    /// one keeps `drain` and `checked_state`; the schema stays 2.
+    #[test]
+    fn drain_fields_are_optional_and_only_written_when_set() {
+        let plain: BackendRecord = serde_json::from_str(&backend_json("")).unwrap();
+        assert!(!plain.drain);
+        assert_eq!(plain.checked_state, None);
+        let written = serde_json::to_string(&plain).unwrap();
+        assert!(
+            !written.contains("drain") && !written.contains("checked_state"),
+            "{written}"
+        );
+
+        let drained: BackendRecord =
+            serde_json::from_str(&backend_json(r#","drain":true,"checked_state":"healthy""#))
+                .unwrap();
+        assert!(drained.drain);
+        assert_eq!(drained.checked_state, Some(HealthState::Healthy));
+        let written = serde_json::to_string(&drained).unwrap();
+        assert!(
+            written.contains(r#""drain":true"#) && written.contains(r#""checked_state":"healthy""#)
+        );
+        assert_eq!(SCHEMA_VERSION, 2);
+    }
+
+    /// Spec state-store "Drained backend record", scenario "Older reader": a
+    /// reader with only the fields of version 0.5.0 reads a drained backend,
+    /// as the daemon stores it, as an unhealthy one and does not fail.
+    #[test]
+    fn older_reader_reads_a_drained_backend_as_unhealthy() {
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Old {
+            id: String,
+            ip: String,
+            port: u16,
+            #[serde(default)]
+            weight: u32,
+            #[serde(default)]
+            backup: bool,
+            state: HealthState,
+            checked_at: Option<u64>,
+            reason: Option<String>,
+        }
+        // What the daemon stores for a drained backend (writer.rs `stored_json`).
+        let stored = r#"{"id":"10.0.0.1:80","ip":"10.0.0.1","port":80,"weight":1,"site":null,"backup":false,"drain":true,"checked_state":"healthy","state":"unhealthy","checked_at":1,"reason":"drained"}"#;
+        let old: Old = serde_json::from_str(stored).expect("an old reader parses it");
+        assert_eq!(old.state, HealthState::Unhealthy);
+        assert_eq!(old.reason.as_deref(), Some("drained"));
+    }
+
+    /// `all_down` does not count a drained backend as healthy.
+    #[test]
+    fn drained_backends_do_not_keep_a_service_up() {
+        let mut backend: BackendRecord = serde_json::from_str(&backend_json("")).unwrap();
+        let mut rec = ServiceRecord {
+            name: "a.svc.emfor".into(),
+            on_all_down: OnAllDown::Open,
+            balance: Balance::default(),
+            all_down: true,
+            slow_start_ms: 0,
+            backends: vec![backend.clone()],
+            pool: None,
+        };
+        rec.refresh_all_down();
+        assert!(!rec.all_down);
+        backend.drain = true;
+        rec.backends = vec![backend];
+        rec.refresh_all_down();
+        assert!(rec.all_down);
+    }
+
     /// The client-lookup spec's length check example, plus an empty file
     /// and a page count that overflows.
     #[test]
@@ -346,6 +435,8 @@ mod tests {
                 reason: None,
                 latency_us: Some(1834),
                 backup: false,
+                drain: false,
+                checked_state: None,
                 recovered_at: None,
             }],
             pool: None,

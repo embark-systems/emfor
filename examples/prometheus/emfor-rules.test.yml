@@ -51,7 +51,28 @@ tests:
           - exp_labels: {severity: warning, job: emfor, instance: "h1:5301", service: api.svc.emfor, backend: "10.0.0.12:8080", state: unhealthy}
             exp_annotations:
               summary: "10.0.0.12:8080 of api.svc.emfor unhealthy for 10 minutes"
-              description: "emfor already routes around it; emfor status shows the last failure message."
+              description: "emfor already routes around it; emfor status shows the last failure message. A drained backend (drain = true, for maintenance) does not fire."
+
+  # A drained backend (maintenance) is unhealthy as far as its checks go, and
+  # does not fire; the other one does.
+  - interval: 1m
+    input_series:
+      - series: 'emfor_backend_state{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.12:8080",state="unhealthy"}'
+        values: '1x15'
+      - series: 'emfor_backend_drain{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.12:8080"}'
+        values: '1x15'
+      - series: 'emfor_backend_state{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.11:8080",state="unhealthy"}'
+        values: '1x15'
+      - series: 'emfor_backend_drain{job="emfor",instance="h1:5301",service="api.svc.emfor",backend="10.0.0.11:8080"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EmforBackendUnhealthy
+        exp_alerts:
+          - exp_labels: {severity: warning, job: emfor, instance: "h1:5301", service: api.svc.emfor, backend: "10.0.0.11:8080", state: unhealthy}
+            exp_annotations:
+              summary: "10.0.0.11:8080 of api.svc.emfor unhealthy for 10 minutes"
+              description: "emfor already routes around it; emfor status shows the last failure message. A drained backend (drain = true, for maintenance) does not fire."
 
   # Six changes in six minutes flap; two do not, and transitions to unknown
   # (start, check changes) are not counted.

@@ -51,7 +51,9 @@ it.
 - **backend**: state, time since the last check, smoothed latency, then
   these markers, in this order, when they apply: `pool` for the fast
   backends of a `fastest` service; `backup` for a backup backend
-  ([chapter 5](05-backend-selection.md#backup-backends)); `local-up` and
+  ([chapter 5](05-backend-selection.md#backup-backends)); `drained (checks:
+  <state>)` instead of the state for a backend drained in the config
+  ([chapter 5](05-backend-selection.md#draining-a-backend)); `local-up` and
   `voted` in a peer group (see [Peer groups](#peer-groups)); `FLAPPING
   (<n> changes in 10m)` for a backend that changed between healthy and
   unhealthy 5 or more times in 10 minutes; `last check failed` for a backend
@@ -103,6 +105,7 @@ no TLS; keep it on loopback or firewall it.
 | `emfor_backend_check_latency_seconds` | Smoothed check latency (healthy backends) |
 | `emfor_backend_last_check_timestamp_seconds` | When the last check finished |
 | `emfor_backend_in_pool` | 1 in the pool of a `fastest` service |
+| `emfor_backend_drain` | 1 for a backend drained in the config, else 0; `emfor_backend_state` keeps the state the checks give |
 | `emfor_service_all_down` | 1 when no backend is healthy |
 | `emfor_backend_checks_total{result}` | Checks by result: `up`, `down`, `error` |
 | `emfor_backend_transitions_total{to}` | State changes by new state |

@@ -31,7 +31,7 @@ backend 記錄新增選用欄位 `drain: bool`（`#[serde(default)]`，缺少讀
 
 ### 真實狀態放在記憶體記錄，寫入 store 時才轉成「對外的樣子」
 
-daemon 的記憶體記錄（也是 DNS 與 metrics 讀的 live 記錄）永遠保留檢查得出的真實 `state` 與 `reason`，加上 `drain`。只有在 `start_commit` 寫進 store 時，對 `drain = true` 的 backend 轉成：`state = "unhealthy"`、`reason = "drained"`、`drain = true`，並新增選用欄位 `checked_state`（寫真實的 `state`，`drain` 為假時不寫，`skip_serializing_if`）。取消 drain 時，記憶體裡的真實狀態直接寫回去，不需要重新累計 `rise`，也不是狀態轉換，所以不觸發 slow start、不寫進歷史。
+daemon 的記憶體記錄（也是 DNS 與 metrics 讀的 live 記錄）永遠保留檢查得出的真實 `state` 與 `reason`，加上 `drain`。只有在 `start_commit` 寫進 store 時，對 `drain = true` 的 backend 轉成：`state = "unhealthy"`、`reason = "drained"`、`drain = true`，並新增選用欄位 `checked_state`（寫真實的 `state`，`drain` 為假時不寫，`skip_serializing_if`）。取消 drain 時，記憶體裡的真實狀態直接寫回去，不需要重新累計 `rise`，也不是狀態轉換，所以 drain 與取消 drain 本身不觸發 slow start、不寫進歷史；drain 期間才從不健康恢復成健康的 backend，`recovered_at` 照平常記錄，取消 drain 時若還在 `slow_start` 內就照平常慢啟動。
 
 為什麼不把真實狀態只放在 `reason`：`reason` 是自由文字，client 與 `status` 不該解析它。為什麼不讓 `status` 從 daemon 取得：`status` 只讀 store，這是它的規格（`Status reads the store read-only`）。
 
@@ -67,7 +67,7 @@ drain 是這台 daemon 的設定。不傳給 peers，不進 `check_digest`，所
 
 - `drain = true` 的 backend：不被任何分配方式、任何候選層、DNS A、AAAA、SRV 與 `fastest` 快組挑出；其他 backend 的行為與現在完全相同；沒有設定任何 `drain` 時，所有輸出與 store 內容和現在相同（沒有新欄位出現）。
 - 全部 backend 已 drain：`lookup` 回 `ALL_DOWN`、DNS SERVFAIL，不論 `on_all_down`。
-- 檢查照跑；取消 drain（reload）後，backend 立刻回到真實狀態，沒有 slow start，沒有狀態轉換紀錄。
+- 檢查照跑；取消 drain（reload）後，backend 立刻回到真實狀態，沒有狀態轉換紀錄；drain 與取消 drain 本身不啟動 slow start（drain 期間才恢復的 backend 照平常從那次恢復起慢啟動）。
 - store 記錄：已 drain 的 backend 是 `state = "unhealthy"`、`reason = "drained"`、`drain = true`、`checked_state = <真實狀態>`；沒有 drain 的 backend 沒有 `drain` 與 `checked_state` 欄位（不寫 `false`，欄位缺少即為假），所以未使用 drain 的 store 內容逐位元組不變。`all_down` 不把已 drain 的 backend 算健康。
 - 舊 client 讀到已 drain 的 backend 時把它當一般的不健康 backend（最後一層可能挑到它，見上）。
 

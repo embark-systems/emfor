@@ -485,6 +485,15 @@ pub fn render(view: &LiveView, version: &str) -> String {
     }
     family(
         &mut out,
+        "emfor_backend_drain",
+        "gauge",
+        "1 for a backend drained in the config (never chosen, still checked), 0 for the others.",
+    );
+    for (_, b, l) in &backends {
+        put!(out, "emfor_backend_drain{{{l}}} {}", u8::from(b.drain));
+    }
+    family(
+        &mut out,
         "emfor_backend_check_latency_seconds",
         "gauge",
         "Smoothed check latency of a healthy backend.",
@@ -586,6 +595,8 @@ mod tests {
             reason: None,
             latency_us: None,
             backup: false,
+            drain: false,
+            checked_state: None,
             recovered_at: None,
         }
     }
@@ -794,6 +805,28 @@ mod tests {
         );
         // Not a fastest service: no pool series.
         assert!(!body.contains("emfor_backend_in_pool{"), "{body}");
+    }
+
+    /// Spec metrics-endpoint "Drain metric": a drained backend is 1, every
+    /// other backend 0; the state series keep the state the checks gave.
+    #[test]
+    fn drain_metric() {
+        let mut rec = api();
+        rec.backends[0].drain = true;
+        let body = render(&view(vec![rec]), "0.1.0");
+        let lines: Vec<&str> = body.lines().collect();
+        for want in [
+            r#"emfor_backend_drain{service="api.svc.emfor",backend="10.0.0.11:8080"} 1"#,
+            r#"emfor_backend_drain{service="api.svc.emfor",backend="10.0.0.12:8080"} 0"#,
+            // Still healthy as far as the checks go.
+            r#"emfor_backend_state{service="api.svc.emfor",backend="10.0.0.11:8080",state="healthy"} 1"#,
+        ] {
+            assert!(lines.contains(&want), "missing {want}\n{body}");
+        }
+        assert_eq!(
+            body.matches("# TYPE emfor_backend_drain gauge\n").count(),
+            1
+        );
     }
 
     /// Spec "Daemon metrics" and the HELP / TYPE lines.

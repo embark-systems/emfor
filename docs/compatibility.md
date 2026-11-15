@@ -70,7 +70,10 @@ a `balance` value a client does not know is treated as `round-robin`, a
 backend `state` as `unhealthy` and an `on_all_down` as `open`. A
 change that older readers would misread raises `meta/schema_version`;
 older clients then fail with `INCOMPATIBLE` instead of guessing, and the
-changelog says so at the top of the entry.
+changelog says so at the top of the entry. A backend record can carry the
+optional fields `drain` and `checked_state` (a backend drained in the
+config): older readers ignore them and read the backend as `unhealthy`,
+which is how it is stored, so the format version stays 2.
 
 The store is rebuilt on every daemon start, so there is never a store to
 migrate; only the state history of `emfor status --history` is carried

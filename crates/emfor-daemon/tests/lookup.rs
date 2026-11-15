@@ -243,6 +243,51 @@ fn json_of(o: &Output) -> Value {
     serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {o:?}"))
 }
 
+/// A service whose first `n` backends are drained: stored as unhealthy with
+/// the reason `drained`, as the daemon writes them.
+fn drained_service(n: usize) -> Value {
+    let mut svc = service(json!({}), &three());
+    for b in svc["backends"].as_array_mut().unwrap().iter_mut().take(n) {
+        b["state"] = json!("unhealthy");
+        b["reason"] = json!("drained");
+        b["drain"] = json!(true);
+        b["checked_state"] = json!("healthy");
+    }
+    svc
+}
+
+/// Spec lookup-command "Explain shows drained backends": a drained backend
+/// is excluded as `drained` in the text and the JSON, and is never the
+/// answer; when every backend is drained there is no candidate and the exit
+/// status is 1.
+#[test]
+fn explain_names_drained_backends() {
+    let f = fixture("fresh", "2", drained_service(1));
+    let o = run(&f.config, &["api.svc.emfor", "--explain"]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let out = stdout(&o);
+    assert!(out.contains("  10.0.0.11:8080  drained"), "{out}");
+    assert!(!out.contains("candidates:\n  10.0.0.11:8080"), "{out}");
+    let o = run(&f.config, &["api.svc.emfor", "--explain", "--json"]);
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    let text = v.to_string();
+    assert!(text.contains("drained"), "{text}");
+    for _ in 0..6 {
+        let o = run(&f.config, &["api.svc.emfor"]);
+        assert_ne!(stdout(&o).trim(), "10.0.0.11:8080");
+    }
+
+    let f = fixture("fresh", "2", drained_service(3));
+    let o = run(&f.config, &["api.svc.emfor", "--explain"]);
+    assert_eq!(o.status.code(), Some(1), "{o:?}");
+    let out = stdout(&o);
+    for id in ["10.0.0.11:8080", "10.0.0.12:8080", "10.0.0.13:8080"] {
+        assert!(out.contains(&format!("  {id}  drained")), "{out}");
+    }
+    assert!(!out.contains("\nanswer:"), "{out}");
+    assert!(out.contains("every backend is drained"), "{out}");
+}
+
 /// Scenario "Primary and backup backends".
 #[test]
 fn explain_names_the_tier_and_the_reason_of_every_backend() {

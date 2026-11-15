@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+**`drain = true`: take a backend out of every choice.** A backend table can
+set `drain = true`; after a reload the backend is never chosen: by no
+`balance` method (`sticky` and `failover` included), not in the last tier of
+an `open` service, not in DNS A, AAAA and SRV answers, not in a `fastest`
+pool. Its checks keep running, so `emfor status` shows `drained (checks:
+healthy)` and removing `drain` brings it back at once, in the state the
+checks gave, without counting `rise` again. Draining and undraining start no slow
+start themselves; a backend that recovered while drained ramps from that
+recovery as usual. `emfor lookup --explain` lists it
+as `drained`, and the metric `emfor_backend_drain` is 1 for it. When every
+backend of a service is drained, lookups fail with `ALL_DOWN` and DNS
+answers `SERVFAIL`, `open` or not. `drain` belongs to the host: it is not
+sent to peers and not part of the service definition they compare. The
+store format stays version 2: a drained backend is written as `unhealthy`
+with the reason `drained`, plus the optional fields `drain` and
+`checked_state`; an older client therefore skips it too, except in the last
+tier of an `open` service when every backend is down, where it can still
+choose it (upgrade `libemfor` first). There is no run-time command: edit the
+config and reload.
+
 **Fixes from a review of the whole system.** (1) `include_dir`: a
 directory or fragment owned by anyone but root or the user running emfor is
 refused (a link is judged by the file it points to), as one writable by

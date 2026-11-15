@@ -107,6 +107,8 @@ pub enum Exclusion {
     LastCheckFailed,
     /// A backup backend while a primary backend is a candidate.
     BackupHeldBack,
+    /// Drained in the config (`drain = true`): never chosen, in any tier.
+    Drained,
 }
 
 impl Exclusion {
@@ -118,6 +120,7 @@ impl Exclusion {
             Exclusion::Unknown => "unknown",
             Exclusion::LastCheckFailed => "last check failed",
             Exclusion::BackupHeldBack => "backup held back",
+            Exclusion::Drained => "drained",
         }
     }
 }
@@ -143,9 +146,13 @@ pub fn explain_tiers<'a, T: Copy>(
 ) -> TierExplanation<T> {
     let is_healthy = |t: T| trust_health && backend(t).state == HealthState::Healthy;
     let is_unknown = |t: T| trust_health && backend(t).state == HealthState::Unknown;
+    // A drained backend is in no tier, the last one included.
     let pick = |keep: &dyn Fn(T) -> bool| -> Vec<usize> {
-        (0..list.len()).filter(|&i| keep(list[i])).collect()
+        (0..list.len())
+            .filter(|&i| !backend(list[i]).drain && keep(list[i]))
+            .collect()
     };
+    let eligible = pick(&|_| true);
     let mut chosen: Option<(Tier, Vec<usize>)> = None;
     let healthy_tiers = [
         (Tier::PrimaryPassing, true, false),
@@ -163,7 +170,7 @@ pub fn explain_tiers<'a, T: Copy>(
             break;
         }
     }
-    if chosen.is_none() && on_all_down.is_open() && !list.is_empty() {
+    if chosen.is_none() && on_all_down.is_open() && !eligible.is_empty() {
         let unknown_passing = pick(&|t| is_unknown(t) && backend(t).reason.is_none());
         let unknown = pick(&|t| is_unknown(t));
         chosen = Some(if !unknown_passing.is_empty() {
@@ -171,11 +178,14 @@ pub fn explain_tiers<'a, T: Copy>(
         } else if !unknown.is_empty() {
             (Tier::Unknown, unknown)
         } else {
-            (Tier::All, (0..list.len()).collect())
+            (Tier::All, eligible)
         });
     }
     let (tier, idx) = chosen.unwrap_or((Tier::None, Vec::new()));
     let why = |t: T| -> Exclusion {
+        if backend(t).drain {
+            return Exclusion::Drained;
+        }
         if !trust_health {
             return Exclusion::Stale;
         }
@@ -299,6 +309,8 @@ mod tests {
             reason: None,
             latency_us: None,
             backup: false,
+            drain: false,
+            checked_state: None,
             recovered_at: None,
         }
     }
@@ -710,6 +722,68 @@ mod tests {
             }
         }
         assert!(checked > 1000, "{checked}");
+    }
+
+    /// Spec backend-selection "Drained backends are never selected": a
+    /// drained backend is in no tier, whatever its state, with a fresh or a
+    /// stale store and either `on_all_down`; it is excluded as `drained`.
+    #[test]
+    fn drained_backends_are_in_no_tier() {
+        use HealthState::*;
+        for state in [Healthy, Unhealthy, Unknown, Unrecognized] {
+            for reason in [false, true] {
+                let mut x = rec("10.0.0.1:80", state, reason, false);
+                x.drain = true;
+                let others = [
+                    rec("10.0.0.2:80", Healthy, false, false),
+                    rec("10.0.0.2:80", Unhealthy, true, false),
+                    rec("10.0.0.2:80", Unknown, false, true),
+                ];
+                for y in &others {
+                    for trust in [true, false] {
+                        for oad in [OnAllDown::Open, OnAllDown::Closed] {
+                            let list = [&x, y];
+                            let got = explain_tiers(oad, &list, trust, |b| b);
+                            assert!(
+                                got.candidates.iter().all(|b| b.id != x.id),
+                                "{state:?} {reason} {trust} {oad:?}: {got:?}"
+                            );
+                            assert!(
+                                got.excluded
+                                    .iter()
+                                    .any(|(b, why)| b.id == x.id && *why == Exclusion::Drained),
+                                "{got:?}"
+                            );
+                        }
+                    }
+                }
+                // Everything drained: nothing to choose, `open` included.
+                let mut only = [x.clone(), x.clone()];
+                only[1].id = "10.0.0.2:80".into();
+                let refs: Vec<&BackendRecord> = only.iter().collect();
+                for oad in [OnAllDown::Open, OnAllDown::Closed] {
+                    let got = explain_tiers(oad, &refs, true, |b| b);
+                    assert_eq!(got.tier, Tier::None, "{oad:?}");
+                    assert!(got.candidates.is_empty());
+                    assert_eq!(got.excluded.len(), 2);
+                    assert!(healthy_or_all(oad, &refs, true, |b| b).is_none());
+                }
+            }
+        }
+    }
+
+    /// The last tier of an open service never offers a drained backend.
+    #[test]
+    fn last_tier_skips_the_drained_backend() {
+        use HealthState::*;
+        let mut a = rec("10.0.0.1:80", Unhealthy, true, false);
+        a.drain = true;
+        let b = rec("10.0.0.2:80", Unhealthy, true, false);
+        let refs = [&a, &b];
+        let got = explain_tiers(OnAllDown::Open, &refs, true, |x| x);
+        assert_eq!(got.tier, Tier::All);
+        assert_eq!(got.candidates.len(), 1);
+        assert_eq!(got.candidates[0].id, "10.0.0.2:80");
     }
 
     /// Spec lookup-command, example "tier of the candidates".

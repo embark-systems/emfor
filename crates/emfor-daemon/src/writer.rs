@@ -601,6 +601,7 @@ impl<S: Sink> Writer<S> {
                     rec.weight = b.weight;
                     rec.site = b.site.clone();
                     rec.backup = b.backup;
+                    rec.drain = b.drain;
                     rec
                 })
                 .collect();
@@ -705,7 +706,7 @@ impl<S: Sink> Writer<S> {
         ops.append(&mut self.extra);
         for name in &self.dirty {
             if let Some(rec) = self.records.get(name) {
-                let json = serde_json::to_string(rec).expect("a ServiceRecord serializes: it holds only strings, numbers, booleans and lists");
+                let json = stored_json(rec);
                 ops.push(Op::Put(service_key(name), json));
             }
         }
@@ -826,6 +827,30 @@ fn refresh_pool(rec: &mut ServiceRecord) {
         .then(|| fast_pool(&rec.backends, rec.pool.as_deref().unwrap_or_default()));
 }
 
+/// The JSON of `rec` as it is stored. The record in memory keeps the state
+/// the checks gave; a drained backend is written as `unhealthy` with the
+/// reason `drained`, and the state of the checks in `checked_state`, so that
+/// a reader which does not know `drain` sees an unhealthy backend. The record
+/// in memory is not changed, and a record without drained backends is
+/// written as it is.
+fn stored_json(rec: &ServiceRecord) -> String {
+    const WHY: &str =
+        "a ServiceRecord serializes: it holds only strings, numbers, booleans and lists";
+    if !rec.backends.iter().any(|b| b.drain) {
+        return serde_json::to_string(rec).expect(WHY);
+    }
+    let mut shown = rec.clone();
+    for b in shown.backends.iter_mut().filter(|b| b.drain) {
+        b.checked_state = Some(b.state);
+        b.state = HealthState::Unhealthy;
+        b.reason = Some(DRAINED_REASON.into());
+    }
+    serde_json::to_string(&shown).expect(WHY)
+}
+
+/// The `reason` of a drained backend in the store.
+pub const DRAINED_REASON: &str = "drained";
+
 fn fresh_backend(b: &Backend) -> BackendRecord {
     BackendRecord {
         id: b.id.clone(),
@@ -834,6 +859,8 @@ fn fresh_backend(b: &Backend) -> BackendRecord {
         weight: b.weight,
         site: b.site.clone(),
         backup: b.backup,
+        drain: b.drain,
+        checked_state: None,
         state: HealthState::Unknown,
         checked_at: None,
         reason: None,
@@ -1330,6 +1357,135 @@ mod tests {
         assert_eq!(rec.backends[0].weight, 4);
         assert_eq!(rec.backends[0].state, HealthState::Healthy);
         assert!(!rec.backends[0].backup);
+    }
+
+    /// Spec state-store "Drained backend record" and service-config
+    /// "Draining a backend": a drained backend is written as unhealthy with
+    /// the reason `drained` and the state of the checks in `checked_state`;
+    /// the others carry no new field; `all_down` follows; a reload that
+    /// removes `drain` brings back the state the checks gave, with no state
+    /// change, no recovery time and no history entry.
+    #[tokio::test]
+    async fn drained_backend_written_and_undrained() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&cfg(dir.path())).unwrap());
+        let (tx, rx) = mpsc::unbounded_channel();
+        spawn_with_tick(store.clone(), rx, Duration::from_secs(3600));
+        let mut l = layout("api.svc.emfor", &["10.0.0.11:8080", "10.0.0.12:8080"], 0);
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: true,
+            site: None,
+            services: vec![l.clone()],
+        })
+        .unwrap();
+        for id in ["10.0.0.11:8080", "10.0.0.12:8080"] {
+            tx.send(upd("api.svc.emfor", id, HealthState::Healthy, true))
+                .unwrap();
+        }
+        settled(&tx).await;
+        let json = store.get(&service_key("api.svc.emfor")).unwrap().unwrap();
+        assert!(
+            !json.contains("drain") && !json.contains("checked_state"),
+            "{json}"
+        );
+
+        let recovered = record(&store, "api.svc.emfor").backends[0].recovered_at;
+        // Drain one: the checks go on, the record shows unhealthy / drained.
+        l.backends[0].drain = true;
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![l.clone()],
+        })
+        .unwrap();
+        settled(&tx).await;
+        let rec = record(&store, "api.svc.emfor");
+        let (a, b) = (&rec.backends[0], &rec.backends[1]);
+        assert!(a.drain);
+        assert_eq!(a.state, HealthState::Unhealthy);
+        assert_eq!(a.reason.as_deref(), Some("drained"));
+        assert_eq!(a.checked_state, Some(HealthState::Healthy));
+        assert!(!b.drain && b.checked_state.is_none() && b.state == HealthState::Healthy);
+        assert!(!rec.all_down);
+        let json = store.get(&service_key("api.svc.emfor")).unwrap().unwrap();
+        assert!(json.matches("\"drain\"").count() == 1, "{json}");
+
+        // A check result while drained updates the real state, not the shown one.
+        tx.send(upd(
+            "api.svc.emfor",
+            "10.0.0.11:8080",
+            HealthState::Unhealthy,
+            true,
+        ))
+        .unwrap();
+        settled(&tx).await;
+        assert_eq!(
+            record(&store, "api.svc.emfor").backends[0].checked_state,
+            Some(HealthState::Unhealthy)
+        );
+        tx.send(upd(
+            "api.svc.emfor",
+            "10.0.0.11:8080",
+            HealthState::Healthy,
+            true,
+        ))
+        .unwrap();
+        settled(&tx).await;
+
+        // Everything drained: all_down.
+        l.backends[1].drain = true;
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![l.clone()],
+        })
+        .unwrap();
+        settled(&tx).await;
+        assert!(record(&store, "api.svc.emfor").all_down);
+
+        // Undrain: the state the checks gave is back at once.
+        l.backends[0].drain = false;
+        l.backends[1].drain = false;
+        tx.send(WriterMsg::SetLayout {
+            fresh_start: false,
+            site: None,
+            services: vec![l],
+        })
+        .unwrap();
+        settled(&tx).await;
+        let rec = record(&store, "api.svc.emfor");
+        for b in &rec.backends {
+            assert!(!b.drain && b.checked_state.is_none());
+            assert_eq!(b.state, HealthState::Healthy);
+            assert_ne!(b.reason.as_deref(), Some("drained"));
+        }
+        assert!(!rec.all_down);
+        // Draining and undraining are no recovery: the time is as before.
+        assert_eq!(rec.backends[0].recovered_at, recovered);
+    }
+
+    /// The conversion for the store does not change the record in memory.
+    #[test]
+    fn stored_json_leaves_the_record_alone() {
+        let mut rec = ServiceRecord {
+            name: "a.svc.emfor".into(),
+            on_all_down: emfor_format::OnAllDown::Open,
+            balance: emfor_format::Balance::default(),
+            all_down: false,
+            slow_start_ms: 0,
+            backends: vec![fresh_backend(&Backend::new("10.0.0.1:80".parse().unwrap()))],
+            pool: None,
+        };
+        rec.backends[0].state = HealthState::Healthy;
+        rec.backends[0].drain = true;
+        let before = rec.clone();
+        let json = stored_json(&rec);
+        assert_eq!(rec, before);
+        assert!(
+            json.contains(r#""state":"unhealthy""#) && json.contains(r#""reason":"drained""#),
+            "{json}"
+        );
+        assert!(json.contains(r#""checked_state":"healthy""#), "{json}");
     }
 
     /// Spec "Store record format version 2", example "backup written", and

@@ -226,7 +226,7 @@ application is than from where the Consul agent is.
 | Least connections, connection limits, queues | No. emfor is not in the data path and does not see connections. Keep HAProxy for this. |
 | Retries and timeouts of the proxy | The application retries. The client returns one address per lookup, so a retry can get the same backend until the next check marks it down. |
 | Passive health checks (`observe layer7`) | No: only active checks. A failing backend is noticed by the next checks; with a [peer group](03-configuration.md#peers) the hosts recheck every 200ms after one of them saw a failure. |
-| Taking a backend out for maintenance (`disabled`, weight 0, `maint`) | Not yet: remove it from the list and reload. A backend that is added again starts `unknown`. |
+| Taking a backend out for maintenance (`disabled`, `maint`, `drain`) | `drain = true` on the backend, then reload ([chapter 5](05-backend-selection.md#draining-a-backend)): it is never chosen and its checks go on. There is no `weight 0`, and no run-time command (`set server ... state drain`): the config is the only way. |
 | Routing by URL, header or cookie, TLS termination | No. |
 | Registration, tags and key-value store of Consul | No. The list of backends is config. |
 | Several configuration files | One file for now. |

@@ -94,6 +94,9 @@ peers = true           # take part in the peer group, when [peers] is set
 [services."db.svc.emfor"]
 check = "tcp"
 backends = ["10.0.1.5:5432", "10.0.1.6:5432"]
+# drain = true takes a backend out of every choice (it is still checked), for
+# an upgrade or a reboot; remove it and reload to bring it back:
+# backends = ["10.0.1.5:5432", { addr = "10.0.1.6:5432", drain = true }]
 # A backup is used only while no other backend passes its checks:
 # backends = ["10.0.1.5:5432", "10.0.1.6:5432",
 #             { addr = "10.2.1.5:5432", backup = true }]

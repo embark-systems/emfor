@@ -322,6 +322,99 @@ fn srv_ports(m: &Message) -> Vec<(u16, u16)> {
         .collect()
 }
 
+/// Spec service-config "Draining a backend", state-store "Drained backend
+/// record" and backend-selection "Drained backends are never selected", end
+/// to end: a reload with `drain = true` takes the backend out of the DNS
+/// answers and writes it as unhealthy / drained while its checks go on; a
+/// reload without it brings it back at once, in the same health.
+#[test]
+fn drained_backend_leaves_the_answers_and_returns() {
+    let (_l1, b1) = listener();
+    let (_l2, b2) = listener();
+    let p1: u16 = b1.rsplit_once(':').unwrap().1.parse().unwrap();
+    let p2: u16 = b2.rsplit_once(':').unwrap().1.parse().unwrap();
+    let port = free_port();
+    let config = |drain: &str| {
+        format!(
+            "{}[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [{{ addr = \"{b1}\"{drain} }}, \"{b2}\"]\ninterval = \"200ms\"\ntimeout = \"100ms\"\nrise = 1\nfall = 1\njitter = \"0%\"\n",
+            dns_table(port)
+        )
+    };
+    let d = Daemon::spawn(&config(""));
+    let ports = |port| {
+        let mut p: Vec<u16> = ask(port, "api.svc.emfor", RecordType::SRV)
+            .map(|m| srv_ports(&m).into_iter().map(|(p, _)| p).collect())
+            .unwrap_or_default();
+        p.sort_unstable();
+        p
+    };
+    let mut both = vec![p1, p2];
+    both.sort_unstable();
+    wait_for(|| ports(port) == both);
+    // Both are really healthy (an open service answers with unknown ones too).
+    let reader = common::Reader::open(&d.store());
+    wait_for(|| {
+        reader.service("api.svc.emfor").is_some_and(|r| {
+            r.backends
+                .iter()
+                .all(|b| b.state == emfor_format::HealthState::Healthy)
+        })
+    });
+
+    d.write_config(&config(", drain = true"));
+    d.signal(Signal::SIGHUP);
+    wait_for(|| ports(port) == [p2]);
+    wait_for(|| {
+        reader
+            .service("api.svc.emfor")
+            .is_some_and(|r| r.backends[0].drain)
+    });
+    let rec = reader.service("api.svc.emfor").unwrap();
+    let drained = &rec.backends[0];
+    assert_eq!(drained.state, emfor_format::HealthState::Unhealthy);
+    assert_eq!(drained.reason.as_deref(), Some("drained"));
+    // The checks go on: the real state is healthy, and the other is untouched.
+    assert_eq!(
+        drained.checked_state,
+        Some(emfor_format::HealthState::Healthy)
+    );
+    assert!(!rec.backends[1].drain && rec.backends[1].checked_state.is_none());
+    for _ in 0..8 {
+        assert_eq!(ports(port), [p2]);
+    }
+
+    // Everything drained: nothing to answer with, although the service is
+    // `open` (the default): SERVFAIL for A and for SRV.
+    let all = |d1: &str, d2: &str| {
+        format!(
+            "{}[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [{{ addr = \"{b1}\"{d1} }}, {{ addr = \"{b2}\"{d2} }}]\ninterval = \"200ms\"\ntimeout = \"100ms\"\nrise = 1\nfall = 1\njitter = \"0%\"\n",
+            dns_table(port)
+        )
+    };
+    d.write_config(&all(", drain = true", ", drain = true"));
+    d.signal(Signal::SIGHUP);
+    wait_for(|| {
+        ask(port, "api.svc.emfor", RecordType::A)
+            .is_some_and(|m| m.metadata.response_code == ResponseCode::ServFail)
+    });
+    for t in [RecordType::A, RecordType::SRV] {
+        let m = ask(port, "api.svc.emfor", t).unwrap();
+        assert_eq!(m.metadata.response_code, ResponseCode::ServFail, "{t:?}");
+        assert!(m.answers.is_empty());
+    }
+    wait_for(|| reader.service("api.svc.emfor").is_some_and(|r| r.all_down));
+
+    d.write_config(&config(""));
+    d.signal(Signal::SIGHUP);
+    wait_for(|| ports(port) == both);
+    let rec = reader.service("api.svc.emfor").unwrap();
+    assert!(!rec.backends[0].drain && rec.backends[0].checked_state.is_none());
+    assert_eq!(rec.backends[0].state, emfor_format::HealthState::Healthy);
+    // Draining and undraining changed no health: only the two first
+    // transitions (unknown to healthy) were logged.
+    assert_eq!(d.log().matches("changed from").count(), 2, "{}", d.log());
+}
+
 #[test]
 fn fastest_srv_gives_slow_backend_priority_1() {
     let fast = http_backend(Duration::ZERO);

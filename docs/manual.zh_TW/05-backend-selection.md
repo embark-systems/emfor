@@ -83,6 +83,18 @@ backend 要連續失敗 `fall` 次才會轉為不健康；在那之前它仍是�
 
 DNS 回答依同樣的順序；SRV 記錄只列出選出的集合。使用備援需要能讀 store 格式版本 2 的 client（[第 6 章](06-clients.md#store-格式版本)）。
 
+## drain 一個 backend
+
+在 backend 上寫 `drain = true`（[第 3 章](03-configuration.md#servicesname)），就能不從設定檔移除它，把它從所有選擇中拿掉，用於升級、重新開機或調查。改檔案後 reload（`systemctl reload emfor`）；沒有在執行期 drain 的指令。
+
+- drain 的 backend 不會被選到：任何 `balance` 都不會（包含 `sticky` 與 `failover`，所以 sticky 的 key 會移到別的 backend，直到拿掉 drain），`open` 服務的最後一層不會，DNS 的 A、AAAA 與 SRV 答案不會，`fastest` 服務的 pool 也不會。emfor 不在資料路徑上，所以已經建立的連線不受影響；只有新的查詢會略過它。
+- 它的檢查照跑。`emfor status` 顯示 `drained (checks: healthy)`，括號裡是檢查給的狀態，所以你馬上看得出它準備好了沒有；拿掉 `drain` 並 reload 之後，它馬上回到選擇中，狀態就是檢查給的狀態，不必重新累計 `rise`。drain 與取消 drain 本身不會啟動慢啟動；drain 期間才恢復健康的 backend，照平常從那次恢復起慢啟動，所以在恢復後的 `slow_start` 內取消 drain，它就會慢啟動。
+- 服務的所有 backend 都 drain 時，沒有東西可選：查詢以 `ALL_DOWN` 失敗，DNS 回 `SERVFAIL`，不論 `on_all_down`，因為 `open` 的意思是「在失敗的之中選」，而 drain 的 backend 不在其中。
+- `drain` 是這台主機的設定。它不會傳給聯防群組的 peer，也不改變 peer 比對的服務定義，所以各台主機可以 drain 不同的 backend。
+- 舊版 client 把 drain 的 backend 當成不健康的（store 裡寫的是 `unhealthy`，原因 `drained`）。它們一樣會略過它，只有一個例外：`open` 服務在所有 backend 都不健康的最後一層，舊版 client 仍可能選到它。要靠 `drain` 處理 `open` 服務之前，先升級各主機的 `libemfor`。
+
+這不是 HAProxy 的 `DRAIN`（讓既有 session 繼續）：emfor 沒有 session，查詢略過這個 backend 就是全部的效果。
+
 ## 慢啟動（slow start）
 
 剛恢復的 backend 可能快取還是冷的、連線池還沒建立。設定 `slow_start`（例如 `slow_start = "30s"`）後，從 `unhealthy` 轉為 `healthy` 的 backend 會在這段時間內逐步增加分到的流量，而不是立刻拿到全部份額。

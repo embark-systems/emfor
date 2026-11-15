@@ -39,7 +39,7 @@ api.svc.emfor  round-robin  on_all_down=open
 
 - **daemon**：heartbeat 不超過 3 秒時為 `running`，超過時為 `stale`（daemon 卡住或已死），正常停止後為 `stopped`。`stale` 或 `stopped` 時，顯示的服務只是 daemon 最後寫入的內容。
 - **服務**：`balance`、`on_all_down`，沒有 backend 健康時顯示 `ALL DOWN`。
-- **backend**：狀態、距上次檢查多久、平滑後的延遲，之後依序是適用的標記：`fastest` 服務中快的 backend 標示 `pool`；備援 backend 標示 `backup`（見[第 5 章](05-backend-selection.md#備援-backend)）；聯防群組裡的 `local-up` 與 `voted`（見[聯防群組](#聯防群組)）；10 分鐘內在 healthy 與 unhealthy 之間變化 5 次以上的 backend 標示 `FLAPPING (<n> changes in 10m)`；仍是 `healthy`、但最近一次檢查失敗的 backend 標示 `last check failed`（連續失敗 `fall` 次才會變成 unhealthy；在那之前，查詢通常會略過它，見[檢查開始失敗的 backend](05-backend-selection.md#檢查開始失敗的-backend)，但所有 healthy backend 都在失敗時例外）；最後是最近一次失敗檢查的 reason。一行同時有所有標記、reason 又短時約 100 欄寬（十台主機、40 個 backend 的群組中量到 97 欄）；`--watch` 會截斷超過終端機寬度的行。
+- **backend**：狀態、距上次檢查多久、平滑後的延遲，之後依序是適用的標記：`fastest` 服務中快的 backend 標示 `pool`；備援 backend 標示 `backup`（見[第 5 章](05-backend-selection.md#備援-backend)）；設定檔裡 drain 的 backend 在狀態的位置顯示 `drained`，後面接 `(checks: <狀態>)`（見[第 5 章](05-backend-selection.md#drain-一個-backend)）；聯防群組裡的 `local-up` 與 `voted`（見[聯防群組](#聯防群組)）；10 分鐘內在 healthy 與 unhealthy 之間變化 5 次以上的 backend 標示 `FLAPPING (<n> changes in 10m)`；仍是 `healthy`、但最近一次檢查失敗的 backend 標示 `last check failed`（連續失敗 `fall` 次才會變成 unhealthy；在那之前，查詢通常會略過它，見[檢查開始失敗的 backend](05-backend-selection.md#檢查開始失敗的-backend)，但所有 healthy backend 都在失敗時例外）；最後是最近一次失敗檢查的 reason。一行同時有所有標記、reason 又短時約 100 欄寬（十台主機、40 個 backend 的群組中量到 97 欄）；`--watch` 會截斷超過終端機寬度的行。
 
 ```
   10.0.1.3:5432   healthy  0.8s ago  1.2ms  voted  last check failed  connect: Connection refused
@@ -73,6 +73,7 @@ pipe 提早關閉（`emfor status | head -1`）不會改變結束代碼。store 
 | `emfor_backend_check_latency_seconds` | 平滑後的檢查延遲（healthy 的 backend） |
 | `emfor_backend_last_check_timestamp_seconds` | 上次檢查結束的時間 |
 | `emfor_backend_in_pool` | 在 `fastest` 服務的 pool 中為 1 |
+| `emfor_backend_drain` | 設定檔裡 drain 的 backend 為 1，其他為 0；`emfor_backend_state` 仍是檢查給的狀態 |
 | `emfor_service_all_down` | 沒有健康的 backend 時為 1 |
 | `emfor_backend_checks_total{result}` | 依結果分類的檢查次數：`up`、`down`、`error` |
 | `emfor_backend_transitions_total{to}` | 依新狀態分類的狀態變化次數 |

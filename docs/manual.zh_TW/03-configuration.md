@@ -166,7 +166,7 @@ path = "/healthz"
 
 **服務名稱**類似主機名稱：轉為小寫、去掉一個結尾的點，最多 253 個字元，由點分隔的 label 組成，每個 label 1–63 個 `a-z`、`0-9` 與 `-` 字元，且不以 `-` 開頭或結尾。只差在大小寫的兩個名稱視為重複。client 查詢時也用同樣方式正規化名稱。
 
-**backend** 可以是字串；需要權重、site 或 `backup` 時用 table：
+**backend** 可以是字串；需要權重、site、`backup` 或 `drain` 時用 table：
 
 ```toml
 backends = [
@@ -174,6 +174,7 @@ backends = [
   { addr = "10.0.4.12:9200", weight = 3 },
   { addr = "10.1.4.11:9200", site = "dc2" },
   { addr = "10.2.4.11:9200", backup = true },
+  { addr = "10.0.4.13:9200", drain = true },
 ]
 ```
 
@@ -183,8 +184,9 @@ backends = [
 | `weight` | 1 | 1 到 100。`balance = "weighted"` 與帶 affinity key 的 `"sticky"` 會用到。 |
 | `site` | 無 | backend 所在的資料中心。`balance = "locality"` 會用到。 |
 | `backup` | `false` | `true` 或 `false`。備援 backend 只在沒有其他 backend 通過檢查時使用（[第 5 章](05-backend-selection.md#備援-backend)）。每個服務至少要有一個不是備援的 backend。 |
+| `drain` | `false` | `true` 或 `false`。drain 的 backend 任何 `balance` 與 DNS 都不會選它，但檢查照跑（[第 5 章](05-backend-selection.md#drain-一個-backend)）。 |
 
-任何 `balance` 都接受 `weight`、`site` 與 `backup`，所以切換 `balance` 時不必修改 backend。
+任何 `balance` 都接受 `weight`、`site`、`backup` 與 `drain`，所以切換 `balance` 時不必修改 backend。
 
 ## [plugins."name"]
 
@@ -288,7 +290,7 @@ interval = "5s" # /etc/emfor/conf.d/99-local.toml
 | 新增或移除服務與 backend | 套用；新的 backend 從 `unknown` 開始。 |
 | 服務的 `check` 或 `check_options` | 套用；它的 backend 從 `unknown` 重新開始。 |
 | `interval`、`timeout`、`rise`、`fall`、`jitter`、`on_all_down`、`peers` | 套用；backend 保留原狀態。新的 `interval` 或 `jitter` 也套用到正在進行的等待：下一次檢查改在上一次結束後經過新的等待時間時開始，若那個時間已經過了就立刻開始。 |
-| `balance`、`weight`、`site`（最上層與 backend）、`backup`、`dns_ttl`、`slow_start` | 套用；backend 保留狀態，正在慢啟動的 backend 保留它的恢復時間。 |
+| `balance`、`weight`、`site`（最上層與 backend）、`backup`、`drain`、`dns_ttl`、`slow_start` | 套用；backend 保留狀態，正在慢啟動的 backend 保留它的恢復時間。 |
 | `[dns] zone`、`[dns] ttl`、`[dns] rate_limit` | 套用。 |
 | `[log] level` | 套用（除非設定了 `RUST_LOG`）。 |
 | plugin 的 `command` | 該 plugin 重新啟動，使用它的服務從 `unknown` 重新開始。未變更的 plugin 繼續執行。 |

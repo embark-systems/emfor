@@ -26,13 +26,13 @@ groups:
           description: "Same as ALL DOWN in emfor status. Lookups follow on_all_down: open picks from all backends, closed fails."
 
       - alert: EmforBackendUnhealthy
-        expr: emfor_backend_state{state="unhealthy"} == 1
+        expr: emfor_backend_state{state="unhealthy"} == 1 unless on(instance, service, backend) emfor_backend_drain == 1
         for: 10m
         labels:
           severity: warning
         annotations:
           summary: "{{ $labels.backend }} of {{ $labels.service }} unhealthy for 10 minutes"
-          description: "emfor already routes around it; emfor status shows the last failure message."
+          description: "emfor already routes around it; emfor status shows the last failure message. A drained backend (drain = true, for maintenance) does not fire."
 
       - alert: EmforBackendFlapping
         expr: sum by (instance, service, backend) (increase(emfor_backend_transitions_total{to!="unknown"}[10m])) >= 5

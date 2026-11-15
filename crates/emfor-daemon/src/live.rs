@@ -298,6 +298,8 @@ mod tests {
             weight: 1,
             site: None,
             backup: false,
+            drain: false,
+            checked_state: None,
             state: HealthState::Unknown,
             checked_at: None,
             reason: None,

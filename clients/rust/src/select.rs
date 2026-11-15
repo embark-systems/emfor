@@ -36,6 +36,12 @@ pub fn candidates(rec: &ServiceRecord, stale: bool) -> Result<Vec<&BackendRecord
 
 /// The `ALL_DOWN` failure of a service with nothing to choose from.
 fn all_down_error(rec: &ServiceRecord, stale: bool) -> Error {
+    if !rec.backends.is_empty() && rec.backends.iter().all(|b| b.drain) {
+        return Error::new(
+            ErrorCode::AllDown,
+            format!("service {}: every backend is drained", rec.name),
+        );
+    }
     let why = if stale {
         "the store is stale (emfor daemon not updating it)"
     } else {
@@ -477,6 +483,8 @@ mod tests {
             reason: None,
             latency_us: None,
             backup: false,
+            drain: false,
+            checked_state: None,
             recovered_at: None,
         }
     }
@@ -1094,6 +1102,86 @@ mod tests {
             v[k] = x.clone();
         }
         v
+    }
+
+    /// Spec backend-selection "Drained backends are never selected" and
+    /// client-lookup "Clients exclude drained backends": whatever the balance
+    /// method, a drained backend is not a candidate, a sticky key moves to
+    /// the other backend and comes back, and a record without `drain` reads
+    /// as before.
+    #[test]
+    fn drained_backend_is_never_a_candidate() {
+        let drained = serde_json::json!({"state": "unhealthy", "reason": "drained",
+            "drain": true, "checked_state": "healthy"});
+        let bes = |a: serde_json::Value| {
+            serde_json::json!([
+                backend_json("10.0.0.11:80", a),
+                backend_json("10.0.0.12:80", serde_json::json!({}))
+            ])
+        };
+        for balance in ["round-robin", "sticky", "failover", "weighted", "locality"] {
+            let rec = record(balance, serde_json::json!({}), bes(drained.clone()));
+            let c = candidates(&rec, false).unwrap();
+            assert_eq!(c.len(), 1, "{balance}");
+            assert_eq!(c[0].id, "10.0.0.12:80");
+            // Stale store, open service: still not the drained one.
+            let c = candidates(&rec, true).unwrap();
+            assert!(c.iter().all(|b| b.id != "10.0.0.11:80"), "{balance} stale");
+        }
+        // Without `drain` the same two backends are both candidates.
+        let rec = record(
+            "round-robin",
+            serde_json::json!({}),
+            bes(serde_json::json!({})),
+        );
+        assert_eq!(candidates(&rec, false).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn sticky_key_moves_away_from_a_drained_backend_and_comes_back() {
+        let drained = serde_json::json!({"state": "unhealthy", "reason": "drained", "drain": true});
+        let both = |a: serde_json::Value, b: serde_json::Value| {
+            record(
+                "sticky",
+                serde_json::json!({}),
+                serde_json::json!([
+                    backend_json("10.0.0.11:80", a),
+                    backend_json("10.0.0.12:80", b)
+                ]),
+            )
+        };
+        let pick_for = |rec: &ServiceRecord, key: &str| {
+            let c = candidates(rec, false).unwrap();
+            pick_at(Balance::Sticky, &c, Some(key), None, 0, 0, || 0)
+        };
+        // A key that maps to the first backend while both are up.
+        let keys: Vec<String> = (0..64).map(|i| format!("user-{i}")).collect();
+        let healthy = both(serde_json::json!({}), serde_json::json!({}));
+        let key = keys
+            .iter()
+            .find(|k| pick_for(&healthy, k) == "10.0.0.11:80")
+            .expect("some key maps to the first backend");
+        let with_drain = both(drained, serde_json::json!({}));
+        assert_eq!(pick_for(&with_drain, key), "10.0.0.12:80");
+        assert_eq!(pick_for(&healthy, key), "10.0.0.11:80");
+    }
+
+    /// Every backend drained: nothing to choose, also for an open service.
+    #[test]
+    fn all_drained_is_all_down() {
+        let drained = serde_json::json!({"state": "unhealthy", "reason": "drained", "drain": true});
+        let rec = record(
+            "round-robin",
+            serde_json::json!({"all_down": true}),
+            serde_json::json!([
+                backend_json("10.0.0.11:80", drained.clone()),
+                backend_json("10.0.0.12:80", drained)
+            ]),
+        );
+        for stale in [false, true] {
+            let e = candidates(&rec, stale).expect_err("nothing to choose");
+            assert_eq!(e.code, ErrorCode::AllDown);
+        }
     }
 
     /// Spec lookup-command, "Explain shows the tier ...": the rules of the

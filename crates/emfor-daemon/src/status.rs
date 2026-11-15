@@ -626,7 +626,13 @@ fn services_lines(
                         .is_some_and(|p| p.iter().any(|id| id == &b.id));
                     [
                         b.id.clone(),
-                        b.state.as_str().to_owned(),
+                        // A drained backend is stored as unhealthy, for readers
+                        // that do not know `drain`; say what it is.
+                        if b.drain {
+                            "drained".to_owned()
+                        } else {
+                            b.state.as_str().to_owned()
+                        },
                         checked,
                         b.latency_us.map_or_else(|| "-".to_owned(), latency),
                         if in_pool {
@@ -670,7 +676,9 @@ fn services_lines(
                     continue;
                 }
                 let padded = format!("{c:<w$}", w = width[i]);
-                parts.push(if i == 1 {
+                parts.push(if i == 1 && backend.drain {
+                    paint(style, YELLOW, &padded)
+                } else if i == 1 {
                     match backend.state {
                         HealthState::Healthy => padded,
                         // A state from a newer daemon reads as unhealthy.
@@ -706,13 +714,19 @@ fn services_lines(
                 let marker = format!("FLAPPING ({n} changes in 10m)");
                 parts.push(paint(style, YELLOW, &marker));
             }
-            // Healthy, yet its last check failed: usually left out of the
-            // candidates (manual chapter 5); not for any other state.
-            if backend.state == HealthState::Healthy && backend.reason.is_some() {
-                parts.push(paint(style, YELLOW, "last check failed"));
-            }
-            if let Some(r) = &backend.reason {
-                parts.push(r.clone());
+            if backend.drain {
+                // The checks go on; their state is `checked_state`.
+                let checks = backend.checked_state.unwrap_or(HealthState::Unknown);
+                parts.push(format!("(checks: {})", checks.as_str()));
+            } else {
+                // Healthy, yet its last check failed: usually left out of the
+                // candidates (manual chapter 5); not for any other state.
+                if backend.state == HealthState::Healthy && backend.reason.is_some() {
+                    parts.push(paint(style, YELLOW, "last check failed"));
+                }
+                if let Some(r) = &backend.reason {
+                    parts.push(r.clone());
+                }
             }
             let mut row = format!("  {}", parts.join("  ").trim_end());
             if marked.contains(&Row::Backend(svc.name.clone(), backend.id.clone())) {
@@ -2657,6 +2671,39 @@ mod tests {
             b[k] = v.clone();
         }
         b
+    }
+
+    /// Spec status-command "Status shows drained backends": the text names
+    /// the backend drained and gives the state of its checks; the others are
+    /// as before; the JSON carries `drain` and `checked_state` for the
+    /// drained one only.
+    #[test]
+    fn drained_marker() {
+        let plain = backend_with("10.0.1.5:5432", "healthy", None, json!({}));
+        let drained = backend_with(
+            "10.0.1.6:5432",
+            "unhealthy",
+            Some("drained"),
+            json!({"drain": true, "checked_state": "healthy"}),
+        );
+        let snap = snap(
+            Some(400),
+            vec![service("db.svc.emfor", false, vec![plain, drained])],
+        );
+        let lines = render(&snap);
+        let line = |id: &str| lines.iter().find(|l| l.contains(id)).unwrap().clone();
+        assert!(line("10.0.1.6:5432").contains("drained"), "{lines:?}");
+        assert!(
+            line("10.0.1.6:5432").contains("(checks: healthy)"),
+            "{lines:?}"
+        );
+        assert!(!line("10.0.1.6:5432").contains("unhealthy"), "{lines:?}");
+        assert!(!line("10.0.1.5:5432").contains("drained"), "{lines:?}");
+        let v = json(&snap, Path::new("/x"), NOW);
+        let bes = &v["services"][0]["backends"];
+        assert_eq!(bes[1]["drain"], true);
+        assert_eq!(bes[1]["checked_state"], "healthy");
+        assert!(bes[0].get("drain").is_none() && bes[0].get("checked_state").is_none());
     }
 
     /// Spec "Status text output", scenario "Backup backend".

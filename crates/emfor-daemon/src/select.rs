@@ -283,6 +283,8 @@ mod tests {
                     reason: None,
                     latency_us: None,
                     backup: false,
+                    drain: false,
+                    checked_state: None,
                     recovered_at: None,
                 })
                 .collect(),
@@ -311,6 +313,102 @@ mod tests {
             .expect("the backend is in the record");
         b.backup = true;
         r
+    }
+
+    /// `r` with backend `ip` drained.
+    fn drained(mut r: ServiceRecord, ip: &str) -> ServiceRecord {
+        let b = r
+            .backends
+            .iter_mut()
+            .find(|b| b.ip == ip)
+            .expect("the backend is in the record");
+        b.drain = true;
+        r.refresh_all_down();
+        r
+    }
+
+    /// Spec backend-selection "Drained backends are never selected": for
+    /// every balance method, the choice, the candidates and the SRV targets
+    /// leave the drained backend out, also when it is the only healthy one
+    /// or when everything else is down and the service is open; and when
+    /// every backend is drained nothing is chosen, `open` included.
+    #[test]
+    fn drained_backend_is_never_chosen() {
+        use OnAllDown::{Closed, Open};
+        for balance in [
+            Balance::RoundRobin,
+            Balance::Sticky,
+            Balance::Failover,
+            Balance::Weighted,
+            Balance::Locality,
+            Balance::Fastest,
+        ] {
+            for oad in [Open, Closed] {
+                let r = drained(
+                    rec(
+                        &[("10.0.0.1", Healthy), ("10.0.0.2", Healthy)],
+                        oad,
+                        balance,
+                    ),
+                    "10.0.0.1",
+                );
+                assert_eq!(
+                    candidates(&r, Family::V4),
+                    Ok(ips(&["10.0.0.2"])),
+                    "{balance:?}"
+                );
+                let choice = FamilyChoice::default();
+                for _ in 0..20 {
+                    assert_eq!(
+                        select(&r, Family::V4, &choice, None),
+                        Selection::Chosen("10.0.0.2".parse().unwrap()),
+                        "{balance:?} {oad:?}"
+                    );
+                }
+                let rotation = AtomicU64::new(0);
+                let targets = srv_targets_at(&r, &rotation, None, 0).unwrap();
+                assert!(
+                    targets
+                        .iter()
+                        .all(|t| t.ip != "10.0.0.1".parse::<IpAddr>().unwrap())
+                );
+                // The other backend down, the service open: still not the drained one.
+                let r = drained(
+                    rec(
+                        &[("10.0.0.1", Healthy), ("10.0.0.2", Unhealthy)],
+                        oad,
+                        balance,
+                    ),
+                    "10.0.0.1",
+                );
+                match oad {
+                    Closed => assert_eq!(candidates(&r, Family::V4), Err(Selection::AllDown)),
+                    _ => assert_eq!(candidates(&r, Family::V4), Ok(ips(&["10.0.0.2"]))),
+                }
+                // Everything drained.
+                let r = drained(
+                    drained(
+                        rec(
+                            &[("10.0.0.1", Healthy), ("10.0.0.2", Healthy)],
+                            oad,
+                            balance,
+                        ),
+                        "10.0.0.1",
+                    ),
+                    "10.0.0.2",
+                );
+                assert_eq!(
+                    candidates(&r, Family::V4),
+                    Err(Selection::AllDown),
+                    "{balance:?} {oad:?}"
+                );
+                assert_eq!(
+                    select(&r, Family::V4, &FamilyChoice::default(), None),
+                    Selection::AllDown
+                );
+                assert!(srv_targets_at(&r, &AtomicU64::new(0), None, 0).is_err());
+            }
+        }
     }
 
     fn ips(list: &[&str]) -> Vec<IpAddr> {
@@ -838,6 +936,8 @@ mod tests {
                 reason: None,
                 latency_us: None,
                 backup: false,
+                drain: false,
+                checked_state: None,
                 recovered_at: None,
             })
             .collect();

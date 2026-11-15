@@ -185,7 +185,7 @@ path = "/healthz"
 | 最少連線、連線數限制、排隊 | 沒有。emfor 不在資料路徑上，看不到連線。這部分請保留 HAProxy。 |
 | proxy 的重試與逾時 | 由應用程式重試。client 每次查詢回傳一個位址，所以在下一次檢查執行之前，重試可能拿到同一個 backend。 |
 | 被動健康檢查（`observe layer7`） | 沒有：只有主動檢查。失敗的 backend 由下一次檢查發現；在[聯防群組](03-configuration.md#peers)裡，其中一台看到失敗後，各主機每 200ms 會重新檢查。 |
-| 為了維護把 backend 拿下來（`disabled`、weight 0、`maint`） | 目前沒有：從清單移除再 reload。重新加回的 backend 會從 `unknown` 開始。 |
+| 為了維護把 backend 拿下來（`disabled`、`maint`、`drain`） | 在 backend 上寫 `drain = true` 再 reload（[第 5 章](05-backend-selection.md#drain-一個-backend)）：它不會被選到，檢查照跑。沒有 `weight 0`，也沒有執行期的指令（`set server ... state drain`）：只能改設定檔。 |
 | 依 URL、header 或 cookie 路由，TLS 終結 | 沒有。 |
 | Consul 的註冊、tag 與 key-value store | 沒有。backend 清單就是設定。 |
 | 多個設定檔 | 目前只有一個檔案。 |

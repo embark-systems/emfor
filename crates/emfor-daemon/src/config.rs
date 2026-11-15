@@ -345,6 +345,8 @@ pub struct Backend {
     pub site: Option<String>,
     /// `backup = true`: used only while no primary backend passes.
     pub backup: bool,
+    /// `drain = true`: never chosen, but still checked.
+    pub drain: bool,
 }
 
 impl Backend {
@@ -356,6 +358,7 @@ impl Backend {
             weight: 1,
             site: None,
             backup: false,
+            drain: false,
         }
     }
 }
@@ -1804,7 +1807,7 @@ impl Validator {
             Some(_) => {
                 self.err(
                     &bpath,
-                    "must be an array of \"ip:port\" strings or { addr, weight, site, backup } tables",
+                    "must be an array of \"ip:port\" strings or { addr, weight, site, backup, drain } tables",
                 );
                 return None;
             }
@@ -1814,10 +1817,18 @@ impl Validator {
         let mut seen = HashSet::new();
         for (i, item) in items.iter().enumerate() {
             let ipath = format!("{bpath}[{i}]");
-            let (s, weight, site, backup) = match item {
-                toml::Value::String(s) => (s.as_str(), 1, None, false),
+            let (s, weight, site, backup, drain) = match item {
+                toml::Value::String(s) => (s.as_str(), 1, None, false, false),
                 toml::Value::Table(bt) => {
-                    self.unknown_keys(bt, &ipath, &["addr", "weight", "site", "backup"]);
+                    self.unknown_keys(bt, &ipath, &["addr", "weight", "site", "backup", "drain"]);
+                    let drain = match bt.get("drain") {
+                        None => false,
+                        Some(toml::Value::Boolean(b)) => *b,
+                        Some(_) => {
+                            self.err(key_path(&ipath, "drain"), "drain must be true or false");
+                            false
+                        }
+                    };
                     let backup = match bt.get("backup") {
                         None => false,
                         Some(toml::Value::Boolean(b)) => *b,
@@ -1836,7 +1847,7 @@ impl Validator {
                     };
                     let site = self.site(bt, &ipath);
                     match bt.get("addr") {
-                        Some(toml::Value::String(a)) => (a.as_str(), weight, site, backup),
+                        Some(toml::Value::String(a)) => (a.as_str(), weight, site, backup, drain),
                         Some(_) => {
                             self.err(key_path(&ipath, "addr"), "must be a string");
                             continue;
@@ -1861,6 +1872,7 @@ impl Validator {
                             weight,
                             site,
                             backup,
+                            drain,
                             ..Backend::new(addr)
                         });
                     }
@@ -2389,6 +2401,58 @@ backends = ["10.0.0.1:80"]
         assert_eq!(e.len(), 1, "{e:?}");
         assert_eq!(e[0].path, r#"services."api.svc.emfor".backends"#);
         assert_eq!(e[0].message, "at least one backend must not be a backup");
+    }
+
+    /// Spec service-config "Draining a backend": `drain` is a boolean that
+    /// defaults to false, a service of only drained backends is valid, and
+    /// a wrong type is an error at the key.
+    #[test]
+    fn drain_backends() {
+        let svc = |backends: &str| {
+            format!("[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = {backends}\n")
+        };
+        let c = parse_ok(&svc(
+            r#"["10.0.0.10:8080", { addr = "10.0.0.11:8080", drain = true }]"#,
+        ));
+        let b = &c.services[0].backends;
+        assert!(!b[0].drain);
+        assert!(b[1].drain);
+        for (value, drain) in [
+            ("", false),
+            (", drain = false", false),
+            (", drain = true", true),
+        ] {
+            let c = parse_ok(&svc(&format!(
+                r#"["10.0.0.1:80", {{ addr = "10.0.1.1:80"{value} }}]"#
+            )));
+            assert_eq!(c.services[0].backends[1].drain, drain, "{value:?}");
+        }
+        let e = parse_err(&svc(
+            r#"["10.0.0.1:80", { addr = "10.0.1.1:80", drain = "yes" }]"#,
+        ));
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(e[0].path, r#"services."api.svc.emfor".backends[1].drain"#);
+        assert_eq!(e[0].message, "drain must be true or false");
+        // Every backend drained is a valid service.
+        let c = parse_ok(&svc(
+            r#"[{ addr = "10.0.0.1:80", drain = true }, { addr = "10.0.0.2:80", drain = true }]"#,
+        ));
+        assert!(c.services[0].backends.iter().all(|b| b.drain));
+    }
+
+    /// Spec service-config "Draining a backend": drain is not part of the
+    /// service definition digest, and does not restart the check.
+    #[test]
+    fn drain_does_not_change_digest_or_check() {
+        let svc = |d: &str| {
+            format!(
+                "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [{{ addr = \"10.0.0.1:80\"{d} }}]\n"
+            )
+        };
+        let a = parse_ok(&svc(""));
+        let b = parse_ok(&svc(", drain = true"));
+        assert_eq!(a.services[0].digest, b.services[0].digest);
+        assert!(!a.services[0].check_changed(&b.services[0]));
     }
 
     /// Spec "Slow start setting", scenario "Default and override" and
