@@ -24,6 +24,11 @@ pub struct Client {
     /// (write lock) closes the old environment only when none uses it, and
     /// before it opens the new one: LMDB must not have two environments on
     /// one lock file in a process.
+    ///
+    /// Every call into LMDB (open, read transaction, map size, close) runs
+    /// under this lock, which is what lets `fork::prepare` keep every thread
+    /// out of LMDB by taking it for writing. A new call into LMDB must stay
+    /// under it.
     env: RwLock<Option<Env>>,
     /// Read-locked on each round-robin lookup; written only the first time
     /// a service is looked up.
@@ -83,9 +88,17 @@ impl Client {
         Client::new(path, max)
     }
 
+    /// The write lock of the store, for `fork::prepare`: held, no thread is
+    /// inside LMDB.
+    #[cfg_attr(not(any(target_os = "freebsd", feature = "testing")), allow(dead_code))]
+    pub(crate) fn lock_store(&self) -> std::sync::RwLockWriteGuard<'_, Option<Env>> {
+        self.env.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// One read transaction on the store, opening it first if needed.
     fn snapshot(&self, key: &str) -> Result<Snapshot, Error> {
         {
+            let _in_store = crate::fork::InStore::enter();
             let slot = self.env.read().unwrap_or_else(PoisonError::into_inner);
             if let Some(env) = slot.as_ref() {
                 match env.snapshot(key) {
@@ -97,7 +110,10 @@ impl Client {
                 self.check_open_failure()?;
             }
         }
+        // Not while a fork is prepared, and before taking the lock it waits for.
+        crate::fork::wait_while_forking();
         // The write lock waits until no lookup has a read transaction open.
+        let _in_store = crate::fork::InStore::enter();
         let mut slot = self.env.write().unwrap_or_else(PoisonError::into_inner);
         let mut env = match slot.take() {
             Some(env) => env, // another thread opened it meanwhile
@@ -165,16 +181,20 @@ impl Client {
             return false; // another thread checks now
         }
         // Under the read lock, so lookups go on while the file is checked.
-        let replaced = self
-            .env
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .is_some_and(Env::replaced);
+        let replaced = {
+            let _in_store = crate::fork::InStore::enter();
+            self.env
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(Env::replaced)
+        };
         if !replaced {
             return false;
         }
         // The write lock waits until no lookup uses the open store.
+        crate::fork::wait_while_forking();
+        let _in_store = crate::fork::InStore::enter();
         let mut slot = self.env.write().unwrap_or_else(PoisonError::into_inner);
         let Some(old) = slot.as_ref() else {
             return false;

@@ -114,6 +114,8 @@ try {
 - 可以從多個執行緒同時查詢。
 - 每個行程只開啟 store 一次並重複使用。一次查詢只在讀取期間占用一個 LMDB reader slot。store 共有 1024 個 slot，由主機上所有行程共用；查詢途中被殺掉的行程會留下一個被占用的 slot，直到 daemon 釋放它（大約每分鐘一次）。
 - `fork` 之後，子行程在第一次查詢時重新開啟 store；即使父行程在 fork 前查詢過（php-fpm、prefork 型伺服器），或 fork 的當下父行程有其他執行緒正在查詢，也沒問題。
+- 在 FreeBSD 上，`fork` 會等到行程內沒有查詢還在 store 裡，並擋住新的查詢，直到 fork 在父行程與子行程都回傳；否則在別的執行緒查詢的當下 fork，子行程的第一次查詢可能永遠卡住，因為 FreeBSD 的執行緒函式庫會把它自己的一把鎖在子行程裡留成已鎖住的狀態。等待的時間只有一次讀取那麼長；fork 進行期間，查詢也同樣會等。有執行緒在查詢途中被 `SIGSTOP`，fork 會等到它繼續。FreeBSD 上的 `libemfor` 不能被卸載（`dlclose` 之後它仍然留在記憶體裡），因為它的 fork handler 要到行程結束才會解除註冊；把 `libemfor.a` 靜態連進會被卸載的模組，或在自己的 cdylib 裡依賴 Rust crate，必須自行加 `-Wl,-z,nodelete`。
+- FreeBSD 上這個 guard 沒有涵蓋的情形：在 signal handler 裡 fork，而被中斷的正是同一個執行緒正在進行的查詢（fork 會回傳，但子行程的第一次查詢仍可能卡住，和沒有 guard 時一樣）；以及同一個行程裡其他使用 process-shared mutex 的程式（例如另一個 LMDB environment），它們仍可能讓子行程在自己的查詢裡卡住。不要在 signal handler 裡 fork；其餘的情形函式庫沒有辦法處理。
 - round-robin 計數器是每個行程各自一份。
 
 ## store 檔案被替換或變大時

@@ -118,6 +118,16 @@ The C library, and every client built on it, must come from the same emfor relea
 
 Linux and FreeBSD are the deployment platforms; macOS is for development. On FreeBSD, the tests, the rc.d script and the example port have been run on FreeBSD 15.1-RELEASE (arm64, in a VM); 14.x and amd64 are covered only by the optional CI job.
 
+### FreeBSD: fork while other threads look up
+
+On FreeBSD, a process that forks while another of its threads is inside a lookup can leave the child waiting for ever in its first lookup. The cause is in FreeBSD's threading library (libthr), not in emfor: its `fork` takes the lock of its table of process-shared mutexes (LMDB keeps its reader mutex in the store's lock file) only for reading, so the read hold of a thread that is inside such a mutex at that moment stays in the child, where nothing releases it, and the child's first use of a newly mapped process-shared mutex waits for it. libthr has a second problem next to it: a parent that forks while another thread maps a process-shared mutex for the first time can deadlock. A small C program that does not use LMDB shows both.
+
+- Measured on FreeBSD 15.1-RELEASE-p6 (arm64, in a VM): the fork test of the Rust and the C client failed in every run, a child hanging within the first 50 of 300 forks. Lock state of a hung child: one read hold left, one writer waiting.
+- From libthr's source only (not run): the same code is in FreeBSD 12.4 to 15.1 and in main; main also caches the last lookup per thread, which makes a hang much rarer. 13.x, 14.x, amd64 and main were not tested, and neither was emfor 0.4.0.
+- emfor works around it from the release after 0.4.0: on FreeBSD the client makes `fork` wait until no lookup is inside the store (a `pthread_atfork` handler), and `libemfor` cannot be unloaded there. Lookup throughput measured the same with and without it.
+- Not covered: other users of process-shared mutexes in the same process (another LMDB environment, say), a `fork` from a signal handler that interrupted a lookup of the same thread (it returns, but the child can hang as before), and a `libemfor.a` linked statically into a module that is unloaded (that needs `-Wl,-z,nodelete`). An application that forks children which look up can avoid the problem by forking before it starts the threads that look up, or by calling `exec` in the child.
+- Not reported to FreeBSD yet.
+
 ## Repository layout
 
 | Path | Contents |

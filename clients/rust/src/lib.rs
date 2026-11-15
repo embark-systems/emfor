@@ -21,6 +21,7 @@
 
 mod client;
 mod config;
+mod fork;
 mod select;
 mod store;
 
@@ -105,6 +106,7 @@ static GLOBAL: AtomicPtr<Global> = AtomicPtr::new(ptr::null_mut());
 
 /// The client for this process, created on first use and again after a fork.
 fn global() -> &'static Client {
+    fork::register();
     let pid = std::process::id();
     loop {
         let current = GLOBAL.load(Ordering::Acquire);
@@ -187,6 +189,36 @@ pub mod testing {
             client,
         }));
         crate::GLOBAL.store(g, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The `pthread_atfork` prepare handler, called directly: no lookup of
+    /// the process is inside the store when it returns, and none enters it
+    /// until [`fork_release`] (on the same thread).
+    pub fn fork_prepare() {
+        crate::fork::prepare();
+    }
+
+    /// The parent handler that undoes [`fork_prepare`].
+    pub fn fork_release() {
+        crate::fork::release();
+    }
+
+    /// The child handler that undoes [`fork_prepare`] in a forked child.
+    pub fn fork_release_child() {
+        crate::fork::release_child();
+    }
+
+    /// Set the registration state of the fork handlers as a child of the
+    /// process with pid `pid` inherits it: `phase` 1 is registering, 2
+    /// registered, 0 none.
+    pub fn fork_registration_set(pid: u32, phase: u64) {
+        crate::fork::set_registration(pid, phase);
+    }
+
+    /// Run the registration of the fork handlers with `register` in place of
+    /// `pthread_atfork`; it returns whether it registered.
+    pub fn fork_register(register: impl FnOnce() -> bool) {
+        crate::fork::register_with(register);
     }
 
     /// Rendezvous hash version 1 of `key` and backend `id`.

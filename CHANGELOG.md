@@ -277,7 +277,19 @@
   the old size. Before, every lookup failed with `UNAVAILABLE`
   (`MDB_MAP_RESIZED`) until the application restarted.
 - A child forked while other threads of the parent were looking up no
-  longer hangs in its first lookup.
+  longer hangs in its first lookup. On FreeBSD this did not hold at
+  first: a child waited for ever, within the first few dozen forks of
+  the fork test (measured on FreeBSD 15.1-RELEASE, arm64), on a lock of
+  the threading library that a thread of the parent held inside LMDB at
+  the fork. On FreeBSD the client now makes `fork` wait until no lookup
+  is inside the store (`pthread_atfork` handlers, registered on FreeBSD
+  only), and `libemfor` can no longer be unloaded there, since the
+  handlers stay registered. Lookup throughput did not change (measured
+  with 1, 4 and 8 threads). The lock file and the daemon are the same.
+  Not guarded: a `fork` from a signal handler that interrupted a lookup
+  of the same thread (it returns, but the child can still hang), and other
+  users of process-shared mutexes in the same process (see
+  [Threads, processes and fork](docs/manual/06-clients.md#threads-processes-and-fork)).
 - A store file that exists but cannot be opened is tried again at most
   once a second; lookups in between fail with the same `UNAVAILABLE`
   error. A missing store is still tried on every lookup.

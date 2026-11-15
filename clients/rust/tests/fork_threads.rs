@@ -22,7 +22,10 @@ fn child_of_a_busy_parent_looks_up() {
     assert!(support::API.contains(&lookup("api.svc.emfor", None).unwrap().as_str()));
 
     let stop = Arc::new(AtomicBool::new(false));
-    let threads: Vec<_> = (0..4)
+    // At least 4 lookup threads, and as many as the machine has cores: with
+    // fewer than cores, a hang that needs threads to run at once may not show.
+    let lookups = std::thread::available_parallelism().map_or(4, |n| n.get().max(4));
+    let threads: Vec<_> = (0..lookups)
         .map(|_| {
             let stop = stop.clone();
             std::thread::spawn(move || {

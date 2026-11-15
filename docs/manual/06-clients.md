@@ -137,6 +137,23 @@ Each client's README covers installing it and its exact API:
   works also when the parent looked up before forking (php-fpm, preforking
   servers), and when other threads of the parent were looking up at the
   moment of the fork.
+- On FreeBSD, `fork` waits until no lookup of the process is inside the
+  store, and keeps new lookups out until it has returned in the parent and
+  in the child; without that, a child forked while another thread looked
+  up could wait for ever in its first lookup, on a lock that FreeBSD's
+  threading library leaves held in the child. The wait is as long as one
+  read, and lookups wait the same way while a fork runs. A thread stopped
+  (`SIGSTOP`) inside a lookup holds the fork up until it continues.
+  `libemfor` cannot be unloaded on FreeBSD (`dlclose` leaves it mapped),
+  because its fork handlers stay registered until the process ends; link
+  `libemfor.a` statically into a module that is unloaded, or depend on the
+  Rust crate from your own cdylib, only with `-Wl,-z,nodelete`.
+- What the guard does not cover on FreeBSD: a `fork` from a signal handler
+  that interrupted a lookup of the same thread (it returns, but the child
+  can hang in its first lookup, as without the guard), and other users of
+  process-shared mutexes in the same process (another LMDB environment,
+  say), which can still leave a child waiting in its own lookup. Do not
+  fork from signal handlers; the library cannot fix the rest.
 - Round-robin counters are per process.
 
 ## When the store file is replaced or grows

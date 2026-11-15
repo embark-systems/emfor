@@ -9,7 +9,7 @@ BUILD   := $(CLIENTS_BUILD)/c
 STORE   := $(BUILD)/state.mdb
 CFLAGS  ?= -O2
 CFLAGS  += -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror
-TESTS   := test_lookup test_fork test_threads
+TESTS   := test_lookup test_fork test_threads test_fork_threads
 RUN     := EMFOR_STORE=$(STORE) EMFOR_MAX_STALENESS=60s
 
 .PHONY: all test clean FORCE
