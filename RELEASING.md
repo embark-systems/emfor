@@ -100,6 +100,7 @@ needs `cargo-fuzz` and a nightly toolchain (`cargo install cargo-fuzz`,
 
 ```sh
 cd fuzz
+mkdir -p corpus/plugins corpus/peers corpus/dns   # the first run of a target needs its directory
 cargo +nightly fuzz run -O plugins corpus/plugins seeds/plugins -- -len_control=0 -max_total_time=600
 cargo +nightly fuzz run -O peers corpus/peers seeds/peers -- -max_total_time=600
 cargo +nightly fuzz run -O dns corpus/dns seeds/dns -- -max_total_time=600

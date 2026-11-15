@@ -1,6 +1,36 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-11-15
+
+**Stricter validation: a config that 0.4.0 accepted can now be refused.**
+`emfor check-config`, and so a start or a reload, now refuses options that
+could never work and that 0.4.0 let through, to fail later: an `interval`
+above `24h`, a `timeout` below `10ms`, an http `path` with `#` or `\`, an
+exec or plugin `command` with a NUL, a user or password with a NUL where
+the protocol cannot carry one (mysql, pgsql, amqp), an amqp password too
+long for AMQP's first frame, a diameter list too long for one message, a
+`ca_file` with no usable CA, and more (see Daemon and emfor-check). Run
+`emfor check-config` with the new binary before you upgrade a host.
+
+**Peer messages have a second encrypted format, `EMP3`**
+(XChaCha20-Poly1305, which has no practical limit on the number of
+messages per secret). Each member is sent the format it understands, so a group of
+0.4.0 and 0.5.0 members works in any upgrade order without a
+configuration change (see Daemon).
+
+The store format (`meta/schema_version` 2) and the plugin protocol (1) are
+unchanged. As with every release, install `libemfor` from the same release
+as the daemon; its files are now `libemfor.so.0.5` and
+`libemfor.0.5.dylib`.
+
+The main additions are `EMP3`, `[peers] accept_plaintext` and
+`previous_secret_file`, a DNS server that limits UDP responses per client
+network and keeps answering while a commit is slow, plugins that are
+restarted when they stop answering, and clients that no longer end the
+application with `SIGBUS` on a truncated store or hang a forked child on
+FreeBSD. The rest are fixes, most of them in `emfor-check` and the DNS
+server.
+
 
 ### Daemon
 
@@ -297,8 +327,8 @@
   error. A missing store is still tried on every lookup.
 - `emfor.h` no longer defines the internal macros `REPLACE_CHECK_MS` and
   `MAX_STICKY_WEIGHT`.
-- Python: the library file named for this release (`libemfor.so.0.4`,
-  `libemfor.0.4.dylib`) is tried before what `ctypes.util.find_library`
+- Python: the library file named for this release (`libemfor.so.0.5`,
+  `libemfor.0.5.dylib`) is tried before what `ctypes.util.find_library`
   finds, which may be another release's.
 - C API: `emfor_lookup` called from a thread-local destructor during
   thread exit returns a status instead of aborting the process.
@@ -330,6 +360,35 @@
 - `peers.rs` is split into a `peers/` module (wire, crypto, stats,
   group, targets, task); the peer group's live members have one owner,
   and service digest lookups go through one function.
+
+### Known limits
+
+- FreeBSD has been tested on 15.1-RELEASE (arm64, in a VM): the tests,
+  the rc.d script, the port with `make stage check-plist install`, and
+  the fork tests. Not tested: poudriere, 13.x, 14.x, amd64 (the optional
+  CI job covers 14.3 on amd64, and had not been run for this release).
+- FreeBSD's threading library can hang a child forked while other threads
+  use a process-shared mutex (LMDB's reader mutex is one), and can
+  deadlock such a parent. `libemfor` works around it for its own lookups
+  (see Clients; 0.4.0 has the problem). Not covered: other users of
+  process-shared mutexes in the same process, a `fork` from a signal
+  handler that interrupted a lookup of the same thread, and a
+  `libemfor.a` linked statically into a module that is unloaded. A patch
+  for libthr, tested on 15.1-RELEASE only, is in
+  [docs/freebsd/](docs/freebsd/libthr-pshared-fork.md).
+- Peer messages have no forward secrecy: whoever later gets
+  `secret_file` can read recorded messages. Rotate the secret regularly.
+- The `ldap` plugin has been checked against Active Directory only
+  without a certificate and without a successful login.
+- Unchanged from 0.1.0: lookup throughput across threads levels off at
+  about two million a second on Linux
+  ([docs/performance.md](docs/performance.md)).
+- Unchanged from 0.2.0: with `[store] sync = false` (the default), a host
+  crash can leave the store damaged; the daemon then sets it aside at the
+  next start and the state history is lost.
+- Unchanged from 0.3.0: a host announces at most 80 services left out of
+  the peer group; the other members still count it as a candidate for
+  the rest.
 
 ## 0.4.0 — 2026-11-14
 
