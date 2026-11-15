@@ -134,7 +134,7 @@ MariaDB Galera, multi-source replication (only the default connection is read), 
 
 If the file cannot be read during a check, the check is `error`, which does not count against the backend.
 
-A `user` (and for `pgsql` a `database`) with a NUL character is refused by `emfor check-config`: the protocols end those strings at NUL. For `pgsql` the password must not contain NUL either (PostgreSQL cannot store one, and the driver refuses to send it), nor for `amqp`, since the PLAIN login separates the fields with it. The password file is read again at every check: a file that gained a NUL since is `error` with `password_file: password must not contain NUL`.
+A `user` (and for `pgsql` a `database`) with a NUL character is refused by `emfor check-config`: the protocols end those strings at NUL. For `pgsql` the password must not contain NUL either (PostgreSQL cannot store one, and the driver refuses to send it), nor for `amqp`, since the PLAIN login separates the fields with it. The password file is read again at every check: a file that gained a NUL since is `error` with `password_file: password must not contain NUL`. A `mysql` password may contain NUL, but one does not always log in: MySQL's default `caching_sha2_password` without TLS sends it whole only once the server has cached it, so after a server restart or `FLUSH PRIVILEGES` such a check is down with `auth: ERROR 1045 (28000): Access denied …` until a TLS login caches it again. Set `tls = true` for an account whose password contains NUL; `mysql_native_password` and MariaDB are not affected (tested against MySQL 8.4 and MariaDB 11.4).
 
 ### TLS
 

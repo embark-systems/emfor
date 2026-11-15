@@ -223,7 +223,9 @@
 - mysql and pgsql `user` and pgsql `database` and password must not
   contain NUL. The amqp `user` and password must not contain NUL (PLAIN
   separates them with NUL). A pgsql password file that gained a NUL
-  after validation is `error` at the check instead of `down`.
+  after validation is `error` at the check instead of `down`. A mysql
+  password may still contain NUL; the plugin documentation says when
+  one fails to log in (`caching_sha2_password` without TLS).
 - amqp: a password too long for the login to fit in AMQP's 4096-byte
   first frame is refused at validation, and is `error` at a check when
   the file grew since. Before, every check sent a frame the
