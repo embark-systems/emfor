@@ -66,17 +66,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config golang-go python3 libperl-dev php-dev php-cli php-dba
-      # cargo-c takes minutes to build from source, so its binaries are kept
-      # here under its version. To upgrade it, change the version in both
-      # places below.
-      - name: Cache cargo-c
-        id: cargo-c
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/cargo-c*
-          key: cargo-c-0.10.26-${{ runner.os }}-${{ runner.arch }}
+      # Pinned, so that a new cargo-c release does not change the job. The
+      # binaries come back with rust-cache (it keeps ~/.cargo/bin), so only
+      # the first run, or one after the version changes, builds it.
       - name: Install cargo-c
-        if: steps.cargo-c.outputs.cache-hit != 'true'
         run: cargo install cargo-c --locked --version 0.10.26
       - run: make -C clients test
         env:
