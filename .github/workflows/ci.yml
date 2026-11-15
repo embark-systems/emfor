@@ -1,8 +1,11 @@
 name: CI
 
-# Disabled for now: runs only when started by hand from the Actions tab
-# (or `gh workflow run CI`). Restore push / pull_request to turn it back on.
+# Runs on every push to main and on every pull request; it can also be
+# started by hand from the Actions tab (or `gh workflow run CI`).
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 env:
