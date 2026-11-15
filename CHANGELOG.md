@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+**`emfor status` shows more of what decides a lookup.** The text output
+(which is not a stable interface; `--json` and the exit status are
+unchanged) has three additions:
+
+- A backup backend is marked `backup`.
+- A backend that is still `healthy` but whose last check failed is marked
+  `last check failed`, before its reason. Lookups usually skip such a
+  backend (not when every healthy backend is failing), so a `healthy` row
+  with a reason no longer reads as "healthy and in use".
+- When this host and the live members that have not left a service out
+  number fewer than three, the group cannot vote, and every reason is this
+  host's own. The `peers:` line then ends with `too few live members to
+  vote` (only when this holds for every shown service that takes part in
+  the group; `assigned_checkers` in `--json` has the per-backend answer).
+
+The manual and `docs/deploy/daemon.md` now list every marker of a backend
+row (`local-up` and `voted` were missing from the lists) and the `peers`
+and `assigned_checkers` fields of `emfor status --json`, and say that the
+age of a `voted` backend is the time its result was applied, not the time
+this host last connected to it.
+
 ## 0.5.0 — 2026-11-15
 
 **Stricter validation: a config that 0.4.0 accepted can now be refused.**

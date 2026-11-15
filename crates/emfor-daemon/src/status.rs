@@ -464,6 +464,30 @@ fn is_voted(me: std::net::SocketAddr, checkers: &[std::net::SocketAddr]) -> bool
     !checkers.is_empty() && !checkers.contains(&me)
 }
 
+/// Whether the group cannot vote (spec "Status text output"): some shown
+/// backend belongs to a service this host does not leave out of the group,
+/// and none of those backends has assigned checkers, because this host and
+/// the live members that do not leave the service out number fewer than
+/// three.
+fn cannot_vote(state: &PeerState, snap: &Snapshot, map: &Checkers) -> bool {
+    let mut any = false;
+    for svc in &snap.services {
+        if state.services_off.contains(&svc.name) {
+            continue;
+        }
+        for b in &svc.backends {
+            any = true;
+            if map
+                .get(&(svc.name.clone(), b.id.clone()))
+                .is_some_and(|c| !c.is_empty())
+            {
+                return false;
+            }
+        }
+    }
+    any
+}
+
 /// The `peers:` lines (spec "Status text output"); `checkers` is
 /// [`assigned_checkers`] of `state`.
 fn peer_lines(
@@ -491,6 +515,8 @@ fn peer_lines(
                 map.len() - voted,
                 map.len()
             );
+        } else if cannot_vote(state, snap, map) {
+            line.push_str(", too few live members to vote");
         }
     }
     let mut lines = vec![line];
@@ -657,6 +683,9 @@ fn services_lines(
                     padded
                 });
             }
+            if backend.backup {
+                parts.push("backup".to_owned());
+            }
             if peers.as_ref().is_some_and(|p| {
                 p.disagreements
                     .iter()
@@ -676,6 +705,11 @@ fn services_lines(
             {
                 let marker = format!("FLAPPING ({n} changes in 10m)");
                 parts.push(paint(style, YELLOW, &marker));
+            }
+            // Healthy, yet its last check failed: usually left out of the
+            // candidates (manual chapter 5); not for any other state.
+            if backend.state == HealthState::Healthy && backend.reason.is_some() {
+                parts.push(paint(style, YELLOW, "last check failed"));
             }
             if let Some(r) = &backend.reason {
                 parts.push(r.clone());
@@ -1643,7 +1677,21 @@ mod tests {
         let value = r#"{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true,"services_off":["db.svc.emfor","api.svc.emfor"]},{"addr":"10.0.0.7:5302","live":true,"services_off":[]},{"addr":"10.0.0.8:5302","live":true,"services_off":["api.svc.emfor"]}],"digest_mismatch":[{"service":"api.svc.emfor","member":"10.0.0.7:5302"}],"disagreements":[]}"#;
         let mut s = snap(
             Some(400),
-            vec![api(), service("db.svc.emfor", false, vec![])],
+            vec![
+                api(),
+                // With a backend, so that the group can vote for this service.
+                service(
+                    "db.svc.emfor",
+                    false,
+                    vec![backend(
+                        "10.0.1.5:5432",
+                        "healthy",
+                        Some(800),
+                        Some(1200),
+                        None,
+                    )],
+                ),
+            ],
         );
         s.peers = peers_value(Some(value));
         assert_eq!(
@@ -1724,7 +1772,9 @@ mod tests {
             (
                 Some(&none_live),
                 Some(400),
-                Some("peers: 0/2 live, not live 10.0.0.6:5302 10.0.0.7:5302"),
+                Some(
+                    "peers: 0/2 live, not live 10.0.0.6:5302 10.0.0.7:5302, too few live members to vote",
+                ),
             ),
             (None, Some(400), None),
             (Some("not json"), Some(400), None),
@@ -1799,7 +1849,7 @@ mod tests {
                 peers_at(me, [true, false, false, false]),
                 false,
                 false,
-                "not live 10.0.0.7:5302 10.0.0.8:5302 10.0.0.9:5302",
+                "not live 10.0.0.7:5302 10.0.0.8:5302 10.0.0.9:5302, too few live members to vote",
             ),
             (peers_at("bad", [true; 4]), false, false, "4/4 live"),
         ];
@@ -1906,7 +1956,12 @@ mod tests {
             (&[], false, true, "live, checks 1/2 backends here"),
             (&[9], false, true, "live, checks 1/2 backends here"),
             (&[6, 9], false, false, "4/4 live"),
-            (&[6, 7, 9], false, false, "4/4 live"),
+            (
+                &[6, 7, 9],
+                false,
+                false,
+                "4/4 live, too few live members to vote",
+            ),
         ];
         for (off, voted11, voted12, end) in rows {
             let mut s = snap(Some(400), vec![api()]);
@@ -2588,5 +2643,268 @@ mod tests {
         std::fs::remove_file(&cfg.path).unwrap();
         let f = frame();
         assert!(f.contains("error: cannot open store"), "{f}");
+    }
+
+    /// A store record of `id` with extra JSON fields merged in.
+    fn backend_with(
+        id: &str,
+        state: &str,
+        reason: Option<&str>,
+        extra: serde_json::Value,
+    ) -> serde_json::Value {
+        let mut b = backend(id, state, Some(800), Some(1200), reason);
+        for (k, v) in extra.as_object().unwrap() {
+            b[k] = v.clone();
+        }
+        b
+    }
+
+    /// Spec "Status text output", scenario "Backup backend".
+    #[test]
+    fn backup_marker() {
+        let primary = backend_with("10.0.1.5:5432", "healthy", None, json!({"backup": false}));
+        let backup = backend_with("10.1.1.5:5432", "healthy", None, json!({"backup": true}));
+        // A version 1 store has no `backup` field.
+        let old = backend("10.0.1.6:5432", "healthy", Some(800), Some(1200), None);
+        let s = snap(
+            Some(400),
+            vec![service("db.svc.emfor", false, vec![primary, backup, old])],
+        );
+        let lines = render(&s);
+        let line = |id| lines.iter().find(|l| l.contains(id)).unwrap();
+        assert!(line("10.1.1.5:5432").contains("backup"), "{lines:?}");
+        assert!(!line("10.0.1.5:5432").contains("backup"), "{lines:?}");
+        assert!(!line("10.0.1.6:5432").contains("backup"), "{lines:?}");
+        // After `pool` and before `local-up`.
+        let mut p = snap(
+            Some(400),
+            vec![service(
+                "db.svc.emfor",
+                false,
+                vec![backend_with(
+                    "10.1.1.5:5432",
+                    "healthy",
+                    None,
+                    json!({"backup": true}),
+                )],
+            )],
+        );
+        p.peers = peers_value(Some(
+            r#"{"listen":"10.0.0.5:5302","members":[],"digest_mismatch":[],"disagreements":[{"service":"db.svc.emfor","backend":"10.1.1.5:5432","down":2,"fresh":3}]}"#,
+        ));
+        let row = render(&p)
+            .into_iter()
+            .find(|l| l.contains("10.1.1.5"))
+            .unwrap();
+        let (b, l) = (row.find("backup").unwrap(), row.find("local-up").unwrap());
+        assert!(b < l, "{row}");
+        // After `pool`.
+        let mut svc = service(
+            "db.svc.emfor",
+            false,
+            vec![backend_with(
+                "10.1.1.5:5432",
+                "healthy",
+                None,
+                json!({"backup": true}),
+            )],
+        );
+        svc.balance = emfor_format::Balance::Fastest;
+        svc.pool = Some(vec!["10.1.1.5:5432".into()]);
+        let row = render(&snap(Some(400), vec![svc]))
+            .into_iter()
+            .find(|l| l.contains("10.1.1.5"))
+            .unwrap();
+        assert!(row.ends_with("1.2ms  pool  backup"), "{row}");
+    }
+
+    /// Spec "Status text output", scenario "Healthy backend whose last
+    /// check failed" and its example.
+    #[test]
+    fn last_check_failed_table() {
+        let refused = Some("connect: Connection refused");
+        let rows = [
+            ("healthy", None, false),
+            ("healthy", refused, true),
+            ("unhealthy", refused, false),
+            ("unknown", refused, false),
+            ("rising", refused, false),
+        ];
+        for (state, reason, marked) in rows {
+            let b = backend("10.0.0.11:8080", state, Some(800), Some(1200), reason);
+            let s = snap(Some(400), vec![service("api.svc.emfor", false, vec![b])]);
+            let row = render(&s)
+                .into_iter()
+                .find(|l| l.contains("10.0.0.11"))
+                .unwrap();
+            assert_eq!(
+                row.contains("last check failed"),
+                marked,
+                "{state} {reason:?}"
+            );
+            if marked {
+                // Before the reason, and no escape sequences without color.
+                assert!(
+                    row.find("last check failed").unwrap() < row.find("connect:").unwrap(),
+                    "{row}"
+                );
+                assert!(!row.contains('\u{1b}'), "{row:?}");
+            }
+        }
+    }
+
+    /// `meta/peers` at 10.0.0.5:5302 with the given members (address,
+    /// live, services_off), and `services_off` of its own.
+    fn group(members: &[(&str, bool, &[&str])], own_off: &[&str]) -> String {
+        let ms: Vec<String> = members
+            .iter()
+            .map(|(a, l, off)| {
+                format!(
+                    r#"{{"addr":"{a}","live":{l},"services_off":{}}}"#,
+                    serde_json::to_string(off).unwrap()
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"listen":"10.0.0.5:5302","members":[{}],"digest_mismatch":[],"disagreements":[],"services_off":{}}}"#,
+            ms.join(","),
+            serde_json::to_string(own_off).unwrap()
+        )
+    }
+
+    fn peers_first_line(s: &Snapshot) -> String {
+        render(s)
+            .into_iter()
+            .find(|l| l.starts_with("peers:"))
+            .unwrap()
+    }
+
+    /// Spec "Status text output", scenarios "Group that cannot vote",
+    /// "Group with exactly three candidates can vote", "Service left out of
+    /// the group does not make the group unable to vote" and "Group that
+    /// can vote for some services only".
+    #[test]
+    fn too_few_live_members_to_vote() {
+        let with = |v: &str| {
+            let mut s = snap(Some(400), vec![api()]);
+            s.peers = peers_value(Some(v));
+            peers_first_line(&s)
+        };
+        // One live member of two: the daemon and one member are two candidates.
+        assert_eq!(
+            with(&group(
+                &[("10.0.0.6:5302", true, &[]), ("10.0.0.7:5302", false, &[])],
+                &[]
+            )),
+            "peers: 1/2 live, not live 10.0.0.7:5302, too few live members to vote"
+        );
+        // Exactly three candidates can vote.
+        assert_eq!(
+            with(&group(
+                &[("10.0.0.6:5302", true, &[]), ("10.0.0.7:5302", true, &[])],
+                &[]
+            )),
+            "peers: 2/2 live"
+        );
+        // A service this host leaves out is not counted.
+        assert_eq!(
+            with(&group(&[("10.0.0.6:5302", false, &[])], &["api.svc.emfor"])),
+            "peers: 0/1 live, not live 10.0.0.6:5302"
+        );
+        // Without a valid listen the checkers cannot be computed.
+        let bad = group(&[("10.0.0.6:5302", false, &[])], &[]).replace("10.0.0.5:5302", "bad");
+        assert_eq!(with(&bad), "peers: 0/1 live, not live 10.0.0.6:5302");
+        // Never together with a `checks` part.
+        let none: &[&str] = &[];
+        let four = group(
+            &[
+                ("10.0.0.6:5302", true, none),
+                ("10.0.0.7:5302", true, none),
+                ("10.0.0.8:5302", true, none),
+                ("10.0.0.9:5302", true, none),
+            ],
+            &[],
+        );
+        assert!(!with(&four).contains("too few"));
+    }
+
+    /// Spec "Status text output", scenario "Group that can vote for some
+    /// services only".
+    #[test]
+    fn group_that_can_vote_for_some_services_only() {
+        let db = service(
+            "db.svc.emfor",
+            false,
+            vec![backend(
+                "10.0.1.5:5432",
+                "healthy",
+                Some(800),
+                Some(1200),
+                None,
+            )],
+        );
+        let mut s = snap(Some(400), vec![api(), db]);
+        let off: &[&str] = &["db.svc.emfor"];
+        s.peers = peers_value(Some(&group(
+            &[
+                ("10.0.0.6:5302", true, off),
+                ("10.0.0.7:5302", true, off),
+                ("10.0.0.8:5302", true, off),
+            ],
+            &[],
+        )));
+        assert!(
+            !peers_first_line(&s).contains("too few"),
+            "{:?}",
+            peers_first_line(&s)
+        );
+        let j = json(&s, Path::new("/s.mdb"), NOW);
+        let ac = j["assigned_checkers"].as_array().unwrap();
+        let db_row = ac.iter().find(|r| r["service"] == "db.svc.emfor").unwrap();
+        assert_eq!(db_row["checkers"], serde_json::json!([]));
+    }
+
+    /// Task "width": a group of ten hosts with 40 backends shows every new
+    /// marker, and every row stays one line.
+    #[test]
+    fn large_group_rows() {
+        let members: Vec<(String, bool, Vec<&str>)> = (6..=14)
+            .map(|i| (format!("10.0.0.{i}:5302"), true, Vec::new()))
+            .collect();
+        let ms: Vec<(&str, bool, &[&str])> = members
+            .iter()
+            .map(|(a, l, o)| (a.as_str(), *l, o.as_slice()))
+            .collect();
+        let mut backends = Vec::new();
+        for i in 1..=40 {
+            let id = format!("10.0.1.{i}:5432");
+            backends.push(match i {
+                // One failing primary and one backup.
+                3 => backend_with(
+                    &id,
+                    "healthy",
+                    Some("connect: Connection refused"),
+                    json!({"backup": false}),
+                ),
+                40 => backend_with(&id, "healthy", None, json!({"backup": true})),
+                _ => backend(&id, "healthy", Some(800), Some(1200), None),
+            });
+        }
+        let mut s = snap(Some(400), vec![service("db.svc.emfor", false, backends)]);
+        s.peers = peers_value(Some(&group(&ms, &[])));
+        let lines = render(&s);
+        // store, daemon, peers, blank, service line, then 40 backends.
+        assert_eq!(lines.len(), 5 + 40, "{lines:?}");
+        assert!(lines.iter().all(|l| !l.contains('\n')));
+        let failing = lines.iter().find(|l| l.contains("10.0.1.3:")).unwrap();
+        assert!(failing.contains("last check failed"), "{failing}");
+        let backup = lines.iter().find(|l| l.contains("10.0.1.40:")).unwrap();
+        assert!(backup.contains("backup"), "{backup}");
+        // Measured on this example: the widest row is 97 columns (a failing,
+        // voted backend with a 27-character reason); the reason is the only
+        // part of a row whose width varies.
+        let widest = lines.iter().map(|l| l.chars().count()).max().unwrap();
+        assert_eq!(widest, 97, "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("voted")));
     }
 }

@@ -47,10 +47,26 @@ it.
   what the daemon wrote last.
 - **service**: `balance`, `on_all_down`, and `ALL DOWN` when no backend is
   healthy.
-- **backend**: state, time since the last check, smoothed latency, `pool`
-  for the fast backends of a `fastest` service, `FLAPPING (<n> changes in
-  10m)` for a backend that changed between healthy and unhealthy 5 or more
-  times in 10 minutes, and the reason of the last failed check.
+- **backend**: state, time since the last check, smoothed latency, then
+  these markers, in this order, when they apply: `pool` for the fast
+  backends of a `fastest` service; `backup` for a backup backend
+  ([chapter 5](05-backend-selection.md#backup-backends)); `local-up` and
+  `voted` in a peer group (see [Peer groups](#peer-groups)); `FLAPPING
+  (<n> changes in 10m)` for a backend that changed between healthy and
+  unhealthy 5 or more times in 10 minutes; `last check failed` for a backend
+  that is still `healthy` but whose last check failed (it turns unhealthy
+  after `fall` failed checks in a row; until then lookups usually skip it,
+  see [a backend whose checks start
+  failing](05-backend-selection.md#a-backend-whose-checks-start-failing),
+  but not when every healthy backend is failing); and the reason of the last
+  failed check. A row with every marker and a short reason is about 100
+  columns wide (97 in a group of ten hosts with 40 backends); `--watch` cuts
+  lines wider than the terminal.
+
+```
+  10.0.1.3:5432   healthy  0.8s ago  1.2ms  voted  last check failed  connect: Connection refused
+  10.0.1.40:5432  healthy  0.8s ago  1.2ms  backup  voted
+```
 
 | Option | Effect |
 | --- | --- |
@@ -140,7 +156,9 @@ peers: check definition of api.svc.emfor differs at 10.0.0.6:5302
 and marks backends with `local-up` when the group votes them down while
 this host's own check passes. Those are worth a look: this host reaches a
 backend the others do not (often a network partition or a firewall rule on
-the other hosts), and `emfor_peer_disagreements` counts them. A "check
+the other hosts), and `emfor_peer_disagreements` counts them. To see which members decide
+a backend, read its `assigned_checkers` in `emfor status --json` (below).
+A "check
 definition differs" line means that member's `check`, `check_options` or
 `timeout` for the service differ from this host's, so its results are not
 counted; make the configs match. The same data is in the store key
@@ -156,6 +174,20 @@ the `peers:` line, listing only the services shown:
 ```
 peers: 10.0.0.6:5302 leaves out api.svc.emfor db.svc.emfor
 ```
+
+When this host and the live members that have not left a service out number
+fewer than three, the group cannot vote for it: no backend of it is voted
+and every reason is this host's own, without a `peers d/f:` prefix. If that
+is so for every shown service that takes part in the group, the `peers:`
+line ends with `too few live members to vote`:
+
+```
+peers: 1/2 live, not live 10.0.0.7:5302, too few live members to vote
+```
+
+If some services can vote and others cannot, the line says nothing; a
+backend with no `checkers` in `assigned_checkers` (below) is decided by
+this host alone.
 
 In a group of four or more, `emfor_peer_checks_skipped_total` grows on
 hosts that are not an assigned checker of some backends: they let the
@@ -187,7 +219,9 @@ decided by votes depends on the votes at that moment.
 `emfor_backend_checks_total` still counts every check time, decided by
 votes or not. A backend's latency is measured only
 by this host's own checks, so on such a host it changes about every third
-`interval`.
+`interval`. The `<age> ago` of a voted backend is the time its result was
+applied, whoever decided it, so it can be recent while this host last
+connected to the backend up to about three `interval`s ago.
 
 ## Logs
 

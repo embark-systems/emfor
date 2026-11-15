@@ -38,7 +38,12 @@ api.svc.emfor  round-robin  on_all_down=open
 
 - **daemon**：heartbeat 不超過 3 秒時為 `running`，超過時為 `stale`（daemon 卡住或已死），正常停止後為 `stopped`。`stale` 或 `stopped` 時，顯示的服務只是 daemon 最後寫入的內容。
 - **服務**：`balance`、`on_all_down`，沒有 backend 健康時顯示 `ALL DOWN`。
-- **backend**：狀態、距上次檢查多久、平滑後的延遲、`fastest` 服務中快的 backend 標示 `pool`、10 分鐘內在 healthy 與 unhealthy 之間變化 5 次以上的 backend 標示 `FLAPPING (<n> changes in 10m)`，以及最近一次失敗檢查的 reason。
+- **backend**：狀態、距上次檢查多久、平滑後的延遲，之後依序是適用的標記：`fastest` 服務中快的 backend 標示 `pool`；備援 backend 標示 `backup`（見[第 5 章](05-backend-selection.md#備援-backend)）；聯防群組裡的 `local-up` 與 `voted`（見[聯防群組](#聯防群組)）；10 分鐘內在 healthy 與 unhealthy 之間變化 5 次以上的 backend 標示 `FLAPPING (<n> changes in 10m)`；仍是 `healthy`、但最近一次檢查失敗的 backend 標示 `last check failed`（連續失敗 `fall` 次才會變成 unhealthy；在那之前，查詢通常會略過它，見[檢查開始失敗的 backend](05-backend-selection.md#檢查開始失敗的-backend)，但所有 healthy backend 都在失敗時例外）；最後是最近一次失敗檢查的 reason。一行同時有所有標記、reason 又短時約 100 欄寬（十台主機、40 個 backend 的群組中量到 97 欄）；`--watch` 會截斷超過終端機寬度的行。
+
+```
+  10.0.1.3:5432   healthy  0.8s ago  1.2ms  voted  last check failed  connect: Connection refused
+  10.0.1.40:5432  healthy  0.8s ago  1.2ms  backup  voted
+```
 
 | 選項 | 效果 |
 | --- | --- |
@@ -96,11 +101,19 @@ peers: 1/2 live, not live 10.0.0.7:5302
 peers: check definition of api.svc.emfor differs at 10.0.0.6:5302
 ```
 
-群組投票判為 down、而本機檢查通過的 backend 會標上 `local-up`。這些值得看一下：這台主機連得到其他主機連不到的 backend（常見原因是網路分割，或其他主機上的防火牆規則），`emfor_peer_disagreements` 會計算它們的數量。「check definition differs」那一行表示該成員這個服務的 `check`、`check_options` 或 `timeout` 和這台主機不同，所以它的結果不計入；請讓設定一致。同樣的資料也在 store 的 `meta/peers` key，以及 `emfor status --json` 的 `peers` 中。其中 `services_off` 列出這台主機不參加群組的服務（`peers = false`）；它們的 backend 不會標 `voted`，也沒有 `assigned_checkers`。`members` 的每一項也有自己的 `services_off`：該成員宣告不參加、而這台主機也有的服務。這台主機挑這些服務的負責主機時不算那個成員，`emfor status` 也照同樣方式排除。文字輸出會在 `peers:` 那一行之後，為每個這樣的成員加一行，只列出目前顯示的服務：
+群組投票判為 down、而本機檢查通過的 backend 會標上 `local-up`。這些值得看一下：這台主機連得到其他主機連不到的 backend（常見原因是網路分割，或其他主機上的防火牆規則），`emfor_peer_disagreements` 會計算它們的數量。要看某個 backend 是由哪幾台決定的，請看 `emfor status --json` 裡它的 `assigned_checkers`（見下）。「check definition differs」那一行表示該成員這個服務的 `check`、`check_options` 或 `timeout` 和這台主機不同，所以它的結果不計入；請讓設定一致。同樣的資料也在 store 的 `meta/peers` key，以及 `emfor status --json` 的 `peers` 中。其中 `services_off` 列出這台主機不參加群組的服務（`peers = false`）；它們的 backend 不會標 `voted`，也沒有 `assigned_checkers`。`members` 的每一項也有自己的 `services_off`：該成員宣告不參加、而這台主機也有的服務。這台主機挑這些服務的負責主機時不算那個成員，`emfor status` 也照同樣方式排除。文字輸出會在 `peers:` 那一行之後，為每個這樣的成員加一行，只列出目前顯示的服務：
 
 ```
 peers: 10.0.0.6:5302 leaves out api.svc.emfor db.svc.emfor
 ```
+
+這台主機加上沒有略過某個服務、且仍 live 的成員不到三台時，群組無法為那個服務投票：它的 backend 都不會是 voted，每個 reason 都是這台主機自己判的，沒有 `peers d/f:` 前綴。如果每個有參加群組的服務都是這種情形，`peers:` 那一行會以 `too few live members to vote` 結尾：
+
+```
+peers: 1/2 live, not live 10.0.0.7:5302, too few live members to vote
+```
+
+如果有些服務投得了票、有些投不了，這一行不會有提示；在 `assigned_checkers`（見下）裡沒有 `checkers` 的 backend，就是只由這台主機決定。
 
 四台以上的群組裡，不是某些 backend 負責主機的主機，`emfor_peer_checks_skipped_total` 會增加：大部分的檢查時間讓投票決定，大約每三個 `interval` 才自己檢查那些 backend 一次。`emfor status` 會把那些 backend 標上 `voted`，並在 `peers:` 那一行最後寫出顯示的 backend 中有幾個是這台主機每次都檢查的：
 
@@ -117,7 +130,7 @@ peers: 4/4 live, checks 12/40 backends here
 ]
 ```
 
-daemon 沒有執行或沒有 `meta/peers` 時它是 `null`。status 依 `meta/peers` 中的存活成員算出這些內容，而 daemon 每秒更新一次 `meta/peers`，所以成員剛加入或離開時最多會落後一秒。`voted` 只表示這台主機不是負責主機；某次檢查時間是否由投票決定，要看當下的票。`emfor_backend_checks_total` 仍然計算每一次檢查時間，不論是否由投票決定。backend 的延遲只由這台主機自己的檢查量測，所以在這種主機上大約每三個 `interval` 才變一次。
+daemon 沒有執行或沒有 `meta/peers` 時它是 `null`。status 依 `meta/peers` 中的存活成員算出這些內容，而 daemon 每秒更新一次 `meta/peers`，所以成員剛加入或離開時最多會落後一秒。`voted` 只表示這台主機不是負責主機；某次檢查時間是否由投票決定，要看當下的票。`emfor_backend_checks_total` 仍然計算每一次檢查時間，不論是否由投票決定。backend 的延遲只由這台主機自己的檢查量測，所以在這種主機上大約每三個 `interval` 才變一次。`voted` 的 backend 那一行的「`<age> ago`」是結果套用的時間，不論由誰決定，所以它可能很新，而這台主機實際連線到那個 backend 可能是大約三個 `interval` 之前。
 
 ## Log
 
