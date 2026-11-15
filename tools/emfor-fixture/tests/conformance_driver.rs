@@ -157,12 +157,13 @@ fn error_without_message_fails() {
 /// Each lookup reads a store whose fresh heartbeat was written just before
 /// it, so slow lookups earlier in a case cannot make it stale. The program
 /// reads the heartbeat from the LMDB file (key and value are stored next to
-/// each other) and answers like a client would.
+/// each other) and answers like a client would. The clock is read with
+/// python3: `date +%s%3N` is GNU only (macOS prints the `3N`).
 #[test]
 fn each_lookup_gets_a_fresh_store() {
     let script = r#"sleep 0.2
 hb=$(grep -ao 'meta/heartbeat[0-9]*' "$EMFOR_STORE" | head -1 | sed 's/meta.heartbeat//')
-now=$(date +%s%3N)
+now=$(python3 -c 'import time; print(int(time.time() * 1000))')
 if [ $((now - hb)) -lt 500 ]; then echo 'OK 10.0.0.11:8080'; else echo "ERR ALL_DOWN heartbeat $((now - hb)) ms old"; fi
 "#;
     let backend = serde_json::json!({"id": "10.0.0.11:8080", "ip": "10.0.0.11", "port": 8080,

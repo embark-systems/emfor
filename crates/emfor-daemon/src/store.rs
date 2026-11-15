@@ -689,7 +689,16 @@ pub(crate) mod tests {
                     break;
                 }
             }
-            assert!(short, "the workload leaves the file short");
+            if !short {
+                // Whether the file ends up short depends on the page size
+                // and the file system: on macOS (16 KiB pages) this workload
+                // never leaves it short, on Linux and FreeBSD it does.
+                if cfg!(target_os = "macos") {
+                    eprintln!("skipped: this workload does not leave the file short here");
+                    return;
+                }
+                panic!("the workload leaves the file short");
+            }
         }
         let store = Store::open(&c).unwrap();
         assert_replaced(&dir, &store);
