@@ -281,7 +281,9 @@
   first: a child waited for ever, within the first few dozen forks of
   the fork test (measured on FreeBSD 15.1-RELEASE, arm64), on a lock of
   the threading library that a thread of the parent held inside LMDB at
-  the fork. On FreeBSD the client now makes `fork` wait until no lookup
+  the fork; 0.4.0 has the same hang there (its tag, built and run with
+  the same tests: 10 of 10 runs of the Rust test and 5 of 5 of the C
+  test failed). On FreeBSD the client now makes `fork` wait until no lookup
   is inside the store (`pthread_atfork` handlers, registered on FreeBSD
   only), and `libemfor` can no longer be unloaded there, since the
   handlers stay registered. Lookup throughput did not change (measured

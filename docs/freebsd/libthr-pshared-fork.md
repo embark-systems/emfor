@@ -118,6 +118,11 @@ The client with its own atfork workaround (emfor's current client) also passes
 on the patched libthr: its C test 3 of 3 and its Rust fork tests 10 of 10, so
 the two do not get in each other's way.
 
+emfor 0.4.0 (the client without the workaround), built from its tag and run
+with the same fork tests on the same VM and the base system's libthr, hangs
+too: its Rust test failed in 10 of 10 runs (a child hung at forks 4, 102, 20,
+8, 37, 14, 43, 57, 36 and 20) and its C test in 5 of 5.
+
 Not tested: freebsd-src `main`, 14.x, 13.x, amd64 or other architectures; the
 libthr test suite; the patched library installed in the base system for other
 programs. The base system is p6 and the source is 15.1-RELEASE: the repro
