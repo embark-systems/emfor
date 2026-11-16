@@ -55,6 +55,18 @@ name server or port. `tests/prometheus/run.sh` checks it on Prometheus 3.16.0
 hand with Prometheus 2.55.1. Not tried: dnsmasq or unbound in front of emfor,
 other versions, HTTPS targets, many targets.
 
+**Using it with Caddy (manual chapter 7, both languages).** `reverse_proxy`
+with `dynamic srv` takes its upstreams from emfor's SRV answers, so health and
+`drain` reach Caddy without a reload. The section gives the Caddyfile and says
+what each part is for: `resolvers` in both `dynamic srv` and `transport http`
+(the second dials the names of the targets), `grace_period` (without it every
+request fails when emfor answers `SERVFAIL`), `lb_try_duration` (without it a
+backend that has just stopped loses requests). Caddy does not follow the SRV
+weights, and follows priorities only with `lb_policy first`.
+`tests/caddy/run.sh [image]` checks it on Caddy 2.11.9 (also in the
+Integrations workflow). Not tried: HTTPS upstreams, Caddy's own health checks,
+other policies, other versions, FreeBSD.
+
 **deb and rpm packages, and a `packages/` directory.** The example FreeBSD
 port moved from `examples/freebsd/` to `packages/freebsd/` (the same files;
 update a link or a script that names the old path). `packages/build.sh`

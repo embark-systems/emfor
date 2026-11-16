@@ -3,8 +3,9 @@ name: Integrations
 # emfor with other software: nginx and HAProxy taking their servers from
 # emfor's SRV answers (docs/manual/07-dns.md, "Using it with nginx" and "Using
 # it with HAProxy"), and a rolling deploy over nginx with drain
-# (docs/manual/08-operations.md, "Rolling deploy with drain"), and Prometheus
-# finding its targets from them ("Using it with Prometheus"). What these tests
+# (docs/manual/08-operations.md, "Rolling deploy with drain"), Prometheus and
+# Caddy finding their targets from them ("Using it with Prometheus" and "Using
+# it with Caddy"). What these tests
 # can catch is a new nginx or HAProxy that behaves differently (the images are
 # the floating tags stable, mainline and lts), and a change in emfor's answers.
 # So they run once a week and when those parts of emfor or the tests change,
@@ -23,6 +24,7 @@ on:
       - "tests/haproxy/**"
       - "tests/deploy/**"
       - "tests/prometheus/**"
+      - "tests/caddy/**"
       - "examples/deploy/**"
       - ".github/workflows/integrations.yml"
   workflow_dispatch:
@@ -77,3 +79,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: tests/prometheus/run.sh prom/prometheus
+
+  caddy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - run: tests/caddy/run.sh caddy

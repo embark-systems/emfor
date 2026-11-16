@@ -205,6 +205,41 @@ HAProxy 怎麼處理這個回答，用 HAProxy 3.4.7 與 2.8.31 測過：
 
 在 FreeBSD 15.1（arm64，套件裡的 HAProxy 3.4.4）上，同樣的檢查全部通過，包含不遵守優先序與權重那兩項，所以這一節在那裡照樣成立。和 nginx 一樣，`tests/haproxy/inside.sh` 是手動跑的，除了 HAProxy 套件之外不需要別的東西。FreeBSD 上沒試過：其他版本的 HAProxy。
 
+## 搭配 Caddy 使用
+
+Caddy 的 `reverse_proxy` 可以用 `dynamic srv` 從 SRV 回答取得上游，所以 health 與 drain 幾秒內就會傳到 Caddy，不需要 reload：
+
+```
+:80 {
+    reverse_proxy {
+        dynamic srv {
+            name _http._tcp.api.svc.emfor
+            refresh 1s
+            resolvers 127.0.0.1:5300
+            grace_period 30s
+        }
+        transport http {
+            resolvers 127.0.0.1:5300
+        }
+        lb_try_duration 2s
+        lb_try_interval 100ms
+    }
+}
+```
+
+- **兩個 `resolvers`**：`dynamic srv` 裡的用來查 SRV；回答裡的目標是 `10-0-0-11.api.svc.emfor` 這樣的名稱，Caddy 要連線到它們，`transport http` 裡的就是為了這個。少了它，Caddy 會問主機的 resolver，主機的 resolver 不認得這個 zone 時，每個請求都會失敗（測試中 10 個有 10 個失敗，log 是 `no such host`）；主機的 resolver 已經[轉送這個 zone](#從主機的-resolver-轉送)的話就不需要它。
+- **`refresh`** 是 Caddy 多久再問一次；測試用 1 秒。預設值比較長（我讀 Caddy 文件的理解是一分鐘；沒有試過），`refresh` 越長，drain 或故障傳到 Caddy 就越慢。
+- **`grace_period`** 在查詢失敗時保留上一份清單。service 的 backend 全部故障或被 drain 時 emfor 回答 `SERVFAIL`：有 `grace_period`，Caddy 繼續回答（10 個有 10 個）；沒有的話 Caddy 沒有上游，每個請求都失敗（10 個有 10 個）。nginx 自己就會保留上一份清單。
+- **`lb_try_duration` 與 `lb_try_interval`** 讓 Caddy 重試，所以剛停掉、但在 emfor 與 Caddy 察覺前（約一秒）還在清單裡的 backend 不會丟請求（測試中 25 個請求丟 0 個）。沒有它們，Caddy 不會重試，25 個丟了 3 個。
+
+Caddy 怎麼處理這個回答，以下是 `tests/caddy/run.sh` 用 Caddy 2.11.9 看到的：
+
+- 檢查失敗的 backend 離開清單，恢復後回來；`drain = true` 的 backend 同樣離開，不需要 reload Caddy，也沒有請求遺失（需要上面的重試）。
+- **不遵守權重**：3 比 1 的 service，兩台各分到約一半（一次執行中 80 個請求分到 41 與 39）。
+- **預設策略不遵守優先序**：`failover` 的 service 也把請求送給備援。`lb_policy first` 則依回答的順序取 backend，回答是依優先序排序的，所以 `balance = "failover"` 配 `lb_policy first`，backend 健康時全部送給第一台，不健康時送給第二台，恢復後再回到第一台。
+
+[tests/caddy/](../../tests/caddy/run.sh) 在指定的 Caddy 映像上執行這些檢查（`tests/caddy/run.sh caddy:2`）；Integrations workflow 每週執行一次，emfor 的 DNS 或候選的程式有改動時也會執行。沒試過：HTTPS 上游、Caddy 自己的主動健康檢查與 emfor 並用、`first` 與預設以外的負載平衡策略、多個 Caddy、2.11.9 以外的版本、FreeBSD。
+
 ## 搭配 Prometheus 使用
 
 Prometheus 可以用 `dns_sd_configs`（型別 `SRV`）從 SRV 回答找到要抓取的目標：目標就是 emfor 某個 service 中健康的 backend，清單跟著檢查結果變動，不需要 reload Prometheus。

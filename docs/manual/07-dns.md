@@ -350,6 +350,71 @@ there as it is. As with nginx, `tests/haproxy/inside.sh` was run by hand;
 it needed nothing else than the HAProxy package. Not tried on FreeBSD: other
 HAProxy versions.
 
+## Using it with Caddy
+
+Caddy's `reverse_proxy` can take its upstreams from SRV answers with
+`dynamic srv`, so health and drain reach Caddy within a few seconds without a
+reload:
+
+```
+:80 {
+    reverse_proxy {
+        dynamic srv {
+            name _http._tcp.api.svc.emfor
+            refresh 1s
+            resolvers 127.0.0.1:5300
+            grace_period 30s
+        }
+        transport http {
+            resolvers 127.0.0.1:5300
+        }
+        lb_try_duration 2s
+        lb_try_interval 100ms
+    }
+}
+```
+
+- **Two `resolvers`.** The one in `dynamic srv` is for the SRV query. The
+  targets of the answer are names such as `10-0-0-11.api.svc.emfor`, which
+  Caddy dials, and the one in `transport http` is for that. Without it Caddy
+  asks the host resolver, and when that does not know the zone every request
+  fails (10 of 10 in the test, `no such host` in the log); with a host
+  resolver that [forwards the
+  zone](#forwarding-from-the-host-resolver) it is not needed.
+- **`refresh`** is how often Caddy asks again; the test used 1 second. The
+  default is longer (a minute, as I read the Caddy documentation; not
+  tried), and a longer `refresh` delays a drain or a failure that long.
+- **`grace_period`** keeps the last list when the lookup fails. emfor
+  answers `SERVFAIL` when every backend of the service is down or drained:
+  with `grace_period` Caddy kept answering (10 of 10), without it Caddy had no
+  upstream and every request failed (10 of 10). nginx keeps its last list
+  by itself.
+- **`lb_try_duration` and `lb_try_interval`** make Caddy try again, so a
+  backend that has just stopped, and is still in the list for the second or
+  so that emfor and Caddy need to notice it, loses nothing (0 of 25 requests
+  in the test). Without them Caddy does not retry, and 3 of 25 were lost.
+
+What Caddy does with the answer, as `tests/caddy/run.sh` saw it with Caddy
+2.11.9:
+
+- A backend that fails its checks leaves the list, and one that recovers
+  returns; a `drain = true` backend leaves it too, without a reload of
+  Caddy and with no request lost (with the retries above).
+- **Weights are not followed**: a 3 to 1 service gave about half each (41 and 39 of 80 in one run).
+- **Priorities are not followed by the default policy**: a `failover` service
+  sent requests to the backup as well. With `lb_policy first` Caddy takes the
+  backends in the order of the answer, which is sorted by priority, so
+  `balance = "failover"` with `lb_policy first` sends everything to the
+  first backend while it is healthy, to the second when it is not, and back
+  when it returns.
+
+[tests/caddy/](../../tests/caddy/run.sh) runs these checks on a given Caddy
+image (`tests/caddy/run.sh caddy:2`); the Integrations workflow runs it every
+week and when the DNS or candidate code of emfor changes. Not tried: HTTPS
+upstreams, Caddy's own active health checks next to emfor's, load balancing
+policies other than `first` and the default, several Caddy instances, other
+versions than 2.11.9, FreeBSD.
+
 ## Using it with Prometheus
 
 Prometheus can find its scrape targets from SRV answers with
