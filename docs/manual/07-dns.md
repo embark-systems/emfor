@@ -422,10 +422,12 @@ Three variations, as `tests/haproxy/more.sh` saw them with HAProxy 3.4.7 and
   with the right address and port 0, and a request sent to it got a `503`
   after about 3 seconds (a backend stopped and started every 1.5 seconds:
   with two nameservers 5 of 5 runs on Linux 3.4.7, and with one nameserver
-  at most one such request per run; but on FreeBSD with 3.4.4 the same test
-  gave them with one nameserver too, 29 to 45 of 80 requests in each of 5
-  runs, so the second nameserver is not the only cause, and I do not know
-  which release changed this). These were seen by hand, not in the test, and
+  at most one such request per run; but on FreeBSD the same test gave them
+  with one nameserver too: 29 to 45 of 80 requests in each of 5 runs with
+  3.4.4 (the package), and 21 to 28 with 3.4.7 (built from the port), so it is
+  not a change between those releases, and the second nameserver is not the
+  only cause; why FreeBSD shows it and the Linux container does not was not
+  found). These were seen by hand, not in the test, and
   the exact cause inside HAProxy was not found. For availability run an emfor server next to each HAProxy
   rather than giving one HAProxy several nameservers. If you give it two
   anyway, they must agree, `drain` included; `option redispatch` hides the
