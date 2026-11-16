@@ -162,6 +162,9 @@ A 回答只有一個 backend，由 `balance` 選出，所以 nginx 一秒內的�
 
 [tests/nginx/](../../tests/nginx/run.sh) 在指定的 nginx 映像上執行這些檢查（`tests/nginx/run.sh nginx:stable`），包含較舊的 nginx 的情況。Integrations workflow 每週執行一次，emfor 的 DNS 或候選的程式有改動時也會執行。
 
+
+在 FreeBSD 15.1（arm64，套件裡的 nginx 1.30.6）上，同樣的檢查全部通過，包含較舊的 nginx 的情況，食譜不需要改。nginx 套件讀的是 `/usr/local/etc/nginx/nginx.conf`，不是 `/etc/nginx`。Docker 版的測試本身不在那裡執行；腳本（`tests/nginx/inside.sh`）是手動跑的，需要 Linux 容器本來就有的三樣東西：`dig`（用 `drill` 包一層就行）、loopback 上的位址 `127.0.0.2`（`ifconfig lo0 alias 127.0.0.2/32`；FreeBSD 的 loopback 只有 `127.0.0.1`，較舊 nginx 那項檢查會把一個 backend 綁在 `127.0.0.2`），以及讓 `nginx` 讀 `/etc/nginx/nginx.conf`。
+
 ## 搭配 HAProxy 使用
 
 HAProxy 可以用 SRV 回答來填一個 backend 的 server：`server-template` 寫上 SRV 查詢名稱與一個「槽」的數量，HAProxy 把記錄放進槽裡，回答改變時再重新查詢。把 emfor 的 DNS server 當作它的 resolver，檢查失敗的 backend、你 drain 的 backend、你新增的 backend，都會在幾秒內傳到 HAProxy，不需要 reload：
@@ -198,6 +201,9 @@ HAProxy 怎麼處理這個回答，用 HAProxy 3.4.7 與 2.8.31 測過：
 哪一種比較對，取決於 emfor 說沒有 backend 時你希望發生什麼。`hold` 的值是 HAProxy 的，這裡沒有調校過。
 
 [tests/haproxy/](../../tests/haproxy/run.sh) 在指定的 HAProxy 映像上執行這些檢查（`tests/haproxy/run.sh haproxy:2.8`），包含 HAProxy 不做的那兩件事，所以日後 HAProxy 開始遵守優先序或權重時，測試會失敗，提醒這一節要改。Integrations workflow 每週執行一次，emfor 的 DNS 或候選的程式有改動時也會執行。沒試過：HAProxy 的 `mode tcp`、到 backend 的 TLS、`resolvers` 有多個 name server、上述兩個以外的版本。
+
+
+在 FreeBSD 15.1（arm64，套件裡的 HAProxy 3.4.4）上，同樣的檢查全部通過，包含不遵守優先序與權重那兩項，所以這一節在那裡照樣成立。和 nginx 一樣，`tests/haproxy/inside.sh` 是手動跑的，除了 HAProxy 套件之外不需要別的東西。FreeBSD 上沒試過：其他版本的 HAProxy。
 
 ## 快取
 

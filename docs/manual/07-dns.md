@@ -257,6 +257,17 @@ in the test; how evenly was not measured.
 case. The Integrations workflow runs it every week and when the DNS or
 candidate code of emfor changes.
 
+
+On FreeBSD 15.1 (arm64, nginx 1.30.6 from the packages) the same checks
+passed, including the older nginx case. The recipes need no change; the
+nginx package reads `/usr/local/etc/nginx/nginx.conf`, not `/etc/nginx`.
+The Docker test itself does not run there; the script
+(`tests/nginx/inside.sh`) was run by hand, and it needed three things the
+Linux container has: `dig` (a wrapper around `drill` did), the address
+`127.0.0.2` on the loopback (`ifconfig lo0 alias 127.0.0.2/32`; FreeBSD's
+loopback has only `127.0.0.1`, and the older-nginx check binds a backend
+to `127.0.0.2`), and `nginx` reading `/etc/nginx/nginx.conf`.
+
 ## Using it with HAProxy
 
 HAProxy can fill the servers of a backend from SRV answers: a
@@ -331,6 +342,13 @@ follow priorities or weights and this section must change. The Integrations
 workflow runs it every week and when the DNS or candidate code of emfor
 changes. Not tried: HAProxy with `mode tcp`, TLS to the backends, `resolvers`
 with several name servers, other versions than the two above.
+
+
+On FreeBSD 15.1 (arm64, HAProxy 3.4.4 from the packages) the same checks
+passed, priorities and weights not followed included, so the section holds
+there as it is. As with nginx, `tests/haproxy/inside.sh` was run by hand;
+it needed nothing else than the HAProxy package. Not tried on FreeBSD: other
+HAProxy versions.
 
 ## Caching
 
