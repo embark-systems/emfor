@@ -28,6 +28,18 @@ candidate code or these tests change, not on every push.
 Checked with nginx 1.30.6, 1.31.8 and (older recipe only) 1.26.3. Not tried:
 HTTPS upstreams, nginx Plus, several workers, the `stream` module.
 
+**Rolling deploy with drain (manual chapter 8, both languages).**
+`examples/deploy/emfor-drain.sh` drains a backend in a `conf.d` file (one
+backend per line), checks the config, reloads, and waits until emfor shows it
+drained (`on`), waits until the connections to a port are quiet (`wait-idle`,
+Linux, needs `ss`), waits until the checks say healthy (`wait-ready`), and
+undrains (`off`). The chapter says what the waiting is for and what was seen:
+a request in flight finishes after a drain and is cut after a plain stop;
+nginx 1.30 keeps idle connections to its upstream, so "no connection" never
+comes. `tests/deploy/run.sh [image]` checks it on nginx 1.30.6 and 1.31.8
+(also in the Integrations workflow). Not tried: HAProxy, HTTPS, clients with
+their own connection pool, several emfor hosts, FreeBSD.
+
 **deb and rpm packages, and a `packages/` directory.** The example FreeBSD
 port moved from `examples/freebsd/` to `packages/freebsd/` (the same files;
 update a link or a script that names the old path). `packages/build.sh`

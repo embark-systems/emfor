@@ -184,6 +184,9 @@ This is not HAProxy's `DRAIN`, which lets existing sessions continue:
 emfor has no sessions, and a lookup that skips the backend is the whole
 effect.
 
+For a deploy that waits for the running requests to end and then puts the
+backend back, see [Rolling deploy with drain](08-operations.md#rolling-deploy-with-drain).
+
 ## Slow start
 
 A backend that comes back may have cold caches or connection pools. With

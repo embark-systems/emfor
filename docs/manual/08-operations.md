@@ -351,6 +351,92 @@ Otherwise, give your applications a group:
 4. `chgrp emfor-clients` the existing store and lock files, and restart the
    daemon (it sets the modes at every start).
 
+## Rolling deploy with drain
+
+To deploy to the backends of a service one at a time without cutting the
+requests that are running, take the backend out of the choice with
+`drain = true` ([chapter 5](05-backend-selection.md#draining-a-backend)),
+wait until its requests are over, stop, deploy and start it, wait until its
+checks pass, and put it back. emfor does the first and the last step and
+shows the checks in between; the waiting is yours, because emfor is not in
+the data path and does not see a request.
+
+A `conf.d` file cannot switch one backend of a service that another file
+defines: a list is replaced as a whole, so the file would have to repeat the
+whole `backends` list. Give the service its own file with one backend per
+line, and change that line:
+
+```toml
+# /etc/emfor/conf.d/20-api.toml
+[services."api.svc.emfor"]
+check = "tcp"
+backends = [
+  { addr = "10.0.0.11:8080" },
+  { addr = "10.0.0.12:8080" },
+]
+```
+
+[examples/deploy/emfor-drain.sh](../../examples/deploy/emfor-drain.sh) does
+the steps for one backend (it needs `jq`, and `ss` for `wait-idle`):
+
+```sh
+# On the host that runs emfor: add drain = true to the line of the backend,
+# run emfor check-config, reload, and wait until `emfor status` shows it drained.
+emfor-drain.sh on /etc/emfor/conf.d/20-api.toml 10.0.0.11:8080
+
+# On 10.0.0.11: wait until no connection to port 8080 has moved data for 3 seconds.
+emfor-drain.sh wait-idle 8080
+deploy-and-restart-api
+
+# On the emfor host again: wait until the checks of the backend say healthy,
+# then remove drain and reload.
+emfor-drain.sh wait-ready 10.0.0.11:8080 120
+emfor-drain.sh off /etc/emfor/conf.d/20-api.toml 10.0.0.11:8080
+```
+
+Do the backends one at a time, and look at `emfor status` between them (its
+exit status is 1 when a service is `ALL DOWN`): a service whose backends are
+all drained answers nothing. `drain` is a setting of one host's config
+([chapter 5](05-backend-selection.md#draining-a-backend)), so when emfor runs
+on every application host, run the first and the last step on each of them.
+
+What the waiting is for, as `tests/deploy/run.sh` saw it with nginx 1.30.6
+and 1.31.8 taking its upstream from emfor's SRV answers
+([chapter 7](07-dns.md#using-it-with-nginx)):
+
+- A request that is running when the backend is drained finishes (a 1200
+  byte answer, sent over about 6 seconds, arrived whole). Stopping the
+  backend without a drain cut the same request after 146 bytes.
+- New requests stop reaching a drained backend within a few seconds (nginx
+  asks again every second). For a client that reads the store it is the
+  next lookup; a client that asks DNS may cache the answer for its TTL.
+- nginx retried a request that a stopped backend had refused, so a stop
+  without a drain lost no new request in the test (0 of 64 to 96 POSTs).
+  The drain matters for the requests that are running, and for clients that
+  do not retry; the second was not tried.
+- Connections that a proxy keeps open for the next request stay open after
+  the drain, so "no connection to the port" does not come: nginx 1.30
+  keeps idle connections to an upstream by default, and 1 or 2 were still
+  open when the wait was over. `wait-idle` therefore waits for a quiet
+  time, 3 seconds by default (a third argument, in milliseconds), read from
+  `ss -i`. A request that stays silent for longer than that, a long poll or
+  an event stream, looks idle to it: raise the time, or count the requests
+  in the application.
+- `off` puts the backend back at once, without counting `rise` again, and
+  without slow start; a backend that was restarted while it was drained
+  ramps from the moment its checks passed, so after a short deploy it may
+  still be inside `slow_start`
+  ([chapter 5](05-backend-selection.md#slow-start)).
+
+Not tried: HAProxy, which also retries, and its own sessions; HTTPS;
+clients that keep their own connection pool to the backends (a drain does not
+close a pooled connection); several emfor hosts; FreeBSD (`wait-idle` needs
+`ss`, a Linux tool, and says so; there, wait a fixed time, at least the
+longest request and the time a proxy needs to ask again, or count the
+requests in the application; the script's `sed`, `cp` and `mv` were not run
+there). The Integrations workflow runs the test every week and when the
+test or the script changes.
+
 ## Running more than one daemon
 
 Each store has one writer: the daemon locks `<store>.writer`, and a second

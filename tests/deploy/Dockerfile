@@ -1,0 +1,24 @@
+# nginx with emfor, for tests/deploy/run.sh: the rolling deploy of
+# docs/manual/08-operations.md, section "Rolling deploy with drain".
+#
+#   docker build -f tests/deploy/Dockerfile --build-arg NGINX_IMAGE=nginx:stable .
+ARG NGINX_IMAGE=nginx:mainline
+
+FROM rust:1-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+# Every workspace member must be present for cargo to load the workspace.
+COPY tools tools
+COPY clients/rust clients/rust
+COPY tests/spike/probe tests/spike/probe
+RUN cargo build --locked --bin emfor
+
+FROM ${NGINX_IMAGE}
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends dnsutils iproute2 jq \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/debug/emfor /usr/local/bin/emfor
+COPY examples/deploy/emfor-drain.sh /usr/local/bin/emfor-drain.sh
+COPY tests/deploy/inside.sh /inside.sh
+ENTRYPOINT ["/bin/sh", "/inside.sh"]

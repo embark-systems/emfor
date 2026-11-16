@@ -2,10 +2,12 @@ name: Integrations
 
 # emfor with other software: nginx and HAProxy taking their servers from
 # emfor's SRV answers (docs/manual/07-dns.md, "Using it with nginx" and "Using
-# it with HAProxy"). What these tests can catch is a new nginx or HAProxy that
-# behaves differently (the images are the floating tags stable, mainline and
-# lts), and a change in emfor's answers. So they run once a week and when
-# those parts of emfor or the tests change, not on every push (CI does that).
+# it with HAProxy"), and a rolling deploy over nginx with drain
+# (docs/manual/08-operations.md, "Rolling deploy with drain"). What these tests
+# can catch is a new nginx or HAProxy that behaves differently (the images are
+# the floating tags stable, mainline and lts), and a change in emfor's answers.
+# So they run once a week and when those parts of emfor or the tests change,
+# not on every push (CI does that).
 # Start them by hand from the Actions tab (or `gh workflow run Integrations`).
 on:
   schedule:
@@ -18,6 +20,8 @@ on:
       - "crates/emfor-format/**"
       - "tests/nginx/**"
       - "tests/haproxy/**"
+      - "tests/deploy/**"
+      - "examples/deploy/**"
       - ".github/workflows/integrations.yml"
   workflow_dispatch:
 
@@ -53,3 +57,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: tests/haproxy/run.sh ${{ matrix.image }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["nginx:stable", "nginx:mainline"]
+    steps:
+      - uses: actions/checkout@v7
+      - run: tests/deploy/run.sh ${{ matrix.image }}

@@ -198,6 +198,50 @@ store 裡沒有任何東西需要在重開機後保留，所以可以放在 tmpf
 3. 在 `[store]` 中設定 `file_mode = "0640"` 與 `lock_file_mode = "0660"`。
 4. 對既有的 store 與 lock 檔執行 `chgrp emfor-clients`，然後重新啟動 daemon（它每次啟動都會設定權限）。
 
+## 用 drain 做滾動部署
+
+要一台一台部署一個 service 的 backend，又不想切斷正在跑的請求：先用 `drain = true`（[第 5 章](05-backend-selection.md#drain-一個-backend)）把那台 backend 從選擇中拿掉，等它的請求結束，停止、部署、啟動，等它的檢查通過，再放回去。emfor 負責第一步和最後一步，中間顯示檢查的結果；等待要你自己做，因為 emfor 不在資料路徑上，看不到任何一個請求。
+
+`conf.d` 的檔案無法只改別的檔案已定義的 service 的某一台 backend：清單是整個被取代，所以那個檔案要把整份 `backends` 清單重寫一遍。請讓 service 有自己的檔案、每台 backend 一行，然後改那一行：
+
+```toml
+# /etc/emfor/conf.d/20-api.toml
+[services."api.svc.emfor"]
+check = "tcp"
+backends = [
+  { addr = "10.0.0.11:8080" },
+  { addr = "10.0.0.12:8080" },
+]
+```
+
+[examples/deploy/emfor-drain.sh](../../examples/deploy/emfor-drain.sh) 做一台 backend 的這幾步（需要 `jq`，`wait-idle` 還需要 `ss`）：
+
+```sh
+# 在執行 emfor 的主機上：在 backend 那一行加 drain = true、執行 emfor check-config、
+# reload，等到 `emfor status` 顯示它被 drain。
+emfor-drain.sh on /etc/emfor/conf.d/20-api.toml 10.0.0.11:8080
+
+# 在 10.0.0.11 上：等到連到 8080 埠的連線都有 3 秒沒有傳輸資料。
+emfor-drain.sh wait-idle 8080
+deploy-and-restart-api
+
+# 回到 emfor 的主機：等到這台 backend 的檢查是 healthy，再拿掉 drain 並 reload。
+emfor-drain.sh wait-ready 10.0.0.11:8080 120
+emfor-drain.sh off /etc/emfor/conf.d/20-api.toml 10.0.0.11:8080
+```
+
+一次只處理一台，兩台之間看一下 `emfor status`（service 是 `ALL DOWN` 時它的結束狀態是 1）：backend 全被 drain 的 service 什麼也不回答。`drain` 是單一主機設定的一部分（[第 5 章](05-backend-selection.md#drain-一個-backend)），所以每台應用程式主機都跑 emfor 時，第一步與最後一步要在每一台上做。
+
+等待是為了什麼，以下是 `tests/deploy/run.sh` 在 nginx 1.30.6 與 1.31.8（用 emfor 的 SRV 回答當 upstream，[第 7 章](07-dns.md#搭配-nginx-使用)）看到的：
+
+- backend 被 drain 時正在跑的請求會跑完（一個 1200 位元組、約 6 秒傳完的回應完整收到）。不 drain 就停掉 backend，同一個請求在 146 位元組處被切斷。
+- 新的請求在幾秒內就不再到被 drain 的 backend（nginx 每秒重新查詢一次）。讀 store 的 client 是下一次 lookup；問 DNS 的 client 可能把答案快取到 TTL 結束。
+- nginx 會重試被停掉的 backend 拒絕的請求，所以不 drain 就停止，在測試裡沒有丟掉新的請求（64 到 96 個 POST 中 0 個）。drain 的好處在於正在跑的請求，以及不會重試的 client；後者沒有試過。
+- proxy 為了下一個請求而保持開著的連線，drain 之後仍然開著，所以「連到那個埠的連線歸零」不會來：nginx 1.30 預設會保持與 upstream 的閒置連線，等待結束時還有 1 到 2 條開著。因此 `wait-idle` 等的是一段安靜的時間，預設 3 秒（第三個參數，單位毫秒），資料取自 `ss -i`。一個沉默超過這段時間的請求（long poll 或事件串流）在它看來像是閒置：把時間調長，或在應用程式裡計算請求數。
+- `off` 讓 backend 立刻回到選擇中，不重新計算 `rise`，也不啟動慢啟動；部署期間被重啟、在 drain 時恢復的 backend，從它的檢查通過那一刻起升權，所以很短的部署之後它可能還在 `slow_start` 之內（[第 5 章](05-backend-selection.md#慢啟動slow-start)）。
+
+沒有試過：HAProxy（它同樣會重試，也有自己的 session）、HTTPS、自己維護連線池到 backend 的 client（drain 不會關掉池裡的連線）、多台 emfor 主機、FreeBSD（`wait-idle` 需要 Linux 的 `ss`，沒有它會說明；那裡就等一段固定時間，至少是最長的請求加上 proxy 重新查詢所需的時間，或在應用程式裡計算請求數；腳本裡的 `sed`、`cp`、`mv` 也沒有在那裡跑過）。Integrations workflow 每週執行一次，測試或腳本有改動時也會執行。
+
 ## 執行多個 daemon
 
 每個 store 只有一個寫入者：daemon 鎖住 `<store>.writer`，使用相同 `[store] path` 的第二個 daemon 會以 1 結束。要在同一台主機上執行兩個 daemon（測試用），請給它們不同的 store 路徑、DNS port 與 metrics port。

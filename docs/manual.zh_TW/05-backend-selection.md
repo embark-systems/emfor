@@ -95,6 +95,8 @@ DNS 回答依同樣的順序；SRV 記錄只列出選出的集合。使用備援
 
 這不是 HAProxy 的 `DRAIN`（讓既有 session 繼續）：emfor 沒有 session，查詢略過這個 backend 就是全部的效果。
 
+要在部署時等正在跑的請求結束、再把 backend 放回去，見[用 drain 做滾動部署](08-operations.md#用-drain-做滾動部署)。
+
 ## 慢啟動（slow start）
 
 剛恢復的 backend 可能快取還是冷的、連線池還沒建立。設定 `slow_start`（例如 `slow_start = "30s"`）後，從 `unhealthy` 轉為 `healthy` 的 backend 會在這段時間內逐步增加分到的流量，而不是立刻拿到全部份額。
