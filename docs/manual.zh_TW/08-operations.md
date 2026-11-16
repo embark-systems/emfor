@@ -35,10 +35,10 @@ api.svc.emfor  round-robin  on_all_down=open
   10.0.0.12:8080  unhealthy  0.9s ago  -      connect: Connection refused
 ```
 
-`emfor status` 只讀取設定檔的 `[store]` table，並像 client 一樣以唯讀方式開啟 store。開啟 store 時會在 lock 檔登記一個 reader，所以使用者需要 store 的讀取權限與 lock 檔的寫入權限（[誰能使用 store](#誰能使用-store)）；lock 檔是 0444 時，`emfor status` 會以 `cannot open store …: Permission denied` 停止。
+`emfor status` 只讀取設定檔的 `[store]` table（[第 3 章](03-configuration.md#store)），並像 client 一樣以唯讀方式開啟 store。開啟 store 時會在 lock 檔登記一個 reader，所以使用者需要 store 的讀取權限與 lock 檔的寫入權限（[誰能使用 store](#誰能使用-store)）；lock 檔是 0444 時，`emfor status` 會以 `cannot open store …: Permission denied` 停止。
 
 - **daemon**：heartbeat 不超過 3 秒時為 `running`，超過時為 `stale`（daemon 卡住或已死），正常停止後為 `stopped`。`stale` 或 `stopped` 時，顯示的服務只是 daemon 最後寫入的內容。
-- **服務**：`balance`、`on_all_down`，沒有 backend 健康時顯示 `ALL DOWN`。
+- **服務**：`balance` 與 `on_all_down`（[第 5 章](05-backend-selection.md#balance-方式)），沒有 backend 健康時顯示 `ALL DOWN`。
 - **backend**：狀態、距上次檢查多久、平滑後的延遲，之後依序是適用的標記：`fastest` 服務中快的 backend 標示 `pool`；備援 backend 標示 `backup`（見[第 5 章](05-backend-selection.md#備援-backend)）；聯防群組裡的 `local-up` 與 `voted`（見[聯防群組](#聯防群組)）；10 分鐘內在 healthy 與 unhealthy 之間變化 5 次以上的 backend 標示 `FLAPPING (<n> changes in 10m)`；仍是 `healthy`、但最近一次檢查失敗的 backend 標示 `last check failed`（連續失敗 `fall` 次才會變成 unhealthy；在那之前，查詢通常會略過它，見[檢查開始失敗的 backend](05-backend-selection.md#檢查開始失敗的-backend)，但所有 healthy backend 都在失敗時例外）；最後是最近一次失敗檢查的 reason。設定檔裡 drain 的 backend（見[第 5 章](05-backend-selection.md#drain-一個-backend)）在狀態的位置顯示 `drained`，而 `(checks: <狀態>)`（檢查給的狀態）是最後一個標記，排在 `backup`、`local-up`、`voted` 與 `FLAPPING` 之後；它沒有 `last check failed`，也沒有最近一次失敗檢查的 reason。一行同時有所有標記、reason 又短時約 100 欄寬（十台主機、40 個 backend 的群組中量到 97 欄）；`--watch` 會截斷超過終端機寬度的行。
 
 ```
@@ -97,7 +97,7 @@ pipe 提早關閉（`emfor status | head -1`）不會改變結束代碼。store 
 
 ### 聯防群組
 
-聯防群組的成員之間需要能以 UDP 連到彼此的 `[peers] listen` port（範例中為 5302），時鐘相差不能超過 5 秒（NTP）。某個成員的 `emfor_peer_up` 一直是 0 時，看兩邊的 `emfor_peer_messages_rejected_total`：`auth` 表示密鑰不同，`stale` 表示時鐘偏移，`sender` 表示 `members` 或 `listen` 不符，`site` 表示兩台主機的 `site` 不同。0.3.0 成員那邊的 `malformed` 表示它讀不了已升級成員的加密訊息：在它升級前，已升級的成員先設 `encrypt = false`（見 [`[peers]`](03-configuration.md#peers)）。警告 `peer <address> sends plaintext messages (EMP1); set encrypt = true there` 表示該成員仍送未加密的訊息；這些訊息照常接受，除非設了 `accept_plaintext = false`：那時它們算成 `plaintext`，該成員在這裡不算存活。
+聯防群組的成員之間需要能以 UDP 連到彼此的 [`[peers]`](03-configuration.md#peers) 的 `listen` port（範例中為 5302），時鐘相差不能超過 5 秒（NTP）。某個成員的 `emfor_peer_up` 一直是 0 時，看兩邊的 `emfor_peer_messages_rejected_total`：`auth` 表示密鑰不同，`stale` 表示時鐘偏移，`sender` 表示 `members` 或 `listen` 不符，`site` 表示兩台主機的 `site` 不同。0.3.0 成員那邊的 `malformed` 表示它讀不了已升級成員的加密訊息：在它升級前，已升級的成員先設 `encrypt = false`（見 [`[peers]`](03-configuration.md#peers)）。警告 `peer <address> sends plaintext messages (EMP1); set encrypt = true there` 表示該成員仍送未加密的訊息；這些訊息照常接受，除非設了 `accept_plaintext = false`：那時它們算成 `plaintext`，該成員在這裡不算存活。
 
 原因會說明 `down` 從哪裡來：`peers 2/3: <原因>` 表示三台負責主機中有兩台看到 backend down（原因是它們的）；`local: <原因>` 表示只有這台主機看到 down，投票沒有判 down；沒有前綴的原因表示沒有投票（存活成員少於三台，或沒有夠新的結果）。`emfor status` 在 daemon 那一行下面顯示群組狀態：
 

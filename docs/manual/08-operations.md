@@ -38,7 +38,7 @@ api.svc.emfor  round-robin  on_all_down=open
   10.0.0.12:8080  unhealthy  0.9s ago  -      connect: Connection refused
 ```
 
-`emfor status` reads only the `[store]` table of the config and opens the
+`emfor status` reads only the `[store]` table of the config ([chapter 3](03-configuration.md#store)) and opens the
 store read-only, like a client. Opening the store registers a reader in its
 lock file, so the user needs read access to the store and write access to
 the lock file ([who can use the store](#who-can-use-the-store)); with the
@@ -49,7 +49,7 @@ Permission denied`.
   `stale` when it is older (the daemon hangs or died), `stopped` after a
   clean shutdown. With `stale` or `stopped`, the services shown are only
   what the daemon wrote last.
-- **service**: `balance`, `on_all_down`, and `ALL DOWN` when no backend is
+- **service**: `balance` and `on_all_down` ([chapter 5](05-backend-selection.md#balance-methods)), and `ALL DOWN` when no backend is
   healthy.
 - **backend**: state, time since the last check, smoothed latency, then
   these markers, in this order, when they apply: `pool` for the fast
@@ -138,8 +138,8 @@ their types and labels.
 
 ### Peer groups
 
-Members of a peer group need UDP between each other on their `[peers]
-listen` port (5302 in the examples) and clocks within 5 seconds of each
+Members of a peer group need UDP between each other on their [`[peers]`](03-configuration.md#peers)
+`listen` port (5302 in the examples) and clocks within 5 seconds of each
 other (NTP). If `emfor_peer_up` stays 0 for a member, look at
 `emfor_peer_messages_rejected_total` on both sides: `auth` means the
 secrets differ, `stale` that the clocks drift, `sender` that `members` or
@@ -261,7 +261,7 @@ only when stderr is a terminal and `NO_COLOR` is not set.
 ## The store on disk
 
 The daemon commits to the store at least once a second and on every state
-change. By default (`[store] sync = false`) a commit does not wait for the
+change. By default ([`[store] sync = false`](03-configuration.md#store)) a commit does not wait for the
 disk, so a stalled disk cannot make the heartbeat late and the store look
 stale to every application on the host. Nothing in the store needs to
 survive a host crash: the daemon rewrites every service at start. Only the

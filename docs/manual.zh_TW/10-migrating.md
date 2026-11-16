@@ -66,7 +66,7 @@ expect_status = [200]
 | `server api1 10.0.0.11:8080` | `backends` 的一個項目 | 只能寫 IP 位址，不能寫主機名稱：emfor 不依賴 DNS 去找它的 backend。 |
 | `check` | `check = "http"`（或 `"tcp"`） | 整個服務共用一個 `check`。 |
 | `inter 2s` | `interval = "2s"` | 預設都是 2 秒。 |
-| `fall 3` / `rise 2` | `fall = 3` / `rise = 2` | 預設分別都是 3 與 2。 |
+| `fall 3` / `rise 2` | `fall = 3` / `rise = 2` | 預設分別都是 3 與 2（[rise、fall 與 error](04-health-checks.md#risefall-與-error)）。 |
 | `option httpchk GET /healthz` | `path = "/healthz"` | emfor 一律送 `GET`。HAProxy 不帶參數時送 `OPTIONS /`；emfor 不設 `path` 就送 `GET /`（[http 檢查](04-health-checks.md#http)）。 |
 | `http-check expect status 200` | `expect_status = [200]` | 沒有設的話，200 到 399 的狀態碼都算 `up`；HAProxy 的預設也接受 2xx 與 3xx。範圍寫成 `"200-299"`。 |
 | `http-check send ... hdr Host x` | `host_header = "x"` | 只能設 `Host` header。 |
@@ -100,6 +100,12 @@ emfor 不碰流量，所以可以先在 HAProxy 旁邊跑：
 3. 用 `emfor lookup api.svc.emfor --explain` 看應用程式會拿到什麼、為什麼（[第 6 章](06-clients.md#從-shell-查詢emfor-lookup)）。
 4. 一次只把一個應用程式搬到 emfor，同時看 [metrics](08-operations.md#metrics) 與 `emfor status --watch`。
 5. 等到沒有任何應用程式再使用某個 backend 時，才把它從 HAProxy 的設定移除。
+
+### 保留 HAProxy，讓 emfor 提供它的清單
+
+你不一定要搬應用程式。HAProxy 可以繼續處理流量，保有它的重試、排隊、TLS 與路由，只是改從 emfor 的 SRV 回答取得 server 清單，讓 emfor 的檢查決定誰在清單裡（設定寫在[第 7 章的 HAProxy](07-dns.md#搭配-haproxy-使用)：一個 `server-template`，加上指向 emfor DNS server 的 `resolvers`，所以設定檔需要 `[dns]` table，服務名稱也必須在它的 zone 之下）。你得到的是：任何 emfor 的檢查（例如資料庫 plugin）取代 `check` 來決定健康，`drain = true` 只要 reload emfor 就能把 server 拿掉、不必 reload HAProxy，而且每台主機上的[聯防群組](03-configuration.md#peers)可以對 backend 投票。
+
+沒有跟過來的部分，以 HAProxy 3.4.7 與 2.8.31 試過的為準：HAProxy 忽略回答裡的 priority 與 weight，所以 `failover`、`weighted` 與 `backup = true` 在那裡沒有作用（請保留 HAProxy 自己的 `backup` 與 `weight`）；template 的 slot 數限制了 backend 的數量；而 `SERVFAIL` 之後 HAProxy 會在 `hold other`（預設 30 秒）之後丟掉它的 server 並回 503。每個 HAProxy 只用一個 name server，就是同一台主機上的 emfor。沒有試過：超過 27 個 backend 走 UDP，以及長時間執行。
 
 ## 從 Consul 搬過來
 

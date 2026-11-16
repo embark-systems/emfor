@@ -45,7 +45,7 @@ drill -p 5300 api.svc.emfor @127.0.0.1           # FreeBSD
 | --- | --- |
 | 服務的 A / AAAA | 一筆記錄：依 `balance` 選出的該位址族 backend（[第 5 章](05-backend-selection.md#dns-的差異)），帶 `aa` flag。 |
 | A / AAAA，沒有該位址族的 backend | `NOERROR`，沒有記錄（NODATA）。 |
-| A / AAAA / SRV，沒有健康的 backend 且 `on_all_down = "closed"` | `SERVFAIL`。A 與 AAAA 的「沒有健康的 backend」是依位址族分開算的。 |
+| A / AAAA / SRV，沒有健康的 backend 且 [`on_all_down = "closed"`](05-backend-selection.md#沒有任何-backend-健康時) | `SERVFAIL`。A 與 AAAA 的「沒有健康的 backend」是依位址族分開算的。 |
 | A / AAAA / SRV，服務的每個 backend 都被 drain | `SERVFAIL`，不論 `on_all_down` 是什麼（[第 5 章](05-backend-selection.md#drain-一個-backend)）。 |
 | zone 之下的任何名稱，在 daemon 還沒有第一份狀態之前（剛啟動的那一小段時間） | `SERVFAIL`：還不知道有哪些名稱。 |
 | SRV，某個 backend 的目標名稱會超過 255 位元組 | `SERVFAIL`。 |
@@ -55,7 +55,7 @@ drill -p 5300 api.svc.emfor @127.0.0.1           # FreeBSD
 | zone 之外的名稱，或 class 不是 `IN` | `REFUSED`。 |
 | EDNS 版本大於 0 | `BADVERS`。 |
 
-TTL 是服務的 `dns_ttl`，否則為 `[dns] ttl`（預設 1 秒）。zone 有一筆合成的 SOA，其負向快取 TTL 也是 `[dns] ttl`。
+TTL 是服務的 `dns_ttl`（[第 3 章](03-configuration.md#servicesname)），否則為 `[dns] ttl`（[第 3 章](03-configuration.md#dns)；預設 1 秒）。zone 有一筆合成的 SOA，其負向快取 TTL 也是 `[dns] ttl`。
 
 ## SRV 記錄
 
@@ -144,7 +144,7 @@ nginx 怎麼處理這個回答，以下用 nginx 1.30.6（stable）與 1.31.8（
 
 - **健康狀態**：檢查失敗的 backend 不在回答裡，nginx 就不再送請求給它；它恢復後又回來。測試對每個變化最多等 10 秒；檢查間隔 200 毫秒時大約花 3 秒。
 - **`drain = true`**（[第 5 章](05-backend-selection.md#drain-一個-backend)）：改 emfor 的設定並 reload emfor；不用動 nginx，那台 backend 不再收到新的請求。正在 backend 上跑的請求會跑完，nginx 對它開著的連線也維持開著：見[用 drain 做滾動部署](08-operations.md#用-drain-做滾動部署)（`tests/deploy`）與下面的 stream 測試。
-- **優先序**：nginx 把 priority 數字最小的記錄當 server，其他的當 `backup`。`balance = "failover"` 時，第一台健康的 backend 是唯一的 server，第二台是它的備援；`locality` 與 `fastest` 的 priority 0 與 1 也是同樣的用法。
+- **優先序**：nginx 把 priority 數字最小的記錄當 server，其他的當 `backup`。`balance = "failover"` 時，第一台健康的 backend 是唯一的 server，第二台是它的備援；`locality` 與 `fastest` 也給 priority 0 與 1（見上面的 SRV 表），但只有 `failover` 對 nginx 跑過。
 - **`balance = "weighted"` 的權重**會被遵守：權重 3 與 1 時，80 個請求中有 60 個送到第一台。（nginx 的文件沒有說它會用 SRV 的權重。）
 - **emfor 無法回答時**：服務沒有 backend 可以給（`on_all_down = "closed"` 且全部不健康，或每個 backend 都 drain），emfor 回 `SERVFAIL`；nginx 會記錄 `could not be resolved`，並**沿用它最後一次拿到的清單**，繼續送請求給那些 backend。停掉的 emfor 根本不會回任何答案，nginx 的查詢是逾時而不是收到 `SERVFAIL`；這個情況沒有試過（測試只 drain 過所有 backend），nginx 對逾時的處理可能和對 `SERVFAIL` 的不同。對 nginx 的用戶端來說，要靠 nginx 自己的 `proxy_next_upstream` 與 `max_fails` 才會失敗。**emfor 再度回答時，nginx 要等 `resolver_timeout` 之後才會跟上**，預設是 30 秒：測試中用預設值，emfor 再度回答 5 秒後 nginx 仍是舊清單，大約 26 秒後才跟上；設成 `resolver_timeout 1s` 則大約一秒就跟上（設 5 秒約 2 秒，設 10 秒約 7 秒）。在這個狀態下你做的改動，例如 drain，也同樣要等那麼久才會到 nginx。所以食譜設 `resolver_timeout 1s`。
 - **HTTPS upstream**：記錄的目標是像 `10-0-0-11.api.svc.emfor` 的名稱。要把 `proxy_ssl_name`（並設 `proxy_ssl_server_name on`）設成 backend 憑證上的名稱。這一項沒有試過。
@@ -223,10 +223,10 @@ backend api
 HAProxy 怎麼處理這個回答，用 HAProxy 3.4.7 與 2.8.31 測過：
 
 - **健康狀態與 `drain = true`**（[第 5 章](05-backend-selection.md#drain-一個-backend)）會在幾秒內傳到 HAProxy，和 nginx 一樣：那台 backend 收不到請求，恢復或取消 drain 後又會收到。HAProxy 不用 reload。
-- **不使用優先序。** `balance = "failover"` 時，HAProxy 把請求送給兩台 backend（40 個中 20 對 20），不是只送第一台。`locality` 與 `fastest` 用 priority 0 和 1 排序，也是一樣。不要指望 SRV 回答裡的備援；備援請用 HAProxy 自己的 `backup`，或用上面會遵守優先序的 nginx 做法。
+- **不使用優先序。** `balance = "failover"` 時，HAProxy 把請求送給兩台 backend（40 個中 20 對 20），不是只送第一台。`locality` 與 `fastest` 也用 priority 0 和 1 排序，應該有同樣的表現；這沒有跑過。不要指望 SRV 回答裡的備援；備援請用 HAProxy 自己的 `backup`，或用上面會遵守優先序的 nginx 做法（以 `failover` 試過）。
 - **不使用權重。** `balance = "weighted"`、權重 3 與 1 時，80 個請求是 40 對 40；在 template 上加 `weight 1` 或 `ignore-weight` 也一樣。
 - **emfor 沒有回答時**（停掉或重新啟動）：HAProxy 依 `hold` 的時間保留它的 server。用上面的設定，emfor 停掉 4 秒後，所有請求仍然成功。
-- **emfor 回 `SERVFAIL` 時**（沒有 backend 可給，或每個 backend 都 drain）：HAProxy 先保留 server 一陣子，然後丟掉，之後每個請求都得到 `503`；測試中在 10 到 30 秒之間就沒了，這是預設的 `hold other`（30 秒）。同樣的情況 nginx 會一直沿用最後的清單。
+- **emfor 回 `SERVFAIL` 時**（沒有 backend 可給，或每個 backend 都 drain）：HAProxy 先保留 server 一陣子，然後丟掉，之後每個請求都得到 `503`；測試中在 10 到 30 秒之間就沒了，這是預設的 `hold other`（30 秒）。同樣的情況 nginx 在測試觀察的那幾秒內沿用最後的清單；它會沿用多久沒有試過。
 
 哪一種比較對，取決於 emfor 說沒有 backend 時你希望發生什麼。`hold` 的值是 HAProxy 的，這裡沒有調校過。
 
@@ -265,7 +265,7 @@ Caddy 的 `reverse_proxy` 可以用 `dynamic srv` 從 SRV 回答取得上游，�
 
 - **兩個 `resolvers`**：`dynamic srv` 裡的用來查 SRV；回答裡的目標是 `10-0-0-11.api.svc.emfor` 這樣的名稱，Caddy 要連線到它們，`transport http` 裡的就是為了這個。少了它，Caddy 會問主機的 resolver，主機的 resolver 不認得這個 zone 時，每個請求都會失敗（測試中 10 個有 10 個失敗，log 是 `no such host`）；主機的 resolver 已經[轉送這個 zone](#從主機的-resolver-轉送)的話就不需要它。
 - **`refresh`** 是 Caddy 多久再問一次；測試用 1 秒。預設值比較長（我讀 Caddy 文件的理解是一分鐘；沒有試過），`refresh` 越長，drain 或故障傳到 Caddy 就越慢。
-- **`grace_period`** 在查詢失敗時保留上一份清單。service 的 backend 全部被 drain、或在 `on_all_down = "closed"` 下全部故障時 emfor 回答 `SERVFAIL`（預設的 `open` 仍會回答）：有 `grace_period`，Caddy 繼續回答（10 個有 10 個）；沒有的話 Caddy 沒有上游，每個請求都失敗（10 個有 10 個）。nginx 自己就會保留上一份清單。
+- **`grace_period`** 在查詢失敗時保留上一份清單。service 的 backend 全部被 drain、或在 `on_all_down = "closed"` 下全部故障時 emfor 回答 `SERVFAIL`（預設的 `open` 仍會回答）：有 `grace_period`，Caddy 繼續回答（10 個有 10 個）；沒有的話 Caddy 沒有上游，每個請求都失敗（10 個有 10 個）。nginx 在它的測試中不需要這種設定，自己就保留了上一份清單。
 - **`lb_try_duration` 與 `lb_try_interval`** 讓 Caddy 重試，所以剛停掉、但在 emfor 與 Caddy 察覺前（約一秒）還在清單裡的 backend 不會丟請求（測試中 25 個請求丟 0 個）。沒有它們，Caddy 不會重試，25 個丟了 3 個。
 
 Caddy 怎麼處理這個回答，以下是 `tests/caddy/run.sh` 用 Caddy 2.11.9 看到的：

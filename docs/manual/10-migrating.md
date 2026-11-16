@@ -81,7 +81,7 @@ Line by line:
 | `server api1 10.0.0.11:8080` | an entry of `backends` | IP addresses only, never host names: emfor does not depend on DNS to find its backends. |
 | `check` | `check = "http"` (or `"tcp"`) | One `check` for the whole service. |
 | `inter 2s` | `interval = "2s"` | Both default to 2 seconds. |
-| `fall 3` / `rise 2` | `fall = 3` / `rise = 2` | Both default to 3 and 2. |
+| `fall 3` / `rise 2` | `fall = 3` / `rise = 2` | Both default to 3 and 2 ([rise, fall and errors](04-health-checks.md#rise-fall-and-errors)). |
 | `option httpchk GET /healthz` | `path = "/healthz"` | emfor always sends `GET`. HAProxy without arguments sends `OPTIONS /`; emfor sends `GET /` unless you set `path` ([http check](04-health-checks.md#http)). |
 | `http-check expect status 200` | `expect_status = [200]` | Without it, any status from 200 to 399 is `up`. HAProxy's default accepts 2xx and 3xx too. Ranges are written `"200-299"`. |
 | `http-check send ... hdr Host x` | `host_header = "x"` | Only the `Host` header can be set. |
@@ -134,6 +134,27 @@ emfor does not touch the traffic, so you can run it beside HAProxy first:
    [metrics](08-operations.md#metrics) and `emfor status --watch`.
 5. Remove a backend from HAProxy's configuration only when no application
    uses it any more.
+
+### Keeping HAProxy and letting emfor feed it
+
+You do not have to move the applications. HAProxy can keep the traffic, with
+its retries, queues, TLS and routing, and take its list of servers from
+emfor's SRV answers, so that emfor's checks decide who is in it
+([HAProxy in chapter 7](07-dns.md#using-it-with-haproxy) has the
+configuration: a `server-template` and a `resolvers` section that points at
+emfor's DNS server, so the config needs a `[dns]` table and the services
+must be named under its zone). What you get: any emfor check (for example a
+database plugin) decides the health instead of `check`, `drain = true` takes a
+server out with a reload of emfor and no reload of HAProxy, and on every host
+a [peer group](03-configuration.md#peers) can vote on a backend.
+
+What does not carry over, as tried with HAProxy 3.4.7 and 2.8.31: HAProxy
+ignores the priorities and weights of the answer, so `failover`, `weighted`,
+and `backup = true` do nothing there (keep HAProxy's own `backup`
+and `weight`); the slots of the template limit the number of backends; and
+after a `SERVFAIL` HAProxy drops its servers after `hold other` (30 seconds by
+default) and answers 503. Use one name server per HAProxy, the emfor of the
+same host. Not tried: more than 27 backends over UDP, and long-running use.
 
 ## From Consul
 

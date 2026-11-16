@@ -71,7 +71,7 @@ drill -p 5300 api.svc.emfor @127.0.0.1           # FreeBSD
 | --- | --- |
 | A / AAAA for a service | One record: a backend of that family chosen by `balance` ([chapter 5](05-backend-selection.md#dns-differences)), with the `aa` flag. |
 | A / AAAA, no backend of that family | `NOERROR` with no records (NODATA). |
-| A / AAAA / SRV, no healthy backend and `on_all_down = "closed"` | `SERVFAIL`. For A and AAAA "no healthy backend" is counted per address family. |
+| A / AAAA / SRV, no healthy backend and [`on_all_down = "closed"`](05-backend-selection.md#when-no-backend-is-healthy) | `SERVFAIL`. For A and AAAA "no healthy backend" is counted per address family. |
 | A / AAAA / SRV, every backend of the service drained | `SERVFAIL`, whatever `on_all_down` is ([chapter 5](05-backend-selection.md#draining-a-backend)). |
 | Any name in the zone, before the daemon has its first state (the first moments after a start) | `SERVFAIL`: which names exist is not known yet. |
 | SRV, a backend whose target name would be longer than 255 bytes | `SERVFAIL`. |
@@ -81,7 +81,7 @@ drill -p 5300 api.svc.emfor @127.0.0.1           # FreeBSD
 | A name outside the zone, or a class other than `IN` | `REFUSED`. |
 | EDNS version above 0 | `BADVERS`. |
 
-The TTL is the service's `dns_ttl`, or `[dns] ttl` (1 second by default).
+The TTL is the service's `dns_ttl` ([chapter 3](03-configuration.md#servicesname)), or `[dns] ttl` ([chapter 3](03-configuration.md#dns); 1 second by default).
 The zone has a synthesized SOA whose negative-caching TTL is also
 `[dns] ttl`.
 
@@ -231,7 +231,7 @@ What nginx does with the answer, as checked with nginx 1.30.6 (stable) and
 - **Priorities**: nginx takes the records with the lowest priority number as
   its servers and the others as `backup`. With `balance = "failover"` the
   first healthy backend is the only server and the second its backup;
-  `locality` and `fastest` use priority 0 and 1 the same way.
+  `locality` and `fastest` also give priority 0 and 1 (SRV records table above), but only `failover` was run against nginx.
 - **Weights** of `balance = "weighted"` are followed: with weights 3 and 1,
   60 of 80 requests went to the first backend. (nginx's documentation does
   not say it uses the SRV weight.)
@@ -390,10 +390,10 @@ What HAProxy does with the answer, as checked with HAProxy 3.4.7 and 2.8.31:
   when it recovers or the drain is removed. HAProxy is not reloaded.
 - **Priorities are not used.** With `balance = "failover"`, HAProxy sent
   requests to both backends (20 and 20 of 40), not only to the first one.
-  The same holds for `locality` and `fastest`, which rank backends by
-  priority 0 and 1. Do not rely on a backup in the SRV answer; use
-  HAProxy's own `backup` for that, or the nginx recipe above, which does
-  follow priorities.
+  `locality` and `fastest` rank backends by priority 0 and 1 too, so they
+  should behave the same; that was not run. Do not rely on a backup in the SRV answer; use
+  HAProxy's own `backup` for that, or the nginx recipe above, which follows
+  priorities (tried with `failover`).
 - **Weights are not used.** With `balance = "weighted"` and weights 3 and 1,
   the requests went 40 and 40 of 80, also with `weight 1` or
   `ignore-weight` on the template.
@@ -404,7 +404,8 @@ What HAProxy does with the answer, as checked with HAProxy 3.4.7 and 2.8.31:
   drained): HAProxy kept its servers for a while and then dropped them, and
   every request got `503`; in the test it had lost them between 10 and 30
   seconds later, which is the default `hold other` (30 s). nginx, in
-  the same case, keeps its last list for good.
+  the same case, kept its last list for the few seconds the test
+  looked; how long it keeps it was not tried.
 
 Which is right depends on what you want to happen when emfor says there is
 no backend. The `hold` values are HAProxy's, and were not tuned here.
@@ -508,8 +509,8 @@ reload:
   answers `SERVFAIL` when every backend of the service is drained, or is down
   with `on_all_down = "closed"` (with the default `open` it still answers):
   with `grace_period` Caddy kept answering (10 of 10), without it Caddy had no
-  upstream and every request failed (10 of 10). nginx keeps its last list
-  by itself.
+  upstream and every request failed (10 of 10). nginx kept its last list
+  without such a setting in its test.
 - **`lb_try_duration` and `lb_try_interval`** make Caddy try again, so a
   backend that has just stopped, and is still in the list for the second or
   so that emfor and Caddy need to notice it, loses nothing (0 of 25 requests
