@@ -56,7 +56,7 @@ every backend counts as unhealthy and the service's `on_all_down` decides:
 ## Getting the package
 
 ```bash
-go get github.com/embark-systems/emfor/clients/go@v0.5.0
+go get github.com/embark-systems/emfor/clients/go@v0.6.0
 ```
 
 The package's versions are tags `clients/go/vX.Y.Z`, one for each emfor

@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-11-17
+
+The store format (`meta/schema_version` 2) and the plugin protocol (1) are
+unchanged: clients and plugins of 0.5.0 keep working with this daemon. Upgrade
+`libemfor` and the clients before you use `drain = true`, so that an older client
+does not choose a drained backend (see below). A config that 0.5.0 accepted is
+still accepted.
 
 **Manual chapter 7 is split in two (both languages).** `07-dns.md` keeps the DNS
 server, its answers, SRV records, forwarding and caching; the recipes for
@@ -295,6 +301,30 @@ row (`local-up` and `voted` were missing from the lists) and the `peers`
 and `assigned_checkers` fields of `emfor status --json`, and say that the
 age of a `voted` backend is the time its result was applied, not the time
 this host last connected to it.
+
+### Known limits
+
+- FreeBSD has been tested on 15.1-RELEASE (arm64, in a VM): the tests, the
+  rc.d script, the port with `make stage check-plist install`, the fork
+  tests, and the nginx, HAProxy and pf recipes by hand. Not tested:
+  poudriere, 13.x, 14.x, amd64 (the optional CI job covers 14.3 on amd64).
+- HAProxy 3.4.4 on FreeBSD answered 503 for a while after a `server-template`
+  slot came up with port 0, also with one name server; the cause is not
+  known (the same test passes on Linux).
+- The deb and rpm have been installed, upgraded and removed in containers
+  (arm64) without systemd; not tested on x86-64 or under systemd, and they
+  are not signed.
+- The packages and the port are not in any repository: they are built from
+  the source tree.
+- Everything in 0.5.0's known limits that is not listed here has not
+  changed: no forward secrecy for peer messages; the `ldap` plugin checked
+  against Active Directory only without a certificate; lookup throughput
+  across threads levels off at about two million a second on Linux
+  ([docs/performance.md](docs/performance.md)); with `[store] sync = false` a
+  host crash can damage the store; a host announces at most 80 services to
+  the peer group. FreeBSD's libthr fork problem is worked around by
+  `libemfor` as in 0.5.0
+  ([docs/freebsd/](docs/freebsd/libthr-pshared-fork.md)).
 
 ## 0.5.0 — 2026-11-15
 

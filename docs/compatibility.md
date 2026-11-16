@@ -29,7 +29,7 @@ of reader slots. Install `libemfor` and the client wrappers from the same
 release as the daemon, and upgrade them together. A mismatch shows up as
 `UNAVAILABLE` with a message that says so; it never returns wrong data.
 
-The shared library's name carries the minor version (`libemfor.so.0.5` for 0.5),
+The shared library's name carries the minor version (`libemfor.so.0.6` for 0.6),
 so programs linked against one minor release do not silently load another.
 
 ## Interfaces

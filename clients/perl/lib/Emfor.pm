@@ -16,7 +16,7 @@ use warnings;
 
 use Emfor::Error;
 
-our $VERSION = '0.5.0';
+our $VERSION = '0.6.0';
 
 require XSLoader;
 XSLoader::load('Emfor', $VERSION);
