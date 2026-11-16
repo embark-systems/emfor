@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+**Using emfor with nginx.** Manual chapter 7 (both languages) has a section
+for nginx: from 1.27.3 the open-source nginx can take its upstream from emfor's
+SRV answers (`server api.svc.emfor service=http resolve;` with `resolver
+127.0.0.1:5300`), so health, `drain` and weights reach it within a few
+seconds without a reload; the section also says what nginx does when emfor
+answers `SERVFAIL` (it keeps its last list) and gives the variable
+`proxy_pass` recipe for older nginx. `tests/nginx/run.sh [image]` checks it
+on a given image, and the CI runs it on `nginx:stable` and `nginx:mainline`.
+Checked with nginx 1.30.6, 1.31.8 and (older recipe only) 1.26.3. Not tried:
+HTTPS upstreams, nginx Plus, several workers, the `stream` module.
+
 **deb and rpm packages, and a `packages/` directory.** The example FreeBSD
 port moved from `examples/freebsd/` to `packages/freebsd/` (the same files;
 update a link or a script that names the old path). `packages/build.sh`

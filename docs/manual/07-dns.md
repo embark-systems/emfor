@@ -173,6 +173,89 @@ Linux and FreeBSD, `dscacheutil -q host -a name api.svc.emfor` on macOS.
 [docs/deploy/dns-resolver.md](../deploy/dns-resolver.md) has the verified
 recipes and more checks.
 
+## Using it with nginx
+
+Open-source nginx has no active health checks (only `max_fails`), and its
+upstream list is fixed until a reload. With nginx 1.27.3 or later it can
+take the list from emfor's SRV answers instead (`resolve` and `service=` were
+commercial-only before that release), so a backend that fails its checks, a
+backend you drain and a weight you change all reach nginx within a few
+seconds (emfor's own check interval first, then the one second of `valid`),
+without a reload:
+
+```nginx
+resolver 127.0.0.1:5300 valid=1s ipv6=off;    # emfor's DNS server, asked every second
+
+upstream api {
+    zone api 64k;                              # required with `resolve`
+    server api.svc.emfor service=http resolve; # asks _http._tcp.api.svc.emfor
+}
+
+server {
+    listen 80;
+    location / { proxy_pass http://api; }
+}
+```
+
+The `resolver` points at emfor directly (`[dns] listen`, port 5300 by
+default), not at the host resolver: nginx has its own resolver cache, and
+`valid=1s` makes it ask again every second. `service=http` is only the name
+prefix (`_http._tcp`); emfor answers `_<anything>._tcp.<service>`
+([SRV records](#srv-records)), so the port comes from each record.
+
+What nginx does with the answer, as checked with nginx 1.30.6 (stable) and
+1.31.8 (mainline):
+
+- **Health**: a backend whose checks fail is not in the answer, and nginx
+  stops sending to it; when it recovers, it returns. The test waits up to
+  10 seconds for each change; with a 200 ms check interval it took about 3.
+- **`drain = true`** ([chapter 5](05-backend-selection.md#draining-a-backend)):
+  edit emfor's config and reload emfor; nginx is not touched, and the
+  backend stops getting new requests. (What happens to a connection nginx
+  already holds open to it was not tried.)
+- **Priorities**: nginx takes the records with the lowest priority number as
+  its servers and the others as `backup`. With `balance = "failover"` the
+  first healthy backend is the only server and the second its backup;
+  `locality` and `fastest` use priority 0 and 1 the same way.
+- **Weights** of `balance = "weighted"` are followed: with weights 3 and 1,
+  60 of 80 requests went to the first backend. (nginx's documentation does
+  not say it uses the SRV weight.)
+- **When emfor cannot answer**: a service with no backend to offer
+  (`on_all_down = "closed"` and everything down, or every backend drained)
+  gets `SERVFAIL`, and so does a stopped emfor. nginx logs `could not be
+  resolved` and **keeps the last list it had**, so it goes on sending
+  to those backends. The lookup fails for nginx's clients only through
+  nginx's own `proxy_next_upstream` and `max_fails`.
+- **HTTPS upstreams**: a record's target is a name like
+  `10-0-0-11.api.svc.emfor`. Set `proxy_ssl_name` (and
+  `proxy_ssl_server_name on`) to the name the backend's certificate has. This
+  was not tried.
+
+**Older nginx.** Before 1.27.3 the `service=` parameter is rejected at
+`nginx -t` (`invalid parameter "service=http"`, seen with 1.26.3). Without
+it, use a variable in `proxy_pass`, which makes nginx resolve the name at run
+time, and give every backend of the service the same port:
+
+```nginx
+resolver 127.0.0.1:5300 valid=1s ipv6=off;
+server {
+    listen 80;
+    location / {
+        set $backend api.svc.emfor;
+        proxy_pass http://$backend:8080;
+    }
+}
+```
+
+An A answer holds one backend, chosen by `balance`, so nginx sends all
+requests of a second to that one (it keeps the answer for `valid`); the
+rotation is across seconds, not across requests. Both backends were reached
+in the test; how evenly was not measured.
+
+[tests/nginx/](../../tests/nginx/run.sh) runs this on a given nginx image
+(`tests/nginx/run.sh nginx:stable`): the checks above, and the older nginx
+case. It is part of the CI.
+
 ## Caching
 
 emfor's short TTL lets a failed backend drop out of answers within about a

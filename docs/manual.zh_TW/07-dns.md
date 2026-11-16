@@ -116,6 +116,52 @@ port 5300
 
 接著透過系統 resolver 測試：Linux 與 FreeBSD 用 `getent hosts api.svc.emfor`，macOS 用 `dscacheutil -q host -a name api.svc.emfor`。[docs/deploy/dns-resolver.md](../deploy/dns-resolver.md) 有經過驗證的設定方式與更多檢查方法。
 
+## 搭配 nginx 使用
+
+開源版的 nginx 沒有主動健康檢查（只有 `max_fails`），upstream 清單在 reload 之前也是固定的。nginx 1.27.3 或更新的版本可以改從 emfor 的 SRV 回答取得清單（`resolve` 與 `service=` 在那個版本之前只有商業版有），所以檢查失敗的 backend、你 drain 的 backend、你改的權重，都會在幾秒內傳到 nginx（先是 emfor 自己的檢查間隔，再加上 `valid` 的一秒），不需要 reload：
+
+```nginx
+resolver 127.0.0.1:5300 valid=1s ipv6=off;    # emfor 的 DNS server，每秒問一次
+
+upstream api {
+    zone api 64k;                              # 用 `resolve` 就一定要有
+    server api.svc.emfor service=http resolve; # 查 _http._tcp.api.svc.emfor
+}
+
+server {
+    listen 80;
+    location / { proxy_pass http://api; }
+}
+```
+
+`resolver` 直接指向 emfor（`[dns] listen`，預設 5300 port），不是主機的 resolver：nginx 有自己的 resolver 快取，`valid=1s` 讓它每秒重新問一次。`service=http` 只是名稱的前綴（`_http._tcp`）；emfor 會回答 `_<任意>._tcp.<服務名稱>`（[SRV 記錄](#srv-記錄)），所以 port 來自每一筆記錄。
+
+nginx 怎麼處理這個回答，以下用 nginx 1.30.6（stable）與 1.31.8（mainline）測過：
+
+- **健康狀態**：檢查失敗的 backend 不在回答裡，nginx 就不再送請求給它；它恢復後又回來。測試對每個變化最多等 10 秒；檢查間隔 200 毫秒時大約花 3 秒。
+- **`drain = true`**（[第 5 章](05-backend-selection.md#drain-一個-backend)）：改 emfor 的設定並 reload emfor；不用動 nginx，那台 backend 不再收到新的請求。（nginx 已經對它開著的連線會怎樣，沒有試過。）
+- **優先序**：nginx 把 priority 數字最小的記錄當 server，其他的當 `backup`。`balance = "failover"` 時，第一台健康的 backend 是唯一的 server，第二台是它的備援；`locality` 與 `fastest` 的 priority 0 與 1 也是同樣的用法。
+- **`balance = "weighted"` 的權重**會被遵守：權重 3 與 1 時，80 個請求中有 60 個送到第一台。（nginx 的文件沒有說它會用 SRV 的權重。）
+- **emfor 無法回答時**：服務沒有 backend 可以給（`on_all_down = "closed"` 且全部不健康，或每個 backend 都 drain），emfor 回 `SERVFAIL`；emfor 停掉也一樣。nginx 會記錄 `could not be resolved`，並**沿用它最後一次拿到的清單**，繼續送請求給那些 backend。對 nginx 的用戶端來說，要靠 nginx 自己的 `proxy_next_upstream` 與 `max_fails` 才會失敗。
+- **HTTPS upstream**：記錄的目標是像 `10-0-0-11.api.svc.emfor` 的名稱。要把 `proxy_ssl_name`（並設 `proxy_ssl_server_name on`）設成 backend 憑證上的名稱。這一項沒有試過。
+
+**較舊的 nginx。** 1.27.3 之前，`service=` 參數在 `nginx -t` 就被拒絕（`invalid parameter "service=http"`，用 1.26.3 看到的）。沒有它時，在 `proxy_pass` 用變數，讓 nginx 在執行時解析名稱，並讓服務的每個 backend 用同一個 port：
+
+```nginx
+resolver 127.0.0.1:5300 valid=1s ipv6=off;
+server {
+    listen 80;
+    location / {
+        set $backend api.svc.emfor;
+        proxy_pass http://$backend:8080;
+    }
+}
+```
+
+A 回答只有一個 backend，由 `balance` 選出，所以 nginx 一秒內的所有請求都送給那一台（它把回答保留 `valid` 的時間）；輪替發生在秒與秒之間，不是請求與請求之間。測試中兩台 backend 都有被用到，平均程度沒有量。
+
+[tests/nginx/](../../tests/nginx/run.sh) 在指定的 nginx 映像上執行這些檢查（`tests/nginx/run.sh nginx:stable`），包含較舊的 nginx 的情況，也是 CI 的一部分。
+
 ## 快取
 
 emfor 的短 TTL 讓故障的 backend 大約一秒內從回答中消失。快取會拉長這段時間：
