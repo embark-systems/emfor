@@ -442,6 +442,67 @@ requests in the application. The rest of the script (`sed`, `cp`, `mv`, `jq`)
 ran there. The Integrations workflow runs the test on Linux every week and
 when the test or the script changes.
 
+## Watching emfor from Nagios, Icinga or Zabbix
+
+Two small scripts connect emfor to a monitoring system that speaks the Nagios
+plugin convention (exit status 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN, a first
+line of text, perfdata after a `|`). They are examples to copy, in
+[examples/nagios/](../../examples/nagios/check_emfor.sh).
+
+**Watching emfor: `check_emfor.sh`.** It reads `emfor status --json` (it needs
+`jq`) and gives the Nagios status of it:
+
+```console
+$ check_emfor.sh -s web.svc.emfor
+EMFOR WARNING - web.svc.emfor: 2 of 3 healthy (127.0.0.1:7002 WARNING - slow on 7002) | 'web.svc.emfor_healthy'=2;3;1;0;3
+$ echo $?
+1
+```
+
+- CRITICAL: the daemon is stale or stopped, or a service has fewer than `-c`
+  healthy backends (default 1: all down, or all drained).
+- WARNING: fewer than `-w` are healthy (default: every backend that is not
+  drained).
+- UNKNOWN: `emfor` or `jq` cannot be run, the store cannot be read, or the
+  service does not exist.
+- A drained backend is left out of the counts (it is out on purpose) and is
+  named in the text. `-s` picks a service (default every service), `-C` the
+  config that names the store.
+- The user the monitoring runs as must be able to read the store
+  ([who can use the store](#who-can-use-the-store)); with NRPE or SSH the
+  script runs on the host that has the store.
+
+**Using a Nagios plugin as a check: `emfor-exec.sh`.** emfor's [`exec`
+check](04-health-checks.md#exec) starts a program without a shell and passes
+the backend in the environment (`EMFOR_IP`, `EMFOR_PORT`), so a plugin cannot
+be given `-H $EMFOR_IP` in the config. `emfor-exec.sh` does that and runs the
+plugin:
+
+```toml
+[services."web.svc.emfor"]
+check = "exec"
+backends = ["10.0.0.11:80", "10.0.0.12:80"]
+interval = "10s"
+timeout = "5s"
+check_options = { command = ["/usr/local/libexec/emfor-exec.sh",
+    "/usr/local/libexec/nagios/check_http", "-u", "/healthz"] }
+```
+
+It runs `check_http -H <ip> -p <port> -u /healthz` and returns the plugin's
+exit status; `--host-flag` and `--port-flag` change the two flags for a plugin
+that uses others. What emfor makes of it: 0 is up, **1 (WARNING) is down**, 2
+(CRITICAL) is down, and 3 (UNKNOWN) is an error, shown as state `unknown`
+and not up; the first line of the plugin's output is the reason, and a
+plugin that has not finished at `timeout` is down. `--warning up` turns a
+WARNING into up. A process is started for every check of every backend, so
+choose `interval` with that in mind ([chapter 4](04-health-checks.md#exec)).
+
+`tests/nagios/run.sh` checks both scripts in Docker, with a stand-in for the
+plugin that says what a file tells it (ok, warn, crit, unknown, hang). Not
+tried: the real plugins of the Monitoring Plugins or Nagios Plugins packages,
+a Nagios or Icinga core, NRPE, Zabbix (its `UserParameter` can run
+`check_emfor.sh` and use its text), FreeBSD.
+
 ## Running more than one daemon
 
 Each store has one writer: the daemon locks `<store>.writer`, and a second

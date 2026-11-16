@@ -25,6 +25,8 @@ on:
       - "tests/deploy/**"
       - "tests/prometheus/**"
       - "tests/caddy/**"
+      - "tests/nagios/**"
+      - "examples/nagios/**"
       - "examples/deploy/**"
       - ".github/workflows/integrations.yml"
   workflow_dispatch:
@@ -86,3 +88,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: tests/caddy/run.sh caddy
+
+  nagios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - run: tests/nagios/run.sh

@@ -62,6 +62,17 @@ comes. `tests/deploy/run.sh [image]` checks it on nginx 1.30.6 and 1.31.8
 there). Not tried: HAProxy, HTTPS, clients with their own connection pool,
 several emfor hosts.
 
+**Nagios, Icinga and Zabbix (manual chapter 8, both languages).**
+`examples/nagios/check_emfor.sh` gives the Nagios status of what `emfor status
+--json` reports (CRITICAL for a stale or stopped daemon or a service with fewer
+than `-c` healthy backends, WARNING below `-w`, UNKNOWN when emfor or the store
+cannot be read; drained backends are left out of the counts; perfdata per
+service). `examples/nagios/emfor-exec.sh` runs an existing Nagios plugin as an
+`exec` check, adding `-H` and `-p` from `EMFOR_IP` and `EMFOR_PORT`; for emfor a
+plugin's WARNING is down (`--warning up` changes that) and UNKNOWN is an error.
+`tests/nagios/run.sh` checks both with a stand-in plugin. Not tried: the real
+Monitoring Plugins, a Nagios or Icinga core, NRPE, Zabbix, FreeBSD.
+
 **Using it with pf (FreeBSD; manual chapter 7, both languages).**
 `examples/pf/emfor-pf-table.sh` asks emfor's DNS server for the SRV records of a
 service every second and makes a pf table equal to the targets with the lowest

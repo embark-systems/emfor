@@ -88,7 +88,7 @@ check_options = { command = ["/usr/local/libexec/check_pg_replication", "--max-l
 | 其他結束代碼、被 signal 終止、無法啟動 | `error` |
 | 到 `timeout` 仍在執行 | `down`（`timeout`）；程式與它所有子行程都會被終止 |
 
-`command` 是唯一的選項：不含 NUL 的字串組成的非空清單，第一個元素是可執行檔的絕對路徑。每次檢查都啟動一個行程的成本不低；需要頻繁檢查很多 backend 時，請用 plugin。
+`command` 是唯一的選項：不含 NUL 的字串組成的非空清單，第一個元素是可執行檔的絕對路徑。每次檢查都啟動一個行程的成本不低；需要頻繁檢查很多 backend 時，請用 plugin。要執行現成的、命令列需要 `-H` 與 `-p` 的 Nagios 外掛，見[從 Nagios 監看 emfor](08-operations.md#從-nagiosicinga-或-zabbix-監看-emfor)。
 
 ## plugin 與 emfor-check
 

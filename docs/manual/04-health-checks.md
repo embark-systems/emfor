@@ -112,7 +112,9 @@ check_options = { command = ["/usr/local/libexec/check_pg_replication", "--max-l
 | still running at `timeout` | `down` (`timeout`); the program and all its children are killed |
 
 `command` is the only option: a non-empty list of strings without NUL whose first element is an
-absolute path to an executable. Starting a process per check is costly; for
+absolute path to an executable. To run an existing Nagios plugin, which wants
+`-H` and `-p` on its command line, see
+[Watching emfor from Nagios](08-operations.md#watching-emfor-from-nagios-icinga-or-zabbix). Starting a process per check is costly; for
 frequent checks of many backends, use a plugin.
 
 ## Plugins and emfor-check

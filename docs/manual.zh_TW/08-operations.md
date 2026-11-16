@@ -242,6 +242,41 @@ emfor-drain.sh off /etc/emfor/conf.d/20-api.toml 10.0.0.11:8080
 
 沒有試過：HAProxy（它同樣會重試，也有自己的 session）、HTTPS、自己維護連線池到 backend 的 client（drain 不會關掉池裡的連線）、多台 emfor 主機。在 FreeBSD 15.1（套件裡的 nginx 1.30.6 與 `jq`）上，把 `wait-idle` 換成固定等 8 秒，手動執行測試也通過：`wait-idle` 需要 Linux 的 `ss`，在那裡會直接停下並說明；FreeBSD 上請等一段固定時間，至少是最長的請求加上 proxy 重新查詢所需的時間，或在應用程式裡計算請求數。腳本的其餘部分（`sed`、`cp`、`mv`、`jq`）在那裡都跑過。Integrations workflow 每週在 Linux 上執行一次，測試或腳本有改動時也會執行。
 
+## 從 Nagios、Icinga 或 Zabbix 監看 emfor
+
+兩支小腳本把 emfor 接到使用 Nagios 外掛慣例的監控系統（結束狀態 0 OK、1 WARNING、2 CRITICAL、3 UNKNOWN，第一行文字，`|` 後面是 perfdata）。它們是給你複製的範例，在 [examples/nagios/](../../examples/nagios/check_emfor.sh)。
+
+**監看 emfor：`check_emfor.sh`。** 它讀 `emfor status --json`（需要 `jq`），給出 Nagios 的狀態：
+
+```console
+$ check_emfor.sh -s web.svc.emfor
+EMFOR WARNING - web.svc.emfor: 2 of 3 healthy (127.0.0.1:7002 WARNING - slow on 7002) | 'web.svc.emfor_healthy'=2;3;1;0;3
+$ echo $?
+1
+```
+
+- CRITICAL：daemon 是 stale 或 stopped，或某個 service 的健康 backend 少於 `-c` 個（預設 1：全部故障，或全部被 drain）。
+- WARNING：健康的少於 `-w` 個（預設：每一個沒有被 drain 的 backend）。
+- UNKNOWN：`emfor` 或 `jq` 無法執行、讀不到 store，或 service 不存在。
+- 被 drain 的 backend 不計入（它是刻意被拿掉的），但會在文字裡點名。`-s` 選一個 service（預設全部），`-C` 指定寫著 store 的設定檔。
+- 監控程式所用的使用者必須能讀 store（[誰能使用 store](#誰能使用-store)）；用 NRPE 或 SSH 時，腳本在有 store 的那台主機上執行。
+
+**把 Nagios 外掛當成檢查：`emfor-exec.sh`。** emfor 的 [`exec` 檢查](04-health-checks.md#exec)不經 shell 啟動程式，並把 backend 放在環境變數（`EMFOR_IP`、`EMFOR_PORT`），所以設定檔裡沒辦法給外掛 `-H $EMFOR_IP`。`emfor-exec.sh` 就是做這件事並執行外掛：
+
+```toml
+[services."web.svc.emfor"]
+check = "exec"
+backends = ["10.0.0.11:80", "10.0.0.12:80"]
+interval = "10s"
+timeout = "5s"
+check_options = { command = ["/usr/local/libexec/emfor-exec.sh",
+    "/usr/local/libexec/nagios/check_http", "-u", "/healthz"] }
+```
+
+它執行 `check_http -H <ip> -p <port> -u /healthz`，並回傳外掛的結束狀態；外掛用別的旗標時，用 `--host-flag` 與 `--port-flag` 換掉。emfor 怎麼看這個結果：0 是 up，**1（WARNING）是 down**，2（CRITICAL）是 down，3（UNKNOWN）是 error，顯示為狀態 `unknown`、不算 up；外掛輸出的第一行是 reason，在 `timeout` 內沒有結束的外掛是 down。`--warning up` 把 WARNING 當成 up。每個 backend 的每次檢查都會啟動一個行程，所以選 `interval` 時要把這點算進去（[第 4 章](04-health-checks.md#exec)）。
+
+`tests/nagios/run.sh` 在 Docker 裡檢查這兩支腳本，外掛用一個替身，它依檔案內容說 ok、warn、crit、unknown 或 hang。沒試過：Monitoring Plugins 或 Nagios Plugins 套件裡的真正外掛、Nagios 或 Icinga 本體、NRPE、Zabbix（它的 `UserParameter` 可以執行 `check_emfor.sh` 並取用它的文字）、FreeBSD。
+
 ## 執行多個 daemon
 
 每個 store 只有一個寫入者：daemon 鎖住 `<store>.writer`，使用相同 `[store] path` 的第二個 daemon 會以 1 結束。要在同一台主機上執行兩個 daemon（測試用），請給它們不同的 store 路徑、DNS port 與 metrics port。
