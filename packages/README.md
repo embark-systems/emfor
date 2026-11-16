@@ -34,6 +34,10 @@ Neither package is signed.
 | `/etc/emfor/conf.d/` | For the services, one file per group (`01-`, `10-`, `99-` prefixes); a `README` explains it. |
 | `/usr/share/doc/emfor/` | The commented example config, and (deb) the manual and the Prometheus rules. |
 
+Both packages depend on `ca-certificates`: the http check builds its client
+with the system's root certificates, even for `scheme = "http"`, and without
+them every http check fails with `cannot build http client`.
+
 The store is in `/var/lib/emfor`, which the unit creates (`StateDirectory`).
 The scripts create the user and group `emfor`, and make `/etc/emfor` and
 `/etc/emfor/conf.d` owned by root and mode 0755: emfor refuses a config
@@ -47,10 +51,16 @@ directory that group or others can write, or that another user owns.
 
 ## What has been tested
 
-On an arm64 machine, in containers without systemd (Debian 12 and Rocky
-Linux 9): the deb and the rpm install; the user, the directories and their
-modes are right; `emfor check-config` passes as the `emfor` user; the daemon
-starts as that user and creates the store; remove, purge and upgrade over a
-modified config behave as above. **Not tested**: the systemd side (the unit
-start, the enable and the restart scripts need a running systemd), x86-64
-packages, and other distributions than the two.
+On an arm64 machine, in containers (Debian 12 and Rocky Linux 9): the deb
+and the rpm install; the user, the directories and their modes are right;
+`emfor check-config` passes as the `emfor` user; the daemon starts as that
+user and creates the store; remove, purge and upgrade over a modified config
+behave as above. The deb was also run under systemd 252 as PID 1 in a Debian
+12 container: the postinst enables and starts the unit, the daemon runs as
+`emfor` under the unit's hardening with tcp, http, exec and `emfor-check dns`
+checks, `systemctl reload` refuses a conf.d file that others can write and
+the daemon keeps running, `restart` with an invalid config leaves the unit
+retrying until its start limit (`systemctl reset-failed` after the fix),
+and a killed daemon is started again. **Not tested**: the rpm under systemd,
+x86-64 packages, a real host (journald, other cgroup limits), an upgrade
+between two different versions, and other distributions than the two.

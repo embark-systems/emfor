@@ -37,10 +37,15 @@ later, Ubuntu 20.04 and later, RHEL 9 and relatives) into `packages/dist/`:
 only sets `include_dir = "conf.d"` plus an empty `/etc/emfor/conf.d`, the
 example config, and the `emfor` user (the deb enables and starts the
 service, the rpm does not). They are built from this repository and not
-published; they are not signed. Tested on arm64 in containers without
-systemd (Debian 12 and Rocky Linux 9): install, user and modes, the daemon as
-the `emfor` user, remove, purge, upgrade over a modified config. Not tested:
-the systemd scripts (they need a running systemd), x86-64 packages.
+published; they are not signed. They depend on `ca-certificates`: the http
+check builds its client with the system's root certificates even for
+`scheme = "http"`, and fails with "cannot build http client" without them.
+Tested on arm64 in containers (Debian 12 and Rocky Linux 9): install, user
+and modes, the daemon as the `emfor` user, remove, purge, upgrade over a
+modified config; the deb also under systemd 252 as PID 1 in a Debian 12
+container (enable and start by the postinst, the hardened unit with tcp, http,
+exec and dns-plugin checks, reload, a refused conf.d file, restart, remove,
+purge). Not tested: the rpm under systemd, x86-64 packages, a real host.
 
 **`drain = true`: take a backend out of every choice.** A backend table can
 set `drain = true`; after a reload the backend is never chosen: by no

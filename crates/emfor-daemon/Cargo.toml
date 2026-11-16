@@ -82,7 +82,9 @@ a proxy; it can also answer DNS from that state. This package has the \
 daemon, the emfor-check plugin binary, a systemd unit and the manual."""
 section = "net"
 priority = "optional"
-depends = "$auto"
+# ca-certificates: the http check builds its client with the system's root
+# certificates even for scheme "http", and fails without them.
+depends = "$auto, ca-certificates"
 maintainer-scripts = "../../packages/deb"
 conf-files = ["/etc/emfor/emfor.toml"]
 assets = [
@@ -122,3 +124,7 @@ assets = [
     { source = "../../LICENSE", dest = "/usr/share/licenses/emfor/LICENSE", mode = "644", license = true },
     { source = "../../README.md", dest = "/usr/share/doc/emfor/README.md", mode = "644", doc = true },
 ]
+
+# Same reason as the deb's depends: the http check needs the root certificates.
+[package.metadata.generate-rpm.requires]
+ca-certificates = "*"
