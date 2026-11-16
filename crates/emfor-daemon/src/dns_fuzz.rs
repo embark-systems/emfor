@@ -160,6 +160,8 @@ fn backend(addr: &str, state: HealthState, weight: u32, site: Option<&str>) -> B
         weight,
         site: site.map(Into::into),
         backup: false,
+        drain: false,
+        checked_state: None,
         state,
         checked_at: Some(1762905600123),
         reason: (state != HealthState::Healthy).then(|| "connect: Connection refused".into()),
