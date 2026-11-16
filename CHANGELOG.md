@@ -37,8 +37,23 @@ undrains (`off`). The chapter says what the waiting is for and what was seen:
 a request in flight finishes after a drain and is cut after a plain stop;
 nginx 1.30 keeps idle connections to its upstream, so "no connection" never
 comes. `tests/deploy/run.sh [image]` checks it on nginx 1.30.6 and 1.31.8
-(also in the Integrations workflow). Not tried: HAProxy, HTTPS, clients with
-their own connection pool, several emfor hosts, FreeBSD.
+(also in the Integrations workflow). On FreeBSD 15.1 it passed by hand with
+`wait-idle` replaced by a fixed wait (`ss` is Linux only; the script says so
+there). Not tried: HAProxy, HTTPS, clients with their own connection pool,
+several emfor hosts.
+
+**Using it with Prometheus (manual chapter 7, both languages).**
+`dns_sd_configs` of type `SRV` on emfor's answers gives Prometheus the healthy
+backends of a service as scrape targets. The section says what that means: a
+backend that fails its checks or is drained is no longer a target, so its `up`
+series ends and `up == 0` never fires (alert on emfor's metrics, or keep a
+static list for the scrape); a `failover` backup is scraped too; a
+`backup = true` backend only when no primary is healthy; and the host
+resolver must forward the whole zone, since `dns_sd_configs` cannot be given a
+name server or port. `tests/prometheus/run.sh` checks it on Prometheus 3.16.0
+(also in the Integrations workflow); on FreeBSD 15.1 the same script passed by
+hand with Prometheus 2.55.1. Not tried: dnsmasq or unbound in front of emfor,
+other versions, HTTPS targets, many targets.
 
 **deb and rpm packages, and a `packages/` directory.** The example FreeBSD
 port moved from `examples/freebsd/` to `packages/freebsd/` (the same files;

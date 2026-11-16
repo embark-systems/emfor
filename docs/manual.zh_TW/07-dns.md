@@ -205,6 +205,33 @@ HAProxy 怎麼處理這個回答，用 HAProxy 3.4.7 與 2.8.31 測過：
 
 在 FreeBSD 15.1（arm64，套件裡的 HAProxy 3.4.4）上，同樣的檢查全部通過，包含不遵守優先序與權重那兩項，所以這一節在那裡照樣成立。和 nginx 一樣，`tests/haproxy/inside.sh` 是手動跑的，除了 HAProxy 套件之外不需要別的東西。FreeBSD 上沒試過：其他版本的 HAProxy。
 
+## 搭配 Prometheus 使用
+
+Prometheus 可以用 `dns_sd_configs`（型別 `SRV`）從 SRV 回答找到要抓取的目標：目標就是 emfor 某個 service 中健康的 backend，清單跟著檢查結果變動，不需要 reload Prometheus。
+
+```yaml
+scrape_configs:
+  - job_name: api
+    dns_sd_configs:
+      - names: ["_http._tcp.api.svc.emfor"]
+        type: SRV
+        refresh_interval: 5s
+```
+
+`dns_sd_configs` 問的是主機的 resolver，沒有設定 name server 或埠的欄位（`promtool check config` 會拒絕 `server` 欄位），所以主機的 resolver 要把這個 zone 轉送給 emfor，做法見[從主機的 resolver 轉送](#從主機的-resolver-轉送)。要轉送的是整個 zone，不只是 SRV 查詢：回答裡的目標是 `10-0-0-11.api.svc.emfor` 這樣的名稱，Prometheus 每次抓取都會再解析一次，而 emfor 會回答它們。`instance` 標籤是這個名稱加埠，不是位址；`__meta_dns_srv_record_target` 與 `__meta_dns_srv_record_port` 可以用在 `relabel_configs`。SRV 記錄裡的埠就是 emfor 裡 backend 的埠，所以應用程式的 metrics 要在這個埠上；要用別的埠，就另外做一個 backend 是那個埠的 service。
+
+目標是什麼，以下是 `tests/prometheus/run.sh` 用 Prometheus 3.16.0 看到的（`refresh_interval` 1 秒，emfor 是容器唯一的 resolver）：
+
+- `round-robin` service 的兩台 backend 都是目標，而且 `up`。
+- 檢查失敗的 backend **不再是目標**：它不是顯示成 down，而是它的 `up` 序列結束。所以 `up == 0` 對它永遠不會觸發；請改用 emfor 自己的 metrics 發警報（`emfor_backend_state`，見 [examples/prometheus/](../../examples/prometheus/emfor-rules.yml)）。
+- 被 drain 的 backend 也不是目標，雖然它還在跑、`/metrics` 也回得出來：在[用 drain 做滾動部署](08-operations.md#用-drain-做滾動部署)期間，它的 metrics 不會被收集。
+- `failover` service 會列出它的備援（優先序 1），Prometheus 取每一筆記錄，所以兩台都抓。`backup = true` 的 backend 只有在沒有任何主要 backend 健康時才是目標。
+- 目標出現與消失的時間，大約是 `refresh_interval` 加上 emfor 看出變化所需的時間（`interval`、`fall`、`rise`）。
+
+所以 emfor 的 service 很適合當作「現在正在服務的 backend」的來源。想不論健康狀況都抓每一台、並看到 `up == 0`，抓取請維持靜態清單或檔案式探索，用 emfor 發警報。
+
+[tests/prometheus/](../../tests/prometheus/run.sh) 執行這些檢查（Integrations workflow 每週執行一次，emfor 的 DNS 或候選的程式有改動時也會執行）。在 FreeBSD 15.1 上，同一支腳本用套件的 Prometheus 2.55.1 手動執行也通過（nginx 1.30.6 也是套件；停掉 `local_unbound`，emfor 在 53 埠）。沒試過：emfor 前面放 dnsmasq 或 unbound（測試把 emfor 當作唯一的 resolver）、其他版本的 Prometheus、HTTPS 目標、很多個目標、預設 30 秒的 `refresh_interval`。
+
 ## 快取
 
 emfor 的短 TTL 讓故障的 backend 大約一秒內從回答中消失。快取會拉長這段時間：

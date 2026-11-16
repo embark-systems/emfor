@@ -240,7 +240,7 @@ emfor-drain.sh off /etc/emfor/conf.d/20-api.toml 10.0.0.11:8080
 - proxy 為了下一個請求而保持開著的連線，drain 之後仍然開著，所以「連到那個埠的連線歸零」不會來：nginx 1.30 預設會保持與 upstream 的閒置連線，等待結束時還有 1 到 2 條開著。因此 `wait-idle` 等的是一段安靜的時間，預設 3 秒（第三個參數，單位毫秒），資料取自 `ss -i`。一個沉默超過這段時間的請求（long poll 或事件串流）在它看來像是閒置：把時間調長，或在應用程式裡計算請求數。
 - `off` 讓 backend 立刻回到選擇中，不重新計算 `rise`，也不啟動慢啟動；部署期間被重啟、在 drain 時恢復的 backend，從它的檢查通過那一刻起升權，所以很短的部署之後它可能還在 `slow_start` 之內（[第 5 章](05-backend-selection.md#慢啟動slow-start)）。
 
-沒有試過：HAProxy（它同樣會重試，也有自己的 session）、HTTPS、自己維護連線池到 backend 的 client（drain 不會關掉池裡的連線）、多台 emfor 主機、FreeBSD（`wait-idle` 需要 Linux 的 `ss`，沒有它會說明；那裡就等一段固定時間，至少是最長的請求加上 proxy 重新查詢所需的時間，或在應用程式裡計算請求數；腳本裡的 `sed`、`cp`、`mv` 也沒有在那裡跑過）。Integrations workflow 每週執行一次，測試或腳本有改動時也會執行。
+沒有試過：HAProxy（它同樣會重試，也有自己的 session）、HTTPS、自己維護連線池到 backend 的 client（drain 不會關掉池裡的連線）、多台 emfor 主機。在 FreeBSD 15.1（套件裡的 nginx 1.30.6 與 `jq`）上，把 `wait-idle` 換成固定等 8 秒，手動執行測試也通過：`wait-idle` 需要 Linux 的 `ss`，在那裡會直接停下並說明；FreeBSD 上請等一段固定時間，至少是最長的請求加上 proxy 重新查詢所需的時間，或在應用程式裡計算請求數。腳本的其餘部分（`sed`、`cp`、`mv`、`jq`）在那裡都跑過。Integrations workflow 每週在 Linux 上執行一次，測試或腳本有改動時也會執行。
 
 ## 執行多個 daemon
 

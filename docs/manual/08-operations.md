@@ -430,12 +430,14 @@ and 1.31.8 taking its upstream from emfor's SRV answers
 
 Not tried: HAProxy, which also retries, and its own sessions; HTTPS;
 clients that keep their own connection pool to the backends (a drain does not
-close a pooled connection); several emfor hosts; FreeBSD (`wait-idle` needs
-`ss`, a Linux tool, and says so; there, wait a fixed time, at least the
+close a pooled connection); several emfor hosts. On FreeBSD 15.1 (nginx 1.30.6
+and `jq` from the packages) the test passed when run by hand with `wait-idle`
+replaced by a fixed 8-second wait: `wait-idle` needs `ss`, a Linux tool, and
+stops there with a message; on FreeBSD wait a fixed time, at least the
 longest request and the time a proxy needs to ask again, or count the
-requests in the application; the script's `sed`, `cp` and `mv` were not run
-there). The Integrations workflow runs the test every week and when the
-test or the script changes.
+requests in the application. The rest of the script (`sed`, `cp`, `mv`, `jq`)
+ran there. The Integrations workflow runs the test on Linux every week and
+when the test or the script changes.
 
 ## Running more than one daemon
 

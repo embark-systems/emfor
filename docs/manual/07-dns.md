@@ -350,6 +350,65 @@ there as it is. As with nginx, `tests/haproxy/inside.sh` was run by hand;
 it needed nothing else than the HAProxy package. Not tried on FreeBSD: other
 HAProxy versions.
 
+## Using it with Prometheus
+
+Prometheus can find its scrape targets from SRV answers with
+`dns_sd_configs` of type `SRV`: the targets are the backends of an emfor
+service that are healthy, and the list follows the checks without a reload
+of Prometheus.
+
+```yaml
+scrape_configs:
+  - job_name: api
+    dns_sd_configs:
+      - names: ["_http._tcp.api.svc.emfor"]
+        type: SRV
+        refresh_interval: 5s
+```
+
+`dns_sd_configs` asks the host's resolver and has no setting for a name
+server or a port (`promtool check config` rejects a `server` field), so
+the host resolver must forward the zone to emfor, as in [Forwarding from the
+host resolver](#forwarding-from-the-host-resolver). It must forward the whole
+zone, not only the SRV query: the targets of the answer are names such as
+`10-0-0-11.api.svc.emfor`, which Prometheus resolves again for each scrape
+and which emfor answers. The `instance` label is that name and the port, not
+the address; `__meta_dns_srv_record_target` and `__meta_dns_srv_record_port`
+are there for `relabel_configs`. The port of an SRV record is the port of the
+backend in emfor, so the application's metrics have to be on it; for another
+port, make a second service whose backends are that port.
+
+What the targets are, as `tests/prometheus/run.sh` saw it with Prometheus
+3.16.0 (`refresh_interval` 1 second, emfor as the only resolver of the
+container):
+
+- Both backends of a `round-robin` service are targets and `up`.
+- A backend that fails its checks **is not a target any more**: it is not
+  shown as down, and its `up` series ends. So `up == 0` never fires for it;
+  alert on emfor's own metrics instead (`emfor_backend_state`, see
+  [examples/prometheus/](../../examples/prometheus/emfor-rules.yml)).
+- A drained backend is not a target either, though it runs and answers on
+  `/metrics`: during a [deploy with drain](08-operations.md#rolling-deploy-with-drain)
+  its metrics are not collected.
+- A `failover` service lists its backup too (priority 1), and Prometheus
+  takes every record, so it scrapes both. A backend with `backup = true`
+  is a target only while no primary is healthy.
+- A target appears and disappears within about `refresh_interval` plus the
+  time emfor needs to see the change (`interval`, `fall`, `rise`).
+
+So an emfor service is a good source for "the backends that are serving
+now". To scrape every backend whatever its health, and to see `up == 0`,
+keep a static list or file-based discovery for the scrape and use emfor for
+the alerts.
+
+[tests/prometheus/](../../tests/prometheus/run.sh) runs these checks (the
+Integrations workflow runs it every week and when the DNS or candidate
+code of emfor changes). On FreeBSD 15.1 the same script passed by hand with
+the Prometheus 2.55.1 package (nginx 1.30.6 from the packages; `local_unbound`
+stopped, emfor on port 53). Not tried: dnsmasq or unbound in front of emfor
+(the tests used emfor as the only resolver), other Prometheus versions, HTTPS
+targets, many targets, the default `refresh_interval` of 30 seconds.
+
 ## Caching
 
 emfor's short TTL lets a failed backend drop out of answers within about a

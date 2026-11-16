@@ -135,13 +135,13 @@ wait_both /tmp/load1.log
 slow_start
 stop_backend "$X"
 wait "$SLOW" 2>/dev/null
-size=$(wc -c < /tmp/slow.out)
+size=$(wc -c < /tmp/slow.out | tr -d " ")
 [ "$size" -lt 1200 ] || fail "stopping a backend without drain did not cut the request in flight ($size bytes): the manual's claim is wrong"
 sleep 3
 load_stop
 n=$(bad /tmp/load1.log)
 echo "ok: without drain, stopping the backend cut the request in flight ($size of 1200 bytes)"
-echo "note: of the $(wc -l < /tmp/load1.log) new POSTs sent meanwhile, $n failed (nginx retries a request that was refused before it was sent)"
+echo "note: of the $(wc -l < /tmp/load1.log | tr -d " ") new POSTs sent meanwhile, $n failed (nginx retries a request that was refused before it was sent)"
 backend "$X"
 $DRAIN wait-ready "127.0.0.1:$X" 30 || fail "$X did not turn healthy"
 
@@ -166,12 +166,12 @@ for round in 1 2; do
     if [ "$round" = 1 ]; then
         kill -0 "$SLOW" 2>/dev/null && fail "wait-idle returned while the request was still running"
         wait "$SLOW"
-        size=$(wc -c < /tmp/slow.out)
+        size=$(wc -c < /tmp/slow.out | tr -d " ")
         [ "$size" = 1200 ] || fail "the request in flight got $size bytes, not 1200"
         grep -q '^HTTP/1.1 200' /tmp/slow.h || fail "the request in flight did not get 200"
         echo "ok: the request in flight finished with all 1200 bytes; wait-idle returned after it"
     fi
-    mark=$(wc -l < /tmp/load2.log)
+    mark=$(wc -l < /tmp/load2.log | tr -d " ")
     sleep 2
     [ "$(tail -n +"$((mark + 1))" /tmp/load2.log | grep -c "^$P ")" = 0 ] \
         || fail "$ADDR still got requests after wait-idle"
@@ -188,7 +188,7 @@ for round in 1 2; do
 done
 load_stop
 n=$(bad /tmp/load2.log)
-total=$(wc -l < /tmp/load2.log)
+total=$(wc -l < /tmp/load2.log | tr -d " ")
 [ "$total" -ge 100 ] || fail "only $total requests were sent"
 [ "$n" = 0 ] || { grep -v ' 200$' /tmp/load2.log | sort | uniq -c >&2; fail "$n of $total requests failed during the deploy"; }
 echo "ok: no request failed during the rolling deploy ($total requests)"
