@@ -109,17 +109,3 @@ jobs:
         env:
           # The PHP test must run the same-process check with dba's lmdb.
           EMFOR_REQUIRE_DBA: "1"
-
-  # nginx taking its upstream list from emfor's SRV answers
-  # (docs/manual/07-dns.md, "Using it with nginx"): the stable and the
-  # mainline image, which build emfor in Docker.
-  nginx:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        image: ["nginx:stable", "nginx:mainline"]
-    steps:
-      - uses: actions/checkout@v7
-      - run: tests/nginx/run.sh ${{ matrix.image }}

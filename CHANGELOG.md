@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+**Using emfor with HAProxy.** Manual chapter 7 (both languages) has a section
+for HAProxy: a `server-template` on emfor's SRV answers (`resolvers` with
+`nameserver 127.0.0.1:5300`) fills its servers, and health and `drain` reach
+HAProxy within a few seconds without a reload. It also says what HAProxy does
+not take from the answer: SRV **priorities** and **weights** are ignored (so
+`failover`, `weighted`, `locality` and `fastest` do not behave as for nginx),
+and that after `SERVFAIL` HAProxy drops its servers after its `hold other`
+time (30 s) and answers 503, where nginx keeps its last list. The slots of the
+template limit the number of backends. `tests/haproxy/run.sh [image]` checks
+all of it, the two ignored features included, and the Integrations workflow
+runs it on `haproxy:lts` and `haproxy:2.8`. Checked with HAProxy 3.4.7 and 2.8.31. Not
+tried: `mode tcp`, TLS to the backends, several name servers.
+
 **Using emfor with nginx.** Manual chapter 7 (both languages) has a section
 for nginx: from 1.27.3 the open-source nginx can take its upstream from emfor's
 SRV answers (`server api.svc.emfor service=http resolve;` with `resolver
@@ -9,7 +22,9 @@ SRV answers (`server api.svc.emfor service=http resolve;` with `resolver
 seconds without a reload; the section also says what nginx does when emfor
 answers `SERVFAIL` (it keeps its last list) and gives the variable
 `proxy_pass` recipe for older nginx. `tests/nginx/run.sh [image]` checks it
-on a given image, and the CI runs it on `nginx:stable` and `nginx:mainline`.
+on a given image, and the Integrations workflow runs it on `nginx:stable` and
+`nginx:mainline`. That workflow runs every week and when emfor's DNS or
+candidate code or these tests change, not on every push.
 Checked with nginx 1.30.6, 1.31.8 and (older recipe only) 1.26.3. Not tried:
 HTTPS upstreams, nginx Plus, several workers, the `stream` module.
 

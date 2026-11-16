@@ -254,7 +254,83 @@ in the test; how evenly was not measured.
 
 [tests/nginx/](../../tests/nginx/run.sh) runs this on a given nginx image
 (`tests/nginx/run.sh nginx:stable`): the checks above, and the older nginx
-case. It is part of the CI.
+case. The Integrations workflow runs it every week and when the DNS or
+candidate code of emfor changes.
+
+## Using it with HAProxy
+
+HAProxy can fill the servers of a backend from SRV answers: a
+`server-template` names the SRV query and a number of slots, and HAProxy
+puts the records into the slots, asking again when the answer changes. With
+emfor's DNS server as its resolver, a backend that fails emfor's checks, one
+you drain and one you add all reach HAProxy within a few seconds, without a
+reload:
+
+```
+resolvers emfor
+    nameserver emfor 127.0.0.1:5300
+    accepted_payload_size 4096
+    hold valid 1s
+    resolve_retries 3
+    timeout resolve 1s
+    timeout retry 1s
+
+backend api
+    balance roundrobin
+    server-template s 1-4 _http._tcp.api.svc.emfor resolvers emfor resolve-opts allow-dup-ip resolve-prefer ipv4 init-addr none
+```
+
+- `nameserver` is emfor's DNS server (`[dns] listen`, port 5300 by default),
+  not the host resolver.
+- `accepted_payload_size 4096` lets the answer of a service with many
+  backends arrive over UDP (HAProxy asks for 512 bytes by default).
+- `hold valid 1s` makes HAProxy use a new answer after a second; the other
+  `hold` values stay at their defaults, which matter below.
+- `1-4` is the number of **slots**: the most backends HAProxy can use. A
+  service with more backends than slots is cut off (the test: three backends
+  in four slots use three). Make it larger than the service.
+- `_http._tcp.api.svc.emfor` is the SRV name; emfor answers
+  `_<anything>._tcp.<service>` ([SRV records](#srv-records)), and the port
+  comes from each record. `allow-dup-ip` is needed when several backends
+  share one address with different ports, and `init-addr none` lets HAProxy
+  start before the first answer.
+- No `check` is needed: a backend that fails emfor's checks leaves the
+  answer. You can add HAProxy's own `check` as a second opinion.
+
+What HAProxy does with the answer, as checked with HAProxy 3.4.7 and 2.8.31:
+
+- **Health and `drain = true`** ([chapter
+  5](05-backend-selection.md#draining-a-backend)) reach HAProxy within a few
+  seconds, as for nginx: the backend gets nothing, and gets requests again
+  when it recovers or the drain is removed. HAProxy is not reloaded.
+- **Priorities are not used.** With `balance = "failover"`, HAProxy sent
+  requests to both backends (20 and 20 of 40), not only to the first one.
+  The same holds for `locality` and `fastest`, which rank backends by
+  priority 0 and 1. Do not rely on a backup in the SRV answer; use
+  HAProxy's own `backup` for that, or the nginx recipe above, which does
+  follow priorities.
+- **Weights are not used.** With `balance = "weighted"` and weights 3 and 1,
+  the requests went 40 and 40 of 80, also with `weight 1` or
+  `ignore-weight` on the template.
+- **When emfor does not answer** (stopped, or restarting): HAProxy keeps its
+  servers for the `hold` times. With the settings above it still served all
+  requests 4 seconds after emfor stopped.
+- **When emfor answers `SERVFAIL`** (no backend to offer, or every backend
+  drained): HAProxy kept its servers for a while and then dropped them, and
+  every request got `503`; in the test it had lost them between 10 and 30
+  seconds later, which is the default `hold other` (30 s). nginx, in
+  the same case, keeps its last list for good.
+
+Which is right depends on what you want to happen when emfor says there is
+no backend. The `hold` values are HAProxy's, and were not tuned here.
+
+[tests/haproxy/](../../tests/haproxy/run.sh) runs these checks on a given
+HAProxy image (`tests/haproxy/run.sh haproxy:2.8`), including the two things
+HAProxy does not do, so that the test fails if a later HAProxy starts to
+follow priorities or weights and this section must change. The Integrations
+workflow runs it every week and when the DNS or candidate code of emfor
+changes. Not tried: HAProxy with `mode tcp`, TLS to the backends, `resolvers`
+with several name servers, other versions than the two above.
 
 ## Caching
 

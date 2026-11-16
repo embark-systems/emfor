@@ -160,7 +160,44 @@ server {
 
 A 回答只有一個 backend，由 `balance` 選出，所以 nginx 一秒內的所有請求都送給那一台（它把回答保留 `valid` 的時間）；輪替發生在秒與秒之間，不是請求與請求之間。測試中兩台 backend 都有被用到，平均程度沒有量。
 
-[tests/nginx/](../../tests/nginx/run.sh) 在指定的 nginx 映像上執行這些檢查（`tests/nginx/run.sh nginx:stable`），包含較舊的 nginx 的情況，也是 CI 的一部分。
+[tests/nginx/](../../tests/nginx/run.sh) 在指定的 nginx 映像上執行這些檢查（`tests/nginx/run.sh nginx:stable`），包含較舊的 nginx 的情況。Integrations workflow 每週執行一次，emfor 的 DNS 或候選的程式有改動時也會執行。
+
+## 搭配 HAProxy 使用
+
+HAProxy 可以用 SRV 回答來填一個 backend 的 server：`server-template` 寫上 SRV 查詢名稱與一個「槽」的數量，HAProxy 把記錄放進槽裡，回答改變時再重新查詢。把 emfor 的 DNS server 當作它的 resolver，檢查失敗的 backend、你 drain 的 backend、你新增的 backend，都會在幾秒內傳到 HAProxy，不需要 reload：
+
+```
+resolvers emfor
+    nameserver emfor 127.0.0.1:5300
+    accepted_payload_size 4096
+    hold valid 1s
+    resolve_retries 3
+    timeout resolve 1s
+    timeout retry 1s
+
+backend api
+    balance roundrobin
+    server-template s 1-4 _http._tcp.api.svc.emfor resolvers emfor resolve-opts allow-dup-ip resolve-prefer ipv4 init-addr none
+```
+
+- `nameserver` 是 emfor 的 DNS server（`[dns] listen`，預設 5300 port），不是主機的 resolver。
+- `accepted_payload_size 4096` 讓 backend 很多的服務的回答可以走 UDP 送到（HAProxy 預設只要 512 bytes）。
+- `hold valid 1s` 讓 HAProxy 一秒後就採用新的回答；其他的 `hold` 維持預設，下面會說明為什麼重要。
+- `1-4` 是**槽**的數量，也就是 HAProxy 最多能用的 backend 數。backend 比槽多的服務會被截斷（測試：三個 backend 放進四個槽，用到三個）。請設得比服務的 backend 數大。
+- `_http._tcp.api.svc.emfor` 是 SRV 名稱；emfor 會回答 `_<任意>._tcp.<服務名稱>`（[SRV 記錄](#srv-記錄)），port 來自每一筆記錄。數個 backend 用同一個位址、不同 port 時要有 `allow-dup-ip`，`init-addr none` 讓 HAProxy 在第一次回答之前就能啟動。
+- 不需要 `check`：沒通過 emfor 檢查的 backend 不在回答裡。你可以再加 HAProxy 自己的 `check` 當第二意見。
+
+HAProxy 怎麼處理這個回答，用 HAProxy 3.4.7 與 2.8.31 測過：
+
+- **健康狀態與 `drain = true`**（[第 5 章](05-backend-selection.md#drain-一個-backend)）會在幾秒內傳到 HAProxy，和 nginx 一樣：那台 backend 收不到請求，恢復或取消 drain 後又會收到。HAProxy 不用 reload。
+- **不使用優先序。** `balance = "failover"` 時，HAProxy 把請求送給兩台 backend（40 個中 20 對 20），不是只送第一台。`locality` 與 `fastest` 用 priority 0 和 1 排序，也是一樣。不要指望 SRV 回答裡的備援；備援請用 HAProxy 自己的 `backup`，或用上面會遵守優先序的 nginx 做法。
+- **不使用權重。** `balance = "weighted"`、權重 3 與 1 時，80 個請求是 40 對 40；在 template 上加 `weight 1` 或 `ignore-weight` 也一樣。
+- **emfor 沒有回答時**（停掉或重新啟動）：HAProxy 依 `hold` 的時間保留它的 server。用上面的設定，emfor 停掉 4 秒後，所有請求仍然成功。
+- **emfor 回 `SERVFAIL` 時**（沒有 backend 可給，或每個 backend 都 drain）：HAProxy 先保留 server 一陣子，然後丟掉，之後每個請求都得到 `503`；測試中在 10 到 30 秒之間就沒了，這是預設的 `hold other`（30 秒）。同樣的情況 nginx 會一直沿用最後的清單。
+
+哪一種比較對，取決於 emfor 說沒有 backend 時你希望發生什麼。`hold` 的值是 HAProxy 的，這裡沒有調校過。
+
+[tests/haproxy/](../../tests/haproxy/run.sh) 在指定的 HAProxy 映像上執行這些檢查（`tests/haproxy/run.sh haproxy:2.8`），包含 HAProxy 不做的那兩件事，所以日後 HAProxy 開始遵守優先序或權重時，測試會失敗，提醒這一節要改。Integrations workflow 每週執行一次，emfor 的 DNS 或候選的程式有改動時也會執行。沒試過：HAProxy 的 `mode tcp`、到 backend 的 TLS、`resolvers` 有多個 name server、上述兩個以外的版本。
 
 ## 快取
 
