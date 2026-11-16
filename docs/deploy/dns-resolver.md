@@ -162,7 +162,7 @@ On macOS the mDNS responder holds UDP 5353, which is why the default port is 530
 A/AAAA answers carry only an address. When the backends of a service listen on different ports, or a program wants the whole backend list, query SRV instead. emfor answers SRV on two names, with the same records:
 
 - the service name itself: `api.svc.emfor`
-- `_<anything>._tcp.<service name>`: `_http._tcp.api.svc.emfor`, the form Go's `net.LookupSRV("http", "tcp", "api.svc.emfor")`, gRPC and similar clients build
+- `_<anything>._tcp.<service name>`: `_http._tcp.api.svc.emfor`, the form Go's `net.LookupSRV("http", "tcp", "api.svc.emfor")` builds
 
 `_tcp.api.svc.emfor` exists but has no records (NODATA). `_udp` names are not answered (NXDOMAIN).
 

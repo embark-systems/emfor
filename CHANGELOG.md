@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+**`examples/deploy/emfor-drain.sh` is safer.** `wait-ready` no longer returns
+at the first `healthy`: a backend that has just stopped keeps that state for
+`fall` x `interval` (6 s by default), so a drained backend that was stopped
+could be put back dead. It now needs a check newer than the command and
+`healthy` for SETTLE seconds in a row (third argument, default 10). `on` and
+`off` refuse a backend line they cannot change (it must read
+`{ addr = "..." },` with a space before the `}`) without touching the file, and
+put the old file back when `check-config` refuses the new one. New:
+`EMFOR_CONFIG` (passed as `--config`) and `EMFOR_SERVICE` (the service, when
+two have the same address). `tests/deploy` has a case with the default
+timings, and one for each refusal. Manual chapter 8 (both languages) lists
+what to set up first, and the corrections of the review of chapters 7, 8 and
+10: `emfor status` needs write access to the lock file, the `drained (checks:
+…)` marker comes last, the upgrade order (clients first, `check-config` before
+the restart), the metrics tables, and in chapters 7 and 10 the SERVFAIL cases,
+the 1232-byte UDP cap, `include_dir` before the first table, `rise` and `fall`
+of 1 instead of Consul's 0, and weights from 1 to 100.
+
 **Using emfor with HAProxy.** Manual chapter 7 (both languages) has a section
 for HAProxy: a `server-template` on emfor's SRV answers (`resolvers` with
 `nameserver 127.0.0.1:5300`) fills its servers, and health and `drain` reach

@@ -163,7 +163,8 @@ without removing it from the config. Edit the file and reload
   A, AAAA and SRV answers, and not in the pool of a `fastest` service.
   emfor is not in the data path, so connections that are already open are
   not affected; only new lookups skip it.
-- Its checks keep running. `emfor status` shows `drained (checks: healthy)`
+- Its checks keep running. `emfor status` shows `drained` in place of the
+  state, and `(checks: healthy)` as the last marker on the line,
   with the state the checks give, so you see at once whether it is ready;
   when you remove `drain` and reload, it is back in the choice at once,
   with that state, without counting `rise` again. Draining and undraining never start slow start by themselves; a backend that recovered while it was drained ramps from that recovery as usual, so if you undrain it within `slow_start` of coming back, it ramps.

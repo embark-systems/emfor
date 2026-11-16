@@ -35,15 +35,17 @@ api.svc.emfor  round-robin  on_all_down=open
   10.0.0.12:8080  unhealthy  0.9s ago  -      connect: Connection refused
 ```
 
-`emfor status` 只讀取設定檔的 `[store]` table，並像 client 一樣以唯讀方式開啟 store；任何能讀取 store 的使用者都能執行它。
+`emfor status` 只讀取設定檔的 `[store]` table，並像 client 一樣以唯讀方式開啟 store。開啟 store 時會在 lock 檔登記一個 reader，所以使用者需要 store 的讀取權限與 lock 檔的寫入權限（[誰能使用 store](#誰能使用-store)）；lock 檔是 0444 時，`emfor status` 會以 `cannot open store …: Permission denied` 停止。
 
 - **daemon**：heartbeat 不超過 3 秒時為 `running`，超過時為 `stale`（daemon 卡住或已死），正常停止後為 `stopped`。`stale` 或 `stopped` 時，顯示的服務只是 daemon 最後寫入的內容。
 - **服務**：`balance`、`on_all_down`，沒有 backend 健康時顯示 `ALL DOWN`。
-- **backend**：狀態、距上次檢查多久、平滑後的延遲，之後依序是適用的標記：`fastest` 服務中快的 backend 標示 `pool`；備援 backend 標示 `backup`（見[第 5 章](05-backend-selection.md#備援-backend)）；設定檔裡 drain 的 backend 在狀態的位置顯示 `drained`，後面接 `(checks: <狀態>)`（見[第 5 章](05-backend-selection.md#drain-一個-backend)）；聯防群組裡的 `local-up` 與 `voted`（見[聯防群組](#聯防群組)）；10 分鐘內在 healthy 與 unhealthy 之間變化 5 次以上的 backend 標示 `FLAPPING (<n> changes in 10m)`；仍是 `healthy`、但最近一次檢查失敗的 backend 標示 `last check failed`（連續失敗 `fall` 次才會變成 unhealthy；在那之前，查詢通常會略過它，見[檢查開始失敗的 backend](05-backend-selection.md#檢查開始失敗的-backend)，但所有 healthy backend 都在失敗時例外）；最後是最近一次失敗檢查的 reason。一行同時有所有標記、reason 又短時約 100 欄寬（十台主機、40 個 backend 的群組中量到 97 欄）；`--watch` 會截斷超過終端機寬度的行。
+- **backend**：狀態、距上次檢查多久、平滑後的延遲，之後依序是適用的標記：`fastest` 服務中快的 backend 標示 `pool`；備援 backend 標示 `backup`（見[第 5 章](05-backend-selection.md#備援-backend)）；聯防群組裡的 `local-up` 與 `voted`（見[聯防群組](#聯防群組)）；10 分鐘內在 healthy 與 unhealthy 之間變化 5 次以上的 backend 標示 `FLAPPING (<n> changes in 10m)`；仍是 `healthy`、但最近一次檢查失敗的 backend 標示 `last check failed`（連續失敗 `fall` 次才會變成 unhealthy；在那之前，查詢通常會略過它，見[檢查開始失敗的 backend](05-backend-selection.md#檢查開始失敗的-backend)，但所有 healthy backend 都在失敗時例外）；最後是最近一次失敗檢查的 reason。設定檔裡 drain 的 backend（見[第 5 章](05-backend-selection.md#drain-一個-backend)）在狀態的位置顯示 `drained`，而 `(checks: <狀態>)`（檢查給的狀態）是最後一個標記，排在 `backup`、`local-up`、`voted` 與 `FLAPPING` 之後；它沒有 `last check failed`，也沒有最近一次失敗檢查的 reason。一行同時有所有標記、reason 又短時約 100 欄寬（十台主機、40 個 backend 的群組中量到 97 欄）；`--watch` 會截斷超過終端機寬度的行。
 
 ```
   10.0.1.3:5432   healthy  0.8s ago  1.2ms  voted  last check failed  connect: Connection refused
   10.0.1.40:5432  healthy  0.8s ago  1.2ms  backup  voted
+  10.0.0.13:8080  drained  0.8s ago  1.2ms  (checks: healthy)
+  127.0.0.1:9     drained  0.4s ago  -      (checks: unhealthy)
 ```
 
 | 選項 | 效果 |
@@ -81,8 +83,9 @@ pipe 提早關閉（`emfor status | head -1`）不會改變結束代碼。store 
 | `emfor_store_last_commit_timestamp_seconds` | 上次成功 commit 的時間；應在幾秒以內 |
 | `emfor_store_used_bytes`、`emfor_store_map_size_bytes` | store 使用量與 `[store] map_size` |
 | `emfor_plugin_up`、`emfor_plugin_restarts_total` | plugin 健康狀況 |
+| `emfor_dns_rate_limited_total{action}` | 有 `[dns]` 時：超過 `rate_limit` 的 UDP 回答，依改送什麼分類：`truncated` 或 `dropped`（[第 7 章](07-dns.md#速率限制)） |
 | `emfor_peer_up{peer}` | 有 `[peers]` 時：該成員存活時為 1 |
-| `emfor_peer_messages_rejected_total{reason}` | 有 `[peers]` 時：依原因分類的丟棄訊息數：`malformed`、`auth`（密鑰錯誤，或無法解密的訊息）、`sender`（不是成員，或偽造的位址）、`site`、`stale`（時鐘相差超過 5 秒）、`replay` |
+| `emfor_peer_messages_rejected_total{reason}` | 有 `[peers]` 時：依原因分類的丟棄訊息數：`malformed`、`auth`（密鑰錯誤，或無法解密的訊息）、`sender`（不是成員，或偽造的位址）、`site`、`stale`（時鐘相差超過 5 秒）、`replay`、`plaintext`（`accept_plaintext = false` 時收到的未加密訊息） |
 | `emfor_peer_notifications_total{direction}` | 有 `[peers]` 時：故障通知 `sent`（每個成員算一次）與 `received` |
 | `emfor_peer_results_total{direction}` | 有 `[peers]` 時：負責主機的檢查結果 `sent`（每個成員算一次）與 `received` |
 | `emfor_peer_disagreements` | 有 `[peers]` 時：群組投票判為 down、而本機檢查通過的 backend 數 |
@@ -90,7 +93,7 @@ pipe 提早關閉（`emfor status | head -1`）不會改變結束代碼。store 
 | `emfor_peer_queue_dropped_total` | 有 `[peers]` 時：peer task 落後超過 4096 則訊息，因而沒送出的 `down` 與 `result` 訊息數（log 記為 `the peer task is behind`）；應該保持 0 |
 | `emfor_build_info{version}`、`emfor_start_time_seconds` | daemon 本身 |
 
-[examples/prometheus/emfor-rules.yml](../../examples/prometheus/emfor-rules.yml) 提供告警規則：endpoint 無法抓取、服務 `ALL DOWN`、store commit 失敗、backend 不健康達 10 分鐘、flapping、大多是 error，或不再被檢查。完整的 metrics 與規則清單見 [docs/deploy/daemon.md](../deploy/daemon.md#metrics)。
+[examples/prometheus/emfor-rules.yml](../../examples/prometheus/emfor-rules.yml) 提供告警規則：endpoint 無法抓取、服務 `ALL DOWN`、store commit 失敗、backend 不健康達 10 分鐘、flapping、大多是 error，或不再被檢查。[docs/deploy/daemon.md](../deploy/daemon.md#metrics) 列出每個 metric 的型別與 label。
 
 ### 聯防群組
 
@@ -99,7 +102,7 @@ pipe 提早關閉（`emfor status | head -1`）不會改變結束代碼。store 
 原因會說明 `down` 從哪裡來：`peers 2/3: <原因>` 表示三台負責主機中有兩台看到 backend down（原因是它們的）；`local: <原因>` 表示只有這台主機看到 down，投票沒有判 down；沒有前綴的原因表示沒有投票（存活成員少於三台，或沒有夠新的結果）。`emfor status` 在 daemon 那一行下面顯示群組狀態：
 
 ```
-peers: 1/2 live, not live 10.0.0.7:5302
+peers: 2/3 live, not live 10.0.0.7:5302
 peers: check definition of api.svc.emfor differs at 10.0.0.6:5302
 ```
 
@@ -151,7 +154,7 @@ daemon 把 log 寫到 stderr：systemd 下進 journal，FreeBSD rc.d script 下�
 | --- | --- | --- |
 | 0 | 正常停止（`SIGTERM` / `SIGINT`） | — |
 | 1 | 無法啟動：listen 位址已被使用、無法開啟 store，或另一個 emfor 持有這個 store（`<store>.writer`） | 沒用；先排除原因 |
-| 2 | 設定無效，或沒有給指令 | 沒用；修正設定 |
+| 2 | 設定無效，或沒有給指令 | 沒用；先用你要啟動的那個 binary 執行 `emfor check-config`，再修正設定 |
 | 70 | state writer 或 DNS listener 在執行中停止了 | 有用；systemd unit 會重新啟動它 |
 
 ## 磁碟上的 store
@@ -214,7 +217,15 @@ backends = [
 ]
 ```
 
-[examples/deploy/emfor-drain.sh](../../examples/deploy/emfor-drain.sh) 做一台 backend 的這幾步（需要 `jq`，`wait-idle` 還需要 `ss`）：
+[examples/deploy/emfor-drain.sh](../../examples/deploy/emfor-drain.sh) 做一台 backend 的這幾步。開始之前：
+
+- 沒有任何套件會安裝這支腳本。請複製到 emfor 的主機（給 `on`、`off`、`wait-ready` 用）與 backend 的主機（給 `wait-idle` 用）。
+- 在 emfor 的主機上以 root 執行：以 root 執行的 `emfor check-config` 只接受 root 擁有的 conf.d 檔案，而且腳本會 reload emfor。
+- 需要 `jq`；`wait-idle` 還需要 `ss`（Linux、iproute2）。
+- reload 指令是 `systemctl reload emfor`；要用別的，設 `EMFOR_RELOAD`（FreeBSD：`service emfor reload`，檔案在 `/usr/local/etc/emfor/conf.d`）。
+- 它呼叫 `emfor check-config` 與 `emfor status` 時不帶 `--config`，所以用的是編在 emfor 裡的預設設定檔路徑。要用別的路徑，設 `EMFOR_CONFIG=/path/to/emfor.toml`。
+- 每台 backend 必須是一行，寫成剛好 `{ addr = "10.0.0.11:8080" },`，`}` 之前有一個空格。遇到它改不了的那一行，腳本會停下來、不動檔案。它把新的那一行寫到一份副本，用副本取代原檔，執行 `check-config`，檢查被拒絕就把舊檔放回去；之後才 reload。
+- 它用位址在 `emfor status --json` 裡找 backend，找到的是名稱順序第一個有那個位址的 service。兩個 service 共用一個位址時，設 `EMFOR_SERVICE=<name>`。
 
 ```sh
 # 在執行 emfor 的主機上：在 backend 那一行加 drain = true、執行 emfor check-config、
@@ -225,10 +236,12 @@ emfor-drain.sh on /etc/emfor/conf.d/20-api.toml 10.0.0.11:8080
 emfor-drain.sh wait-idle 8080
 deploy-and-restart-api
 
-# 回到 emfor 的主機：等到這台 backend 的檢查是 healthy，再拿掉 drain 並 reload。
+# 回到 emfor 的主機：等到這台 backend 的檢查連續 10 秒都是 healthy，再拿掉 drain 並 reload。
 emfor-drain.sh wait-ready 10.0.0.11:8080 120
 emfor-drain.sh off /etc/emfor/conf.d/20-api.toml 10.0.0.11:8080
 ```
+
+`wait-ready` 保證什麼：剛停掉的 backend 要等 `fall` 次檢查失敗之後才不再是 `healthy`（預設 `interval` 2 秒、`fall` 3，約 6 秒），而被 drain 的 backend 會藏起最近一次檢查的結果（store 只顯示檢查給的狀態）。所以 `wait-ready ADDR [秒數 [SETTLE]]` 不會一看到 `healthy` 就返回：要有一次比這個指令更晚完成的檢查，而且檢查連續 SETTLE 秒（預設 10）都是 `healthy` 才返回；沒有被 drain 的 backend 還要求最近一次檢查通過。SETTLE 必須比該 service 的 `fall` x `interval` 加 `timeout` 長；改了那些設定就要調大。它不計算 `rise`，也不看應用程式怎麼處理請求：通過 `tcp` 檢查、卻回 500 的 backend，它仍視為準備好了。
 
 一次只處理一台，兩台之間看一下 `emfor status`（service 是 `ALL DOWN` 時它的結束狀態是 1）：backend 全被 drain 的 service 什麼也不回答。`drain` 是單一主機設定的一部分（[第 5 章](05-backend-selection.md#drain-一個-backend)），所以每台應用程式主機都跑 emfor 時，第一步與最後一步要在每一台上做。把好幾台主機的 emfor 都當作 name server 的 HAProxy，這幾台的 `drain` 也必須一致，而且只用一個本機的 name server 比較好（[第 7 章的 HAProxy](07-dns.md#搭配-haproxy-使用)）。
 
@@ -238,9 +251,10 @@ emfor-drain.sh off /etc/emfor/conf.d/20-api.toml 10.0.0.11:8080
 - 新的請求在幾秒內就不再到被 drain 的 backend（nginx 每秒重新查詢一次）。讀 store 的 client 是下一次 lookup；問 DNS 的 client 可能把答案快取到 TTL 結束。
 - nginx 會重試被停掉的 backend 拒絕的請求，所以不 drain 就停止，在測試裡沒有丟掉新的請求（64 到 96 個 POST 中 0 個）。drain 的好處在於正在跑的請求，以及不會重試的 client；後者沒有試過。
 - proxy 為了下一個請求而保持開著的連線，drain 之後仍然開著，所以「連到那個埠的連線歸零」不會來：nginx 1.30 預設會保持與 upstream 的閒置連線，等待結束時還有 1 到 2 條開著。因此 `wait-idle` 等的是一段安靜的時間，預設 3 秒（第三個參數，單位毫秒），資料取自 `ss -i`。一個沉默超過這段時間的請求（long poll 或事件串流）在它看來像是閒置：把時間調長，或在應用程式裡計算請求數。
+- 預設的 `interval` 與 `fall` 下的 `wait-ready`：測試停掉一台被 drain 的 backend，馬上看 `wait-ready`；那時檢查仍說 `healthy`，而 `wait-ready` 要等 backend 重新啟動、檢查連續通過 10 秒之後才返回（停止後 26 秒，backend 是在停止後 12 秒啟動的）。測試設定檔的其餘部分用 `interval = "200ms"` 與 `fall = 1`，停掉的 backend 在不到一秒內就顯示 `unhealthy`，這些時間值會藏起這個問題，所以這個案例用預設值。測試也檢查：腳本改不了那一行時不動檔案，`check-config` 拒絕新檔案時把舊檔放回去。
 - `off` 讓 backend 立刻回到選擇中，不重新計算 `rise`，也不啟動慢啟動；部署期間被重啟、在 drain 時恢復的 backend，從它的檢查通過那一刻起升權，所以很短的部署之後它可能還在 `slow_start` 之內（[第 5 章](05-backend-selection.md#慢啟動slow-start)）。
 
-沒有試過：HAProxy（它同樣會重試，也有自己的 session）、HTTPS、自己維護連線池到 backend 的 client（drain 不會關掉池裡的連線）、多台 emfor 主機。在 FreeBSD 15.1（套件裡的 nginx 1.30.6 與 `jq`）上，把 `wait-idle` 換成固定等 8 秒，手動執行測試也通過：`wait-idle` 需要 Linux 的 `ss`，在那裡會直接停下並說明；FreeBSD 上請等一段固定時間，至少是最長的請求加上 proxy 重新查詢所需的時間，或在應用程式裡計算請求數。腳本的其餘部分（`sed`、`cp`、`mv`、`jq`）在那裡都跑過。Integrations workflow 每週在 Linux 上執行一次，測試或腳本有改動時也會執行。
+沒有試過：HAProxy（它同樣會重試，也有自己的 session）、HTTPS、自己維護連線池到 backend 的 client（drain 不會關掉池裡的連線）、多台 emfor 主機。腳本與測試只在 Linux 上跑過。腳本的較早版本（`wait-ready` 還不會等穩定、也還沒有 `EMFOR_CONFIG`、`EMFOR_SERVICE` 與放回舊檔之前）在 FreeBSD 15.1（套件裡的 nginx 1.30.6 與 `jq`）上，把 `wait-idle` 換成固定等 8 秒，手動執行測試通過；現在的腳本沒有在那裡跑過。`wait-idle` 需要 Linux 的 `ss`，在別處會直接停下並說明：請等一段固定時間，至少是最長的請求加上 proxy 重新查詢所需的時間，或在應用程式裡計算請求數。`tests/deploy/inside.sh` 本身也呼叫 `ss`、並寫入 `/etc/nginx/nginx.conf`，所以在 FreeBSD 上跑它需要先改。Integrations workflow 每週在 Linux 上執行一次，測試或腳本有改動時也會執行。
 
 ## 從 Nagios、Icinga 或 Zabbix 監看 emfor
 
@@ -259,7 +273,7 @@ $ echo $?
 - WARNING：健康的少於 `-w` 個（預設：每一個沒有被 drain 的 backend）。
 - UNKNOWN：`emfor` 或 `jq` 無法執行、讀不到 store，或 service 不存在。
 - 被 drain 的 backend 不計入（它是刻意被拿掉的），但會在文字裡點名。`-s` 選一個 service（預設全部），`-C` 指定寫著 store 的設定檔。
-- 監控程式所用的使用者必須能讀 store（[誰能使用 store](#誰能使用-store)）；用 NRPE 或 SSH 時，腳本在有 store 的那台主機上執行。
+- 監控程式所用的使用者必須能讀 store、也能寫它的 lock 檔（[誰能使用 store](#誰能使用-store)）；採用建議的 `lock_file_mode = "0660"` 時，這個使用者必須在那個群組裡。用 NRPE 或 SSH 時，腳本在有 store 的那台主機上執行。
 
 **把 Nagios 外掛當成檢查：`emfor-exec.sh`。** emfor 的 [`exec` 檢查](04-health-checks.md#exec)不經 shell 啟動程式，並把 backend 放在環境變數（`EMFOR_IP`、`EMFOR_PORT`），所以設定檔裡沒辦法給外掛 `-H $EMFOR_IP`。`emfor-exec.sh` 就是做這件事並執行外掛：
 
@@ -273,7 +287,7 @@ check_options = { command = ["/usr/local/libexec/emfor-exec.sh",
     "/usr/local/libexec/nagios/check_http", "-u", "/healthz"] }
 ```
 
-它執行 `check_http -H <ip> -p <port> -u /healthz`，並回傳外掛的結束狀態；外掛用別的旗標時，用 `--host-flag` 與 `--port-flag` 換掉。emfor 怎麼看這個結果：0 是 up，**1（WARNING）是 down**，2（CRITICAL）是 down，3（UNKNOWN）是 error，顯示為狀態 `unknown`、不算 up；外掛輸出的第一行是 reason，在 `timeout` 內沒有結束的外掛是 down。`--warning up` 把 WARNING 當成 up。每個 backend 的每次檢查都會啟動一個行程，所以選 `interval` 時要把這點算進去（[第 4 章](04-health-checks.md#exec)）。
+它執行 `check_http -H <ip> -p <port> -u /healthz`，並回傳外掛的結束狀態；外掛用別的旗標時，用 `--host-flag` 與 `--port-flag` 換掉。emfor 怎麼看這個結果：0 是 up，**1（WARNING）是 down**，2（CRITICAL）是 down，3（UNKNOWN）是 error：狀態一開始不變，只有連續 error 超過 `fall` x `interval` 之後才變成 `unknown`（[第 4 章](04-health-checks.md#risefall-與-error)）；外掛輸出的第一行是 reason，在 `timeout` 內沒有結束的外掛是 down。`--warning up` 把 WARNING 當成 up。每個 backend 的每次檢查都會啟動一個行程，所以選 `interval` 時要把這點算進去（[第 4 章](04-health-checks.md#exec)）。
 
 `tests/nagios/run.sh` 在 Docker 裡檢查這兩支腳本，外掛用一個替身，它依檔案內容說 ok、warn、crit、unknown 或 hang。沒試過：Monitoring Plugins 或 Nagios Plugins 套件裡的真正外掛、Nagios 或 Icinga 本體、NRPE、Zabbix（它的 `UserParameter` 可以執行 `check_emfor.sh` 並取用它的文字）、FreeBSD。
 
@@ -283,7 +297,15 @@ check_options = { command = ["/usr/local/libexec/emfor-exec.sh",
 
 ## 升級
 
-從同一個發行版安裝 daemon 與所有 client 函式庫，然後重新啟動 daemon。應用程式不必停止；它們會跟上重新啟動後 daemon 的 store，不需要自行重新啟動。
+從同一個發行版安裝 daemon 與所有 client 函式庫，順序如下：
+
+1. 升級主機上的 client 函式庫（以及 `emfor status`），並重新啟動應用程式讓它們載入新的函式庫：執行中的應用程式一直用它啟動時載入的那一版。比 daemon 舊的 client 可能每次查詢都以 `INCOMPATIBLE` 失敗（0.4.0 起 store 格式是版本 2，見 [store 格式版本](06-clients.md#store-格式版本)），而且較舊的 client 仍可能在 open service 的最後一層選到被 drain 的 backend（[drain 一個 backend](05-backend-selection.md#drain-一個-backend)）。
+2. 重新啟動之前，先用新的 binary 執行 `emfor check-config`。0.5.0 會拒絕 0.4.0 接受的選項（高於 `24h` 的 `interval`、低於 `10ms` 的 `timeout` 等，見 [CHANGELOG.md](../../CHANGELOG.md)）。設定無效時，`systemctl restart emfor` 會讓 daemon 停著（啟動前的檢查失敗，unit 最後是 `failed`，要 `systemctl reset-failed emfor` 才能再啟動）：見 daemon 指南的 [Restarts](../deploy/daemon.md#running-under-systemd)。
+3. 安裝 daemon 並重新啟動。
+
+會改變做法的版本說明：0.4.0 寫入 store 格式版本 2，並預設加密 peer 訊息（聯防群組一台一台升級，升級時先設 `encrypt = false`，見[聯防群組](#聯防群組)）；0.5.0 更嚴格地驗證設定。
+
+重新啟動之後，已經在用新函式庫的應用程式會跟上重新啟動後 daemon 的 store，不必再重新啟動。
 
 ### 重新啟動時應用程式會看到什麼
 

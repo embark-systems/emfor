@@ -39,8 +39,11 @@ api.svc.emfor  round-robin  on_all_down=open
 ```
 
 `emfor status` reads only the `[store]` table of the config and opens the
-store read-only, like a client; any user who can read the store can run
-it.
+store read-only, like a client. Opening the store registers a reader in its
+lock file, so the user needs read access to the store and write access to
+the lock file ([who can use the store](#who-can-use-the-store)); with the
+lock file at mode 0444, `emfor status` stops with `cannot open store …:
+Permission denied`.
 
 - **daemon**: `running` while the heartbeat is at most 3 seconds old,
   `stale` when it is older (the daemon hangs or died), `stopped` after a
@@ -51,9 +54,7 @@ it.
 - **backend**: state, time since the last check, smoothed latency, then
   these markers, in this order, when they apply: `pool` for the fast
   backends of a `fastest` service; `backup` for a backup backend
-  ([chapter 5](05-backend-selection.md#backup-backends)); `drained (checks:
-  <state>)` instead of the state for a backend drained in the config
-  ([chapter 5](05-backend-selection.md#draining-a-backend)); `local-up` and
+  ([chapter 5](05-backend-selection.md#backup-backends)); `local-up` and
   `voted` in a peer group (see [Peer groups](#peer-groups)); `FLAPPING
   (<n> changes in 10m)` for a backend that changed between healthy and
   unhealthy 5 or more times in 10 minutes; `last check failed` for a backend
@@ -62,13 +63,19 @@ it.
   see [a backend whose checks start
   failing](05-backend-selection.md#a-backend-whose-checks-start-failing),
   but not when every healthy backend is failing); and the reason of the last
-  failed check. A row with every marker and a short reason is about 100
+  failed check. A backend drained in the config
+  ([chapter 5](05-backend-selection.md#draining-a-backend)) shows `drained`
+  in place of its state, and `(checks: <state>)`, the state the checks give,
+  as the last marker, after `backup`, `local-up`, `voted` and `FLAPPING`; it
+  has no `last check failed` and no reason of the last failed check. A row with every marker and a short reason is about 100
   columns wide (97 in a group of ten hosts with 40 backends); `--watch` cuts
   lines wider than the terminal.
 
 ```
   10.0.1.3:5432   healthy  0.8s ago  1.2ms  voted  last check failed  connect: Connection refused
   10.0.1.40:5432  healthy  0.8s ago  1.2ms  backup  voted
+  10.0.0.13:8080  drained  0.8s ago  1.2ms  (checks: healthy)
+  127.0.0.1:9     drained  0.4s ago  -      (checks: unhealthy)
 ```
 
 | Option | Effect |
@@ -113,8 +120,9 @@ no TLS; keep it on loopback or firewall it.
 | `emfor_store_last_commit_timestamp_seconds` | Last successful commit; should be under a few seconds old |
 | `emfor_store_used_bytes`, `emfor_store_map_size_bytes` | Store use against `[store] map_size` |
 | `emfor_plugin_up`, `emfor_plugin_restarts_total` | Plugin health |
+| `emfor_dns_rate_limited_total{action}` | With `[dns]`: UDP answers over `rate_limit`, by what was sent instead: `truncated` or `dropped` ([chapter 7](07-dns.md#rate-limit)) |
 | `emfor_peer_up{peer}` | With `[peers]`: 1 while that member is live |
-| `emfor_peer_messages_rejected_total{reason}` | With `[peers]`: dropped messages by reason: `malformed`, `auth` (wrong secret, or a message that does not decrypt), `sender` (not a member, or a spoofed address), `site`, `stale` (clocks more than 5 seconds apart), `replay` |
+| `emfor_peer_messages_rejected_total{reason}` | With `[peers]`: dropped messages by reason: `malformed`, `auth` (wrong secret, or a message that does not decrypt), `sender` (not a member, or a spoofed address), `site`, `stale` (clocks more than 5 seconds apart), `replay`, `plaintext` (an unencrypted message while `accept_plaintext = false`) |
 | `emfor_peer_notifications_total{direction}` | With `[peers]`: failure reports `sent` (one per member) and `received` |
 | `emfor_peer_results_total{direction}` | With `[peers]`: check results of assigned checkers `sent` (one per member) and `received` |
 | `emfor_peer_disagreements` | With `[peers]`: backends the group votes down while this host's own check passes |
@@ -125,8 +133,8 @@ no TLS; keep it on loopback or firewall it.
 [examples/prometheus/emfor-rules.yml](../../examples/prometheus/emfor-rules.yml)
 has alerting rules: the endpoint is down, a service is `ALL DOWN`, store
 commits fail, a backend is unhealthy for 10 minutes, flaps, mostly errors,
-or is no longer checked. The full list of metrics and rules is in
-[docs/deploy/daemon.md](../deploy/daemon.md#metrics).
+or is no longer checked. [docs/deploy/daemon.md](../deploy/daemon.md#metrics) has the metrics with
+their types and labels.
 
 ### Peer groups
 
@@ -153,7 +161,7 @@ three live members, or no recent result). `emfor status` shows the group
 under the daemon line:
 
 ```
-peers: 1/2 live, not live 10.0.0.7:5302
+peers: 2/3 live, not live 10.0.0.7:5302
 peers: check definition of api.svc.emfor differs at 10.0.0.6:5302
 ```
 
@@ -247,7 +255,7 @@ only when stderr is a terminal and `NO_COLOR` is not set.
 | --- | --- | --- |
 | 0 | Clean stop (`SIGTERM` / `SIGINT`) | — |
 | 1 | Cannot start: a listen address is in use, the store cannot be opened, or another emfor holds the store (`<store>.writer`) | No; fix the cause |
-| 2 | Invalid config, or no command given | No; fix the config |
+| 2 | Invalid config, or no command given | No; run `emfor check-config` first (with the binary you are about to start) and fix the config |
 | 70 | The state writer or a DNS listener stopped while running | Yes; the systemd unit restarts it |
 
 ## The store on disk
@@ -377,7 +385,27 @@ backends = [
 ```
 
 [examples/deploy/emfor-drain.sh](../../examples/deploy/emfor-drain.sh) does
-the steps for one backend (it needs `jq`, and `ss` for `wait-idle`):
+the steps for one backend. Before you start:
+
+- No package installs the script. Copy it to the emfor host (for `on`, `off`
+  and `wait-ready`) and to the backend host (for `wait-idle`).
+- Run it as root on the emfor host: `emfor check-config` run as root accepts
+  only conf.d files that root owns, and the script reloads emfor.
+- It needs `jq`, and `ss` (Linux, iproute2) for `wait-idle`.
+- The reload command is `systemctl reload emfor`. Set `EMFOR_RELOAD` for
+  another one (FreeBSD: `service emfor reload`, with the files in
+  `/usr/local/etc/emfor/conf.d`).
+- It calls `emfor check-config` and `emfor status` without `--config`, so
+  they use the config path built into emfor. For another path set
+  `EMFOR_CONFIG=/path/to/emfor.toml`.
+- Each backend must be one line, written exactly `{ addr = "10.0.0.11:8080" },`
+  with a space before the `}`. For a line it cannot change the script stops
+  and leaves the file alone. It writes the new line to a copy, moves it
+  over the file, runs `check-config`, and puts the old file back if the check
+  refuses; only then does it reload.
+- It finds the backend in `emfor status --json` by address, in the first
+  service (in name order) that has that address. If two services share an
+  address, set `EMFOR_SERVICE=<name>`.
 
 ```sh
 # On the host that runs emfor: add drain = true to the line of the backend,
@@ -388,11 +416,24 @@ emfor-drain.sh on /etc/emfor/conf.d/20-api.toml 10.0.0.11:8080
 emfor-drain.sh wait-idle 8080
 deploy-and-restart-api
 
-# On the emfor host again: wait until the checks of the backend say healthy,
-# then remove drain and reload.
+# On the emfor host again: wait until the checks of the backend have said
+# healthy for 10 seconds, then remove drain and reload.
 emfor-drain.sh wait-ready 10.0.0.11:8080 120
 emfor-drain.sh off /etc/emfor/conf.d/20-api.toml 10.0.0.11:8080
 ```
+
+What `wait-ready` guarantees. A backend that has just stopped keeps the state
+`healthy` until `fall` checks have failed (with the defaults, `interval` 2
+seconds and `fall` 3, about 6 seconds), and a drained backend hides the
+result of its last check (the store shows only the state of the checks). So
+`wait-ready ADDR [SECONDS [SETTLE]]` does not return at the first `healthy`:
+it returns when a check newer than the command has finished and the checks
+have said `healthy` for SETTLE seconds in a row (default 10), and for a
+backend that is not drained also when the last check passed. SETTLE must be
+longer than `fall` x `interval` plus `timeout` of the service; raise it if
+you changed those. It does not count `rise` and does not look at what the
+application does with a request: a backend that passes a `tcp` check and
+still answers 500 is ready for it.
 
 Do the backends one at a time, and look at `emfor status` between them (its
 exit status is 1 when a service is `ALL DOWN`): a service whose backends are
@@ -425,6 +466,16 @@ and 1.31.8 taking its upstream from emfor's SRV answers
   `ss -i`. A request that stays silent for longer than that, a long poll or
   an event stream, looks idle to it: raise the time, or count the requests
   in the application.
+- `wait-ready` with the default `interval` and `fall`: the test stops a
+  drained backend and looks at `wait-ready` at once; the checks still said
+  `healthy` then, and `wait-ready` returned only after the backend had been
+  started again and its checks had passed for 10 seconds (26 seconds after
+  the stop, the backend being started 12 seconds after it). The rest of the
+  test config has `interval = "200ms"` and `fall = 1`, with which a stopped
+  backend shows `unhealthy` within a fraction of a second; those timings hide the
+  problem, so the case runs with the defaults. The test also checks that the
+  script leaves a file alone when it cannot change the line, and puts the old
+  file back when `check-config` refuses the new one.
 - `off` puts the backend back at once, without counting `rise` again, and
   without slow start; a backend that was restarted while it was drained
   ramps from the moment its checks passed, so after a short deploy it may
@@ -433,14 +484,18 @@ and 1.31.8 taking its upstream from emfor's SRV answers
 
 Not tried: HAProxy, which also retries, and its own sessions; HTTPS;
 clients that keep their own connection pool to the backends (a drain does not
-close a pooled connection); several emfor hosts. On FreeBSD 15.1 (nginx 1.30.6
-and `jq` from the packages) the test passed when run by hand with `wait-idle`
-replaced by a fixed 8-second wait: `wait-idle` needs `ss`, a Linux tool, and
-stops there with a message; on FreeBSD wait a fixed time, at least the
-longest request and the time a proxy needs to ask again, or count the
-requests in the application. The rest of the script (`sed`, `cp`, `mv`, `jq`)
-ran there. The Integrations workflow runs the test on Linux every week and
-when the test or the script changes.
+close a pooled connection); several emfor hosts. The script and the test ran
+on Linux only. An earlier version of the script (before `wait-ready` settled
+and before `EMFOR_CONFIG`, `EMFOR_SERVICE` and the restore of the old file)
+passed on FreeBSD 15.1 (nginx 1.30.6 and `jq` from the packages) when run
+by hand with `wait-idle` replaced by a fixed 8-second wait; the present
+script was not run there. `wait-idle` needs `ss`, a Linux tool, and stops
+with a message elsewhere: wait a fixed time, at least the longest request
+and the time a proxy needs to ask again, or count the requests in the
+application. `tests/deploy/inside.sh` itself calls `ss` and writes
+`/etc/nginx/nginx.conf`, so a FreeBSD run needs edits to it. The Integrations
+workflow runs the test on Linux every week and when the test or the script
+changes.
 
 ## Watching emfor from Nagios, Icinga or Zabbix
 
@@ -468,9 +523,10 @@ $ echo $?
 - A drained backend is left out of the counts (it is out on purpose) and is
   named in the text. `-s` picks a service (default every service), `-C` the
   config that names the store.
-- The user the monitoring runs as must be able to read the store
-  ([who can use the store](#who-can-use-the-store)); with NRPE or SSH the
-  script runs on the host that has the store.
+- The user the monitoring runs as must be able to read the store and write
+  its lock file ([who can use the store](#who-can-use-the-store)); with
+  the recommended `lock_file_mode = "0660"` that user must be in the group.
+  With NRPE or SSH the script runs on the host that has the store.
 
 **Using a Nagios plugin as a check: `emfor-exec.sh`.** emfor's [`exec`
 check](04-health-checks.md#exec) starts a program without a shell and passes
@@ -491,8 +547,9 @@ check_options = { command = ["/usr/local/libexec/emfor-exec.sh",
 It runs `check_http -H <ip> -p <port> -u /healthz` and returns the plugin's
 exit status; `--host-flag` and `--port-flag` change the two flags for a plugin
 that uses others. What emfor makes of it: 0 is up, **1 (WARNING) is down**, 2
-(CRITICAL) is down, and 3 (UNKNOWN) is an error, shown as state `unknown`
-and not up; the first line of the plugin's output is the reason, and a
+(CRITICAL) is down, and 3 (UNKNOWN) is an error: the state does not change at
+first, and after `fall` x `interval` of nothing but errors it becomes
+`unknown` ([chapter 4](04-health-checks.md#rise-fall-and-errors)); the first line of the plugin's output is the reason, and a
 plugin that has not finished at `timeout` is down. `--warning up` turns a
 WARNING into up. A process is started for every check of every backend, so
 choose `interval` with that in mind ([chapter 4](04-health-checks.md#exec)).
@@ -512,9 +569,32 @@ ports and metrics ports.
 
 ## Upgrading
 
-Install the daemon and every client library from the same release, then
-restart the daemon. Applications keep running; they follow the restarted
-daemon's store without a restart of their own.
+Install the daemon and every client library from the same release, in this
+order:
+
+1. Upgrade the client libraries (and `emfor status`) on the host, and restart
+   the applications so that they load them: a running application keeps the
+   library it started with. A client older than the daemon can fail every
+   lookup with `INCOMPATIBLE` (the store format is version 2 since 0.4.0, see
+   [store format version](06-clients.md#store-format-version)), and an older
+   client can still choose a drained backend in the last tier of an open
+   service ([draining a backend](05-backend-selection.md#draining-a-backend)).
+2. Run `emfor check-config` with the new binary, before you restart. 0.5.0
+   refuses options that 0.4.0 accepted (an `interval` above `24h`, a
+   `timeout` below `10ms`, and more: [CHANGELOG.md](../../CHANGELOG.md)).
+   With an invalid config, `systemctl restart emfor` leaves the daemon down
+   (the check before the start fails, and the unit ends `failed` until
+   `systemctl reset-failed emfor`): see
+   [Restarts](../deploy/daemon.md#running-under-systemd) in the daemon guide.
+3. Install the daemon and restart it.
+
+Release notes that change what to do: 0.4.0 writes store format version 2
+and encrypts peer messages by default (a group is upgraded host by host with
+`encrypt = false`, [Peer groups](#peer-groups)); 0.5.0 validates the config
+more strictly.
+
+After the restart, applications that were already running the new library
+follow the restarted daemon's store without another restart.
 
 ### What applications see during a restart
 

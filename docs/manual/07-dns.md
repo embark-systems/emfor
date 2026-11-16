@@ -46,7 +46,7 @@ with forged-source UDP queries. The server therefore counts UDP
 responses per client network (an IPv4 /24 or an IPv6 /56) and sends at
 most `[dns] rate_limit` (100 by default) of them a second to each. Past
 the limit, every other response is an empty one with the TC flag, which
-is smaller than the query and makes a real client retry over TCP; the
+is no larger than the query (the same size when the query has no EDNS) and makes a real client retry over TCP; the
 rest are not sent. Clients on a loopback address and TCP are never
 limited, so the default setup (`listen` on 127.0.0.1, queried by the
 host's own resolver) is not affected. `emfor_dns_rate_limited_total`
@@ -71,7 +71,10 @@ drill -p 5300 api.svc.emfor @127.0.0.1           # FreeBSD
 | --- | --- |
 | A / AAAA for a service | One record: a backend of that family chosen by `balance` ([chapter 5](05-backend-selection.md#dns-differences)), with the `aa` flag. |
 | A / AAAA, no backend of that family | `NOERROR` with no records (NODATA). |
-| A / AAAA / SRV, no healthy backend and `on_all_down = "closed"` | `SERVFAIL`. |
+| A / AAAA / SRV, no healthy backend and `on_all_down = "closed"` | `SERVFAIL`. For A and AAAA "no healthy backend" is counted per address family. |
+| A / AAAA / SRV, every backend of the service drained | `SERVFAIL`, whatever `on_all_down` is ([chapter 5](05-backend-selection.md#draining-a-backend)). |
+| Any name in the zone, before the daemon has its first state (the first moments after a start) | `SERVFAIL`: which names exist is not known yet. |
+| SRV, a backend whose target name would be longer than 255 bytes | `SERVFAIL`. |
 | SRV for a service, or `_<anything>._tcp.<service>` | One SRV record per candidate, addresses in the additional section. |
 | Other types for a service | `NOERROR` with no records. |
 | A name under the zone that is no service | `NXDOMAIN`. |
@@ -96,8 +99,9 @@ when none is healthy and `on_all_down` is `open`, the `unknown` backends
 (those whose last check passed first) before all of them (see [When no
 backend is healthy](05-backend-selection.md#when-no-backend-is-healthy)).
 IPv4 and IPv6 backends are listed together. Go's
-`net.LookupSRV("http", "tcp", "api.svc.emfor")`, gRPC and similar clients
-ask for `_http._tcp.api.svc.emfor`, which emfor answers.
+`net.LookupSRV("http", "tcp", "api.svc.emfor")` asks for
+`_http._tcp.api.svc.emfor`, which emfor answers (other clients that build
+such names were not tried).
 
 | `balance` | Priority | Weight | Order |
 | --- | --- | --- | --- |
@@ -118,10 +122,16 @@ the service name, which emfor resolves whatever the backend's health:
 - `10.0.0.11` → `10-0-0-11.api.svc.emfor`
 - `2001:db8::11` → `2001-0db8-0000-0000-0000-0000-0000-0011.api.svc.emfor`
 
-Over UDP a reply stays within the size the client advertises with EDNS (at
-most 1232 bytes), or 512 bytes without EDNS. When the addresses do not fit,
+Over UDP a reply stays within the size the client advertises with EDNS, but
+emfor caps that at 1232 bytes (a client that advertises 4096 gets 1232), or
+512 bytes without EDNS. When the addresses do not fit,
 they are left out; when even the SRV records do not fit, the reply is
-truncated (TC) and the resolver retries over TCP. A name close to the
+truncated (TC) and the resolver retries over TCP. In the tests (IPv4
+backends, a short service name) 19 backends fit in 1232 bytes with their
+addresses and 27 without them; at 512 bytes it is 8 and 11. With 40
+backends and a client that advertises 4096, the UDP reply held 27 records
+with TC set, and over TCP all 40 arrived. What a given client does after TC
+was tried for nginx and HAProxy only as far as the sections below say. A name close to the
 255-byte limit can make even a single A record or the SOA too big for 512
 bytes; that reply is truncated too.
 
@@ -214,8 +224,10 @@ What nginx does with the answer, as checked with nginx 1.30.6 (stable) and
   10 seconds for each change; with a 200 ms check interval it took about 3.
 - **`drain = true`** ([chapter 5](05-backend-selection.md#draining-a-backend)):
   edit emfor's config and reload emfor; nginx is not touched, and the
-  backend stops getting new requests. (What happens to a connection nginx
-  already holds open to it was not tried.)
+  backend stops getting new requests. A request that is running on the
+  backend finishes, and a connection nginx holds open to it stays open:
+  see [Rolling deploy with drain](08-operations.md#rolling-deploy-with-drain)
+  (`tests/deploy`) and the stream test below.
 - **Priorities**: nginx takes the records with the lowest priority number as
   its servers and the others as `backup`. With `balance = "failover"` the
   first healthy backend is the only server and the second its backup;
@@ -225,9 +237,11 @@ What nginx does with the answer, as checked with nginx 1.30.6 (stable) and
   not say it uses the SRV weight.)
 - **When emfor cannot answer**: a service with no backend to offer
   (`on_all_down = "closed"` and everything down, or every backend drained)
-  gets `SERVFAIL`, and so does a stopped emfor. nginx logs `could not be
-  resolved` and **keeps the last list it had**, so it goes on sending
-  to those backends. The lookup fails for nginx's clients only through
+  gets `SERVFAIL`; nginx logs `could not be resolved` and **keeps the last
+  list it had**, so it goes on sending to those backends. A stopped emfor
+  sends no answer at all, so nginx's lookup times out instead; that case
+  was not tried (the tests only drain every backend), and what nginx does
+  with a timeout may differ from what it does with `SERVFAIL`. The lookup fails for nginx's clients only through
   nginx's own `proxy_next_upstream` and `max_fails`. **When emfor answers
   again, nginx follows only after `resolver_timeout`**, which is 30 seconds
   by default: in the test, with the default, nginx still had its old list 5
@@ -350,8 +364,11 @@ backend api
 
 - `nameserver` is emfor's DNS server (`[dns] listen`, port 5300 by default),
   not the host resolver.
-- `accepted_payload_size 4096` lets the answer of a service with many
-  backends arrive over UDP (HAProxy asks for 512 bytes by default).
+- `accepted_payload_size 4096` tells emfor that HAProxy takes a larger
+  answer over UDP than the 512 bytes it asks for by default; emfor caps it
+  at 1232 bytes ([SRV records](#srv-records): 19 backends with their
+  addresses, 27 without). More than 27 backends with HAProxy was not tried,
+  nor whether HAProxy then retries over TCP.
 - `hold valid 1s` makes HAProxy use a new answer after a second; the other
   `hold` values stay at their defaults, which matter below.
 - `1-4` is the number of **slots**: the most backends HAProxy can use. A
@@ -488,7 +505,8 @@ reload:
   default is longer (a minute, as I read the Caddy documentation; not
   tried), and a longer `refresh` delays a drain or a failure that long.
 - **`grace_period`** keeps the last list when the lookup fails. emfor
-  answers `SERVFAIL` when every backend of the service is down or drained:
+  answers `SERVFAIL` when every backend of the service is drained, or is down
+  with `on_all_down = "closed"` (with the default `open` it still answers):
   with `grace_period` Caddy kept answering (10 of 10), without it Caddy had no
   upstream and every request failed (10 of 10). nginx keeps its last list
   by itself.

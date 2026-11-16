@@ -12,28 +12,51 @@
 #                                      received anything for MS milliseconds
 #                                      (default 3000), for at most S seconds
 #                                      (default 60)
-#   emfor-drain.sh wait-ready ADDR [S] wait until the checks of ADDR say healthy
-#                                      (also while it is drained)
+#   emfor-drain.sh wait-ready ADDR [S [SETTLE]]
+#                                      wait until the checks of ADDR (also while
+#                                      it is drained) have said healthy, with a
+#                                      check newer than this command, for SETTLE
+#                                      seconds in a row (default 10), for at
+#                                      most S seconds (default 60). SETTLE
+#                                      should be more than fall x interval of
+#                                      the service: a backend that has just
+#                                      stopped still shows healthy until its
+#                                      failed checks have counted up to fall.
 #
 # FILE is a conf.d file in which each backend of the service is one line,
 #   { addr = "10.0.0.11:8080" },
-# which `on` changes to  { addr = "10.0.0.11:8080", drain = true },
-# Reload with EMFOR_RELOAD (default "systemctl reload emfor"). Needs jq (for
-# status --json) and, for wait-idle, ss (iproute2). The script changes nothing
-# but FILE, and it replaces FILE only after the line has changed, with the
-# mode and owner it had: emfor refuses a conf.d file that others can write.
+# written exactly so, with a space before the }. `on` changes it to
+#   { addr = "10.0.0.11:8080", drain = true },
+# and refuses (changing nothing) a line it cannot change.
+#
+# Run as root on the host that runs emfor (check-config run as root accepts
+# only conf.d files owned by root). Environment:
+#   EMFOR_RELOAD   how to reload (default "systemctl reload emfor"; FreeBSD:
+#                  "service emfor reload")
+#   EMFOR_CONFIG   the config file, passed as --config to emfor (default: the
+#                  path built into emfor)
+#   EMFOR_SERVICE  the service name, when ADDR is a backend of more than one
+#                  service (default: the first service, in name order, that
+#                  has ADDR)
+# Needs jq (for status --json) and, for wait-idle, ss (iproute2). The script
+# changes nothing but FILE. It writes the new line to FILE.new, moves it over
+# FILE (same mode and owner), runs check-config, and puts the old FILE back if
+# check-config refuses; only then does it reload.
 set -eu
 
 die() { echo "emfor-drain: $*" >&2; exit 1; }
 reload=${EMFOR_RELOAD:-systemctl reload emfor}
+service=${EMFOR_SERVICE:-}
+emfor_cmd() { if [ -n "${EMFOR_CONFIG:-}" ]; then c=$1; shift; emfor "$c" --config "$EMFOR_CONFIG" "$@"; else emfor "$@"; fi; }
 
 # addr with the characters that mean something in a sed pattern escaped.
 pattern() { printf '%s' "$1" | sed 's/[][\.*^$/]/\\&/g'; }
 
 # backend_field ADDR JQ-EXPRESSION: a value from `emfor status --json`.
 backend_field() {
-    emfor status --json 2>/dev/null |
-        jq -r --arg a "$1" "[.services[].backends[] | select(.id == \$a)][0] | $2"
+    emfor_cmd status --json 2>/dev/null |
+        jq -r --arg a "$1" --arg s "$service" \
+            "[.services[] | select(\$s == \"\" or .name == \$s) | .backends[] | select(.id == \$a)][0] | $2"
 }
 
 wait_for() { # SECONDS DESCRIPTION COMMAND...: poll once a second
@@ -46,8 +69,14 @@ wait_for() { # SECONDS DESCRIPTION COMMAND...: poll once a second
 
 drained() { [ "$(backend_field "$1" '(.drain // false)')" = true ]; }
 undrained() { [ "$(backend_field "$1" '(.drain // false)')" = false ]; }
+# healthy ADDR SINCE-MS: the checks say healthy, the last check passed (not
+# visible while drained: the store shows only the state of the checks then),
+# and a check has finished after SINCE-MS.
 healthy() {
-    [ "$(backend_field "$1" '(.checked_state // .state)')" = healthy ]
+    [ "$(backend_field "$1" "if (.drain // false) then (.checked_state // \"\")
+        elif .reason == null then .state else \"failing\" end")" = healthy ] || return 1
+    at=$(backend_field "$1" '(.checked_at // 0)')
+    [ "$at" -gt "$2" ]
 }
 
 edit() { # on|off FILE ADDR
@@ -56,15 +85,28 @@ edit() { # on|off FILE ADDR
     p=$(pattern "$addr")
     n=$(grep -c "addr = \"$p\"" "$file" || true)
     [ "$n" = 1 ] || die "$file has $n lines with addr = \"$addr\", not 1"
-    cp -p "$file" "$file.new"
+    cp -p "$file" "$file.new"   # same mode and owner
     case "$mode" in
         on) sed "/addr = \"$p\"/{/drain = true/!s/ }/, drain = true }/;}" "$file" > "$file.new" ;;
         off) sed "/addr = \"$p\"/s/, drain = true//" "$file" > "$file.new" ;;
     esac
-    # A fragment that does not end in .toml is not read by emfor, so the
-    # temporary file cannot be loaded half-written.
-    mv "$file.new" "$file"
-    emfor check-config >/dev/null || die "check-config refuses the new $file"
+    case "$mode" in
+        on) grep -q "addr = \"$p\".*drain = true" "$file.new" ;;
+        off) ! grep -q "addr = \"$p\".*drain" "$file.new" ;;
+    esac || { rm -f "$file.new"; die "cannot change the line of $addr in $file (it must read { addr = \"$addr\" }, with a space before the })"; }
+    if cmp -s "$file" "$file.new"; then
+        rm -f "$file.new"   # already as wanted; reload anyway
+    else
+        # A file that does not end in .toml is not read by emfor, so the
+        # temporary files are never loaded.
+        cp -p "$file" "$file.old"
+        mv "$file.new" "$file"
+        if ! emfor_cmd check-config >/dev/null; then
+            mv "$file.old" "$file"
+            die "check-config refuses the new $file; the old file is back"
+        fi
+        rm -f "$file.old"
+    fi
     sh -c "$reload"
 }
 
@@ -79,7 +121,18 @@ case "$cmd" in
         wait_for 15 "$3 is still shown as drained" undrained "$3"
         ;;
     wait-ready)
-        wait_for "${3:-60}" "$2 is not healthy" healthy "${2:?ADDR}"
+        addr=${2:?ADDR}; t=${3:-60}; settle=${4:-10}
+        since=$(($(date +%s) * 1000)); ok=0
+        while :; do
+            if healthy "$addr" "$since"; then
+                [ "$ok" -gt 0 ] || ok=$(date +%s)
+                [ $(($(date +%s) - ok)) -lt "$settle" ] || exit 0
+            else
+                ok=0
+            fi
+            t=$((t - 1)); [ "$t" -gt 0 ] || die "timed out: the checks of $addr have not said healthy for $settle seconds"
+            sleep 1
+        done
         ;;
     wait-idle)
         port=${2:?PORT}
@@ -112,7 +165,7 @@ case "$cmd" in
         done
         ;;
     *)
-        sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2
+        sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//' >&2
         exit 2
         ;;
 esac

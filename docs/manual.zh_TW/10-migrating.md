@@ -70,7 +70,7 @@ expect_status = [200]
 | `option httpchk GET /healthz` | `path = "/healthz"` | emfor 一律送 `GET`。HAProxy 不帶參數時送 `OPTIONS /`；emfor 不設 `path` 就送 `GET /`（[http 檢查](04-health-checks.md#http)）。 |
 | `http-check expect status 200` | `expect_status = [200]` | 沒有設的話，200 到 399 的狀態碼都算 `up`；HAProxy 的預設也接受 2xx 與 3xx。範圍寫成 `"200-299"`。 |
 | `http-check send ... hdr Host x` | `host_header = "x"` | 只能設 `Host` header。 |
-| `weight 3` | `{ addr = "...", weight = 3 }` | 1 到 100，而且只有 `balance = "weighted"`（以及有 key 的 `sticky`）會用到。 |
+| `weight 3` | `{ addr = "...", weight = 3 }` | 1 到 100，而且只有 `balance = "weighted"`（以及有 key 的 `sticky`）會用到。HAProxy 的權重最高到 256，0 表示把 server 拿掉：emfor 會拒絕 `weight = 0` 與 `weight = 256`（`weight must be from 1 to 100`），所以請把權重重新換算到 1 至 100，要表示 0 就用 `drain = true`（見最後一個表）。 |
 | `backup` | `backup = true` | 只有在沒有其他 backend 通過檢查時才會用到備援（[備援 backend](05-backend-selection.md#備援-backend)）。 |
 | `slowstart 30s` | `slow_start = "30s"` | 恢復的 backend 會分到逐漸增加的流量，分十個階段（[慢啟動](05-backend-selection.md#慢啟動slow-start)）。設在服務上，不是設在單一 backend。 |
 | `balance roundrobin` | `balance = "round-robin"` 或 `"weighted"` | HAProxy 的 round robin 會考慮權重；emfor 的 `round-robin` 不會。用了權重就要用 `weighted`。 |
@@ -89,14 +89,14 @@ $ emfor lookup api.svc.emfor
 $ curl "http://$(emfor lookup api.svc.emfor)/healthz"
 ```
 
-或是用它那個語言的 client 函式庫（[第 6 章](06-clients.md)），或是 DNS 名稱 `api.svc.emfor`，由主機的 resolver 轉送（[第 7 章](07-dns.md)）。用 `emfor lookup` 或 DNS 的話，應用程式除了連線的位址之外不需要改動。
+或是用它那個語言的 client 函式庫（[第 6 章](06-clients.md)），或是 DNS 名稱 `api.svc.emfor`：這要在設定檔加上 `[dns]` table（上面的範例沒有，而且有這個 table 才會啟動 DNS server），並讓主機的 resolver 轉送那個 zone（[第 7 章](07-dns.md)）。要知道的限制：A 與 AAAA 回答不帶 port，所以 port 要由應用程式自己保管（或改問 SRV）；會快取答案的 runtime 或 resolver 會讓改動晚一個快取時間才生效（[快取](07-dns.md#快取)）；而 `emfor lookup` 是一個每個行程印出一個 backend 的指令，所以連到 `$(emfor lookup ...)` 的程式需要一個小的 wrapper，每次連線都執行一次（[第 6 章](06-clients.md#從-shell-查詢emfor-lookup)）。
 
 ### 與 HAProxy 並排試用
 
 emfor 不碰流量，所以可以先在 HAProxy 旁邊跑：
 
-1. 把服務寫進 `emfor.toml`，用 `emfor check-config` 檢查。
-2. 啟動 daemon，把 `emfor status` 與 HAProxy 的 stats 頁面比對：健康與不健康的 backend 應該相同，`emfor status` 裡的 reason 會說明檢查為什麼失敗。
+1. 把服務寫進 `emfor.toml`（用 deb 或 rpm 時，寫進 `/etc/emfor/conf.d/` 的檔案，套件的主設定檔會讀那裡），用 `emfor check-config` 檢查設定。
+2. 啟動 daemon（deb 在安裝時就已啟動；改了檔案之後用 `systemctl reload emfor`），把 `emfor status` 與 HAProxy 的 stats 頁面比對：健康與不健康的 backend 應該相同，`emfor status` 裡的 reason 會說明檢查為什麼失敗。
 3. 用 `emfor lookup api.svc.emfor --explain` 看應用程式會拿到什麼、為什麼（[第 6 章](06-clients.md#從-shell-查詢emfor-lookup)）。
 4. 一次只把一個應用程式搬到 emfor，同時看 [metrics](08-operations.md#metrics) 與 `emfor status --watch`。
 5. 等到沒有任何應用程式再使用某個 backend 時，才把它從 HAProxy 的設定移除。
@@ -149,19 +149,20 @@ zone = "service.consul"
 | `check { args = [...] }`（script） | `check = "exec"` | |
 | `interval` | `interval` | Consul 沒有預設值；emfor 的預設是 2 秒。 |
 | `timeout` | `timeout` | Consul 對 HTTP 與 TCP 的預設是 10 秒；emfor 的是 1 秒，而且不能超過 `interval`。 |
-| `success_before_passing` | `rise` | Consul 的預設是 0；emfor 的是 2。請明確設定。 |
-| `failures_before_critical` | `fall` | Consul 的預設是 0；emfor 的是 3。請明確設定。 |
+| `success_before_passing` | `rise` | Consul 的預設是 0，也就是第一個結果就決定。emfor 拒絕 `rise = 0`（`rise must be at least 1`）：`rise = 1` 是同樣的效果，emfor 的預設是 2。 |
+| `failures_before_critical` | `fall` | Consul 的預設是 0，也就是第一個結果就決定。emfor 拒絕 `fall = 0`（`fall must be at least 1`）：`fall = 1` 是同樣的效果，emfor 的預設是 3。 |
 | `method`、`header` | 無 | emfor 送 `GET`；header 只能設 `Host`（`host_header`）。 |
 | `tls_skip_verify = true` | `tls_verify = false` | 搭配 `scheme = "https"`。 |
 | 狀態 `passing`、`warning`、`critical` | `healthy`、`unhealthy`、`unknown` | Consul 的 HTTP 檢查在 200 到 299 為 `passing`、429 為 `warning`、其他為 `critical`；emfor 沒有 `warning`：用 `expect_status` 設定你接受的狀態碼。 |
 | `status`（初始為 `critical`） | 從 `unknown` 開始 | backend 通過 `rise` 次檢查後才變成 `healthy`；在那之前，`open` 的服務仍會回傳一個位址（[第 5 章](05-backend-selection.md#沒有任何-backend-健康時)）。 |
+| `consul maint -enable`、`enable_maintenance` | backend 上的 `drain = true` | 然後 reload；見 [drain 一個 backend](05-backend-selection.md#drain-一個-backend)。 |
 | `deregister_critical_service_after` | 無 | 清單是靜態的，沒有東西會把 backend 反註冊。 |
 | TTL 與 alias 檢查 | 無 | emfor 只執行它自己的檢查。 |
 | `api.service.consul` | 服務名稱，搭配 `[dns] zone` | 見上面。 |
 | `_api._tcp.service.consul`（SRV） | `_<任意>._tcp.<服務名稱>` | emfor 的 SRV 名稱包含完整的服務名稱，例如 `_http._tcp.api.service.consul`（[第 7 章](07-dns.md)）。 |
 | tag、datacenter | `site` 與 `balance = "locality"` | backend 可以有 `site`，主機會優先選自己 site 的 backend（[第 5 章](05-backend-selection.md)）。 |
 
-Consul 會讀一個放服務檔案的目錄，一個服務一個檔案。emfor 用 `include_dir` 也能這樣做：在 `emfor.toml` 寫 `include_dir = "conf.d"`，再在 `conf.d` 裡一個服務放一個檔案，例如 `/etc/emfor/conf.d/10-web.toml`：
+Consul 會讀一個放服務檔案的目錄，一個服務一個檔案。emfor 用 `include_dir` 也能這樣做：把 `include_dir = "conf.d"` 寫在 `emfor.toml` 的第一行、任何 table 之前（寫在 `[dns]` 之後會是錯誤，`dns.include_dir: unknown key`），建立那個目錄，再在裡面一個服務放一個檔案，例如 `/etc/emfor/conf.d/10-web.toml`：
 
 ```toml
 [services."web.svc.emfor"]
@@ -172,7 +173,7 @@ backends = ["10.0.0.21:8080", "10.0.0.22:8080"]
 path = "/healthz"
 ```
 
-`emfor check-config` 會列出讀過的檔案，reload 會把它們全部重讀（[第 3 章](03-configuration.md#把設定拆到目錄)）。和 Consul 不同，emfor 不做註冊：檔案就是 backend 的清單。
+目錄與裡面的檔案不能讓 group 或其他人寫入，擁有者必須是 root 或執行 emfor 的使用者（[權限](03-configuration.md#把設定拆到目錄)）。`emfor check-config` 會列出讀過的檔案，reload 會把它們全部重讀（[第 3 章](03-configuration.md#把設定拆到目錄)）。和 Consul 不同，emfor 不做註冊：檔案就是 backend 的清單。
 
 ### 與 Consul 並排試用
 
@@ -183,9 +184,9 @@ path = "/healthz"
 | 你用的功能 | 在 emfor 裡 |
 | --- | --- |
 | 最少連線、連線數限制、排隊 | 沒有。emfor 不在資料路徑上，看不到連線。這部分請保留 HAProxy。 |
-| proxy 的重試與逾時 | 由應用程式重試。client 每次查詢回傳一個位址，所以在下一次檢查執行之前，重試可能拿到同一個 backend。 |
-| 被動健康檢查（`observe layer7`） | 沒有：只有主動檢查。失敗的 backend 由下一次檢查發現；在[聯防群組](03-configuration.md#peers)裡，其中一台看到失敗後，各主機每 200ms 會重新檢查。 |
-| 為了維護把 backend 拿下來（`disabled`、`maint`、`drain`） | 在 backend 上寫 `drain = true` 再 reload（[第 5 章](05-backend-selection.md#drain-一個-backend)）：它不會被選到，檢查照跑。沒有 `weight 0`，也沒有執行期的指令（`set server ... state drain`）：只能改設定檔。 |
+| proxy 的重試與逾時 | 由應用程式重試。client 每次查詢回傳一個位址，所以服務是 `sticky` 或 `failover` 時，重試會拿到同一個 backend，直到它的下一次檢查失敗為止（大約一個 `interval`）；用 `round-robin` 時，同一個行程的重試會拿下一個候選。backend 在第一次檢查失敗時就會被排除在候選之外，不必等 `fall` 次檢查把它標成 down（[第 5 章](05-backend-selection.md#檢查開始失敗的-backend)）。 |
+| 被動健康檢查（`observe layer7`） | 沒有：只有主動檢查。失敗的 backend 由下一次檢查發現；在[聯防群組](03-configuration.md#peers)裡，某個成員看到 backend 從 `healthy` 變成 `unhealthy`（`fall` 次檢查失敗之後）會通知其他成員，它們隨即重新檢查那個 backend，並每 200ms 檢查一次，最多 `fall` 次。 |
+| 為了維護把 backend 拿下來（`disabled`、`maint`、`drain`） | 在 backend 上寫 `drain = true` 再 reload（[第 5 章](05-backend-selection.md#drain-一個-backend)）：它不會被選到，檢查照跑。`weight = 0` 會被拒絕（`weight must be from 1 to 100`），也沒有執行期的指令（`set server ... state drain`）：只能改設定檔。 |
 | 依 URL、header 或 cookie 路由，TLS 終結 | 沒有。 |
 | Consul 的註冊、tag 與 key-value store | 沒有。backend 清單就是設定。 |
 | 多個設定檔 | 目前只有一個檔案。 |

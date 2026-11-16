@@ -28,7 +28,7 @@ rate_limit = 100              # default; UDP responses a second per client netwo
 
 ### 速率限制
 
-SRV 回答可以比查詢大上許多倍，所以其他主機連得到的 DNS server 可能被拿來用偽造來源的 UDP 查詢灌爆第三方。因此 server 會依 client 網段（IPv4 /24 或 IPv6 /56）計算 UDP 回應，每秒最多送出 `[dns] rate_limit` 個（預設 100）。超過之後，每兩個回應中有一個改成空的、設了 TC 旗標的回應：它比查詢還小，正常的 client 會改用 TCP 重試；其餘不回應。loopback 位址上的 client 與 TCP 一律不受限，所以預設的設定（`listen` 在 127.0.0.1，由本機 resolver 查詢）不受影響。`emfor_dns_rate_limited_total` 計算被限制的回應；如果站內轉送到 emfor 的 resolver 出現在這裡，就調高 `rate_limit`，或設為 `0` 關閉限制。
+SRV 回答可以比查詢大上許多倍，所以其他主機連得到的 DNS server 可能被拿來用偽造來源的 UDP 查詢灌爆第三方。因此 server 會依 client 網段（IPv4 /24 或 IPv6 /56）計算 UDP 回應，每秒最多送出 `[dns] rate_limit` 個（預設 100）。超過之後，每兩個回應中有一個改成空的、設了 TC 旗標的回應：它不比查詢大（查詢沒有 EDNS 時大小相同），正常的 client 會改用 TCP 重試；其餘不回應。loopback 位址上的 client 與 TCP 一律不受限，所以預設的設定（`listen` 在 127.0.0.1，由本機 resolver 查詢）不受影響。`emfor_dns_rate_limited_total` 計算被限制的回應；如果站內轉送到 emfor 的 resolver 出現在這裡，就調高 `rate_limit`，或設為 `0` 關閉限制。
 
 啟動時，daemon 會為每個不是 loopback 的 `listen` 位址記錄一則警告：任何連得到它的主機都能查詢每個服務。請用防火牆限制誰能連到這個 port。
 
@@ -45,7 +45,10 @@ drill -p 5300 api.svc.emfor @127.0.0.1           # FreeBSD
 | --- | --- |
 | 服務的 A / AAAA | 一筆記錄：依 `balance` 選出的該位址族 backend（[第 5 章](05-backend-selection.md#dns-的差異)），帶 `aa` flag。 |
 | A / AAAA，沒有該位址族的 backend | `NOERROR`，沒有記錄（NODATA）。 |
-| A / AAAA / SRV，沒有健康的 backend 且 `on_all_down = "closed"` | `SERVFAIL`。 |
+| A / AAAA / SRV，沒有健康的 backend 且 `on_all_down = "closed"` | `SERVFAIL`。A 與 AAAA 的「沒有健康的 backend」是依位址族分開算的。 |
+| A / AAAA / SRV，服務的每個 backend 都被 drain | `SERVFAIL`，不論 `on_all_down` 是什麼（[第 5 章](05-backend-selection.md#drain-一個-backend)）。 |
+| zone 之下的任何名稱，在 daemon 還沒有第一份狀態之前（剛啟動的那一小段時間） | `SERVFAIL`：還不知道有哪些名稱。 |
+| SRV，某個 backend 的目標名稱會超過 255 位元組 | `SERVFAIL`。 |
 | 服務或 `_<任意>._tcp.<服務>` 的 SRV | 每個候選一筆 SRV 記錄，位址放在 additional section。 |
 | 服務的其他類型 | `NOERROR`，沒有記錄。 |
 | zone 之下、但不是服務的名稱 | `NXDOMAIN`。 |
@@ -56,7 +59,7 @@ TTL 是服務的 `dns_ttl`，否則為 `[dns] ttl`（預設 1 秒）。zone 有�
 
 ## SRV 記錄
 
-SRV 回答帶有每個 backend 的 port，並列出所有候選，選法與 A、AAAA 回答相同：最近一次檢查通過的主要 backend；沒有的話，最近一次檢查通過的[備援](05-backend-selection.md#備援-backend)；再沒有的話，全部健康的主要 backend 都在失敗時列出它們全部（見[檢查開始失敗的 backend](05-backend-selection.md#檢查開始失敗的-backend)），否則列出全部健康的備援。只要有健康的 backend，同一個回答就不會同時列出主要與備援；沒有任何健康且 `on_all_down` 為 `open` 時，列出 open 的候選（見[第 5 章](05-backend-selection.md#沒有任何-backend-健康時)）：先是 `unknown` 的 backend（最近一次檢查通過的優先），沒有才列出全部。IPv4 與 IPv6 backend 一起列出。Go 的 `net.LookupSRV("http", "tcp", "api.svc.emfor")`、gRPC 與類似的 client 會查詢 `_http._tcp.api.svc.emfor`，emfor 會回答。
+SRV 回答帶有每個 backend 的 port，並列出所有候選，選法與 A、AAAA 回答相同：最近一次檢查通過的主要 backend；沒有的話，最近一次檢查通過的[備援](05-backend-selection.md#備援-backend)；再沒有的話，全部健康的主要 backend 都在失敗時列出它們全部（見[檢查開始失敗的 backend](05-backend-selection.md#檢查開始失敗的-backend)），否則列出全部健康的備援。只要有健康的 backend，同一個回答就不會同時列出主要與備援；沒有任何健康且 `on_all_down` 為 `open` 時，列出 open 的候選（見[第 5 章](05-backend-selection.md#沒有任何-backend-健康時)）：先是 `unknown` 的 backend（最近一次檢查通過的優先），沒有才列出全部。IPv4 與 IPv6 backend 一起列出。Go 的 `net.LookupSRV("http", "tcp", "api.svc.emfor")` 會查詢 `_http._tcp.api.svc.emfor`，emfor 會回答（其他會組出這種名稱的 client 沒有試過）。
 
 | `balance` | Priority | Weight | 順序 |
 | --- | --- | --- | --- |
@@ -73,7 +76,7 @@ SRV 回答帶有每個 backend 的 port，並列出所有候選，選法與 A、
 - `10.0.0.11` → `10-0-0-11.api.svc.emfor`
 - `2001:db8::11` → `2001-0db8-0000-0000-0000-0000-0000-0011.api.svc.emfor`
 
-透過 UDP 時，回應大小不超過 client 以 EDNS 宣告的大小（最多 1232 位元組），沒有 EDNS 時為 512 位元組。位址放不下時就省略位址；連 SRV 記錄都放不下時，回應會被截斷（TC），resolver 會改用 TCP 重試。名稱長度接近 255 位元組上限時，連單一 A 記錄或 SOA 都可能超過 512 位元組，這種回應同樣會被截斷。
+透過 UDP 時，回應大小不超過 client 以 EDNS 宣告的大小，但 emfor 把它限制在 1232 位元組以內（宣告 4096 的 client 只得到 1232），沒有 EDNS 時為 512 位元組。位址放不下時就省略位址；連 SRV 記錄都放不下時，回應會被截斷（TC），resolver 會改用 TCP 重試。測試中（IPv4 backend、短的服務名稱）在 1232 位元組內，帶位址可放 19 個 backend、不帶位址可放 27 個；512 位元組時分別是 8 個與 11 個。40 個 backend、client 宣告 4096 時，UDP 回應有 27 筆記錄並設了 TC，走 TCP 則 40 筆全到。個別 client 收到 TC 之後的行為，只試過 nginx 與 HAProxy，範圍以下面各節為準。名稱長度接近 255 位元組上限時，連單一 A 記錄或 SOA 都可能超過 512 位元組，這種回應同樣會被截斷。
 
 ## 從主機的 resolver 轉送
 
@@ -140,10 +143,10 @@ server {
 nginx 怎麼處理這個回答，以下用 nginx 1.30.6（stable）與 1.31.8（mainline）測過：
 
 - **健康狀態**：檢查失敗的 backend 不在回答裡，nginx 就不再送請求給它；它恢復後又回來。測試對每個變化最多等 10 秒；檢查間隔 200 毫秒時大約花 3 秒。
-- **`drain = true`**（[第 5 章](05-backend-selection.md#drain-一個-backend)）：改 emfor 的設定並 reload emfor；不用動 nginx，那台 backend 不再收到新的請求。（nginx 已經對它開著的連線會怎樣，沒有試過。）
+- **`drain = true`**（[第 5 章](05-backend-selection.md#drain-一個-backend)）：改 emfor 的設定並 reload emfor；不用動 nginx，那台 backend 不再收到新的請求。正在 backend 上跑的請求會跑完，nginx 對它開著的連線也維持開著：見[用 drain 做滾動部署](08-operations.md#用-drain-做滾動部署)（`tests/deploy`）與下面的 stream 測試。
 - **優先序**：nginx 把 priority 數字最小的記錄當 server，其他的當 `backup`。`balance = "failover"` 時，第一台健康的 backend 是唯一的 server，第二台是它的備援；`locality` 與 `fastest` 的 priority 0 與 1 也是同樣的用法。
 - **`balance = "weighted"` 的權重**會被遵守：權重 3 與 1 時，80 個請求中有 60 個送到第一台。（nginx 的文件沒有說它會用 SRV 的權重。）
-- **emfor 無法回答時**：服務沒有 backend 可以給（`on_all_down = "closed"` 且全部不健康，或每個 backend 都 drain），emfor 回 `SERVFAIL`；emfor 停掉也一樣。nginx 會記錄 `could not be resolved`，並**沿用它最後一次拿到的清單**，繼續送請求給那些 backend。對 nginx 的用戶端來說，要靠 nginx 自己的 `proxy_next_upstream` 與 `max_fails` 才會失敗。**emfor 再度回答時，nginx 要等 `resolver_timeout` 之後才會跟上**，預設是 30 秒：測試中用預設值，emfor 再度回答 5 秒後 nginx 仍是舊清單，大約 26 秒後才跟上；設成 `resolver_timeout 1s` 則大約一秒就跟上（設 5 秒約 2 秒，設 10 秒約 7 秒）。在這個狀態下你做的改動，例如 drain，也同樣要等那麼久才會到 nginx。所以食譜設 `resolver_timeout 1s`。
+- **emfor 無法回答時**：服務沒有 backend 可以給（`on_all_down = "closed"` 且全部不健康，或每個 backend 都 drain），emfor 回 `SERVFAIL`；nginx 會記錄 `could not be resolved`，並**沿用它最後一次拿到的清單**，繼續送請求給那些 backend。停掉的 emfor 根本不會回任何答案，nginx 的查詢是逾時而不是收到 `SERVFAIL`；這個情況沒有試過（測試只 drain 過所有 backend），nginx 對逾時的處理可能和對 `SERVFAIL` 的不同。對 nginx 的用戶端來說，要靠 nginx 自己的 `proxy_next_upstream` 與 `max_fails` 才會失敗。**emfor 再度回答時，nginx 要等 `resolver_timeout` 之後才會跟上**，預設是 30 秒：測試中用預設值，emfor 再度回答 5 秒後 nginx 仍是舊清單，大約 26 秒後才跟上；設成 `resolver_timeout 1s` 則大約一秒就跟上（設 5 秒約 2 秒，設 10 秒約 7 秒）。在這個狀態下你做的改動，例如 drain，也同樣要等那麼久才會到 nginx。所以食譜設 `resolver_timeout 1s`。
 - **HTTPS upstream**：記錄的目標是像 `10-0-0-11.api.svc.emfor` 的名稱。要把 `proxy_ssl_name`（並設 `proxy_ssl_server_name on`）設成 backend 憑證上的名稱。這一項沒有試過。
 
 **TCP，用 `stream` 模組。** 同樣的 `upstream` 在 `stream` 區塊裡也能用，適合資料庫或其他任何 TCP 服務：
@@ -211,7 +214,7 @@ backend api
 ```
 
 - `nameserver` 是 emfor 的 DNS server（`[dns] listen`，預設 5300 port），不是主機的 resolver。
-- `accepted_payload_size 4096` 讓 backend 很多的服務的回答可以走 UDP 送到（HAProxy 預設只要 512 bytes）。
+- `accepted_payload_size 4096` 告訴 emfor，HAProxy 接受比預設 512 bytes 更大的 UDP 回答；emfor 把它限制在 1232 bytes（[SRV 記錄](#srv-記錄)：帶位址 19 個 backend、不帶位址 27 個）。HAProxy 搭配超過 27 個 backend 沒有試過，HAProxy 之後是否改用 TCP 重試也沒有試過。
 - `hold valid 1s` 讓 HAProxy 一秒後就採用新的回答；其他的 `hold` 維持預設，下面會說明為什麼重要。
 - `1-4` 是**槽**的數量，也就是 HAProxy 最多能用的 backend 數。backend 比槽多的服務會被截斷（測試：三個 backend 放進四個槽，用到三個）。請設得比服務的 backend 數大。
 - `_http._tcp.api.svc.emfor` 是 SRV 名稱；emfor 會回答 `_<任意>._tcp.<服務名稱>`（[SRV 記錄](#srv-記錄)），port 來自每一筆記錄。數個 backend 用同一個位址、不同 port 時要有 `allow-dup-ip`，`init-addr none` 讓 HAProxy 在第一次回答之前就能啟動。
@@ -262,7 +265,7 @@ Caddy 的 `reverse_proxy` 可以用 `dynamic srv` 從 SRV 回答取得上游，�
 
 - **兩個 `resolvers`**：`dynamic srv` 裡的用來查 SRV；回答裡的目標是 `10-0-0-11.api.svc.emfor` 這樣的名稱，Caddy 要連線到它們，`transport http` 裡的就是為了這個。少了它，Caddy 會問主機的 resolver，主機的 resolver 不認得這個 zone 時，每個請求都會失敗（測試中 10 個有 10 個失敗，log 是 `no such host`）；主機的 resolver 已經[轉送這個 zone](#從主機的-resolver-轉送)的話就不需要它。
 - **`refresh`** 是 Caddy 多久再問一次；測試用 1 秒。預設值比較長（我讀 Caddy 文件的理解是一分鐘；沒有試過），`refresh` 越長，drain 或故障傳到 Caddy 就越慢。
-- **`grace_period`** 在查詢失敗時保留上一份清單。service 的 backend 全部故障或被 drain 時 emfor 回答 `SERVFAIL`：有 `grace_period`，Caddy 繼續回答（10 個有 10 個）；沒有的話 Caddy 沒有上游，每個請求都失敗（10 個有 10 個）。nginx 自己就會保留上一份清單。
+- **`grace_period`** 在查詢失敗時保留上一份清單。service 的 backend 全部被 drain、或在 `on_all_down = "closed"` 下全部故障時 emfor 回答 `SERVFAIL`（預設的 `open` 仍會回答）：有 `grace_period`，Caddy 繼續回答（10 個有 10 個）；沒有的話 Caddy 沒有上游，每個請求都失敗（10 個有 10 個）。nginx 自己就會保留上一份清單。
 - **`lb_try_duration` 與 `lb_try_interval`** 讓 Caddy 重試，所以剛停掉、但在 emfor 與 Caddy 察覺前（約一秒）還在清單裡的 backend 不會丟請求（測試中 25 個請求丟 0 個）。沒有它們，Caddy 不會重試，25 個丟了 3 個。
 
 Caddy 怎麼處理這個回答，以下是 `tests/caddy/run.sh` 用 Caddy 2.11.9 看到的：

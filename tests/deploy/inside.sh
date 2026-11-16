@@ -5,7 +5,11 @@
 # nginx under test in front (the recipe of docs/manual/07-dns.md). A client
 # sends a POST every 50 ms all the time. First a backend is stopped without
 # drain while a slow request is in flight; then both backends are deployed in
-# turn with examples/deploy/emfor-drain.sh.
+# turn with examples/deploy/emfor-drain.sh. This test config uses a 200 ms
+# interval and fall = 1, which makes a stopped backend show unhealthy within
+# a fraction of a second; the last case therefore runs the defaults (2 s,
+# fall = 3), where a backend that has just stopped still shows healthy for
+# about 6 seconds, and checks that wait-ready does not take that for ready.
 set -u
 
 FILE=/etc/emfor/conf.d/20-api.toml
@@ -143,7 +147,7 @@ n=$(bad /tmp/load1.log)
 echo "ok: without drain, stopping the backend cut the request in flight ($size of 1200 bytes)"
 echo "note: of the $(wc -l < /tmp/load1.log | tr -d " ") new POSTs sent meanwhile, $n failed (nginx retries a request that was refused before it was sent)"
 backend "$X"
-$DRAIN wait-ready "127.0.0.1:$X" 30 || fail "$X did not turn healthy"
+$DRAIN wait-ready "127.0.0.1:$X" 30 2 || fail "$X did not turn healthy"
 
 # --- the deploy: drain, wait, stop, start, wait, undrain; once per backend
 load_start /tmp/load2.log
@@ -180,7 +184,7 @@ for round in 1 2; do
     stop_backend "$P"
     sleep 3
     backend "$P"
-    $DRAIN wait-ready "$ADDR" 30 || fail "$ADDR did not turn healthy"
+    $DRAIN wait-ready "$ADDR" 30 2 || fail "$ADDR did not turn healthy"
     $DRAIN off "$FILE" "$ADDR" || fail "drain off $ADDR"
     ! grep -q drain "$FILE" || fail "the file still has drain after off"
     wait_both /tmp/load2.log
@@ -192,5 +196,52 @@ total=$(wc -l < /tmp/load2.log | tr -d " ")
 [ "$total" -ge 100 ] || fail "only $total requests were sent"
 [ "$n" = 0 ] || { grep -v ' 200$' /tmp/load2.log | sort | uniq -c >&2; fail "$n of $total requests failed during the deploy"; }
 echo "ok: no request failed during the rolling deploy ($total requests)"
+
+# --- wait-ready with the default timings (interval 2s, fall 3, rise 2)
+cat > "$FILE" <<'CFG'
+[services."api.svc.emfor"]
+check = "tcp"
+backends = [
+  { addr = "127.0.0.1:9001" },
+  { addr = "127.0.0.1:9002" },
+]
+CFG
+chmod 644 "$FILE"
+sh -c "$EMFOR_RELOAD"
+sleep 1
+$DRAIN wait-ready 127.0.0.1:9001 60 || fail "default timings: 9001 did not turn healthy"
+$DRAIN on "$FILE" 127.0.0.1:9001 || fail "default timings: drain on"
+stop_backend 9001
+t0=$(date +%s)
+# The stale state this case is about: the backend is gone, the checks still
+# say healthy.
+st=$(emfor status --json | jq -r '.services[0].backends[] | select(.id == "127.0.0.1:9001") | .checked_state')
+[ "$st" = healthy ] || fail "default timings: expected the checks to still say healthy right after the stop, got $st"
+$DRAIN wait-ready 127.0.0.1:9001 90 &
+W=$!
+sleep 12
+kill -0 "$W" 2>/dev/null || fail "default timings: wait-ready returned while the backend was down"
+backend 9001
+t1=$(date +%s)
+wait "$W" || fail "default timings: wait-ready did not return after the backend was up"
+t2=$(date +%s)
+[ "$t2" -gt "$t1" ] || fail "default timings: wait-ready returned before the backend was started again"
+echo "ok: default timings: wait-ready waited $((t2 - t0)) s after the stop, and returned only after the restart"
+$DRAIN off "$FILE" 127.0.0.1:9001 || fail "default timings: drain off"
+
+# --- refusing a line it cannot change, and a failed check-config
+cp "$FILE" /tmp/keep.toml
+sed 's/{ addr = "127.0.0.1:9002" }/{ addr = "127.0.0.1:9002"}/' /tmp/keep.toml > "$FILE"
+cp "$FILE" /tmp/odd.toml
+if $DRAIN on "$FILE" 127.0.0.1:9002 2>/dev/null; then fail "the script changed a line it cannot change"; fi
+cmp -s "$FILE" /tmp/odd.toml || fail "the script touched a file it refused"
+echo "ok: a backend line without the space before } is refused and the file is untouched"
+cp /tmp/keep.toml "$FILE"
+sed 's/^check = "tcp"/check = "nonsense"/' /tmp/keep.toml > "$FILE"
+cp "$FILE" /tmp/bad.toml
+if $DRAIN on "$FILE" 127.0.0.1:9002 2>/dev/null; then fail "the script accepted a config that check-config refuses"; fi
+cmp -s "$FILE" /tmp/bad.toml || fail "the old file was not put back after check-config refused"
+echo "ok: when check-config refuses, the old file is put back"
+cp /tmp/keep.toml "$FILE"
 
 echo "ok: tests/deploy"
