@@ -22,7 +22,28 @@ It builds the image `emfor-packages` (Debian 11 with Rust, `cargo-deb` and
 `dist/emfor-<version>-1.<arch>.rpm`. The build container has glibc 2.31, so
 the binaries run on Debian 11 and later, Ubuntu 20.04 and later, and RHEL 9
 and its relatives (glibc 2.34). The version is the one in `Cargo.toml`.
-Neither package is signed.
+The packages that `build.sh` writes are not signed.
+
+## Signing
+
+`tools/sign-packages.sh sign` signs the packages of `packages/dist/` with the
+key in `SIGN_KEY` (a fingerprint), and `tools/sign-packages.sh verify` checks
+the result in clean containers that hold only the public key. An rpm gets
+its signature inside the file (`rpmsign --addsign`; it needs a Linux host or
+container). A deb gets a detached `NAME.deb.asc`: apt verifies a repository,
+not a single file. Both go into `SHA256SUMS`, which is signed as
+`SHA256SUMS.asc`, and the public key is written as `emfor-release.asc` and
+`emfor-release.gpg`. A user checks with `rpm --import emfor-release.asc` and
+`rpm -K emfor-*.rpm`, and with `gpg --import emfor-release.asc`,
+`gpg --verify emfor_*.deb.asc emfor_*.deb` and `sha256sum -c SHA256SUMS`.
+
+**Status**: the script was run only with a throwaway key, in Rocky Linux 9
+(rpm 4.16.1.3), for RSA 4096 and for ed25519: both verify, a changed byte
+fails, and an rpm that is not signed, or whose key is not imported, does not
+report `signatures OK`. There is no release key yet, no release has been
+signed, and the key's fingerprint is published nowhere; until then the
+packages stay unsigned. Not tried: a hardware key, a passphrase-protected key,
+other distributions, an apt or dnf repository.
 
 ## What a package installs
 
