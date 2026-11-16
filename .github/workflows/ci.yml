@@ -1,12 +1,29 @@
 name: CI
 
 # Runs on every push to main and on every pull request; it can also be
-# started by hand from the Actions tab (or `gh workflow run CI`).
+# started by hand from the Actions tab (or `gh workflow run CI`). A change
+# that only touches docs/spectra (the Spectra change records and specs, which
+# no test reads) does not start it. The manual and the other docs do:
+# clients/rust/tests/versions.rs and tests/resolver/ read them.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/spectra/**"
   pull_request:
+    paths-ignore:
+      - "docs/spectra/**"
   workflow_dispatch:
+
+# The jobs only read the repository.
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the run it replaces; a push to main
+# is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,8 +31,9 @@ env:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -32,11 +50,18 @@ jobs:
 
   freebsd:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The oldest release still supported and the newest one. One failing
+    # does not cancel the other.
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["14.5", "15.1"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: vmactions/freebsd-vm@v1
         with:
-          release: "14.3"
+          release: ${{ matrix.release }}
           usesh: true
           # cargo-c, pkgconf, python3 and PHP with FFI: client spike 2
           # (tests/spike/RESULTS.md). The PHP dba same-process check runs
@@ -57,8 +82,9 @@ jobs:
   # and the shared conformance driver (make -C clients test).
   clients:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install toolchains
