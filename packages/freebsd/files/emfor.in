@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # FreeBSD rc.d script for the emfor daemon, installed by the port in
-# examples/freebsd as %%PREFIX%%/etc/rc.d/emfor. To use it without the port,
+# packages/freebsd as %%PREFIX%%/etc/rc.d/emfor. To use it without the port,
 # fill in the prefix as the port does ("Running on FreeBSD" in
 # docs/manual/02-installation.md shows the command), install it with mode
 # 0555, create the emfor user (or set emfor_user), and enable it with:

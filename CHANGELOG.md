@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+**deb and rpm packages, and a `packages/` directory.** The example FreeBSD
+port moved from `examples/freebsd/` to `packages/freebsd/` (the same files;
+update a link or a script that names the old path). `packages/build.sh`
+builds a deb and an rpm in a container with an old glibc (Debian 11 and
+later, Ubuntu 20.04 and later, RHEL 9 and relatives) into `packages/dist/`:
+`emfor` and `emfor-check` under `/usr/bin`, the systemd unit, a config that
+only sets `include_dir = "conf.d"` plus an empty `/etc/emfor/conf.d`, the
+example config, and the `emfor` user (the deb enables and starts the
+service, the rpm does not). They are built from this repository and not
+published; they are not signed. Tested on arm64 in containers without
+systemd (Debian 12 and Rocky Linux 9): install, user and modes, the daemon as
+the `emfor` user, remove, purge, upgrade over a modified config. Not tested:
+the systemd scripts (they need a running systemd), x86-64 packages.
+
 **`drain = true`: take a backend out of every choice.** A backend table can
 set `drain = true`; after a reload the backend is never chosen: by no
 `balance` method (`sticky` and `failover` included), not in the last tier of

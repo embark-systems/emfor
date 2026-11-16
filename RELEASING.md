@@ -29,12 +29,14 @@ Change the current version to `X.Y.Z` in each of these:
 | `clients/go/README.md` | the `go get ...@vX.Y.Z` line |
 | `docs/manual/02-installation.md`, `docs/manual.zh_TW/02-installation.md` | the `go get ...@vX.Y.Z` line in the table of languages |
 | `docs/compatibility.md` | the `libemfor.so.X.Y` example |
-| `examples/freebsd/Makefile` | `DISTVERSION` |
+| `packages/freebsd/Makefile` | `DISTVERSION` |
 
 Then run `cargo build` so `Cargo.lock` takes the new version, and
-regenerate `examples/freebsd/Makefile.crates` from it with the command in
-[examples/freebsd/README.md](examples/freebsd/README.md#for-a-new-release).
-The tests in `clients/rust/tests/versions.rs` fail until the five files
+regenerate `packages/freebsd/Makefile.crates` from it with the command in
+[packages/freebsd/README.md](packages/freebsd/README.md#for-a-new-release).
+The deb and rpm take their version from `Cargo.toml`: nothing else to change
+([packages/README.md](packages/README.md)). The tests in
+`clients/rust/tests/versions.rs` fail until the five files
 above match `Cargo.toml` and `Makefile.crates` matches `Cargo.lock`.
 
 If the release changes the store format (`meta/schema_version`, see

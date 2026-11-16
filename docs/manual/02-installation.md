@@ -62,6 +62,25 @@ cargo install --locked --path crates/emfor-check --root /usr/local
 
 `--root` only decides where the binaries go; set `EMFOR_PREFIX` as well.
 
+## Installing a package
+
+The repository builds a deb and an rpm ([packages/](../../packages/README.md);
+`packages/build.sh`). Each installs `emfor` and `emfor-check` under
+`/usr/bin`, the systemd unit, a config that only reads `/etc/emfor/conf.d`,
+the commented example config under `/usr/share/doc/emfor/`, and creates the
+`emfor` user. Put your services in files of `/etc/emfor/conf.d/` ([chapter
+3](03-configuration.md#splitting-the-config-over-a-directory)), then:
+
+```sh
+dpkg -i emfor_0.5.0-1_amd64.deb      # Debian, Ubuntu: also enables and starts it
+rpm -i emfor-0.5.0-1.x86_64.rpm      # RHEL and relatives: then systemctl enable --now emfor
+emfor check-config
+systemctl reload emfor
+```
+
+The packages are not signed and are built from this repository, not
+published anywhere; `packages/build.sh` builds them for your architecture.
+
 ## Running under systemd
 
 The repository has a hardened unit,
@@ -107,7 +126,7 @@ directory must exist and must not be writable by group or others.
 
 ## Running on FreeBSD
 
-[examples/freebsd/](../../examples/freebsd/) is an example port
+[packages/freebsd/](../../packages/freebsd/) is an example port
 (`net-mgmt/emfor`) that builds `emfor` and `emfor-check`, installs an rc.d
 script and a sample config, and creates the `emfor` user, the empty
 `/usr/local/etc/emfor/conf.d` for `include_dir` and `/var/db/emfor`, where its sample config puts the store (applications set
@@ -137,7 +156,7 @@ port's rc.d script with its prefix filled in, and create the `emfor` user
 `[store] path`:
 
 ```sh
-sed 's|%%PREFIX%%|/usr/local|g' examples/freebsd/files/emfor.in > /usr/local/etc/rc.d/emfor
+sed 's|%%PREFIX%%|/usr/local|g' packages/freebsd/files/emfor.in > /usr/local/etc/rc.d/emfor
 chmod 0555 /usr/local/etc/rc.d/emfor
 pw useradd emfor -d /nonexistent -s /usr/sbin/nologin -c "emfor daemon"
 ```

@@ -50,7 +50,7 @@ repository's `Cargo.lock`:
 awk '/^name = /{n=$3} /^version = /{v=$3}
      /^source = "registry\+/{gsub(/"/,"",n); gsub(/"/,"",v); print n"-"v}' Cargo.lock |
   awk 'NR==1{printf "CARGO_CRATES=\t%s", $0; next}
-       {printf " \\\n\t\t%s", $0} END{print ""}' > examples/freebsd/Makefile.crates
+       {printf " \\\n\t\t%s", $0} END{print ""}' > packages/freebsd/Makefile.crates
 ```
 
 On FreeBSD, `make cargo-crates` lists the crates too. It extracts the

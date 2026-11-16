@@ -1,0 +1,14 @@
+#!/bin/sh
+# deb: on purge, remove what the daemon made (the store is rebuilt on every
+# start; the user stays, as for most daemons).
+set -e
+
+#DEBHELPER#
+
+case "$1" in
+purge)
+    rm -rf /var/lib/emfor
+    ;;
+esac
+
+exit 0

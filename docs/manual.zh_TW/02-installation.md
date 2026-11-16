@@ -52,6 +52,19 @@ cargo install --locked --path crates/emfor-check --root /usr/local
 
 `--root` 只決定執行檔放在哪裡；`EMFOR_PREFIX` 也要另外設定。
 
+## 安裝套件
+
+repository 可以建出 deb 與 rpm（[packages/](../../packages/README.md)；`packages/build.sh`）。兩者都會把 `emfor` 與 `emfor-check` 裝到 `/usr/bin`、裝上 systemd unit、一份只讀 `/etc/emfor/conf.d` 的設定檔、把附註解的範例設定放在 `/usr/share/doc/emfor/`，並建立 `emfor` 使用者。把服務寫在 `/etc/emfor/conf.d/` 的檔案裡（[第 3 章](03-configuration.md#把設定拆到目錄)），然後：
+
+```sh
+dpkg -i emfor_0.5.0-1_amd64.deb      # Debian、Ubuntu：同時啟用並啟動
+rpm -i emfor-0.5.0-1.x86_64.rpm      # RHEL 與相近的發行版：之後 systemctl enable --now emfor
+emfor check-config
+systemctl reload emfor
+```
+
+這些套件沒有簽章，由這個 repository 建出，沒有發佈在任何地方；`packages/build.sh` 會為你的架構建出它們。
+
 ## 在 systemd 下執行
 
 repository 裡有一個加固過的 unit：[examples/systemd/emfor.service](../../examples/systemd/emfor.service)。它以使用者 `emfor` 執行 `/usr/local/bin/emfor server --config /etc/emfor/emfor.toml`：
@@ -82,7 +95,7 @@ emfor status
 
 ## 在 FreeBSD 上執行
 
-[examples/freebsd/](../../examples/freebsd/) 是一個範例 port（`net-mgmt/emfor`），它建置 `emfor` 與 `emfor-check`、安裝 rc.d script 與範例設定檔，並建立 `emfor` 使用者、給 `include_dir` 用的空目錄 `/usr/local/etc/emfor/conf.d` 與 `/var/db/emfor`，它的範例設定檔把 store 放在那裡（應用程式要設定 `EMFOR_STORE=/var/db/emfor/state.mdb`）。rc.d script 在 `daemon(8)` 底下執行 daemon；daemon 結束 2 秒後 `daemon(8)` 會再把它啟動。安裝 port 並編輯 `/usr/local/etc/emfor/emfor.toml` 之後：
+[packages/freebsd/](../../packages/freebsd/) 是一個範例 port（`net-mgmt/emfor`），它建置 `emfor` 與 `emfor-check`、安裝 rc.d script 與範例設定檔，並建立 `emfor` 使用者、給 `include_dir` 用的空目錄 `/usr/local/etc/emfor/conf.d` 與 `/var/db/emfor`，它的範例設定檔把 store 放在那裡（應用程式要設定 `EMFOR_STORE=/var/db/emfor/state.mdb`）。rc.d script 在 `daemon(8)` 底下執行 daemon；daemon 結束 2 秒後 `daemon(8)` 會再把它啟動。安裝 port 並編輯 `/usr/local/etc/emfor/emfor.toml` 之後：
 
 ```sh
 sysrc emfor_enable=YES
@@ -101,7 +114,7 @@ emfor status
 不用 port 時，以 `EMFOR_PREFIX=/usr/local` 建置 emfor，把 port 的 rc.d script 填好 prefix 後安裝，再建立 `emfor` 使用者（或設定 `emfor_user`），它需要 `[store] path` 所在目錄的寫入權限：
 
 ```sh
-sed 's|%%PREFIX%%|/usr/local|g' examples/freebsd/files/emfor.in > /usr/local/etc/rc.d/emfor
+sed 's|%%PREFIX%%|/usr/local|g' packages/freebsd/files/emfor.in > /usr/local/etc/rc.d/emfor
 chmod 0555 /usr/local/etc/rc.d/emfor
 pw useradd emfor -d /nonexistent -s /usr/sbin/nologin -c "emfor daemon"
 ```

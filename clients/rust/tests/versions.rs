@@ -9,7 +9,7 @@ const PLACES: [(&str, &str); 6] = [
     ("clients/python/emfor/__init__.py", "__version__ = \"{}\""),
     ("clients/perl/lib/Emfor.pm", "our $VERSION = '{}';"),
     ("clients/php/emfor.c", "#define PHP_EMFOR_VERSION \"{}\""),
-    ("examples/freebsd/Makefile", "DISTVERSION=\t{}\n"),
+    ("packages/freebsd/Makefile", "DISTVERSION=\t{}\n"),
     (
         "clients/go/README.md",
         "go get github.com/embark-systems/emfor/clients/go@v{}",
@@ -58,7 +58,7 @@ fn freebsd_port_lists_the_locked_crates() {
         }
     }
     let crates =
-        std::fs::read_to_string(format!("{root}/examples/freebsd/Makefile.crates")).unwrap();
+        std::fs::read_to_string(format!("{root}/packages/freebsd/Makefile.crates")).unwrap();
     let got: Vec<&str> = crates
         .trim_start_matches("CARGO_CRATES=")
         .split(|c: char| c.is_whitespace() || c == '\\')
@@ -66,6 +66,6 @@ fn freebsd_port_lists_the_locked_crates() {
         .collect();
     assert_eq!(
         got, want,
-        "examples/freebsd/Makefile.crates does not match Cargo.lock; regenerate it (examples/freebsd/README.md)"
+        "packages/freebsd/Makefile.crates does not match Cargo.lock; regenerate it (packages/freebsd/README.md)"
     );
 }

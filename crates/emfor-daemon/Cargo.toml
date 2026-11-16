@@ -65,3 +65,60 @@ tracing-test = "0.2.6"
 # cargo fuzz builds with --cfg fuzzing, see fuzz/README.md.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
+# The deb and rpm packages (packages/README.md): `cargo deb -p emfor-daemon`
+# and `cargo generate-rpm -p crates/emfor-daemon`, run by packages/build.sh
+# on binaries built with `cargo build --release -p emfor-daemon -p
+# emfor-check`. The same files go into both.
+[package.metadata.deb]
+name = "emfor"
+maintainer = "emfor maintainers"
+copyright = "BSD-2-Clause, see /usr/share/doc/emfor/copyright"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+emfor checks the health of backends (tcp, http, exec and plugins) and keeps \
+the result in a local state store that applications read directly, without \
+a proxy; it can also answer DNS from that state. This package has the \
+daemon, the emfor-check plugin binary, a systemd unit and the manual."""
+section = "net"
+priority = "optional"
+depends = "$auto"
+maintainer-scripts = "../../packages/deb"
+conf-files = ["/etc/emfor/emfor.toml"]
+assets = [
+    ["target/release/emfor", "usr/bin/", "755"],
+    ["target/release/emfor-check", "usr/bin/", "755"],
+    ["../../packages/common/emfor.toml", "etc/emfor/", "644"],
+    ["../../packages/common/conf.d-README", "etc/emfor/conf.d/README", "644"],
+    ["../../examples/emfor.toml", "usr/share/doc/emfor/examples/", "644"],
+    ["../../examples/prometheus/*", "usr/share/doc/emfor/examples/prometheus/", "644"],
+    ["../../docs/manual/*.md", "usr/share/doc/emfor/manual/", "644"],
+    ["../../README.md", "usr/share/doc/emfor/", "644"],
+]
+
+[package.metadata.deb.systemd-units]
+unit-name = "emfor"
+unit-scripts = "../../packages/common"
+enable = true
+start = true
+restart-after-upgrade = true
+
+[package.metadata.generate-rpm]
+name = "emfor"
+summary = "emfor health-check daemon, with a state store applications read directly"
+license = "BSD-2-Clause"
+url = "https://github.com/embark-systems/emfor"
+pre_install_script = "../../packages/rpm/pre.sh"
+post_install_script = "../../packages/rpm/post.sh"
+pre_uninstall_script = "../../packages/rpm/preun.sh"
+post_uninstall_script = "../../packages/rpm/postun.sh"
+assets = [
+    { source = "target/release/emfor", dest = "/usr/bin/emfor", mode = "755" },
+    { source = "target/release/emfor-check", dest = "/usr/bin/emfor-check", mode = "755" },
+    { source = "../../packages/common/emfor.service", dest = "/usr/lib/systemd/system/emfor.service", mode = "644" },
+    { source = "../../packages/common/emfor.toml", dest = "/etc/emfor/emfor.toml", mode = "644", config = true },
+    { source = "../../packages/common/conf.d-README", dest = "/etc/emfor/conf.d/README", mode = "644", config = "noreplace" },
+    { source = "../../examples/emfor.toml", dest = "/usr/share/doc/emfor/examples/emfor.toml", mode = "644", doc = true },
+    { source = "../../LICENSE", dest = "/usr/share/licenses/emfor/LICENSE", mode = "644", license = true },
+    { source = "../../README.md", dest = "/usr/share/doc/emfor/README.md", mode = "644", doc = true },
+]

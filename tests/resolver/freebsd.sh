@@ -1,6 +1,6 @@
 #!/bin/sh
 # Usage: tests/resolver/freebsd.sh   (FreeBSD, as root)
-# Installs emfor with the port's rc.d script (examples/freebsd/files/emfor.in,
+# Installs emfor with the port's rc.d script (packages/freebsd/files/emfor.in,
 # its prefix filled in as the port does), checks start/reload/stop, and checks
 # the local_unbound recipe from docs/deploy/dns-resolver.md.
 # Used by the CI freebsd job.
@@ -11,7 +11,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 cargo build --bin emfor
 install -m 0555 target/debug/emfor /usr/local/bin/emfor
-sed 's|%%PREFIX%%|/usr/local|g' examples/freebsd/files/emfor.in > /usr/local/etc/rc.d/emfor
+sed 's|%%PREFIX%%|/usr/local|g' packages/freebsd/files/emfor.in > /usr/local/etc/rc.d/emfor
 chmod 0555 /usr/local/etc/rc.d/emfor
 mkdir -p /usr/local/etc/emfor /var/db/emfor
 # Run as a dedicated user, as the port does: rc.subr then starts daemon(8)
