@@ -3,6 +3,8 @@
 /target
 docs/spectra/.vector-search.db*
 /clients/build/
+# deb and rpm built by packages/build.sh, and what tools/sign-packages.sh adds
+/packages/dist/
 __pycache__/
 /tests/spike/probe/target
 /tests/spike/probe/Cargo.lock
