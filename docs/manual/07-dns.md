@@ -575,6 +575,66 @@ stopped, emfor on port 53). Not tried: dnsmasq or unbound in front of emfor
 (the tests used emfor as the only resolver), other Prometheus versions, HTTPS
 targets, many targets, the default `refresh_interval` of 30 seconds.
 
+## Using it with pf (FreeBSD)
+
+On FreeBSD, pf can spread connections over a table of addresses without a
+proxy in the data path: an `rdr` rule redirects the connections that come to
+an address to the members of a table, in turn. emfor has no hook that runs a
+command when its answer changes, so a small loop asks emfor's DNS server for
+the SRV records of the service every second and makes the table equal to what
+it offers:
+
+```
+table <api> persist
+rdr pass on $ext_if inet proto tcp from any to $vip port 80 -> <api> port 8000 round-robin
+```
+
+[examples/pf/emfor-pf-table.sh](../../examples/pf/emfor-pf-table.sh) is that
+loop (`emfor-pf-table.sh loop api.svc.emfor api`, as root; for example under
+`daemon(8)`, not tried). It takes the SRV records with the lowest priority,
+reads the address out of each target name (`10-0-0-11.api.svc.emfor` is
+`10.0.0.11`) and runs `pfctl -t api -T replace` when the set changed. It needs
+`drill`, which the base system has. All backends of the service must have the
+same port, the one in the `rdr` rule.
+
+What happens, as `tests/pf/run.sh` saw it on FreeBSD 15.1, with the backends
+and the redirected address on the loopback:
+
+- **Health**: a backend that fails its checks leaves the table, and returns
+  when it recovers. **`drain = true`** removes it the same way
+  ([chapter 5](05-backend-selection.md#draining-a-backend)).
+- **A connection that is already open is not cut** when its backend leaves the
+  table, because pf keeps its state: a 6 second answer on a connection to a
+  drained backend arrived whole (1200 of 1200 bytes), while new connections
+  went to the other backend.
+- **Priorities**: only the lowest priority is in the table, so a `failover`
+  service has its first backend there, and the second when the first is
+  down. A `backup = true` backend is out while a primary is healthy.
+- **Weights are not used**: pf's `round-robin` shares equally (40 and 40 of 80
+  for weights 3 and 1).
+- **When emfor has nothing to offer** (`SERVFAIL`: every backend drained, or
+  down with `on_all_down = "closed"`) the table is emptied, and pf drops a
+  connection that an empty `rdr` table cannot redirect: the client waits for
+  its own timeout (seen from the loopback and from another host). Set `EMPTY`
+  to an address on the host where nothing listens on the `rdr` port, and the
+  table holds that instead of nothing; a client on another host was refused at
+  once by a table entry where nothing listened (`rc=7` in a second). The
+  script's `EMPTY` itself was only checked for what it puts in the table.
+- **When emfor does not answer** (stopped, not reachable) the table is left as
+  it is, and follows emfor again when it is back.
+- Between the moment a backend fails and the next pass of the loop (a second,
+  after emfor's own checks), pf still sends new connections to it: from another
+  host a connection to a backend where nothing listened was refused, so the
+  client should retry.
+
+Not tried: IPv6 (the script reads IPv6 targets but they were not run),
+`source-hash` and `sticky-address`, `rdr` on a real interface with many
+clients (the checks of other hosts were made by hand from one machine: refused
+and dropped connections), `daemon(8)` or an rc script for the loop, other
+firewalls. `tests/pf/run.sh` needs root and a FreeBSD with the pf module; it
+loads its own rules and enables pf, so it refuses to run when pf is already
+on. It is not part of the CI.
+
 ## Caching
 
 emfor's short TTL lets a failed backend drop out of answers within about a

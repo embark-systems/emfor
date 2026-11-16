@@ -300,6 +300,29 @@ scrape_configs:
 
 [tests/prometheus/](../../tests/prometheus/run.sh) 執行這些檢查（Integrations workflow 每週執行一次，emfor 的 DNS 或候選的程式有改動時也會執行）。在 FreeBSD 15.1 上，同一支腳本用套件的 Prometheus 2.55.1 手動執行也通過（nginx 1.30.6 也是套件；停掉 `local_unbound`，emfor 在 53 埠）。沒試過：emfor 前面放 dnsmasq 或 unbound（測試把 emfor 當作唯一的 resolver）、其他版本的 Prometheus、HTTPS 目標、很多個目標、預設 30 秒的 `refresh_interval`。
 
+## 搭配 pf 使用（FreeBSD）
+
+在 FreeBSD 上，pf 可以把連線分給一個位址表的成員，資料路徑上不需要任何 proxy：`rdr` 規則把連到某個位址的連線依序導向表裡的成員。emfor 沒有「回答改變時執行指令」的 hook，所以用一個小迴圈，每秒向 emfor 的 DNS server 問這個 service 的 SRV 記錄，讓表和 emfor 提供的一致：
+
+```
+table <api> persist
+rdr pass on $ext_if inet proto tcp from any to $vip port 80 -> <api> port 8000 round-robin
+```
+
+[examples/pf/emfor-pf-table.sh](../../examples/pf/emfor-pf-table.sh) 就是那個迴圈（`emfor-pf-table.sh loop api.svc.emfor api`，以 root 執行；例如放在 `daemon(8)` 底下，這沒有試過）。它取優先序最低的 SRV 記錄，從目標名稱讀出位址（`10-0-0-11.api.svc.emfor` 是 `10.0.0.11`），集合改變時執行 `pfctl -t api -T replace`。它需要 `drill`，base system 就有。service 的所有 backend 必須是同一個埠，也就是 `rdr` 規則裡的那個。
+
+以下是 `tests/pf/run.sh` 在 FreeBSD 15.1 上看到的（backend 與被導向的位址都在 loopback 上）：
+
+- **Health**：檢查失敗的 backend 離開表，恢復後回來；**`drain = true`** 同樣讓它離開（[第 5 章](05-backend-selection.md#drain-一個-backend)）。
+- **已經開著的連線在 backend 離開表時不會被切斷**，因為 pf 保留了它的 state：連到被 drain 的 backend 的連線上，一個 6 秒才傳完的回應完整收到（1200 個位元組收到 1200 個），新連線則去了另一台。
+- **優先序**：表裡只有優先序最低的，所以 `failover` 的 service 表裡是第一台，第一台故障時才是第二台。`backup = true` 的 backend 在主要 backend 健康時不在表裡。
+- **不使用權重**：pf 的 `round-robin` 平均分配（權重 3 與 1，80 個連線分到 40 與 40）。
+- **emfor 沒有東西可給時**（`SERVFAIL`：每個 backend 都被 drain，或在 `on_all_down = "closed"` 下全部故障）表會被清空，而 pf 會丟掉空的 `rdr` 表無法導向的連線：用戶端要等自己的逾時（loopback 與另一台主機上都看到）。把 `EMPTY` 設成主機上一個在 `rdr` 埠沒有東西在聽的位址，表就會放它而不是空的；另一台主機的用戶端，連到表裡一個沒有東西在聽的項目時被立刻拒絕（一秒內 `rc=7`）。腳本的 `EMPTY` 本身只檢查了它放進表裡的內容。
+- **emfor 沒有回答時**（停掉、連不到）表維持原樣，emfor 回來後再跟上。
+- 在 backend 故障到迴圈的下一輪之間（emfor 自己的檢查之後再加一秒），pf 仍然會把新連線送給它：從另一台主機看，連到沒有東西在聽的 backend 會被拒絕，所以用戶端應該重試。
+
+沒試過：IPv6（腳本讀得懂 IPv6 目標，但沒有跑過）、`source-hash` 與 `sticky-address`、真實介面上很多用戶端的 `rdr`（另一台主機的檢查是從一台機器手動做的：被拒絕與被丟掉的連線）、迴圈用的 `daemon(8)` 或 rc script、其他防火牆。`tests/pf/run.sh` 需要 root 與有 pf 模組的 FreeBSD；它載入自己的規則並啟用 pf，所以 pf 已經開著時它會拒絕執行。它不在 CI 裡。
+
 ## 快取
 
 emfor 的短 TTL 讓故障的 backend 大約一秒內從回答中消失。快取會拉長這段時間：

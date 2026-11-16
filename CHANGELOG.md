@@ -62,6 +62,19 @@ comes. `tests/deploy/run.sh [image]` checks it on nginx 1.30.6 and 1.31.8
 there). Not tried: HAProxy, HTTPS, clients with their own connection pool,
 several emfor hosts.
 
+**Using it with pf (FreeBSD; manual chapter 7, both languages).**
+`examples/pf/emfor-pf-table.sh` asks emfor's DNS server for the SRV records of a
+service every second and makes a pf table equal to the targets with the lowest
+priority, so that an `rdr ... -> <api> round-robin` rule spreads connections
+over the backends emfor offers, with no proxy. Health and `drain` reach the
+table, a connection that is already open is not cut (pf keeps its state),
+priorities give the table its failover, SRV weights are not used, an empty
+answer empties the table (pf then drops new connections, so the client waits for
+its own timeout; `EMPTY` puts an address where nothing listens there instead),
+and when emfor does not answer the table is left alone. `tests/pf/run.sh`
+checks it on FreeBSD 15.1 (by hand, as root; not in the CI). Not tried: IPv6,
+`source-hash`, `daemon(8)`, many clients.
+
 **Using it with Prometheus (manual chapter 7, both languages).**
 `dns_sd_configs` of type `SRV` on emfor's answers gives Prometheus the healthy
 backends of a service as scrape targets. The section says what that means: a
