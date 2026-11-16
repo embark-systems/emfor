@@ -61,20 +61,22 @@ def replace_architecture(text):
 
 
 os.makedirs(dst, exist_ok=True)
-for name in sorted(os.listdir(src)):
-    if not name.endswith(".md"):
-        continue
+# The order of the chapters: README first, then by file name without ".md", so
+# that 07-dns comes before 07-dns-recipes ('.' sorts after '-'). Every chapter
+# gets its own weight, which the site's previous/next links and menu follow.
+names = sorted((n for n in os.listdir(src) if n.endswith(".md")), key=lambda n: (n != "README.md", n[:-3]))
+for position, name in enumerate(names, start=1):
     lines = open(os.path.join(src, name), encoding="utf-8").read().split("\n")
     assert lines[0].startswith("# "), (name, lines[0])
     if name == "README.md":
-        out_name, title, weight = "00-guide.md", guide_title, 1
+        out_name, title, weight = "00-guide.md", guide_title, position
         # the language switch line and the blank line after it
         i = next(i for i, l in enumerate(lines) if "manual.zh_TW/README.md" in l or "manual/README.md" in l)
         del lines[i : i + 2]
     else:
         out_name = name
         title = lines[0][2:]
-        weight = int(name[:2]) + 1
+        weight = position
         # the previous/next line and the blank line after it
         i = next(i for i, l in enumerate(lines) if "](README.md)" in l)
         del lines[i : i + 2]
