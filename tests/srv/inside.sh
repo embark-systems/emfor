@@ -31,6 +31,9 @@ listener() { # <address> <port>
     python3 /tmp/listen.py "$1" "$2" &
     echo $! > "/tmp/l/$1-$2.pid"
 }
+# The connections to one port: emfor's own checks connect to every listener
+# too, so a log of all ports would hold more than the client's.
+conns() { sort -u /tmp/conn.log | grep ":$1\$" | tr '\n' ' '; }
 unlisten() { kill "$(cat "/tmp/l/$1-$2.pid")"; wait "$(cat "/tmp/l/$1-$2.pid")" 2>/dev/null; }
 for p in 88 389 27017; do listener 127.0.0.2 $p; listener 127.0.0.3 $p; done
 sleep 1
@@ -108,13 +111,13 @@ grep -q 'Sending DNS SRV query for _kerberos._udp.KDC.SVC.EMFOR' /tmp/krb.trace 
 grep -q 'Sending DNS SRV query for _kerberos._tcp.KDC.SVC.EMFOR' /tmp/krb.trace || fail "kinit did not ask for the _tcp SRV name"
 grep -q 'SRV answer: 0 1 88 "127-0-0-2.kdc.svc.emfor."' /tmp/krb.trace || fail "no SRV answer for the first KDC in the trace"
 grep -q 'SRV answer: 0 1 88 "127-0-0-3.kdc.svc.emfor."' /tmp/krb.trace || fail "no SRV answer for the second KDC in the trace"
-sort -u /tmp/conn.log | tr '\n' ' ' | grep -q '127.0.0.2:88 127.0.0.3:88' || fail "kinit did not go to both KDCs: $(sort -u /tmp/conn.log | tr '\n' ' ')"
-echo "ok: Kerberos: realm KDC.SVC.EMFOR, the _udp name gets no answer, _tcp lists both KDCs, kinit goes to both ($(sort -u /tmp/conn.log | tr '\n' ' '))"
+conns 88 | grep -q '127.0.0.2:88 127.0.0.3:88' || fail "kinit did not go to both KDCs: $(conns 88)"
+echo "ok: Kerberos: realm KDC.SVC.EMFOR, the _udp name gets no answer, _tcp lists both KDCs, kinit goes to both ($(conns 88))"
 
 unlisten 127.0.0.2 88
 wait_srv _kerberos._tcp.kdc.svc.emfor 1
 kinit_trace KDC.SVC.EMFOR
-sort -u /tmp/conn.log | tr '\n' ' ' | grep -q '^127.0.0.3:88 $' || fail "with the first KDC down kinit went to: $(sort -u /tmp/conn.log | tr '\n' ' ')"
+conns 88 | grep -q '^127.0.0.3:88 $' || fail "with the first KDC down kinit went to: $(conns 88)"
 if grep -q 'SRV answer: 0 1 88 "127-0-0-2' /tmp/krb.trace; then fail "emfor still offered the KDC that is down"; fi
 echo "ok: Kerberos: a KDC that fails its checks is not offered, kinit goes to the other only"
 listener 127.0.0.2 88
@@ -135,11 +138,11 @@ URI='ldap:///dc=ldap%2Cdc=svc%2Cdc=emfor'
 ldap_try() { : > /tmp/conn.log; ldapsearch -d1 -x -H "$URI" -b "" -s base -o nettimeout=3 > /tmp/ldap.out 2>&1; }
 ldap_try
 grep -q 'ldap_url_parse_ext(ldap://127-0-0-2.ldap.svc.emfor:389)' /tmp/ldap.out && grep -q 'ldap_url_parse_ext(ldap://127-0-0-3.ldap.svc.emfor:389)' /tmp/ldap.out || fail "ldapsearch did not turn the DN into the two servers: $(grep ldap_url_parse /tmp/ldap.out | tr '\n' ' ')"
-[ "$(sort -u /tmp/conn.log | wc -l)" -ge 1 ] || fail "ldapsearch connected nowhere"
-echo "ok: OpenLDAP: the URI $URI becomes the two servers of _ldap._tcp.ldap.svc.emfor, ldapsearch connected to $(sort -u /tmp/conn.log | tr '\n' ' ')"
+[ -n "$(conns 389)" ] || fail "ldapsearch connected nowhere"
+echo "ok: OpenLDAP: the URI $URI becomes the two servers of _ldap._tcp.ldap.svc.emfor, ldapsearch connected to $(conns 389)"
 unlisten 127.0.0.2 389
 wait_srv _ldap._tcp.ldap.svc.emfor 1
-for i in 1 2 3; do ldap_try; [ "$(sort -u /tmp/conn.log | tr '\n' ' ')" = "127.0.0.3:389 " ] || fail "with the first server down ldapsearch went to: $(sort -u /tmp/conn.log | tr '\n' ' ')"; done
+for i in 1 2 3; do ldap_try; [ "$(conns 389)" = "127.0.0.3:389 " ] || fail "with the first server down ldapsearch went to: $(conns 389)"; done
 echo "ok: OpenLDAP: a server that fails its checks is not offered (3 of 3 went to the other)"
 listener 127.0.0.2 389
 wait_srv _ldap._tcp.ldap.svc.emfor 2
