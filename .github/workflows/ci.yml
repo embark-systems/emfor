@@ -63,6 +63,11 @@ jobs:
         with:
           release: ${{ matrix.release }}
           usesh: true
+          # Nothing the job needs comes back from the VM. The default copies
+          # the whole workspace, target/ included (2.3 GB), to the runner:
+          # 25 seconds when it works, over 2 minutes and a lost connection
+          # (rsync exit 255) on the 14.5 run of cf050bd, after every test passed.
+          copyback: false
           # cargo-c, pkgconf, python3 and PHP with FFI: client spike 2
           # (tests/spike/RESULTS.md). The PHP dba same-process check runs
           # only if the php84-dba build has the lmdb handler.
@@ -75,8 +80,11 @@ jobs:
             # A child forked while other threads look up can hang in libthr:
             # docs/freebsd/libthr-pshared-fork.md.
             sh tests/clients/fork.sh
-            sh tests/resolver/freebsd.sh
+            # The spike fetches crates; the resolver script makes
+            # local_unbound the system resolver and leaves it, which once
+            # left the spike without DNS (run 43790442582). So it goes last.
             sh tests/spike/run.sh 2
+            sh tests/resolver/freebsd.sh
 
   # The C library and the Go, Python, Perl and PHP wrappers: each one's tests
   # and the shared conformance driver (make -C clients test).
