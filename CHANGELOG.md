@@ -33,7 +33,20 @@ on a given image, and the Integrations workflow runs it on `nginx:stable` and
 `nginx:mainline`. That workflow runs every week and when emfor's DNS or
 candidate code or these tests change, not on every push.
 Checked with nginx 1.30.6, 1.31.8 and (older recipe only) 1.26.3. Not tried:
-HTTPS upstreams, nginx Plus, several workers, the `stream` module.
+HTTPS upstreams, nginx Plus, several workers.
+The section now also covers the `stream` module (TCP): the same `upstream`
+works in a `stream` block, a connection already open to a drained backend is
+not cut (it is cut when the backend is stopped), and a new connection to a
+stopped backend goes to the next server. And it says that after a lookup has
+failed (emfor answered `SERVFAIL`), nginx asks again only after
+`resolver_timeout`, 30 seconds by default (about 26 seconds to follow emfor's new
+answers), so the recipe now sets `resolver_timeout 1s` (about a second), for
+both `http` and `stream`, with nginx 1.30.6 and 1.31.8. `tests/nginx/run.sh`
+runs `tests/nginx/stream.sh` after `inside.sh`. Not tried for `stream`: UDP,
+`ssl_preread`, `proxy_protocol`, nginx Plus. On FreeBSD 15.1 (nginx 1.30.6
+package) both scripts passed by hand (about 25 seconds with the default
+`resolver_timeout`, about 1 with `resolver_timeout 1s`); the package builds `stream` as a dynamic
+module, so `nginx.conf` needs `load_module /usr/local/libexec/nginx/ngx_stream_module.so;`.
 
 **Rolling deploy with drain (manual chapter 8, both languages).**
 `examples/deploy/emfor-drain.sh` drains a backend in a `conf.d` file (one

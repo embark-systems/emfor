@@ -80,6 +80,7 @@ events {}
 http {
     access_log off;
     resolver 127.0.0.1:5300 valid=1s ipv6=off;
+    resolver_timeout 1s;
     upstream api {
         zone api 64k;
         server api.svc.emfor service=http resolve;
@@ -141,6 +142,39 @@ if [ "$SRV_OK" = 1 ]; then
     case "$out" in *"other=0") ;; *) fail "nginx stopped answering when emfor had nothing to say: $out" ;; esac
     grep -q 'could not be resolved' /tmp/ngx.err || fail "nginx did not log the failed resolution"
     echo "ok: nginx keeps its last list when emfor answers SERVFAIL ($out)"
+    # emfor answers again (one backend): with resolver_timeout 1s nginx follows
+    # within a few seconds ...
+    config round-robin "$B1" '{ addr = "127.0.0.1:9002", drain = true }'; reload
+    t=0
+    while [ "$t" -lt 15 ]; do
+        out=$(count 6); b=${out#*9002=}; b=${b%% *}
+        [ "$b" = 0 ] && break
+        t=$((t + 1)); sleep 1
+    done
+    [ "$t" -lt 15 ] || fail "nginx did not follow emfor in 15 seconds after a SERVFAIL with resolver_timeout 1s ($out)"
+    echo "ok: with resolver_timeout 1s nginx follows emfor again after about $t seconds ($out)"
+    # ... but with the default resolver_timeout (30 seconds) it waits that long
+    # after the failed lookup
+    grep -v 'resolver_timeout 1s;' /etc/nginx/nginx.conf > /tmp/nginx.conf.new && cat /tmp/nginx.conf.new > /etc/nginx/nginx.conf
+    nginx -s stop; sleep 1; nginx; sleep 2
+    config round-robin "$B1" "$B2"; reload; sleep 3
+    config round-robin '{ addr = "127.0.0.1:9001", drain = true }' '{ addr = "127.0.0.1:9002", drain = true }'; reload
+    sleep 4
+    out=$(count 10)
+    case "$out" in *"other=0") ;; *) fail "nginx stopped answering when emfor answered SERVFAIL (default resolver_timeout): $out" ;; esac
+    config round-robin "$B1" '{ addr = "127.0.0.1:9002", drain = true }'; reload
+    sleep 5
+    out=$(count 20); b=${out#*9002=}; b=${b%% *}
+    [ "$b" -ge 1 ] || fail "nginx followed emfor 5 seconds after a SERVFAIL with the default resolver_timeout ($out): the manual says it waits 30 seconds"
+    echo "ok: with the default resolver_timeout nginx still has its old list 5 seconds after emfor answers again ($out)"
+    t=0
+    while [ "$t" -lt 45 ]; do
+        out=$(count 6); b=${out#*9002=}; b=${b%% *}
+        [ "$b" = 0 ] && break
+        t=$((t + 1)); sleep 1
+    done
+    [ "$t" -lt 45 ] || fail "nginx did not follow emfor in 45 seconds after a SERVFAIL ($out)"
+    echo "ok: with the default resolver_timeout nginx follows emfor again after about $((t + 5)) seconds ($out)"
     nginx -s stop; sleep 1
 fi
 

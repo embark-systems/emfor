@@ -122,6 +122,7 @@ port 5300
 
 ```nginx
 resolver 127.0.0.1:5300 valid=1s ipv6=off;    # emfor 的 DNS server，每秒問一次
+resolver_timeout 1s;                          # 查詢失敗後多久再問一次
 
 upstream api {
     zone api 64k;                              # 用 `resolve` 就一定要有
@@ -134,7 +135,7 @@ server {
 }
 ```
 
-`resolver` 直接指向 emfor（`[dns] listen`，預設 5300 port），不是主機的 resolver：nginx 有自己的 resolver 快取，`valid=1s` 讓它每秒重新問一次。`service=http` 只是名稱的前綴（`_http._tcp`）；emfor 會回答 `_<任意>._tcp.<服務名稱>`（[SRV 記錄](#srv-記錄)），所以 port 來自每一筆記錄。
+`resolver` 直接指向 emfor（`[dns] listen`，預設 5300 port），不是主機的 resolver：nginx 有自己的 resolver 快取，`valid=1s` 讓它每秒重新問一次。`resolver_timeout 1s` 在查詢失敗之後才有作用，例如 emfor 回答 `SERVFAIL` 時：nginx 要等這麼久才會再問，預設是 30 秒（見下）。`service=http` 只是名稱的前綴（`_http._tcp`）；emfor 會回答 `_<任意>._tcp.<服務名稱>`（[SRV 記錄](#srv-記錄)），所以 port 來自每一筆記錄。
 
 nginx 怎麼處理這個回答，以下用 nginx 1.30.6（stable）與 1.31.8（mainline）測過：
 
@@ -142,8 +143,34 @@ nginx 怎麼處理這個回答，以下用 nginx 1.30.6（stable）與 1.31.8（
 - **`drain = true`**（[第 5 章](05-backend-selection.md#drain-一個-backend)）：改 emfor 的設定並 reload emfor；不用動 nginx，那台 backend 不再收到新的請求。（nginx 已經對它開著的連線會怎樣，沒有試過。）
 - **優先序**：nginx 把 priority 數字最小的記錄當 server，其他的當 `backup`。`balance = "failover"` 時，第一台健康的 backend 是唯一的 server，第二台是它的備援；`locality` 與 `fastest` 的 priority 0 與 1 也是同樣的用法。
 - **`balance = "weighted"` 的權重**會被遵守：權重 3 與 1 時，80 個請求中有 60 個送到第一台。（nginx 的文件沒有說它會用 SRV 的權重。）
-- **emfor 無法回答時**：服務沒有 backend 可以給（`on_all_down = "closed"` 且全部不健康，或每個 backend 都 drain），emfor 回 `SERVFAIL`；emfor 停掉也一樣。nginx 會記錄 `could not be resolved`，並**沿用它最後一次拿到的清單**，繼續送請求給那些 backend。對 nginx 的用戶端來說，要靠 nginx 自己的 `proxy_next_upstream` 與 `max_fails` 才會失敗。
+- **emfor 無法回答時**：服務沒有 backend 可以給（`on_all_down = "closed"` 且全部不健康，或每個 backend 都 drain），emfor 回 `SERVFAIL`；emfor 停掉也一樣。nginx 會記錄 `could not be resolved`，並**沿用它最後一次拿到的清單**，繼續送請求給那些 backend。對 nginx 的用戶端來說，要靠 nginx 自己的 `proxy_next_upstream` 與 `max_fails` 才會失敗。**emfor 再度回答時，nginx 要等 `resolver_timeout` 之後才會跟上**，預設是 30 秒：測試中用預設值，emfor 再度回答 5 秒後 nginx 仍是舊清單，大約 26 秒後才跟上；設成 `resolver_timeout 1s` 則大約一秒就跟上（設 5 秒約 2 秒，設 10 秒約 7 秒）。在這個狀態下你做的改動，例如 drain，也同樣要等那麼久才會到 nginx。所以食譜設 `resolver_timeout 1s`。
 - **HTTPS upstream**：記錄的目標是像 `10-0-0-11.api.svc.emfor` 的名稱。要把 `proxy_ssl_name`（並設 `proxy_ssl_server_name on`）設成 backend 憑證上的名稱。這一項沒有試過。
+
+**TCP，用 `stream` 模組。** 同樣的 `upstream` 在 `stream` 區塊裡也能用，適合資料庫或其他任何 TCP 服務：
+
+```nginx
+stream {
+    resolver 127.0.0.1:5300 valid=1s ipv6=off;
+    resolver_timeout 1s;
+
+    upstream db {
+        zone db 64k;
+        server db.svc.emfor service=pgsql resolve;
+    }
+
+    server {
+        listen 5432;
+        proxy_pass db;
+    }
+}
+```
+
+`tests/nginx/stream.sh` 用兩台回答 HTTP 的 backend（TCP proxy 會原樣轉送）檢查過（用的是 `api.svc.emfor` 與 `service=http`，不是上面的名稱），nginx 1.30.6 與 1.31.8。health、`drain`、`failover`（第二台是備援）與權重的行為和 `http` 相同，`SERVFAIL` 也相同，包含之後的 `resolver_timeout`。TCP 特有的是：
+
+- **已經開著的連線不受影響。** backend 被 drain 時，一個 6 秒才傳完的回應，在連到它的連線上仍然完整收到（1200 個位元組收到 1200 個），新的連線則去了另一台。backend 如果是被停掉，同一條連線就被切斷（1200 個位元組只收到 160 個）。所以 drain 之後，連到那台 backend 的長連線要等用戶端或 backend 自己關閉，沒有東西會把它們移走。
+- **連到 emfor 仍然列出、但已經停掉的 backend 的新連線，會改試下一台**：`proxy_next_upstream` 在 `stream` 裡預設是開的，backend 停掉期間建立的 25 條連線，失敗了 0 條。
+
+沒試過：UDP（`listen ... udp`）、`ssl_preread`、`proxy_protocol`、`proxy_timeout`（閒置的連線在預設的十分鐘後被關閉，這是 nginx 文件說的）、nginx Plus。
 
 **較舊的 nginx。** 1.27.3 之前，`service=` 參數在 `nginx -t` 就被拒絕（`invalid parameter "service=http"`，用 1.26.3 看到的）。沒有它時，在 `proxy_pass` 用變數，讓 nginx 在執行時解析名稱，並讓服務的每個 backend 用同一個 port：
 
@@ -163,7 +190,7 @@ A 回答只有一個 backend，由 `balance` 選出，所以 nginx 一秒內的�
 [tests/nginx/](../../tests/nginx/run.sh) 在指定的 nginx 映像上執行這些檢查（`tests/nginx/run.sh nginx:stable`），包含較舊的 nginx 的情況。Integrations workflow 每週執行一次，emfor 的 DNS 或候選的程式有改動時也會執行。
 
 
-在 FreeBSD 15.1（arm64，套件裡的 nginx 1.30.6）上，同樣的檢查全部通過，包含較舊的 nginx 的情況，食譜不需要改。nginx 套件讀的是 `/usr/local/etc/nginx/nginx.conf`，不是 `/etc/nginx`。Docker 版的測試本身不在那裡執行；腳本（`tests/nginx/inside.sh`）是手動跑的，需要 Linux 容器本來就有的三樣東西：`dig`（用 `drill` 包一層就行）、loopback 上的位址 `127.0.0.2`（`ifconfig lo0 alias 127.0.0.2/32`；FreeBSD 的 loopback 只有 `127.0.0.1`，較舊 nginx 那項檢查會把一個 backend 綁在 `127.0.0.2`），以及讓 `nginx` 讀 `/etc/nginx/nginx.conf`。
+在 FreeBSD 15.1（arm64，套件裡的 nginx 1.30.6）上，同樣的檢查全部通過，包含較舊的 nginx 的情況，食譜不需要改。nginx 套件讀的是 `/usr/local/etc/nginx/nginx.conf`，不是 `/etc/nginx`。Docker 版的測試本身不在那裡執行；腳本（`tests/nginx/inside.sh`）是手動跑的，需要 Linux 容器本來就有的三樣東西：`dig`（用 `drill` 包一層就行）、loopback 上的位址 `127.0.0.2`（`ifconfig lo0 alias 127.0.0.2/32`；FreeBSD 的 loopback 只有 `127.0.0.1`，較舊 nginx 那項檢查會把一個 backend 綁在 `127.0.0.2`），以及讓 `nginx` 讀 `/etc/nginx/nginx.conf`。`stream` 的檢查（`tests/nginx/stream.sh`）也在那裡手動跑過、通過，只多一行：FreeBSD 的套件把 `stream` 建成動態模組，所以 `nginx.conf` 最前面要有 `load_module /usr/local/libexec/nginx/ngx_stream_module.so;`（沒有它，`nginx -t` 會說 `unknown directive "stream"`）。`SERVFAIL` 之後的延遲在那裡也一樣：用預設 `resolver_timeout` 約 25 秒，設 `resolver_timeout 1s` 約一秒。
 
 ## 搭配 HAProxy 使用
 

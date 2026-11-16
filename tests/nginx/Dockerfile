@@ -20,4 +20,5 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/debug/emfor /usr/local/bin/emfor
 COPY tests/nginx/inside.sh /inside.sh
+COPY tests/nginx/stream.sh /stream.sh
 ENTRYPOINT ["/bin/sh", "/inside.sh"]

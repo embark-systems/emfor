@@ -185,6 +185,7 @@ without a reload:
 
 ```nginx
 resolver 127.0.0.1:5300 valid=1s ipv6=off;    # emfor's DNS server, asked every second
+resolver_timeout 1s;                          # how soon to ask again after a failed lookup
 
 upstream api {
     zone api 64k;                              # required with `resolve`
@@ -199,7 +200,9 @@ server {
 
 The `resolver` points at emfor directly (`[dns] listen`, port 5300 by
 default), not at the host resolver: nginx has its own resolver cache, and
-`valid=1s` makes it ask again every second. `service=http` is only the name
+`valid=1s` makes it ask again every second. `resolver_timeout 1s` matters
+after a lookup has failed, for example when emfor answers `SERVFAIL`: nginx
+asks again only after that time, and its default is 30 seconds (below). `service=http` is only the name
 prefix (`_http._tcp`); emfor answers `_<anything>._tcp.<service>`
 ([SRV records](#srv-records)), so the port comes from each record.
 
@@ -225,11 +228,59 @@ What nginx does with the answer, as checked with nginx 1.30.6 (stable) and
   gets `SERVFAIL`, and so does a stopped emfor. nginx logs `could not be
   resolved` and **keeps the last list it had**, so it goes on sending
   to those backends. The lookup fails for nginx's clients only through
-  nginx's own `proxy_next_upstream` and `max_fails`.
+  nginx's own `proxy_next_upstream` and `max_fails`. **When emfor answers
+  again, nginx follows only after `resolver_timeout`**, which is 30 seconds
+  by default: in the test, with the default, nginx still had its old list 5
+  seconds after emfor answered again and followed after about 26 seconds; with
+  `resolver_timeout 1s` it followed after about a second (with 5 seconds
+  about 2, with 10 seconds about 7). A change that you make in this state,
+  a drain for example, reaches nginx just as late. That is why the recipe
+  sets `resolver_timeout 1s`.
 - **HTTPS upstreams**: a record's target is a name like
   `10-0-0-11.api.svc.emfor`. Set `proxy_ssl_name` (and
   `proxy_ssl_server_name on`) to the name the backend's certificate has. This
   was not tried.
+
+**TCP, with the `stream` module.** The same `upstream` works in a `stream`
+block, for a database or any other TCP service:
+
+```nginx
+stream {
+    resolver 127.0.0.1:5300 valid=1s ipv6=off;
+    resolver_timeout 1s;
+
+    upstream db {
+        zone db 64k;
+        server db.svc.emfor service=pgsql resolve;
+    }
+
+    server {
+        listen 5432;
+        proxy_pass db;
+    }
+}
+```
+
+`tests/nginx/stream.sh` checked it (with `api.svc.emfor` and `service=http`, not
+the names above) with two backends answering HTTP, which a TCP proxy passes
+on, with nginx 1.30.6 and 1.31.8. Health, `drain`,
+`failover` (the second server is a backup) and the weights behave as for
+`http`, and so does `SERVFAIL`, including the `resolver_timeout` after it. What
+is particular to TCP:
+
+- **A connection that is already open is not touched.** When its backend was
+  drained, a 6 second answer on a connection to it still arrived whole (1200
+  of 1200 bytes) while new connections went to the other backend. When the
+  backend was stopped instead, the same connection was cut (160 of 1200
+  bytes). So after a drain, long connections to the backend end when the client
+  or the backend closes them; nothing moves them.
+- **A new connection to a stopped backend that emfor still lists goes to the
+  next server**: `proxy_next_upstream` is on by default in `stream`, and 0 of
+  25 connections made while a backend was stopped failed.
+
+Not tried: UDP (`listen ... udp`), `ssl_preread`, `proxy_protocol`,
+`proxy_timeout` (an idle connection is closed after its default of ten
+minutes, as nginx documents it), nginx Plus.
 
 **Older nginx.** Before 1.27.3 the `service=` parameter is rejected at
 `nginx -t` (`invalid parameter "service=http"`, seen with 1.26.3). Without
@@ -266,7 +317,13 @@ The Docker test itself does not run there; the script
 Linux container has: `dig` (a wrapper around `drill` did), the address
 `127.0.0.2` on the loopback (`ifconfig lo0 alias 127.0.0.2/32`; FreeBSD's
 loopback has only `127.0.0.1`, and the older-nginx check binds a backend
-to `127.0.0.2`), and `nginx` reading `/etc/nginx/nginx.conf`.
+to `127.0.0.2`), and `nginx` reading `/etc/nginx/nginx.conf`. The
+`stream` checks (`tests/nginx/stream.sh`) passed there too, by hand, with
+one more line: the FreeBSD package builds `stream` as a dynamic module, so
+`nginx.conf` needs `load_module /usr/local/libexec/nginx/ngx_stream_module.so;`
+at its top (without it `nginx -t` says `unknown directive "stream"`). The
+delay after a `SERVFAIL` was the same there: about 25 seconds with the
+default `resolver_timeout`, and about a second with `resolver_timeout 1s`.
 
 ## Using it with HAProxy
 
