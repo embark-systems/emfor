@@ -195,7 +195,7 @@ path = "/healthz"
 | 為了維護把 backend 拿下來（`disabled`、`maint`、`drain`） | 在 backend 上寫 `drain = true` 再 reload（[第 5 章](05-backend-selection.md#drain-一個-backend)）：它不會被選到，檢查照跑。`weight = 0` 會被拒絕（`weight must be from 1 to 100`），也沒有執行期的指令（`set server ... state drain`）：只能改設定檔。 |
 | 依 URL、header 或 cookie 路由，TLS 終結 | 沒有。 |
 | Consul 的註冊、tag 與 key-value store | 沒有。backend 清單就是設定。 |
-| 多個設定檔 | 目前只有一個檔案。 |
+| 多個設定檔（`haproxy -f dir`） | 一個主設定檔，加上用 `include_dir` 指定的一個放片段的目錄（[第 3 章](03-configuration.md#把設定拆到目錄)）。片段不能再 include 別的目錄，`backends` 這類清單是整份取代、不會合併。 |
 | 集中檢視所有檢查 | 每台主機各有自己的。用 [metrics](08-operations.md#metrics) 搭配 Prometheus。 |
 
 表裡寫「請保留 HAProxy」的地方，也可以兩者並用：emfor 在幾個 HAProxy 實例之間選擇，每個 HAProxy 再在它的 server 之間選擇。

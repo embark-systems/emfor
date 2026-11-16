@@ -264,7 +264,7 @@ application is than from where the Consul agent is.
 | Taking a backend out for maintenance (`disabled`, `maint`, `drain`) | `drain = true` on the backend, then reload ([chapter 5](05-backend-selection.md#draining-a-backend)): it is never chosen and its checks go on. `weight = 0` is refused (`weight must be from 1 to 100`), and there is no run-time command (`set server ... state drain`): the config is the only way. |
 | Routing by URL, header or cookie, TLS termination | No. |
 | Registration, tags and key-value store of Consul | No. The list of backends is config. |
-| Several configuration files | One file for now. |
+| Several configuration files (`haproxy -f dir`) | A main file and a directory of fragments with `include_dir` ([chapter 3](03-configuration.md#splitting-the-config-over-a-directory)). A fragment cannot include another directory, and a list such as `backends` is replaced as a whole, not merged. |
 | A central view of all checks | Each host has its own. Use the [metrics](08-operations.md#metrics) with Prometheus. |
 
 Where a row says "keep HAProxy", it is also fine to use both: emfor chooses
