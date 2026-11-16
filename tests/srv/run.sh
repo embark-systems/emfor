@@ -3,7 +3,7 @@
 # Builds emfor in Docker next to MIT Kerberos, OpenLDAP's ldapsearch and PyMongo
 # (Debian bookworm packages) and checks that each finds its servers through
 # emfor's SRV answers, and follows a failing server out of the list: the
-# recipe of docs/manual/07-dns.md, section "Clients that ask for SRV records
+# recipe of docs/manual/07-dns-recipes.md, section "Clients that ask for SRV records
 # themselves". emfor is the container's only resolver, on port 53.
 set -eu
 root="$(cd "$(dirname "$0")/../.." && pwd)"

@@ -14,7 +14,8 @@
 | [4. 健康檢查](04-health-checks.md) | `tcp`、`http`、`exec`、plugin 與 `emfor-check`；rise、fall、排程與 reason |
 | [5. 選擇 backend](05-backend-selection.md) | 各種 `balance` 方式、`on_all_down`，以及過期的 store |
 | [6. Client 函式庫](06-clients.md) | 從 Rust、C、Go、Python、Perl、PHP 查詢 backend |
-| [7. DNS](07-dns.md) | DNS server、它的回答、SRV 記錄，以及從主機 resolver 轉送 |
+| [7. DNS](07-dns.md) | DNS server、它的回答、SRV 記錄、從主機 resolver 轉送，以及快取 |
+| [7b. DNS 做法](07-dns-recipes.md) | 用 emfor 的 DNS 回答設定 nginx、HAProxy、Caddy、Prometheus 與 pf，以及自己會查 SRV 記錄的 client |
 | [8. 維運](08-operations.md) | 指令、signal 與 reload、`emfor status`、`emfor lookup`、metrics、log、結束代碼、磁碟上的 store、升級 |
 | [9. 疑難排解](09-troubleshooting.md) | 症狀、原因與處理方式 |
 | [10. 從 HAProxy 或 Consul 搬過來](10-migrating.md) | 同樣的設定在 emfor 裡長什麼樣子、哪些東西沒有對應，以及如何與現有方案並排試用 emfor |

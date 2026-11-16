@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs inside the test container: two backends (HAProxy answering on 9001 and
 # 9002 with its port), emfor with the DNS server on 5300, and the HAProxy under
-# test in front, configured as docs/manual/07-dns.md says.
+# test in front, configured as docs/manual/07-dns-recipes.md says.
 set -u
 
 fail() { echo "FAIL: $*" >&2; echo "--- emfor:" >&2; tail -5 /tmp/emfor.log >&2; exit 1; }

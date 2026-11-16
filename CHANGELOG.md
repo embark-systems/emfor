@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+**Manual chapter 7 is split in two (both languages).** `07-dns.md` keeps the DNS
+server, its answers, SRV records, forwarding and caching; the recipes for
+nginx, HAProxy, Caddy, Prometheus and pf and the clients that ask for SRV
+records themselves moved to `07-dns-recipes.md` (chapter 7b), so links to
+`07-dns.md#using-it-with-nginx` and the like now point there. The chapter
+numbers do not change.
+
 **`examples/deploy/emfor-drain.sh` is safer.** `wait-ready` no longer returns
 at the first `healthy`: a backend that has just stopped keeps that state for
 `fall` x `interval` (6 s by default), so a drained backend that was stopped

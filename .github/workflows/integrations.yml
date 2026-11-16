@@ -1,7 +1,7 @@
 name: Integrations
 
 # emfor with other software: nginx and HAProxy taking their servers from
-# emfor's SRV answers (docs/manual/07-dns.md, "Using it with nginx" and "Using
+# emfor's SRV answers (docs/manual/07-dns-recipes.md, "Using it with nginx" and "Using
 # it with HAProxy"), and a rolling deploy over nginx with drain
 # (docs/manual/08-operations.md, "Rolling deploy with drain"), Prometheus and
 # Caddy finding their targets from them ("Using it with Prometheus" and "Using

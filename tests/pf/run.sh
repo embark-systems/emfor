@@ -1,7 +1,7 @@
 #!/bin/sh
 # Usage (FreeBSD, as root, pf not in use):  tests/pf/run.sh
 #
-# Checks the recipe of docs/manual/07-dns.md, section "Using it with pf":
+# Checks the recipe of docs/manual/07-dns-recipes.md, section "Using it with pf":
 # examples/pf/emfor-pf-table.sh keeps a pf table equal to the backends emfor
 # offers, and an rdr rule on that table spreads connections over them. It
 # needs a FreeBSD with the pf kernel module, nginx (pkg install nginx), curl,

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs inside the test container: two backends (nginx on 9001 and 9002, each
 # answering its port), emfor with the DNS server on 5300, and the Caddy under
-# test in front (the recipe of docs/manual/07-dns.md, "Using it with Caddy").
+# test in front (the recipe of docs/manual/07-dns-recipes.md, "Using it with Caddy").
 # The container's own resolver does not know svc.emfor, so what Caddy needs
 # from emfor it must be told with `resolvers`.
 set -u

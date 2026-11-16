@@ -1,7 +1,7 @@
 #!/bin/sh
 # Keep a pf(4) table equal to the backends emfor offers for a service, so that
 # a `rdr` rule spreads connections over exactly those backends (FreeBSD).
-# The recipe is docs/manual/07-dns.md, "Using it with pf".
+# The recipe is docs/manual/07-dns-recipes.md, "Using it with pf".
 #
 #   emfor-pf-table.sh once SERVICE TABLE [DNS_SERVER [PORT]]   one pass
 #   emfor-pf-table.sh loop SERVICE TABLE [DNS_SERVER [PORT]]   a pass every second

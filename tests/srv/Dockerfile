@@ -1,6 +1,6 @@
 # emfor with clients that look for their servers with SRV records, for
 # tests/srv/run.sh: MIT Kerberos (dns_lookup_kdc), OpenLDAP (a DNS-based URI)
-# and PyMongo (mongodb+srv://), as docs/manual/07-dns.md, section "Clients that
+# and PyMongo (mongodb+srv://), as docs/manual/07-dns-recipes.md, section "Clients that
 # ask for SRV records themselves", says.
 FROM rust:1-bookworm AS build
 WORKDIR /src

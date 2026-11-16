@@ -140,7 +140,7 @@ emfor does not touch the traffic, so you can run it beside HAProxy first:
 You do not have to move the applications. HAProxy can keep the traffic, with
 its retries, queues, TLS and routing, and take its list of servers from
 emfor's SRV answers, so that emfor's checks decide who is in it
-([HAProxy in chapter 7](07-dns.md#using-it-with-haproxy) has the
+([HAProxy in chapter 7](07-dns-recipes.md#using-it-with-haproxy) has the
 configuration: a `server-template` and a `resolvers` section that points at
 emfor's DNS server, so the config needs a `[dns]` table and the services
 must be named under its zone). What you get: any emfor check (for example a

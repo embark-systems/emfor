@@ -1,6 +1,6 @@
 # 8. Operations
 
-[Manual](README.md) · Previous: [7. DNS](07-dns.md) · Next: [9. Troubleshooting](09-troubleshooting.md)
+[Manual](README.md) · Previous: [7b. DNS recipes](07-dns-recipes.md) · Next: [9. Troubleshooting](09-troubleshooting.md)
 
 ## Commands
 
@@ -442,11 +442,11 @@ all drained answers nothing. `drain` is a setting of one host's config
 on every application host, run the first and the last step on each of them.
 A HAProxy that has the emfor servers of several hosts as name servers needs
 them to agree on `drain` too, and is better off with one local name server
-([HAProxy in chapter 7](07-dns.md#using-it-with-haproxy)).
+([HAProxy in chapter 7](07-dns-recipes.md#using-it-with-haproxy)).
 
 What the waiting is for, as `tests/deploy/run.sh` saw it with nginx 1.30.6
 and 1.31.8 taking its upstream from emfor's SRV answers
-([chapter 7](07-dns.md#using-it-with-nginx)):
+([chapter 7](07-dns-recipes.md#using-it-with-nginx)):
 
 - A request that is running when the backend is drained finishes (a 1200
   byte answer, sent over about 6 seconds, arrived whole). Stopping the

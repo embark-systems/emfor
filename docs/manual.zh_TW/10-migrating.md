@@ -103,7 +103,7 @@ emfor 不碰流量，所以可以先在 HAProxy 旁邊跑：
 
 ### 保留 HAProxy，讓 emfor 提供它的清單
 
-你不一定要搬應用程式。HAProxy 可以繼續處理流量，保有它的重試、排隊、TLS 與路由，只是改從 emfor 的 SRV 回答取得 server 清單，讓 emfor 的檢查決定誰在清單裡（設定寫在[第 7 章的 HAProxy](07-dns.md#搭配-haproxy-使用)：一個 `server-template`，加上指向 emfor DNS server 的 `resolvers`，所以設定檔需要 `[dns]` table，服務名稱也必須在它的 zone 之下）。你得到的是：任何 emfor 的檢查（例如資料庫 plugin）取代 `check` 來決定健康，`drain = true` 只要 reload emfor 就能把 server 拿掉、不必 reload HAProxy，而且每台主機上的[聯防群組](03-configuration.md#peers)可以對 backend 投票。
+你不一定要搬應用程式。HAProxy 可以繼續處理流量，保有它的重試、排隊、TLS 與路由，只是改從 emfor 的 SRV 回答取得 server 清單，讓 emfor 的檢查決定誰在清單裡（設定寫在[第 7 章的 HAProxy](07-dns-recipes.md#搭配-haproxy-使用)：一個 `server-template`，加上指向 emfor DNS server 的 `resolvers`，所以設定檔需要 `[dns]` table，服務名稱也必須在它的 zone 之下）。你得到的是：任何 emfor 的檢查（例如資料庫 plugin）取代 `check` 來決定健康，`drain = true` 只要 reload emfor 就能把 server 拿掉、不必 reload HAProxy，而且每台主機上的[聯防群組](03-configuration.md#peers)可以對 backend 投票。
 
 沒有跟過來的部分，以 HAProxy 3.4.7 與 2.8.31 試過的為準：HAProxy 忽略回答裡的 priority 與 weight，所以 `failover`、`weighted` 與 `backup = true` 在那裡沒有作用（請保留 HAProxy 自己的 `backup` 與 `weight`）；template 的 slot 數限制了 backend 的數量；而 `SERVFAIL` 之後 HAProxy 會在 `hold other`（預設 30 秒）之後丟掉它的 server 並回 503。每個 HAProxy 只用一個 name server，就是同一台主機上的 emfor。沒有試過：超過 27 個 backend 走 UDP，以及長時間執行。
 

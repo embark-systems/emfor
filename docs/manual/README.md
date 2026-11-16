@@ -17,7 +17,8 @@ The manual describes emfor 0.5.
 | [4. Health checks](04-health-checks.md) | `tcp`, `http`, `exec`, plugins and `emfor-check`; rise, fall, scheduling and reasons |
 | [5. Choosing a backend](05-backend-selection.md) | The `balance` methods, `on_all_down`, and a stale store |
 | [6. Client libraries](06-clients.md) | Looking up a backend from Rust, C, Go, Python, Perl and PHP |
-| [7. DNS](07-dns.md) | The DNS server, its answers, SRV records, and forwarding from the host resolver |
+| [7. DNS](07-dns.md) | The DNS server, its answers, SRV records, forwarding from the host resolver, and caching |
+| [7b. DNS recipes](07-dns-recipes.md) | nginx, HAProxy, Caddy, Prometheus and pf on emfor's DNS answers, and clients that ask for SRV records themselves |
 | [8. Operations](08-operations.md) | Commands, signals and reload, `emfor status`, `emfor lookup`, metrics, logs, exit codes, the store on disk, upgrading |
 | [9. Troubleshooting](09-troubleshooting.md) | Symptoms, their causes, and what to do |
 | [10. Moving from HAProxy or Consul](10-migrating.md) | What the same configuration looks like in emfor, what has no equivalent, and how to try emfor next to what you have |

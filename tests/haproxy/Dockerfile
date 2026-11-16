@@ -1,5 +1,5 @@
 # HAProxy with emfor, for tests/haproxy/run.sh: the recipe of
-# docs/manual/07-dns.md, section "Using it with HAProxy".
+# docs/manual/07-dns-recipes.md, section "Using it with HAProxy".
 #
 #   docker build -f tests/haproxy/Dockerfile --build-arg HAPROXY_IMAGE=haproxy:2.8 .
 ARG HAPROXY_IMAGE=haproxy:lts

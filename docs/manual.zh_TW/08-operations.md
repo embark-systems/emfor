@@ -1,6 +1,6 @@
 # 8. 維運
 
-[手冊](README.md) · 上一章：[7. DNS](07-dns.md) · 下一章：[9. 疑難排解](09-troubleshooting.md)
+[手冊](README.md) · 上一章：[7b. DNS 做法](07-dns-recipes.md) · 下一章：[9. 疑難排解](09-troubleshooting.md)
 
 ## 指令
 
@@ -243,9 +243,9 @@ emfor-drain.sh off /etc/emfor/conf.d/20-api.toml 10.0.0.11:8080
 
 `wait-ready` 保證什麼：剛停掉的 backend 要等 `fall` 次檢查失敗之後才不再是 `healthy`（預設 `interval` 2 秒、`fall` 3，約 6 秒），而被 drain 的 backend 會藏起最近一次檢查的結果（store 只顯示檢查給的狀態）。所以 `wait-ready ADDR [秒數 [SETTLE]]` 不會一看到 `healthy` 就返回：要有一次比這個指令更晚完成的檢查，而且檢查連續 SETTLE 秒（預設 10）都是 `healthy` 才返回；沒有被 drain 的 backend 還要求最近一次檢查通過。SETTLE 必須比該 service 的 `fall` x `interval` 加 `timeout` 長；改了那些設定就要調大。它不計算 `rise`，也不看應用程式怎麼處理請求：通過 `tcp` 檢查、卻回 500 的 backend，它仍視為準備好了。
 
-一次只處理一台，兩台之間看一下 `emfor status`（service 是 `ALL DOWN` 時它的結束狀態是 1）：backend 全被 drain 的 service 什麼也不回答。`drain` 是單一主機設定的一部分（[第 5 章](05-backend-selection.md#drain-一個-backend)），所以每台應用程式主機都跑 emfor 時，第一步與最後一步要在每一台上做。把好幾台主機的 emfor 都當作 name server 的 HAProxy，這幾台的 `drain` 也必須一致，而且只用一個本機的 name server 比較好（[第 7 章的 HAProxy](07-dns.md#搭配-haproxy-使用)）。
+一次只處理一台，兩台之間看一下 `emfor status`（service 是 `ALL DOWN` 時它的結束狀態是 1）：backend 全被 drain 的 service 什麼也不回答。`drain` 是單一主機設定的一部分（[第 5 章](05-backend-selection.md#drain-一個-backend)），所以每台應用程式主機都跑 emfor 時，第一步與最後一步要在每一台上做。把好幾台主機的 emfor 都當作 name server 的 HAProxy，這幾台的 `drain` 也必須一致，而且只用一個本機的 name server 比較好（[第 7 章的 HAProxy](07-dns-recipes.md#搭配-haproxy-使用)）。
 
-等待是為了什麼，以下是 `tests/deploy/run.sh` 在 nginx 1.30.6 與 1.31.8（用 emfor 的 SRV 回答當 upstream，[第 7 章](07-dns.md#搭配-nginx-使用)）看到的：
+等待是為了什麼，以下是 `tests/deploy/run.sh` 在 nginx 1.30.6 與 1.31.8（用 emfor 的 SRV 回答當 upstream，[第 7 章](07-dns-recipes.md#搭配-nginx-使用)）看到的：
 
 - backend 被 drain 時正在跑的請求會跑完（一個 1200 位元組、約 6 秒傳完的回應完整收到）。不 drain 就停掉 backend，同一個請求在 146 位元組處被切斷。
 - 新的請求在幾秒內就不再到被 drain 的 backend（nginx 每秒重新查詢一次）。讀 store 的 client 是下一次 lookup；問 DNS 的 client 可能把答案快取到 TTL 結束。
