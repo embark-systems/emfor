@@ -100,6 +100,74 @@ def cover(lang):
     return s + "</svg>\n"
 
 
+def cover_060(lang):
+    T = {
+        "en": dict(
+            title="emfor 0.6.0: take a backend out for a deploy, then put it back",
+            sub="drain = true removes it from every choice; its checks keep running",
+            cfg="conf.d/20-api.toml", reload="reload", emfor="emfor", drained="drained (checks: healthy)",
+            healthy="healthy", client="What a client gets", lookup="lookup", lookup_a="10.0.0.12 or 10.0.0.13",
+            dns="DNS A, AAAA, SRV", dns_a="only .12 and .13", alld="every backend drained", alld_a="ALL_DOWN / SERVFAIL",
+            deploy="A rolling deploy with examples/deploy/emfor-drain.sh",
+            steps=["drain on", "wait-idle", "stop, deploy, start", "wait-ready", "drain off"],
+            note="A request in flight finishes after a drain; after a plain stop it is cut (tested with nginx 1.30)."),
+        "zh": dict(
+            title="emfor 0.6.0：部署時把 backend 拿出來，再放回去",
+            sub="drain = true 讓它從所有選擇中消失；它的檢查照常進行",
+            cfg="conf.d/20-api.toml", reload="reload", emfor="emfor", drained="drained (checks: healthy)",
+            healthy="healthy", client="client 拿到的", lookup="lookup", lookup_a="10.0.0.12 或 10.0.0.13",
+            dns="DNS 的 A、AAAA、SRV", dns_a="只有 .12 與 .13", alld="全部 backend 被 drain", alld_a="ALL_DOWN / SERVFAIL",
+            deploy="用 examples/deploy/emfor-drain.sh 滾動部署",
+            steps=["drain on", "wait-idle", "停止、部署、啟動", "wait-ready", "drain off"],
+            note="drain 之後進行中的請求會做完；直接停掉則會被切斷（以 nginx 1.30 測過）。"),
+    }[lang]
+    s = HEAD % (1200, 675, 1200, 675, 1200, 675)
+    s += text(60, 66, T["title"], 34, 700)
+    s += text(60, 102, T["sub"], 19, 400, "#5b6472")
+    # the config file
+    s += box(60, 140, 420, 330, "#f8fafc", "#9aa1ab")
+    s += text(80, 172, T["cfg"], 18, 700, "#1f2937", "start", True)
+    s += text(80, 224, '{ addr = "10.0.0.11:8080", drain = true },', 14, 700, "#2f6fde", "start", True)
+    s += text(80, 262, '{ addr = "10.0.0.12:8080" },', 14, 400, "#1f2937", "start", True)
+    s += text(80, 300, '{ addr = "10.0.0.13:8080" },', 14, 400, "#1f2937", "start", True)
+    s += arrow(480, 305, 540, 305, "#5b6472", 3)
+    s += text(510, 292, T["reload"], 13, 700, "#5b6472", "middle", True)
+    # emfor's state of the three backends
+    s += box(540, 140, 290, 330, "#eaf1ff", "#2f6fde", 2.5)
+    s += text(560, 172, T["emfor"], 18, 700)
+    rows = [(190, "10.0.0.11:8080", T["drained"], "#f3f4f6", "#9aa1ab", "#5b6472", "6 4"),
+            (282, "10.0.0.12:8080", T["healthy"], "#e8f6ed", "#1f7a3d", "#1f7a3d", None),
+            (374, "10.0.0.13:8080", T["healthy"], "#e8f6ed", "#1f7a3d", "#1f7a3d", None)]
+    for y, addr, state, fill, stroke, col, dash in rows:
+        d = f' stroke-dasharray="{dash}"' if dash else ""
+        s += (f'<rect x="560" y="{y}" width="250" height="80" rx="12" fill="{fill}" stroke="{stroke}" '
+              f'stroke-width="2"{d}/>\n')
+        s += text(576, y + 33, addr, 16, 700, "#1f2937", "start", True)
+        s += text(576, y + 61, state, 15, 600, col)
+    s += arrow(830, 305, 880, 305, "#5b6472", 3)
+    # what the clients get
+    s += box(880, 140, 260, 330, "#ffffff", "#9aa1ab")
+    s += text(900, 172, T["client"], 18, 700)
+    items = [(190, T["lookup"], T["lookup_a"], "#1f7a3d", True), (282, T["dns"], T["dns_a"], "#1f7a3d", False),
+             (374, T["alld"], T["alld_a"], "#b83232", False)]
+    for y, head, val, col, mono in items:
+        s += box(900, y, 220, 80, "#ffffff", col, 2)
+        s += text(914, y + 33, head, 16, 700, "#1f2937", "start", mono)
+        s += text(914, y + 61, val, 15, 600, col)
+    # the deploy steps
+    s += box(60, 500, 1080, 139, "#fff4e0", "#e0a43a")
+    s += text(84, 536, T["deploy"], 18, 700)
+    x = 84
+    for i, step in enumerate(T["steps"]):
+        s += box(x, 552, 184, 36, "#ffffff", "#e0a43a", 1.5, 8)
+        s += text(x + 92, 576, step, 14, 600, "#1f2937", "middle", not any(ord(c) > 127 for c in step))
+        if i < len(T["steps"]) - 1:
+            s += arrow(x + 184, 570, x + 208, 570, "#5b6472", 2)
+        x += 208
+    s += text(84, 620, T["note"], 16, 400, "#5b6472")
+    return s + "</svg>\n"
+
+
 def arch(lang):
     T = {
         "en": dict(title="How emfor fits on one host",
@@ -151,4 +219,5 @@ def arch(lang):
 os.makedirs(out, exist_ok=True)
 for lang, suf in (("en", ""), ("zh", ".zh")):
     open(f"{out}/emfor-0.5.0{suf}.svg", "w").write(cover(lang))
+    open(f"{out}/emfor-0.6.0{suf}.svg", "w").write(cover_060(lang))
     open(f"{out}/emfor-architecture{suf}.svg", "w").write(arch(lang))
