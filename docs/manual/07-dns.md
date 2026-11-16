@@ -637,6 +637,48 @@ firewalls. `tests/pf/run.sh` needs root and a FreeBSD with the pf module; it
 loads its own rules and enables pf, so it refuses to run when pf is already
 on. It is not part of the CI.
 
+## Clients that ask for SRV records themselves
+
+Some clients find their servers with SRV records on their own, so no proxy is
+needed: they ask `_<service>._tcp.<name>`, and emfor answers
+`_<anything>._tcp.<service>` with the healthy backends, their ports, and the
+priorities and weights of [SRV records](#srv-records). A server that fails
+emfor's checks, or is drained, is not in the answer. They ask the host's
+resolver, so it must forward the zone to emfor
+([Forwarding from the host resolver](#forwarding-from-the-host-resolver)); the
+test below made emfor the only resolver of the container, on port 53. Only
+`_tcp` names are answered: a `_udp` name gets `NXDOMAIN`.
+
+- **Kerberos (MIT).** With `dns_lookup_kdc = true` in `krb5.conf` and the
+  realm equal to the service name in capitals (`KDC.SVC.EMFOR` for the service
+  `kdc.svc.emfor`), `kinit` asked `_kerberos._udp.KDC.SVC.EMFOR` (no answer, as
+  said), then `_kerberos._tcp.KDC.SVC.EMFOR`, and went to both KDCs over TCP. A KDC
+  that failed its checks was not offered, and `kinit` went to the other only.
+  With `balance = "failover"` the answer has priorities 0 and 1 and `kinit` tried
+  the primary first. emfor's `tcp` check looks at the TCP port only.
+- **OpenLDAP.** `ldapsearch -H 'ldap:///dc=ldap%2Cdc=svc%2Cdc=emfor'` (no host,
+  a DN) makes libldap ask `_ldap._tcp.ldap.svc.emfor` and use the servers of
+  the answer. **Write the commas of the DN as `%2C`**: with plain commas
+  `ldapsearch` says `Could not parse LDAP URI(s)`. A server that failed its
+  checks was not used (3 of 3 attempts went to the other).
+- **MongoDB.** `mongodb+srv://db.svc.emfor/` gave PyMongo the two servers of
+  `_mongodb._tcp.db.svc.emfor`. emfor has no TXT records and answers the TXT
+  query that `mongodb+srv` also makes with `NOERROR` and no records, which
+  PyMongo accepted. `mongodb+srv` turns TLS on: add `tls=false` to the URI when
+  the servers do not speak TLS. A server that failed its checks, and one that
+  was drained, was not in the list.
+
+[tests/srv/](../../tests/srv/run.sh) checks these with the Debian bookworm
+packages `krb5-user` (MIT Kerberos), `ldap-utils` (OpenLDAP 2.5.13) and
+`python3-pymongo` (3.11.0); the servers are plain listeners, so what is
+checked is which servers the client is told about and goes to. Not tried: a
+real KDC, LDAP or MongoDB server behind them (`kinit` ended with `Cannot contact
+any KDC`), LDAPS, sssd (`ldap_uri = _srv_`), nslcd, Samba, Heimdal, Active
+Directory names such as `_msdcs`, a realm or domain outside `svc.emfor` (the
+`[dns] zone` of its own that it would need), other drivers than PyMongo, other
+versions. The Integrations workflow runs the test every week and when the DNS
+code of emfor or the test changes.
+
 ## Caching
 
 emfor's short TTL lets a failed backend drop out of answers within about a

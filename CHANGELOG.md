@@ -62,6 +62,16 @@ comes. `tests/deploy/run.sh [image]` checks it on nginx 1.30.6 and 1.31.8
 there). Not tried: HAProxy, HTTPS, clients with their own connection pool,
 several emfor hosts.
 
+**Clients that ask for SRV records themselves (manual chapter 7, both
+languages).** MIT Kerberos (`dns_lookup_kdc`, the realm is the service name in
+capitals), OpenLDAP (`ldapsearch -H 'ldap:///dc=ldap%2Cdc=svc%2Cdc=emfor'`, the
+commas must be `%2C`) and PyMongo (`mongodb+srv://`, TLS is on by default) find
+their servers through emfor's SRV answers and leave a server that fails its checks
+or is drained; a `_udp` name gets `NXDOMAIN`; with `balance = "failover"` Kerberos
+tries the primary first. `tests/srv/run.sh` checks them with the Debian
+bookworm packages, against plain listeners. Not tried: a real KDC, LDAP or
+MongoDB server, LDAPS, sssd, Samba, Active Directory names, other drivers.
+
 **Nagios, Icinga and Zabbix (manual chapter 8, both languages).**
 `examples/nagios/check_emfor.sh` gives the Nagios status of what `emfor status
 --json` reports (CRITICAL for a stale or stopped daemon or a service with fewer

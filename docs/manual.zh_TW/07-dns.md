@@ -323,6 +323,16 @@ rdr pass on $ext_if inet proto tcp from any to $vip port 80 -> <api> port 8000 r
 
 沒試過：IPv6（腳本讀得懂 IPv6 目標，但沒有跑過）、`source-hash` 與 `sticky-address`、真實介面上很多用戶端的 `rdr`（另一台主機的檢查是從一台機器手動做的：被拒絕與被丟掉的連線）、迴圈用的 `daemon(8)` 或 rc script、其他防火牆。`tests/pf/run.sh` 需要 root 與有 pf 模組的 FreeBSD；它載入自己的規則並啟用 pf，所以 pf 已經開著時它會拒絕執行。它不在 CI 裡。
 
+## 自己會查 SRV 記錄的 client
+
+有些 client 自己會用 SRV 記錄找伺服器，所以不需要 proxy：它們查 `_<service>._tcp.<名稱>`，emfor 用 `_<任意>._tcp.<service>` 回答健康的 backend、它們的埠，以及 [SRV 記錄](#srv-記錄)那一節的優先序與權重。檢查失敗或被 drain 的伺服器不在回答裡。它們問的是主機的 resolver，所以主機的 resolver 要把這個 zone 轉送給 emfor（[從主機的 resolver 轉送](#從主機的-resolver-轉送)）；下面的測試是讓 emfor 當容器唯一的 resolver，聽 53 埠。只有 `_tcp` 的名稱會被回答：`_udp` 的名稱得到 `NXDOMAIN`。
+
+- **Kerberos（MIT）**：`krb5.conf` 設 `dns_lookup_kdc = true`，realm 設成 service 名稱的大寫（service `kdc.svc.emfor` 對應 `KDC.SVC.EMFOR`），`kinit` 先問 `_kerberos._udp.KDC.SVC.EMFOR`（如上所說沒有答案），再問 `_kerberos._tcp.KDC.SVC.EMFOR`，然後用 TCP 連到兩台 KDC。檢查失敗的 KDC 沒有被提供，`kinit` 只去另一台。用 `balance = "failover"` 時，回答裡有優先序 0 和 1，`kinit` 先試主要那台。emfor 的 `tcp` 檢查只看 TCP 埠。
+- **OpenLDAP**：`ldapsearch -H 'ldap:///dc=ldap%2Cdc=svc%2Cdc=emfor'`（沒有主機，只有 DN）會讓 libldap 去問 `_ldap._tcp.ldap.svc.emfor`，並使用回答裡的伺服器。**DN 裡的逗號要寫成 `%2C`**：用一般的逗號時 `ldapsearch` 會說 `Could not parse LDAP URI(s)`。檢查失敗的伺服器沒有被使用（3 次嘗試 3 次都去了另一台）。
+- **MongoDB**：`mongodb+srv://db.svc.emfor/` 讓 PyMongo 拿到 `_mongodb._tcp.db.svc.emfor` 的兩台伺服器。emfor 沒有 TXT 記錄，對 `mongodb+srv` 也會發出的 TXT 查詢回答 `NOERROR` 而沒有任何記錄，PyMongo 接受了。`mongodb+srv` 會把 TLS 打開：伺服器不講 TLS 時，在 URI 加 `tls=false`。檢查失敗的伺服器與被 drain 的伺服器都不在清單裡。
+
+[tests/srv/](../../tests/srv/run.sh) 用 Debian bookworm 的 `krb5-user`（MIT Kerberos）、`ldap-utils`（OpenLDAP 2.5.13）與 `python3-pymongo`（3.11.0）檢查這些；伺服器只是單純的 listener，所以檢查的是 client 被告知、並且去連的是哪些伺服器。沒試過：它們後面真正的 KDC、LDAP 或 MongoDB 伺服器（`kinit` 以 `Cannot contact any KDC` 結束）、LDAPS、sssd（`ldap_uri = _srv_`）、nslcd、Samba、Heimdal、Active Directory 的 `_msdcs` 之類名稱、`svc.emfor` 以外的 realm 或網域（那需要它自己的 `[dns] zone`）、PyMongo 以外的驅動程式、其他版本。Integrations workflow 每週執行一次，emfor 的 DNS 程式或這個測試有改動時也會執行。
+
 ## 快取
 
 emfor 的短 TTL 讓故障的 backend 大約一秒內從回答中消失。快取會拉長這段時間：

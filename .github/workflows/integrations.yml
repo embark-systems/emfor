@@ -26,6 +26,7 @@ on:
       - "tests/prometheus/**"
       - "tests/caddy/**"
       - "tests/nagios/**"
+      - "tests/srv/**"
       - "examples/nagios/**"
       - "examples/deploy/**"
       - ".github/workflows/integrations.yml"
@@ -95,3 +96,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: tests/nagios/run.sh
+
+  srv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - run: tests/srv/run.sh
