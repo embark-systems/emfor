@@ -230,7 +230,7 @@ emfor-drain.sh wait-ready 10.0.0.11:8080 120
 emfor-drain.sh off /etc/emfor/conf.d/20-api.toml 10.0.0.11:8080
 ```
 
-一次只處理一台，兩台之間看一下 `emfor status`（service 是 `ALL DOWN` 時它的結束狀態是 1）：backend 全被 drain 的 service 什麼也不回答。`drain` 是單一主機設定的一部分（[第 5 章](05-backend-selection.md#drain-一個-backend)），所以每台應用程式主機都跑 emfor 時，第一步與最後一步要在每一台上做。
+一次只處理一台，兩台之間看一下 `emfor status`（service 是 `ALL DOWN` 時它的結束狀態是 1）：backend 全被 drain 的 service 什麼也不回答。`drain` 是單一主機設定的一部分（[第 5 章](05-backend-selection.md#drain-一個-backend)），所以每台應用程式主機都跑 emfor 時，第一步與最後一步要在每一台上做。把好幾台主機的 emfor 都當作 name server 的 HAProxy，這幾台的 `drain` 也必須一致，而且只用一個本機的 name server 比較好（[第 7 章的 HAProxy](07-dns.md#搭配-haproxy-使用)）。
 
 等待是為了什麼，以下是 `tests/deploy/run.sh` 在 nginx 1.30.6 與 1.31.8（用 emfor 的 SRV 回答當 upstream，[第 7 章](07-dns.md#搭配-nginx-使用)）看到的：
 

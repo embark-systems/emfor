@@ -200,10 +200,16 @@ HAProxy 怎麼處理這個回答，用 HAProxy 3.4.7 與 2.8.31 測過：
 
 哪一種比較對，取決於 emfor 說沒有 backend 時你希望發生什麼。`hold` 的值是 HAProxy 的，這裡沒有調校過。
 
-[tests/haproxy/](../../tests/haproxy/run.sh) 在指定的 HAProxy 映像上執行這些檢查（`tests/haproxy/run.sh haproxy:2.8`），包含 HAProxy 不做的那兩件事，所以日後 HAProxy 開始遵守優先序或權重時，測試會失敗，提醒這一節要改。Integrations workflow 每週執行一次，emfor 的 DNS 或候選的程式有改動時也會執行。沒試過：HAProxy 的 `mode tcp`、到 backend 的 TLS、`resolvers` 有多個 name server、上述兩個以外的版本。
+以下三種變化，是 `tests/haproxy/more.sh` 用 HAProxy 3.4.7 與 2.8.31 看到的：
+
+- **`mode tcp`**（寫在 `defaults`，或寫在 frontend 與 backend）沒有任何差別：server 來自同樣的回答，檢查失敗或被 drain 的 backend 收不到連線，恢復後又會收到。
+- **到 backend 的 TLS**：在 template 加上 `ssl`。`ssl verify none` 可以用。要檢查憑證，用 `ssl verify required ca-file <ca> sni str(<名稱>)`，它會用 `<名稱>` 檢查憑證：名稱對的時候兩台 backend 都有服務，名稱不在憑證裡就什麼都不服務。**一定要設 `sni`**：SRV 目標的名稱（`10-0-0-11.api.svc.emfor`）不會出現在憑證裡，而沒有 `sni` 時，3.4.7 會拒絕憑證，2.8.31 卻會接受任何由那個 CA 簽發的憑證，不管名稱是什麼。**不要依賴 `verifyhost`**：錯的 `verifyhost` 搭配對的 `sni`，兩個版本都照樣服務；對的 `verifyhost` 但沒有 `sni`，2.8.31 服務，3.4.7 拒絕。
+- **只設一個 `nameserver`**：只寫一行 `nameserver`，指向和 HAProxy 同一台主機上的 emfor。HAProxy 會把每個查詢送給每一個 nameserver，並採用最先到的那個有效回答，不會把它們合併（測試中，兩台 emfor 回答相同時，停掉其中任何一個 HAProxy 仍然繼續服務，故障的 backend 也照樣離開清單）。兩個回答不同時（只有一台 drain 某個 backend），清單會隨著每次查詢而變：HAProxy 把某個 backend 移除再加回來，常常放進另一個槽位，同樣的設定每次執行服務的結果都可能不同（Linux 上 3.4.7 與 2.8.31 跑了很多次，FreeBSD 上 3.4.4 跑了 6 次）。請求也可能失敗：這種變動之後，有個槽位是 ready 的，位址對、埠卻是 0，送到它的請求大約 3 秒後得到 `503`（每 1.5 秒停掉再啟動一台 backend：兩個 nameserver 時，Linux 3.4.7 上 5 次執行中 5 次出現，只用一個 nameserver 時每次最多一個；但在 FreeBSD 的 3.4.4 上同樣的測試，只用一個 nameserver 也出現，5 次執行每次 80 個請求中有 29 到 45 個，所以第二個 nameserver 不是唯一的原因，我也不知道是哪個版本改變了這一點）。這些都是手動看到的，不在測試裡，HAProxy 內部確切的原因也沒有找到。要高可用，請在每個 HAProxy 旁邊各跑一個 emfor，而不是給一個 HAProxy 多個 nameserver。硬要設兩個的話，它們的回答必須一致，`drain` 也一樣；`option redispatch` 能掩蓋失敗的請求，但不會修好那個槽位。`hold obsolete 30s` 會保留兩邊回答的聯集來讓結果穩定，代價是 drain 或移除要等那麼久才生效：不建議。
+
+[tests/haproxy/](../../tests/haproxy/run.sh) 在指定的 HAProxy 映像上執行這些檢查（`tests/haproxy/run.sh haproxy:2.8`），包含 HAProxy 不做的那兩件事，所以日後 HAProxy 開始遵守優先序或權重時，測試會失敗，提醒這一節要改。Integrations workflow 每週執行一次，emfor 的 DNS 或候選的程式有改動時也會執行。沒試過：emfor 自己的 TLS 檢查與 HAProxy 並用、到 backend 的 client 憑證、`resolvers` 有超過兩個 name server、上述兩個以外的版本。
 
 
-在 FreeBSD 15.1（arm64，套件裡的 HAProxy 3.4.4）上，同樣的檢查全部通過，包含不遵守優先序與權重那兩項，所以這一節在那裡照樣成立。和 nginx 一樣，`tests/haproxy/inside.sh` 是手動跑的，除了 HAProxy 套件之外不需要別的東西。FreeBSD 上沒試過：其他版本的 HAProxy。
+在 FreeBSD 15.1（arm64，套件裡的 HAProxy 3.4.4）上，同樣的檢查全部通過，包含不遵守優先序與權重那兩項，所以這一節在那裡照樣成立。和 nginx 一樣，`tests/haproxy/inside.sh` 是手動跑的，除了 HAProxy 套件之外不需要別的東西。`tests/haproxy/more.sh`（`mode tcp`、到 backend 的 TLS、兩個 name server）也在那裡手動跑過，結果與 3.4.7 相同，包含 `sni` 的那幾項。FreeBSD 上沒試過：其他版本的 HAProxy。
 
 ## 搭配 Caddy 使用
 

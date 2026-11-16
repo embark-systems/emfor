@@ -22,4 +22,5 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/debug/emfor /usr/local/bin/emfor
 COPY tests/haproxy/inside.sh /inside.sh
+COPY tests/haproxy/more.sh /more.sh
 ENTRYPOINT ["/bin/sh", "/inside.sh"]

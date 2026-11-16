@@ -335,20 +335,64 @@ What HAProxy does with the answer, as checked with HAProxy 3.4.7 and 2.8.31:
 Which is right depends on what you want to happen when emfor says there is
 no backend. The `hold` values are HAProxy's, and were not tuned here.
 
+Three variations, as `tests/haproxy/more.sh` saw them with HAProxy 3.4.7 and
+2.8.31:
+
+- **`mode tcp`** (in `defaults` or in the frontend and the backend) changes
+  nothing: the servers come from the same answers, a backend that fails its
+  checks or is drained gets no connections, and it gets them again when it
+  recovers.
+- **TLS to the backends.** Add `ssl` to the template. With `ssl verify none`
+  it works. To check the certificate, `ssl verify required ca-file <ca> sni
+  str(<name>)` checks it against `<name>`: with the right name both
+  backends were served, with a name that is not in the certificate nothing
+  was. Always set `sni`: the names of the SRV targets
+  (`10-0-0-11.api.svc.emfor`) are not in a certificate, and without `sni`
+  3.4.7 refused the certificate while 2.8.31 accepted any certificate that
+  the CA had signed, whatever its name. Do not rely on `verifyhost`: a wrong
+  one next to a right `sni` was served by both, and a right one without
+  `sni` was served by 2.8.31 and refused by 3.4.7.
+- **One `nameserver`.** Use one `nameserver` line, the emfor server on the
+  same host as HAProxy. HAProxy sends every query to every nameserver and
+  uses the first reply that arrives; it does not merge them (in the test, with
+  two emfor servers that gave the same answer, HAProxy kept serving with
+  either one stopped, and a backend that went down still left the list). When
+  the two answers differ (a backend drained on one only), the list changes
+  from query to query: HAProxy removes a backend and adds it again, often in
+  another slot, and what it serves differs from run to run with the same
+  configuration (many runs on Linux with 3.4.7 and 2.8.31, and 6 on FreeBSD
+  with 3.4.4). Requests can also fail: after such a change a slot was ready
+  with the right address and port 0, and a request sent to it got a `503`
+  after about 3 seconds (a backend stopped and started every 1.5 seconds:
+  with two nameservers 5 of 5 runs on Linux 3.4.7, and with one nameserver
+  at most one such request per run; but on FreeBSD with 3.4.4 the same test
+  gave them with one nameserver too, 29 to 45 of 80 requests in each of 5
+  runs, so the second nameserver is not the only cause, and I do not know
+  which release changed this). These were seen by hand, not in the test, and
+  the exact cause inside HAProxy was not found. For availability run an emfor server next to each HAProxy
+  rather than giving one HAProxy several nameservers. If you give it two
+  anyway, they must agree, `drain` included; `option redispatch` hides the
+  failed requests but does not repair the slot. `hold obsolete 30s` makes
+  the result stable by keeping the union of the answers, so a drain or a
+  removal takes that long to count: not recommended.
+
 [tests/haproxy/](../../tests/haproxy/run.sh) runs these checks on a given
 HAProxy image (`tests/haproxy/run.sh haproxy:2.8`), including the two things
 HAProxy does not do, so that the test fails if a later HAProxy starts to
 follow priorities or weights and this section must change. The Integrations
 workflow runs it every week and when the DNS or candidate code of emfor
-changes. Not tried: HAProxy with `mode tcp`, TLS to the backends, `resolvers`
-with several name servers, other versions than the two above.
+changes. Not tried: the TLS checks of emfor itself next to HAProxy's, client
+certificates to the backends, `resolvers` with more than two name servers,
+other versions than the two above.
 
 
 On FreeBSD 15.1 (arm64, HAProxy 3.4.4 from the packages) the same checks
 passed, priorities and weights not followed included, so the section holds
 there as it is. As with nginx, `tests/haproxy/inside.sh` was run by hand;
-it needed nothing else than the HAProxy package. Not tried on FreeBSD: other
-HAProxy versions.
+it needed nothing else than the HAProxy package. `tests/haproxy/more.sh`
+(`mode tcp`, TLS to the backends, two name servers) passed there too, by
+hand, with the same results as with 3.4.7, the `sni` ones included. Not tried
+on FreeBSD: other HAProxy versions.
 
 ## Using it with Caddy
 

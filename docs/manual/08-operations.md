@@ -399,6 +399,9 @@ exit status is 1 when a service is `ALL DOWN`): a service whose backends are
 all drained answers nothing. `drain` is a setting of one host's config
 ([chapter 5](05-backend-selection.md#draining-a-backend)), so when emfor runs
 on every application host, run the first and the last step on each of them.
+A HAProxy that has the emfor servers of several hosts as name servers needs
+them to agree on `drain` too, and is better off with one local name server
+([HAProxy in chapter 7](07-dns.md#using-it-with-haproxy)).
 
 What the waiting is for, as `tests/deploy/run.sh` saw it with nginx 1.30.6
 and 1.31.8 taking its upstream from emfor's SRV answers

@@ -12,8 +12,15 @@ and that after `SERVFAIL` HAProxy drops its servers after its `hold other`
 time (30 s) and answers 503, where nginx keeps its last list. The slots of the
 template limit the number of backends. `tests/haproxy/run.sh [image]` checks
 all of it, the two ignored features included, and the Integrations workflow
-runs it on `haproxy:lts` and `haproxy:2.8`. Checked with HAProxy 3.4.7 and 2.8.31. Not
-tried: `mode tcp`, TLS to the backends, several name servers.
+runs it on `haproxy:lts` and `haproxy:2.8`. Checked with HAProxy 3.4.7 and 2.8.31.
+The section also covers `mode tcp` (no difference), TLS to the backends (set
+`sni`: without it 3.4.7 refuses the certificate and 2.8.31 accepts any
+certificate the CA signed; `verifyhost` is not reliable) and several name
+servers (HAProxy sends each query to all of them and uses the first reply;
+with different answers the result varied from run to run, and requests got 503
+after a slot came up with port 0, which on HAProxy 3.4.4 (FreeBSD) happened
+with one name server as well; use one local `nameserver`);
+`tests/haproxy/more.sh` checks the agreeing case, run by the same `run.sh`.
 
 **Using emfor with nginx.** Manual chapter 7 (both languages) has a section
 for nginx: from 1.27.3 the open-source nginx can take its upstream from emfor's
