@@ -48,6 +48,24 @@ jobs:
       - name: systemd-resolved recipe
         run: tests/resolver/resolved.sh
 
+  # The fuzz targets are built by no other job, and crates/emfor-daemon/src/
+  # dns_fuzz.rs compiles only with `--cfg fuzzing`: a change to a type it
+  # builds (BackendRecord) broke all six targets in 0.6.0 and nothing noticed
+  # until the fuzz run of the release. This only type-checks them, on stable:
+  # no nightly, cargo-fuzz or sanitizer, and nothing runs.
+  fuzz-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - run: cargo check --manifest-path fuzz/Cargo.toml --bins --locked
+        env:
+          RUSTFLAGS: --cfg fuzzing
+
   freebsd:
     runs-on: ubuntu-latest
     timeout-minutes: 30
