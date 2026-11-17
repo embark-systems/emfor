@@ -2,12 +2,12 @@
 //! built only with `--cfg fuzzing`.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::OnceLock;
 
 use emfor_format::{BackendRecord, Balance, HealthState, OnAllDown, ServiceRecord};
-use hickory_proto::op::MessageType;
-use hickory_proto::rr::Record;
+use hickory_proto::op::{Message, MessageType};
+use hickory_proto::rr::{RData, Record};
 use hickory_proto::serialize::binary::BinEncoder;
 use hickory_server::net::NetError;
 use hickory_server::net::runtime::TokioTime;
@@ -16,7 +16,7 @@ use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseI
 use hickory_server::zone_handler::MessageResponse;
 use tokio::sync::watch;
 
-use super::{DnsSettings, Handler, udp_limit};
+use super::{DnsSettings, Handler, ip_label, udp_limit};
 use crate::config::MAX_ZONE_LEN;
 use crate::live::{LiveService, LiveState};
 
@@ -28,7 +28,10 @@ use crate::live::{LiveService, LiveState};
 /// seeds for it.
 ///
 /// Panics when a response to a request with one question does not fit the
-/// transport's size limit: [`super::fit_response`] promises that it does.
+/// transport's size limit: [`super::fit_response`] promises that it does, and
+/// when an answer to a service name names a drained backend ([`DRAINED`]): a
+/// drained backend is in no choice, whatever the request and the state of the
+/// others.
 pub fn fuzz_request(data: &[u8]) {
     let Some((&mode, raw)) = data.split_first() else {
         return;
@@ -84,7 +87,11 @@ impl ResponseHandler for Sink {
         let mut encoder = BinEncoder::new(&mut bytes);
         encoder.set_max_size(self.limit);
         match response.destructive_emit(&mut encoder) {
-            Ok(info) => Ok(info),
+            Ok(info) => {
+                drop(encoder);
+                assert_no_drained(&bytes);
+                Ok(info)
+            }
             Err(e) => {
                 assert!(
                     !self.must_fit,
@@ -95,6 +102,62 @@ impl ResponseHandler for Sink {
             }
         }
     }
+}
+
+/// The backends that [`services`] drains. No answer that chooses backends may
+/// name one: not an A or AAAA answer to a service name, and not an SRV target
+/// (`<ip label>.<service>`), also when the service is `open` and every other
+/// backend is down, and when every backend is drained. A query for a target
+/// name itself is not a choice: the spec (dns-server, "SRV target names") has
+/// it answered whatever the backend's health, so such an answer is left out.
+const DRAINED: [&str; 3] = ["10.0.0.13", "10.0.5.1", "2001:db8::51"];
+
+/// Panics when the encoded response names a drained backend.
+fn assert_no_drained(bytes: &[u8]) {
+    // A response that was cut at the size limit may not decode; what is left
+    // of it was checked by what decodes.
+    let Ok(message) = Message::from_vec(bytes) else {
+        return;
+    };
+    let drained: Vec<IpAddr> = DRAINED
+        .iter()
+        .map(|s| s.parse().expect("the drained addresses are valid"))
+        .collect();
+    let labels: Vec<String> = drained.iter().map(|&ip| ip_label(ip)).collect();
+    // The additional section only repeats the targets of the SRV answers.
+    for record in &message.answers {
+        match &record.data {
+            RData::A(a) => assert!(
+                !drained.contains(&IpAddr::V4(a.0)) || is_target_of(record, IpAddr::V4(a.0)),
+                "a drained backend is in an answer: A {}",
+                a.0
+            ),
+            RData::AAAA(a) => assert!(
+                !drained.contains(&IpAddr::V6(a.0)) || is_target_of(record, IpAddr::V6(a.0)),
+                "a drained backend is in an answer: AAAA {}",
+                a.0
+            ),
+            RData::SRV(srv) => {
+                let target = srv.target.to_ascii();
+                assert!(
+                    !labels.iter().any(|l| target.starts_with(&format!("{l}."))),
+                    "a drained backend is in an answer: SRV target {target}"
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether `record` is owned by the target name of `ip`: its first label is the
+/// IP label.
+fn is_target_of(record: &Record, ip: IpAddr) -> bool {
+    record
+        .name
+        .to_ascii()
+        .split('.')
+        .next()
+        .is_some_and(|first| first.eq_ignore_ascii_case(&ip_label(ip)))
 }
 
 /// One handler per zone and readiness, built once.
@@ -170,10 +233,22 @@ fn backend(addr: &str, state: HealthState, weight: u32, site: Option<&str>) -> B
     }
 }
 
+/// A backend with `drain = true`, as the daemon writes it to the store:
+/// unhealthy with the reason `drained`, and the state the checks gave.
+fn drained(addr: &str, weight: u32) -> BackendRecord {
+    let mut b = backend(addr, HealthState::Unhealthy, weight, None);
+    b.drain = true;
+    b.checked_state = Some(HealthState::Healthy);
+    b.reason = Some("drained".into());
+    b
+}
+
 /// Services covering each kind of answer: A and AAAA with several
 /// methods, all down with `closed`, many SRV targets (truncation), and a
 /// name long enough that one record overflows 512 bytes and an IPv6 SRV
-/// target cannot be named.
+/// target cannot be named. Backends are drained in `api` (a drained backend
+/// next to a healthy one and a down one, `open`) and in `drained` (every
+/// backend drained, `open`: SERVFAIL).
 fn services(zone: &str) -> Vec<(ServiceRecord, Option<u32>)> {
     use HealthState::{Healthy, Unhealthy, Unknown};
     let service = |name: String, on_all_down, balance, backends: Vec<BackendRecord>| {
@@ -213,7 +288,17 @@ fn services(zone: &str) -> Vec<(ServiceRecord, Option<u32>)> {
                     backend("10.0.0.11:8080", Healthy, 1, None),
                     backend("10.0.0.12:8080", Unhealthy, 1, None),
                     backend("[2001:db8::11]:8080", Healthy, 1, None),
+                    drained("10.0.0.13:8080", 1),
                 ],
+            ),
+            None,
+        ),
+        (
+            service(
+                format!("drained.{zone}"),
+                OnAllDown::Open,
+                Balance::RoundRobin,
+                vec![drained("10.0.5.1:80", 1), drained("[2001:db8::51]:80", 1)],
             ),
             None,
         ),
