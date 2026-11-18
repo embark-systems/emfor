@@ -112,12 +112,22 @@ pub(crate) extern "C" fn prepare() {
     if IN_STORE.with(|c| c.get()) > 0 {
         return; // forked from a signal handler inside a lookup: no lock to take
     }
+    // A `fork` from a thread-local destructor, or a signal handler on a thread
+    // that is exiting, can find `HELD` destroyed: there is nowhere to keep the
+    // lock, and `with` would panic, which in this `extern "C"` function aborts
+    // the process. That fork is not guarded (as before the handlers existed),
+    // but it returns.
+    if HELD.try_with(|_| ()).is_err() {
+        return;
+    }
     let global = crate::GLOBAL.load(Ordering::SeqCst);
     // SAFETY: a non-null value comes from `Box::into_raw` and is never freed,
     // so the reference is valid for the rest of the process.
     if let Some(g) = unsafe { global.as_ref() } {
         let guard = g.client.lock_store();
-        HELD.with(|h| *h.borrow_mut() = Some(guard));
+        // `HELD` was alive a moment ago and this thread cannot destroy it in
+        // between; were it not, the guard is dropped with the closure.
+        let _ = HELD.try_with(|h| *h.borrow_mut() = Some(guard));
     }
 }
 
@@ -127,7 +137,8 @@ fn finish(child: bool) {
     if !PREPARED.replace(false) {
         return;
     }
-    let guard = HELD.with(|h| h.borrow_mut().take());
+    // `None` when `HELD` is destroyed: `prepare` kept no lock then.
+    let guard = HELD.try_with(|h| h.borrow_mut().take()).ok().flatten();
     drop(guard);
     if child {
         FORKING.store(0, Ordering::SeqCst);
