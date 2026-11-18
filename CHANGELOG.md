@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+**The systemd unit stops retrying after five failed starts in a minute.**
+With an invalid config (for example a `conf.d` file that group or others can
+write), the config check in `ExecStartPre` fails with status 2, which
+`RestartPreventExitStatus` does not see, so systemd retried every `RestartSec`
+(2 seconds) until its default start limit stopped it, and with that limit and
+`RestartSec=2s` it may never do: on systemd 252 (Rocky Linux 9) the unit was
+retried 11 times in 22 seconds and was still retrying. The packaged unit
+(`packages/common/emfor.service`, so the deb and the rpm) and
+`examples/systemd/emfor.service` now set `StartLimitIntervalSec=60` and
+`StartLimitBurst=5`: the unit is `failed` about nine seconds after the restart
+and stays down until `systemctl reset-failed emfor` and `systemctl start emfor`.
+The same limit stops a daemon that crashes five times in a minute. A copy of the
+example unit has to be updated by hand; the packages bring the new one. Checked
+with the rpm in a Rocky Linux 9.9 (arm64) container running systemd 252 as PID 1;
+not on Debian or FreeBSD (which has no unit).
+
 ## 0.6.0 — 2026-11-17
 
 The store format (`meta/schema_version` 2) and the plugin protocol (1) are

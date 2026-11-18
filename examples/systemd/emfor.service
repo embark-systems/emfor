@@ -19,6 +19,14 @@ Description=emfor health-check daemon
 # Checks reach backends over the network.
 Wants=network-online.target
 After=network-online.target
+# Five failed starts in a minute end the retries (the unit is then `failed`
+# until `systemctl reset-failed`). Without this, an invalid config, which makes
+# the ExecStartPre check fail and which RestartPreventExitStatus below does not
+# see, is retried every RestartSec for as long as the default limit (five
+# starts in ten seconds) happens not to be reached: with RestartSec=2s that is
+# on the edge, and systemd 252 on Rocky Linux 9 never reached it.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=exec
