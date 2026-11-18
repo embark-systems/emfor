@@ -111,6 +111,11 @@ my $addr = eval { Emfor::lookup('api.svc.emfor', 'user-42') };
 warn "$@\n" if $@;   # an Emfor::Error with ->code and ->message
 ```
 
+In Perl the name and the key are character strings, passed to the library as
+UTF-8. Decode bytes first (`Encode::decode('UTF-8', $bytes)`): a byte string
+with non-ASCII bytes is read as Latin-1, and a `sticky` service then picks a
+different backend than the other languages pick for the same text.
+
 **PHP**
 
 ```php
@@ -248,6 +253,11 @@ Do not delete the lock file (`<store>-lock`) alone. Start the daemon
 before applications that run as root or as the daemon's user: if the lock
 file is missing, the first process to open the store creates it, owned by
 that process's user, and the daemon may then fail to start.
+
+A copy of the store file made without its lock file is read the same way: the
+client creates `<store>-lock` next to the copy (mode `0644`) and the lookup
+works. That is how you can look at a backup; in the live directory it is the
+hazard above.
 
 ## Same release as the daemon
 

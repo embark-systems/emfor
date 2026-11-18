@@ -90,6 +90,8 @@ Set `sync = true` to flush every commit before it completes, as emfor did before
 
 Applications read the store through the emfor client and register their reads in the lock file `<path>-lock`, so each application user needs to read the data file and write the lock file. `[store] file_mode` (default `0644`) and `lock_file_mode` (default `0666`) set the modes the daemon creates them with.
 
+If `<path>-lock` is missing while the data file exists, the first client that opens the store creates it (mode `0644`, owned by that client's user), and the daemon may then fail to start because it cannot open a lock file that belongs to another user. Start the daemon before applications that run as another user, and do not delete the lock file alone ([chapter 6](../manual/06-clients.md)).
+
 The lock file holds LMDB's reader table and the lock the daemon takes for each commit. Anyone who can write it can take the lock and stop the daemon's commits (the heartbeat stops and every client on the host sees a stale store), fill the reader table so lookups fail, or clear reader entries so that a lookup reads pages the daemon is rewriting. With the default `0666`, that is any local user. Keep it only on hosts where every local user is trusted; the default stays `0666` so that an upgrade does not lock out applications.
 
 To limit the store to your applications, give them a group of their own and let the daemon create the files with it:

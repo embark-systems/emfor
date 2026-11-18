@@ -97,6 +97,10 @@ my $addr = eval { Emfor::lookup('api.svc.emfor', 'user-42') };
 warn "$@\n" if $@;   # an Emfor::Error with ->code and ->message
 ```
 
+Perl 的名稱與 key 是字元字串，以 UTF-8 傳給函式庫。位元組要先解碼（例如
+`Encode::decode('UTF-8', $bytes)`）：含非 ASCII 的位元組字串會被當成 Latin-1，
+`sticky` 服務因此選到的 backend，會和其他語言對同一段文字選到的不同。
+
 **PHP**
 
 ```php
@@ -174,6 +178,8 @@ answer: 10.0.0.11:8080
 store 檔案存在但開不起來時（LMDB 格式不同、沒有權限、不是 store），client 最多每秒重試一次，期間的查詢都以同一個 `UNAVAILABLE` 錯誤失敗。store 檔案不存在時，每次查詢都會重試，所以比 daemon 先啟動的應用程式在 store 出現後就能讀到。
 
 不要單獨刪除 lock 檔（`<store>-lock`）。請在以 root 或 daemon 使用者身分執行的應用程式之前啟動 daemon：lock 檔不存在時，第一個開啟 store 的行程會建立它，擁有者是該行程的使用者，以另一個使用者執行的 daemon 之後可能無法啟動。
+
+只有 store 檔、沒有 lock 檔的備份複本也是同樣的讀法：client 會在複本旁邊建立 `<store>-lock`（權限 `0644`），查詢照常成功。這可以用來查看備份；在正式的目錄裡，這就是上面說的風險。
 
 ## 與 daemon 同一發行版
 
