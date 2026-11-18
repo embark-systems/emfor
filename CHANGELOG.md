@@ -18,6 +18,22 @@ example unit has to be updated by hand; the packages bring the new one. Checked
 with the rpm in a Rocky Linux 9.9 (arm64) container running systemd 252 as PID 1;
 not on Debian or FreeBSD (which has no unit).
 
+**The client's fork handlers no longer abort the process in a thread that is
+exiting.** On FreeBSD `libemfor` registers `pthread_atfork` handlers that keep
+the store lock in a thread-local while a `fork` is prepared. A `fork` from a
+thread-local destructor, or a signal handler that forks in a thread whose
+thread-locals are being destroyed, found that thread-local gone, and the
+handler panicked; as it is an `extern "C"` function the panic cannot unwind, and
+the process was aborted. The handlers now do nothing in that case (that `fork`
+is not guarded, as before the handlers existed, but it returns). Found as an
+occasional abort or hang of the test `fork_guard_signal` (about once in 800 runs
+on Debian, and once in the CI of 0.6.0); that test now stops its signal thread
+before it ends, and a new test, `fork_guard_tls_exit`, reproduces the case
+every time. Checked on Debian (the stress run of 3600 passed, the new test
+failed before the change and passes after) and in the CI on FreeBSD 14.5 and
+15.1; not by hand on FreeBSD, and the hang, which was never caught while it
+happened, is taken to have the same cause.
+
 ## 0.6.0 — 2026-11-17
 
 The store format (`meta/schema_version` 2) and the plugin protocol (1) are
