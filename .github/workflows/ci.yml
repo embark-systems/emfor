@@ -39,8 +39,8 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --all-features
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --workspace --all-features
       - name: dnsmasq recipe
         run: tests/resolver/run.sh dnsmasq
       - name: unbound recipe
@@ -110,7 +110,7 @@ jobs:
           prepare: pkg install -y rust cargo-c pkgconf python3 php84 php84-ffi php84-dba
           run: |
             rustc --version
-            cargo test --workspace --all-features
+            cargo test --locked --workspace --all-features
             # The Rust fork tests (fork_threads, fork_guard*) ran above; the
             # C ones need this script (BSD make cannot run clients/Makefile).
             # A child forked while other threads look up can hang in libthr:
