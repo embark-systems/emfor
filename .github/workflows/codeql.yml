@@ -1,0 +1,50 @@
+name: CodeQL
+
+# Static analysis (SAST) with GitHub's CodeQL: Rust, the daemon and the client
+# library, and Python, the client wrapper. The results are under Security >
+# Code scanning of the repository; nothing here fails a push, and a finding is
+# looked at there. It runs on every push to main, on pull requests, and once a
+# week, because the queries change without a commit here. Neither build mode
+# needs a build.
+#
+# Not covered: Go, C, Perl and PHP (the wrappers of libemfor): the Go client
+# needs libemfor to compile, and Perl and PHP are not CodeQL languages.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/spectra/**"
+  pull_request:
+    paths-ignore:
+      - "docs/spectra/**"
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Code scanning results are written to the repository, so this job needs
+    # more than the read-only default.
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [rust, python]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+        with:
+          category: "/language:${{ matrix.language }}"
