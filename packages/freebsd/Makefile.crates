@@ -203,7 +203,7 @@ CARGO_CRATES=	adler2-2.0.1 \
 		r-efi-5.3.0 \
 		r-efi-6.0.0 \
 		rand-0.8.8 \
-		rand-0.10.3 \
+		rand-0.10.4 \
 		rand_core-0.6.4 \
 		rand_core-0.10.1 \
 		rand_pcg-0.10.2 \
