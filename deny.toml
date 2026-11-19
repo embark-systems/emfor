@@ -1,0 +1,61 @@
+# cargo-deny configuration: `cargo deny check` (the `deny` job in
+# .github/workflows/ci.yml). It checks Cargo.lock for known vulnerabilities
+# (RustSec advisories), licenses, banned crates and crate sources.
+
+[graph]
+all-features = true
+
+[advisories]
+# A crate with a RustSec advisory fails the check, and so does an unmaintained
+# or yanked one. List an advisory in `ignore` only with the reason and the date
+# it should be looked at again.
+version = 2
+yanked = "deny"
+ignore = [
+    # bincode 1.3.3 is unmaintained (a notice, not a vulnerability). It comes in
+    # through heed-types, which the LMDB binding heed depends on; emfor does
+    # not use bincode itself, and the store records are JSON. Look again when
+    # heed moves off it. Added 2026-11-19.
+    "RUSTSEC-2025-0141",
+]
+
+[licenses]
+version = 2
+# Licenses of the dependencies. The project itself is BSD-2-Clause.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    # The Mozilla root certificates (webpki-roots): a permissive data licence.
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.8
+# libfuzzer-sys is a dependency of the fuzz targets only; nothing that is
+# shipped contains it.
+exceptions = [{ allow = ["NCSA"], crate = "libfuzzer-sys" }]
+
+[bans]
+# Several versions of one crate are common in a tree this size; they are
+# reported, not refused.
+multiple-versions = "warn"
+# The only wildcard dependencies are the workspace crates on each other, by
+# path. cargo-deny counts the workspace crates as public, so
+# allow-wildcard-paths does not apply to them. Registry dependencies have
+# versions in Cargo.toml and are pinned by Cargo.lock.
+wildcards = "allow"
+
+[sources]
+# Only crates.io: no git dependencies, no other registry.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

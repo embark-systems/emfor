@@ -1,0 +1,37 @@
+# Dependabot opens pull requests for newer crate versions and newer
+# versions of the actions the workflows use. It does not merge anything.
+#
+# Not listed: clients/go has no dependencies (go.mod has no require lines) and
+# clients/python has no runtime dependencies, so there is nothing to update.
+#
+# A crate update changes Cargo.lock. packages/freebsd/Makefile.crates is
+# generated from Cargo.lock (RELEASING.md), so regenerate it in the same pull
+# request before merging.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One pull request for the patch and minor updates of the week; a major
+      # update stays on its own.
+      cargo-minor:
+        update-types: [minor, patch]
+
+  # The fuzz targets are their own workspace, with their own Cargo.lock.
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      cargo-minor:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

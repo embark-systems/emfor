@@ -66,6 +66,24 @@ jobs:
         env:
           RUSTFLAGS: --cfg fuzzing
 
+  # Cargo.lock against the RustSec advisories, the licences in deny.toml, and
+  # the crate sources. The advisory database changes without any commit here,
+  # so this job can start failing on an unchanged tree: a new advisory is the
+  # usual reason. The fuzz workspace has its own Cargo.lock and is checked
+  # too.
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: fuzz/Cargo.toml
+          command: check advisories licenses bans sources
+
   freebsd:
     runs-on: ubuntu-latest
     timeout-minutes: 30
