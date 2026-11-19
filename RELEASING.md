@@ -138,6 +138,12 @@ git tag -a clients/go/vX.Y.Z -m "emfor Go client X.Y.Z"
 git push origin vX.Y.Z clients/go/vX.Y.Z
 ```
 
+Once there is a release key (none yet: see [packages/README.md](packages/README.md#signing)
+and its status), make the two tags signed, `git tag -s -a vX.Y.Z ...` and
+`git tag -s -a clients/go/vX.Y.Z ...`, with `user.signingkey` set to that key,
+and check them with `git tag -v vX.Y.Z`. Until then they are annotated, not
+signed, and that is what the project says it does.
+
 Never move or delete a pushed tag: the Go module proxy keeps what it first
 saw for `clients/go/vX.Y.Z`, so a moved tag gives Go users a different
 package than the repository shows. Fix a bad release with a new version.
@@ -156,6 +162,25 @@ gh release create vX.Y.Z --title "emfor X.Y.Z" --notes-file /tmp/emfor-notes.md 
 ```
 
 Open each link in the published Release once.
+
+### Packages and their signatures
+
+The deb and rpm are not attached to the Release by this procedure; a release
+that ships them builds them first ([packages/README.md](packages/README.md)).
+With a release key, sign them and attach what a user needs to check them, in
+the same Release:
+
+```sh
+SIGN_KEY=<fingerprint> tools/sign-packages.sh sign
+tools/sign-packages.sh verify          # clean Debian and Rocky containers, public key only
+gh release upload vX.Y.Z packages/dist/emfor* packages/dist/SHA256SUMS* \
+  packages/dist/emfor-release.asc packages/dist/emfor-release.gpg
+```
+
+The key's fingerprint is published in `SECURITY.md` and in the manual, so that
+a user can compare it with the key in the Release; do that in the commit of the
+first signed release, not later. Without a release key this section is skipped
+and the packages stay unsigned.
 
 ## 8. Check the Go client
 
