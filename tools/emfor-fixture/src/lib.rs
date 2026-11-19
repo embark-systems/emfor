@@ -16,7 +16,7 @@ use std::path::Path;
 
 use emfor_format::{KEY_HEARTBEAT, KEY_SCHEMA_VERSION, service_key};
 use heed::types::Str;
-use heed::{Database, EnvFlags, EnvOpenOptions};
+use heed::{CommitOrAbort, Database, EnvFlags, EnvOpenOptions};
 use serde_json::Value;
 
 /// Current Unix time in milliseconds.
@@ -130,8 +130,15 @@ pub fn write_store(
         // SAFETY: a fresh file written only by this function.
         o.open(path).map_err(err)?
     };
+    let db: Database<Str, Str> = env
+        .create_databases_and_commit(env.write_txn().map_err(err)?, |o, w| -> heed::Result<_> {
+            Ok(CommitOrAbort::<_, ()>::Commit(
+                o.create_database::<Str, Str>(w, None)?,
+            ))
+        })
+        .map_err(err)?
+        .unwrap_commit();
     let mut txn = env.write_txn().map_err(err)?;
-    let db: Database<Str, Str> = env.create_database(&mut txn, None).map_err(err)?;
     for (k, v) in &entries {
         db.put(&mut txn, k, v).map_err(err)?;
     }
@@ -165,7 +172,16 @@ mod tests {
             o.open(path).unwrap()
         };
         let txn = env.read_txn().unwrap();
-        let db: Database<Str, Str> = env.open_database(&txn, None).unwrap().unwrap();
+        let db: Database<Str, Str> = env
+            .open_databases_and_commit(txn, |o, t| -> heed::Result<_> {
+                Ok(CommitOrAbort::<_, ()>::Commit(
+                    o.open_database::<Str, Str>(t, None)?,
+                ))
+            })
+            .unwrap()
+            .unwrap_commit()
+            .unwrap();
+        let txn = env.read_txn().unwrap();
         let out = db
             .iter(&txn)
             .unwrap()

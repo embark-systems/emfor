@@ -6,7 +6,7 @@
 mod support;
 
 use heed::types::{Bytes, Str};
-use heed::{Database, EnvFlags, EnvOpenOptions};
+use heed::{CommitOrAbort, Database, EnvFlags, EnvOpenOptions};
 
 /// What the fixture's store maps (emfor_fixture::write_store).
 const FIXTURE_MAP: usize = 4 << 20;
@@ -22,8 +22,16 @@ fn grow(path: &std::path::Path) {
             .open(path)
     }
     .unwrap();
+    let db: Database<Str, Bytes> = env
+        .open_databases_and_commit(env.read_txn().unwrap(), |o, t| -> heed::Result<_> {
+            Ok(CommitOrAbort::<_, ()>::Commit(
+                o.open_database::<Str, Bytes>(t, None)?,
+            ))
+        })
+        .unwrap()
+        .unwrap_commit()
+        .unwrap();
     let mut txn = env.write_txn().unwrap();
-    let db: Database<Str, Bytes> = env.open_database(&txn, None).unwrap().unwrap();
     let filler = vec![0x5a_u8; 64 << 10];
     for i in 0..128 {
         db.put(&mut txn, &format!("filler/{i}"), &filler).unwrap();
