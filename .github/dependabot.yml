@@ -35,3 +35,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+
+  # The base image of the package build, pinned by digest. The versions of
+  # cargo-deb and cargo-generate-rpm in the same file are not tracked.
+  - package-ecosystem: docker
+    directory: /packages
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
