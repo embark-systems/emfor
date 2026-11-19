@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+**The peer secret is wiped from memory when it is dropped.** `Secret` in the
+daemon zeroizes the secret and the keys derived from it (the `zeroize` crate,
+already in the tree) when a value is dropped, for example after a reload that
+changes the secret. A copy that was made elsewhere in memory is not tracked.
+
 **The systemd unit stops retrying after five failed starts in a minute.**
 With an invalid config (for example a `conf.d` file that group or others can
 write), the config check in `ExecStartPre` fails with status 2, which

@@ -779,6 +779,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
+ "zeroize",
 ]
 
 [[package]]

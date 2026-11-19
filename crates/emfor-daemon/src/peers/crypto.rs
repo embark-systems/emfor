@@ -12,6 +12,7 @@ use hkdf::Hkdf;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use tokio::time::Instant;
+use zeroize::Zeroize;
 
 use super::wire::{
     HEADER_LEN, MAGIC, MAGIC_V2, MAGIC_V3, MAX_DATAGRAM, MIN_DATAGRAM_V2, MIN_DATAGRAM_V3, Message,
@@ -30,12 +31,32 @@ pub const SIGN_PREVIOUS_FOR: Duration = Duration::from_secs(60);
 /// that time, no message between any two of them is dropped.
 pub const ACCEPT_PREVIOUS_FOR: Duration = Duration::from_secs(120);
 
-/// A peer secret and the `EMP2` and `EMP3` keys derived from it.
+/// A peer secret and the `EMP2` and `EMP3` keys derived from it. The bytes
+/// are overwritten when the value is dropped, which includes a secret that
+/// was replaced and has outlived [`ACCEPT_PREVIOUS_FOR`]; each clone is wiped
+/// when it is dropped. The cipher states built from the keys for a datagram
+/// (`cipher`, `cipher_v3`) are not.
 #[derive(Clone)]
 pub struct Secret {
     raw: Vec<u8>,
     aead: [u8; 32],
     aead_v3: [u8; 32],
+}
+
+impl Secret {
+    /// Overwrite the secret and the keys with zeros. The secret is empty
+    /// afterwards.
+    fn wipe(&mut self) {
+        self.raw.zeroize();
+        self.aead.zeroize();
+        self.aead_v3.zeroize();
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        self.wipe();
+    }
 }
 
 impl std::fmt::Debug for Secret {
@@ -321,6 +342,21 @@ impl Keys {
 
 #[cfg(test)]
 mod tests {
+    /// A dropped secret is overwritten: `wipe`, which `drop` calls, leaves
+    /// no byte of the secret or of the keys derived from it.
+    #[test]
+    fn wipe_clears_the_secret_and_its_keys() {
+        let mut s = Secret::new(vec![7u8; 40]);
+        assert!(s.aead != [0u8; 32] && s.aead_v3 != [0u8; 32]);
+        let copy = s.clone();
+        s.wipe();
+        assert!(s.raw().is_empty());
+        assert_eq!(s.aead, [0u8; 32]);
+        assert_eq!(s.aead_v3, [0u8; 32]);
+        // A clone is its own value: wiping one leaves the other.
+        assert_eq!(copy.raw(), &[7u8; 40][..]);
+    }
+
     use super::*;
     use crate::peers::group::Group;
     use crate::peers::stats::{PeerStats, Reject};
