@@ -33,7 +33,7 @@ emfor-client = { path = "../../clients/rust", features = ["daemon-internal"] }
 emfor-format.workspace = true
 emfor-tls = { path = "../emfor-tls" }
 futures = "0.3.34"
-heed = "0.22"
+heed = "0.23"
 hkdf = "=0.13.0"
 hmac = "0.13"
 hickory-proto = "0.26.3"

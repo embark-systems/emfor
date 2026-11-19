@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use assert_cmd::cargo::cargo_bin;
 use emfor_format::{HealthState, ServiceHistory};
 use heed::types::Str;
-use heed::{Database, EnvFlags, EnvOpenOptions};
+use heed::{CommitOrAbort, Database, EnvFlags, EnvOpenOptions};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
@@ -150,7 +150,10 @@ fn damaged_store_is_replaced_at_start() {
     let (path, page) = {
         let r = Reader::open(&d.store());
         wait_for(|| r.service("api.svc.emfor").is_some());
-        (d.store(), u64::from(r.env.stat().page_size))
+        (
+            d.store(),
+            u64::from(r.env.unnamed_database_stat().page_size),
+        )
     };
     let dir = std::mem::replace(&mut d.dir, tempfile::tempdir().unwrap());
     let (code, err) = d.stop();
@@ -729,8 +732,15 @@ fn seed_store(path: &Path, pairs: &[(&str, &str)]) {
         o.flags(EnvFlags::NO_SUB_DIR).map_size(4 << 20);
         o.open(path).unwrap()
     };
+    let db: Database<Str, Str> = env
+        .create_databases_and_commit(env.write_txn().unwrap(), |o, w| -> heed::Result<_> {
+            Ok(CommitOrAbort::<_, ()>::Commit(
+                o.create_database::<Str, Str>(w, None)?,
+            ))
+        })
+        .unwrap()
+        .unwrap_commit();
     let mut wtxn = env.write_txn().unwrap();
-    let db: Database<Str, Str> = env.create_database(&mut wtxn, None).unwrap();
     for (k, v) in pairs {
         db.put(&mut wtxn, k, v).unwrap();
     }
@@ -1302,8 +1312,15 @@ fn status_refuses_another_format_version() {
             o.flags(EnvFlags::NO_SUB_DIR);
             o.open(&store).unwrap()
         };
+        let db: Database<Str, Str> = env
+            .create_databases_and_commit(env.write_txn().unwrap(), |o, w| -> heed::Result<_> {
+                Ok(CommitOrAbort::<_, ()>::Commit(
+                    o.create_database::<Str, Str>(w, None)?,
+                ))
+            })
+            .unwrap()
+            .unwrap_commit();
         let mut wtxn = env.write_txn().unwrap();
-        let db: Database<Str, Str> = env.create_database(&mut wtxn, None).unwrap();
         db.put(&mut wtxn, "meta/schema_version", "3").unwrap();
         wtxn.commit().unwrap();
     }

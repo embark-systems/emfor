@@ -5,12 +5,12 @@ use std::path::Path;
 
 use emfor_format::{BackendRecord, ServiceRecord};
 use heed::types::Str;
-use heed::{Database, Env, EnvFlags, EnvOpenOptions, WithoutTls};
+use heed::{CommitOrAbort, Database, Env, EnvFlags, EnvOpenOptions, WithoutTls};
 
 /// A read-only view of a store.
 pub struct Reader {
     pub env: Env<WithoutTls>,
-    db: Database<Str, Str>,
+    db: Database<'static, Str, Str>,
 }
 
 impl Reader {
@@ -24,10 +24,14 @@ impl Reader {
         };
         let rtxn = env.read_txn().expect("a read transaction can start");
         let db = env
-            .open_database(&rtxn, None)
+            .open_databases_and_commit(rtxn, |opener, rtxn| -> heed::Result<_> {
+                Ok(CommitOrAbort::<_, ()>::Commit(
+                    opener.open_database::<Str, Str>(rtxn, None)?,
+                ))
+            })
             .expect("the main database can be opened")
+            .unwrap_commit()
             .expect("the store has a main database");
-        rtxn.commit().expect("the read transaction ends");
         Reader { env, db }
     }
 

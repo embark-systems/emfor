@@ -8,6 +8,6 @@ publish = false
 
 [dependencies]
 emfor-format.workspace = true
-heed = "0.22"
+heed = "0.23"
 serde_json.workspace = true
 tempfile = "3.27.0"

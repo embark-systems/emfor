@@ -15,7 +15,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use heed::types::{Bytes, DecodeIgnore, Str};
-use heed::{Database, Env, EnvFlags, EnvOpenOptions, RwTxn, WithoutTls};
+use heed::{CommitOrAbort, Database, Env, EnvFlags, EnvOpenOptions, RwTxn, WithoutTls};
 use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg};
 
@@ -83,7 +83,7 @@ pub(crate) fn truncation(env: &Env<WithoutTls>) -> heed::Result<Option<String>> 
     // covers them even when the daemon commits in between (`emfor status`
     // opens the store while the daemon writes it).
     let last_page = env.info().last_page_number as u64;
-    let page_size = u64::from(env.stat().page_size);
+    let page_size = u64::from(env.unnamed_database_stat().page_size);
     let len = env.real_disk_size()?;
     Ok(emfor_format::truncated_store(len, last_page, page_size))
 }
@@ -104,7 +104,7 @@ fn suffixed(path: &Path, suffix: &str) -> PathBuf {
 
 pub struct Store {
     env: Env<WithoutTls>,
-    db: Database<Str, Str>,
+    db: Database<'static, Str, Str>,
     /// LMDB's data file, to keep it as long as LMDB records it (see
     /// [`pad`]).
     data: File,
@@ -188,7 +188,7 @@ impl Store {
     /// Commits fail with `MDB_MAP_FULL` when the first reaches the second.
     pub fn usage(&self) -> (u64, u64) {
         let info = self.env.info();
-        let page = u64::from(self.env.stat().page_size);
+        let page = u64::from(self.env.unnamed_database_stat().page_size);
         (
             (info.last_page_number as u64 + 1) * page,
             info.map_size as u64,
@@ -269,7 +269,7 @@ impl Store {
 /// What [`open_env`] opened.
 struct Opened {
     env: Env<WithoutTls>,
-    db: Database<Str, Str>,
+    db: Database<'static, Str, Str>,
     /// LMDB's data file, for [`pad`].
     data: File,
 }
@@ -306,20 +306,24 @@ fn open_env(cfg: &StoreConfig) -> Result<Opened, OpenError> {
         return Err(OpenError::Truncated(why));
     }
     let data = env.try_clone_inner_file()?;
-    let check = || -> heed::Result<Database<Str, Str>> {
+    let check = || -> heed::Result<Database<'static, Str, Str>> {
         let rtxn = env.read_txn()?;
-        let db = env
-            .open_database::<Str, Str>(&rtxn, None)?
-            .expect("LMDB always has the unnamed default database, so opening it returns Some");
-        // As raw bytes: only LMDB's own structure is checked here. A key or
-        // value that is not UTF-8 is left to whoever reads it
-        // (`load_history` discards it with a warning; `svc/*` is deleted
-        // and rewritten at start, see `delete_prefix`).
-        for item in db.remap_types::<Bytes, Bytes>().iter(&rtxn)? {
-            item?;
-        }
-        rtxn.commit()?;
-        Ok(db)
+        // heed 0.23 opens a database in a transaction it then commits, and
+        // gives back a handle that outlives that transaction.
+        let committed = env.open_databases_and_commit(rtxn, |opener, rtxn| -> heed::Result<_> {
+            let db = opener
+                .open_database::<Str, Str>(rtxn, None)?
+                .expect("LMDB always has the unnamed default database, so opening it returns Some");
+            // As raw bytes: only LMDB's own structure is checked here. A key or
+            // value that is not UTF-8 is left to whoever reads it
+            // (`load_history` discards it with a warning; `svc/*` is deleted
+            // and rewritten at start, see `delete_prefix`).
+            for item in db.remap_types::<Bytes, Bytes>().iter(rtxn)? {
+                item?;
+            }
+            Ok(CommitOrAbort::<_, ()>::Commit(db))
+        })?;
+        Ok(committed.unwrap_commit())
     };
     // On error `env` is dropped here, closing the file before it is moved.
     let db = check()?;
@@ -335,8 +339,8 @@ fn open_env(cfg: &StoreConfig) -> Result<Opened, OpenError> {
 /// writes the file meanwhile and it is only ever made longer.
 fn pad(env: &Env<WithoutTls>, data: &File) -> heed::Result<()> {
     let txn = env.write_txn()?;
-    let recorded =
-        (env.info().last_page_number as u64 + 1).checked_mul(u64::from(env.stat().page_size));
+    let recorded = (env.info().last_page_number as u64 + 1)
+        .checked_mul(u64::from(env.unnamed_database_stat().page_size));
     if let Some(recorded) = recorded
         && data.metadata()?.len() < recorded
     {
@@ -537,7 +541,7 @@ pub(crate) mod tests {
                     Ok(())
                 })
                 .unwrap();
-            u64::from(store.env.stat().page_size)
+            u64::from(store.env.unnamed_database_stat().page_size)
         };
         let mut f = std::fs::OpenOptions::new()
             .write(true)
@@ -638,7 +642,8 @@ pub(crate) mod tests {
 
     /// Bytes LMDB records for `env`, and the data file's length.
     fn recorded_and_len(env: &Env<WithoutTls>, path: &Path) -> (u64, u64) {
-        let recorded = (env.info().last_page_number as u64 + 1) * u64::from(env.stat().page_size);
+        let recorded = (env.info().last_page_number as u64 + 1)
+            * u64::from(env.unnamed_database_stat().page_size);
         (recorded, std::fs::metadata(path).unwrap().len())
     }
 
@@ -675,9 +680,14 @@ pub(crate) mod tests {
                 o.flags(EnvFlags::NO_SUB_DIR);
                 o.open(&c.path).unwrap()
             };
-            let mut txn = env.write_txn().unwrap();
-            let db: Database<Str, Str> = env.create_database(&mut txn, None).unwrap();
-            txn.commit().unwrap();
+            let db: Database<Str, Str> = env
+                .create_databases_and_commit(env.write_txn().unwrap(), |o, w| -> heed::Result<_> {
+                    Ok(CommitOrAbort::<_, ()>::Commit(
+                        o.create_database::<Str, Str>(w, None)?,
+                    ))
+                })
+                .unwrap()
+                .unwrap_commit();
             let mut short = false;
             for i in 0..2000 {
                 let mut txn = env.write_txn().unwrap();

@@ -31,7 +31,7 @@ use emfor_format::{
 };
 use futures::StreamExt;
 use heed::types::Str;
-use heed::{Database, Env, EnvFlags, EnvOpenOptions, WithoutTls};
+use heed::{CommitOrAbort, Database, Env, EnvFlags, EnvOpenOptions, WithoutTls};
 use serde::Deserialize;
 
 use crate::config::{self, StoreConfig};
@@ -124,7 +124,7 @@ pub struct Failure(pub String);
 /// The state store, opened read-only.
 pub struct Reader {
     env: Env<WithoutTls>,
-    db: Database<Str, Str>,
+    db: Database<'static, Str, Str>,
     /// Device and inode of the store file when it was opened.
     file: (u64, u64),
 }
@@ -162,10 +162,14 @@ impl Reader {
         }
         let rtxn = env.read_txn().map_err(|e| failed(&e))?;
         let db = env
-            .open_database::<Str, Str>(&rtxn, None)
+            .open_databases_and_commit(rtxn, |opener, rtxn| -> heed::Result<_> {
+                Ok(CommitOrAbort::<_, ()>::Commit(
+                    opener.open_database::<Str, Str>(rtxn, None)?,
+                ))
+            })
             .map_err(|e| failed(&e))?
+            .unwrap_commit()
             .ok_or_else(|| failed(&"no database"))?;
-        rtxn.commit().map_err(|e| failed(&e))?;
         Ok(Reader { env, db, file })
     }
 

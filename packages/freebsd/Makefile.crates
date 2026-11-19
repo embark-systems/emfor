@@ -103,7 +103,7 @@ CARGO_CRATES=	adler2-2.0.1 \
 		h3-quinn-0.0.10 \
 		hashbrown-0.17.1 \
 		heck-0.5.0 \
-		heed-0.22.1 \
+		heed-0.23.1 \
 		heed-traits-0.20.0 \
 		heed-types-0.21.0 \
 		hickory-net-0.26.3 \
