@@ -61,10 +61,17 @@ StateDirectoryMode=0755
 # directory). A [store] path outside /var/lib/emfor needs
 # ReadWritePaths=<its directory>.
 NoNewPrivileges=yes
+# Files the daemon creates are not readable by others by default; the store
+# files get [store] file_mode and lock_file_mode regardless of this.
+UMask=0027
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
+# Other processes' /proc entries and the system-wide ones (/proc/cpuinfo ...)
+# are hidden: emfor and its checks need only their own.
+ProtectProc=invisible
+ProcSubset=pid
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
@@ -78,6 +85,11 @@ LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
+# A plugin that generates code at run time (a JIT, libffi closures) needs
+# writable and executable memory; emfor and `emfor-check` do not, so you can
+# add the line below if every plugin you run is like that (tried with emfor
+# and the dns plugin on systemd 252):
+#MemoryDenyWriteExecute=yes
 # The default DNS (5300) and metrics (5301) ports need no privilege. To
 # listen on port 53, replace the empty CapabilityBoundingSet= with:
 #   CapabilityBoundingSet=CAP_NET_BIND_SERVICE

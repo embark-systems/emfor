@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+**The systemd unit hides other processes and sets a umask.** The packaged unit
+and `examples/systemd/emfor.service` now set `UMask=0027`, `ProtectProc=invisible`
+and `ProcSubset=pid`, and carry a commented `#MemoryDenyWriteExecute=yes` for
+setups whose plugins do not generate code at run time. The store files set their
+own modes, so clients still read the store (the writer lock file is 0640). `systemd-analyze security` rates the unit 1.5 (it was 1.7).
+Checked with the deb in a Debian 12 (arm64) container running systemd 252: the
+daemon, the `dns` plugin, `emfor lookup` as another user and `systemctl reload`
+work, also with `MemoryDenyWriteExecute=yes`; not on Rocky Linux or FreeBSD. A copy
+of the example unit has to be updated by hand.
+
 **The peer secret is wiped from memory when it is dropped.** `Secret` in the
 daemon zeroizes the secret and the keys derived from it (the `zeroize` crate,
 already in the tree) when a value is dropped, for example after a reload that
