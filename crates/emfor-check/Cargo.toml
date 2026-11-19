@@ -13,7 +13,7 @@ path = "src/main.rs"
 emfor-plugin = { path = "../emfor-plugin" }
 emfor-tls = { path = "../emfor-tls" }
 hickory-proto = "0.26.3"
-base64 = "0.22"
+base64 = "0.23"
 bytes = "1.12.1"
 h2 = "0.4"
 h3 = "=0.0.8"
