@@ -44,14 +44,15 @@ pub const REASON_MAX_CHARS: usize = 512;
 
 /// Make a reason safe to store and print, whatever produced it (a backend's
 /// answer, a plugin, a script): tab, CR and LF become `\t`, `\r`, `\n`;
-/// other control characters (Unicode Cc) become `\u{1b}` and the like;
-/// then anything past [`REASON_MAX_CHARS`] is cut and replaced by `…`.
+/// other control characters (Unicode Cc) become `\u{1b}` and the like, and so
+/// do the invisible format characters that can hide or reorder text (see
+/// [`is_format_control`]); then anything past [`REASON_MAX_CHARS`] is cut and replaced by `…`.
 /// Backslashes stay as they are, so an excerpt that is already escaped
 /// (the tcp checker's `expect: got "..."`) is not escaped twice.
 pub fn normalize_reason(reason: &str) -> String {
     let mut out = String::with_capacity(reason.len());
     for c in reason.chars() {
-        if c.is_control() {
+        if c.is_control() || is_format_control(c) {
             out.extend(c.escape_default());
         } else {
             out.push(c);
@@ -62,6 +63,32 @@ pub fn normalize_reason(reason: &str) -> String {
         out.push('…');
     }
     out
+}
+
+/// The Unicode format characters (category Cf) that print as nothing or turn
+/// the text around them: a reason that holds one can show a service as
+/// something it is not in `emfor status` or in a log. The bidirectional
+/// controls (U+061C, U+200E, U+200F, U+202A..U+202E, U+2066..U+2069), the
+/// zero-width and joiner characters (U+200B..U+200D, U+2060..U+2064, U+FEFF),
+/// the soft hyphen (U+00AD), the Mongolian vowel separator (U+180E), the
+/// deprecated U+206A..U+206F, the interlinear annotation marks
+/// (U+FFF9..U+FFFB) and the tag characters (U+E0000..U+E007F). Not the whole
+/// of Cf: the rest (Arabic number signs, musical symbols, ...) neither hides
+/// nor reorders text.
+fn is_format_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0000}'..='\u{E007F}'
+    )
 }
 
 /// One check of one backend.
@@ -224,6 +251,15 @@ mod tests {
             ("del\u{7f}".into(), "del\\u{7f}".into()),
             ("got \"\\x00\"".into(), "got \"\\x00\"".into()),
             ("é ok 日本".into(), "é ok 日本".into()),
+            // Format characters that hide or reorder text are escaped.
+            ("up\u{202e}nwod".into(), "up\\u{202e}nwod".into()),
+            ("a\u{2066}b\u{2069}".into(), "a\\u{2066}b\\u{2069}".into()),
+            ("a\u{200b}b".into(), "a\\u{200b}b".into()),
+            ("a\u{200d}b".into(), "a\\u{200d}b".into()),
+            ("\u{feff}x".into(), "\\u{feff}x".into()),
+            ("a\u{e0041}b".into(), "a\\u{e0041}b".into()),
+            // Other Cf and ordinary non-ASCII text stay as they are.
+            ("\u{600}1 ñ ℃".into(), "\u{600}1 ñ ℃".into()),
         ] {
             assert_eq!(normalize_reason(&input), want, "{input:?}");
         }

@@ -70,6 +70,17 @@ daemon's group). From the CASA self-assessment (docs/TODO.md 67). Checked on
 Debian with a unit test (a link works, a FIFO is refused without waiting); not on
 macOS or FreeBSD by hand.
 
+**Invisible format characters in a check's reason are escaped.** The reason of a
+check result now has the invisible format characters that can hide or reorder
+text (U+202E and the other bidirectional controls, the zero-width characters, the
+soft hyphen, the tag characters) escaped as `\u{202e}`, as the control characters
+already were, so a backend cannot make `emfor status` or a log show a service as
+something else. Not the whole of Unicode category Cf, only that set, and no new
+dependency. The "Reasons are bounded and printable" requirement of the
+health-checking spec lists the characters (Spectra change
+`emfor-reason-format-chars`). Checked on Debian with unit tests; not on macOS or
+FreeBSD by hand.
+
 ## 0.6.0 — 2026-11-17
 
 The store format (`meta/schema_version` 2) and the plugin protocol (1) are

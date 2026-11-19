@@ -151,7 +151,7 @@ plugin 結束時，等待中的檢查變成 `error`（`plugin exited`），daemo
 
 ## reason
 
-`down` 或 `error` 結果帶有一個 reason，會顯示在 `emfor status`、log 與狀態歷史中。儲存前 reason 會被處理成安全的形式：tab、CR 與 LF 變成 `\t`、`\r` 與 `\n`；其他控制字元變成 `\u{1b}` 之類的形式；超過 512 個字元的 reason 會被截斷並以 `…` 結尾。
+`down` 或 `error` 結果帶有一個 reason，會顯示在 `emfor status`、log 與狀態歷史中。儲存前 reason 會被處理成安全的形式：tab、CR 與 LF 變成 `\t`、`\r` 與 `\n`；其他控制字元變成 `\u{1b}` 之類的形式，會隱藏或改變文字順序的不可見格式字元也一樣（雙向控制字元如 U+202E、零寬字元如 U+200B 與 U+FEFF、軟連字號與 tag 字元）；超過 512 個字元的 reason 會被截斷並以 `…` 結尾。
 
 ## 延遲
 

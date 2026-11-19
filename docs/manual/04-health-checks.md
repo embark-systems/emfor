@@ -247,8 +247,10 @@ and the reason.
 A `down` or `error` result carries a reason, shown by `emfor status`, in
 logs and in the state history. Before it is stored, the reason is made
 safe: tab, CR and LF become `\t`, `\r` and `\n`; other control characters
-become `\u{1b}` and the like; and a reason longer than 512 characters is
-cut and ends in `…`.
+become `\u{1b}` and the like, and so do the invisible format characters that
+can hide or reorder text (the bidirectional controls such as U+202E, the
+zero-width characters such as U+200B and U+FEFF, the soft hyphen and the tag
+characters); and a reason longer than 512 characters is cut and ends in `…`.
 
 ## Latency
 
