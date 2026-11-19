@@ -1564,9 +1564,9 @@ impl Validator {
 
     fn duration(&mut self, t: &toml::Table, parent: &str, key: &str) -> Option<Duration> {
         let s = self.string(t, parent, key)?;
-        match humantime::parse_duration(s) {
-            Ok(d) => Some(d),
-            Err(_) => {
+        match parse_duration(s) {
+            Some(d) => Some(d),
+            None => {
                 self.err(
                     key_path(parent, key),
                     format!("invalid duration \"{s}\", use e.g. \"500ms\" or \"2s\""),
@@ -1902,6 +1902,81 @@ const MAX_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 /// a margin, and no network check is meaningful in less.
 const MIN_TIMEOUT: Duration = Duration::from_millis(10);
 
+/// Parse a duration: one or more `<number><unit>` terms, such as `"500ms"`,
+/// `"2s"`, `"1.5s"` or `"1h 30m"`, or a plain `"0"`. The number is decimal and
+/// may have a fraction; spaces between terms are optional. Units: `ns`, `us`
+/// (or `µs`), `ms`, `s`, `m`, `h`, `d`, `w`, and the spelled-out forms
+/// `nanos`, `nsec`, `usec`, `millis`, `msec`, `sec`, `secs`, `second`,
+/// `seconds`, `min`, `mins`, `minute`, `minutes`, `hr`, `hrs`, `hour`,
+/// `hours`, `day`, `days`, `wk`, `wks`, `week`, `weeks`. A fraction smaller
+/// `M`, `month`, `months` (30.44 days), `y`, `yr`, `yrs`, `year`, `years`
+/// (365.25 days). A fraction smaller than a nanosecond is cut off. It is the
+/// syntax the `humantime` crate accepted, which this replaced; no setting
+/// allows more than 24 hours, so a month or a year is always refused, but with
+/// the message about the bound and not about the syntax.
+fn parse_duration(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if s == "0" {
+        return Some(Duration::ZERO);
+    }
+    let mut rest = s;
+    let mut total: u128 = 0; // nanoseconds
+    loop {
+        let digits = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if digits == 0 {
+            return None;
+        }
+        let whole: u128 = rest[..digits].parse().ok()?;
+        rest = &rest[digits..];
+        let mut frac = "";
+        if let Some(after) = rest.strip_prefix('.') {
+            let n = after
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(after.len());
+            if n == 0 {
+                return None;
+            }
+            frac = &after[..n];
+            rest = &after[n..];
+        }
+        rest = rest.trim_start();
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphabetic() || c == 'µ'))
+            .unwrap_or(rest.len());
+        let unit: u128 = match &rest[..end] {
+            "ns" | "nsec" | "nanos" => 1,
+            "us" | "µs" | "usec" => 1_000,
+            "ms" | "msec" | "millis" => 1_000_000,
+            "s" | "sec" | "secs" | "second" | "seconds" => 1_000_000_000,
+            "m" | "min" | "mins" | "minute" | "minutes" => 60 * 1_000_000_000,
+            "h" | "hr" | "hrs" | "hour" | "hours" => 3600 * 1_000_000_000,
+            "d" | "day" | "days" => 86_400 * 1_000_000_000,
+            "w" | "wk" | "wks" | "week" | "weeks" => 7 * 86_400 * 1_000_000_000,
+            "M" | "month" | "months" => 2_630_016 * 1_000_000_000,
+            "y" | "yr" | "yrs" | "year" | "years" => 31_557_600 * 1_000_000_000,
+            _ => return None,
+        };
+        rest = &rest[end..];
+        let mut term = whole.checked_mul(unit)?;
+        // The fraction is worth `frac / 10^len` of the unit. Digits past the
+        // 18th cannot change a result counted in whole nanoseconds.
+        let frac = &frac[..frac.len().min(18)];
+        if !frac.is_empty() {
+            let scale = 10u128.pow(frac.len() as u32);
+            term = term.checked_add(frac.parse::<u128>().ok()?.checked_mul(unit)? / scale)?;
+        }
+        total = total.checked_add(term)?;
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+    }
+    let secs = u64::try_from(total / 1_000_000_000).ok()?;
+    Some(Duration::new(secs, (total % 1_000_000_000) as u32))
+}
+
 /// Parse `"64MiB"`, `"512KiB"`, `"1GiB"`, or a plain byte count.
 fn parse_size(s: &str) -> Option<usize> {
     let s = s.trim();
@@ -1915,6 +1990,70 @@ fn parse_size(s: &str) -> Option<usize> {
     .find_map(|(suf, m)| s.strip_suffix(suf).map(|n| (n.trim(), *m)))
     .unwrap_or((s, 1));
     num.parse::<usize>().ok()?.checked_mul(mult)
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::*;
+
+    #[test]
+    fn parses_what_the_manual_shows_and_the_humantime_forms() {
+        let ms = Duration::from_millis;
+        let cases: &[(&str, Duration)] = &[
+            ("0", Duration::ZERO),
+            ("500ms", ms(500)),
+            ("2s", ms(2000)),
+            ("1m", ms(60_000)),
+            ("1h", ms(3_600_000)),
+            ("24h", ms(86_400_000)),
+            ("1d", ms(86_400_000)),
+            ("1w", ms(604_800_000)),
+            ("1.5s", ms(1500)),
+            ("0.25s", ms(250)),
+            ("100us", Duration::from_micros(100)),
+            ("100µs", Duration::from_micros(100)),
+            ("7ns", Duration::from_nanos(7)),
+            ("1h 30m", ms(5_400_000)),
+            ("1h30m", ms(5_400_000)),
+            ("1m 30s 500ms", ms(90_500)),
+            (" 2s ", ms(2000)),
+            ("2 seconds", ms(2000)),
+            ("1 minute", ms(60_000)),
+            ("0s", Duration::ZERO),
+            ("1month", Duration::from_secs(2_630_016)),
+            ("1M", Duration::from_secs(2_630_016)),
+            ("200years", Duration::from_secs(200 * 31_557_600)),
+            ("0.0000000019s", Duration::from_nanos(1)),
+        ];
+        for (text, want) in cases {
+            assert_eq!(parse_duration(text), Some(*want), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_what_is_not_a_duration() {
+        for text in [
+            "",
+            " ",
+            "s",
+            "2",
+            "1.s",
+            ".5s",
+            "-1s",
+            "1 x",
+            "1sec2",
+            "2s,",
+            "2s 3",
+            "1e3s",
+            "+1s",
+            "１s",
+            // More than a Duration holds.
+            "99999999999999999999999999999999999999s",
+            "18446744073709551616s",
+        ] {
+            assert_eq!(parse_duration(text), None, "{text:?}");
+        }
+    }
 }
 
 #[cfg(test)]

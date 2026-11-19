@@ -34,6 +34,18 @@ failed before the change and passes after) and in the CI on FreeBSD 14.5 and
 15.1; not by hand on FreeBSD, and the hang, which was never caught while it
 happened, is taken to have the same cause.
 
+**Durations in the config are parsed by emfor itself.** The `humantime` crate,
+which parsed `interval`, `timeout` and the other durations, is now flagged
+unmaintained in the RustSec advisory database (RUSTSEC-2026-0542), and the new
+`cargo deny` job in the CI failed on it. A small parser in
+`crates/emfor-daemon/src/config.rs` replaces it and accepts the same syntax: one
+or more number-and-unit terms such as `"500ms"`, `"1.5s"` or `"1h 30m"`, the
+spelled-out units (`seconds`, `minutes`, ...) and `"0"`. The error message for
+an invalid duration is the same. Checked on Debian: the tests of the old
+parser's uses pass, and a new test lists forms that parse and forms that do not;
+not compared against `humantime` on a large corpus, so a form that only it
+accepted may be refused now.
+
 ## 0.6.0 — 2026-11-17
 
 The store format (`meta/schema_version` 2) and the plugin protocol (1) are
