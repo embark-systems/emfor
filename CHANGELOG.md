@@ -58,6 +58,18 @@ unit tests of the warnings; the `check-config` and log output was not run
 against a real redis or ldap plugin, and mysql, pgsql and mongodb are not
 warned about (whether their password is sent in clear depends on the server).
 
+**The peer secret file is checked on the file that was opened.** The peer
+`secret_file` and `previous_secret_file` are now opened first and the opened file
+is checked (mode, and that it is a regular file) and read, as the `include_dir`
+fragments already were; before, the mode was checked on the name and the file
+read from the name afterwards, so the file could be replaced in between, and a
+FIFO named as the secret made the once-a-second re-read wait for a writer. A link
+to a good file still works. The owner of the file is not checked: it would refuse
+a working setup (a `0640` file made by an administrator other than root, with the
+daemon's group). From the CASA self-assessment (docs/TODO.md 67). Checked on
+Debian with a unit test (a link works, a FIFO is refused without waiting); not on
+macOS or FreeBSD by hand.
+
 ## 0.6.0 — 2026-11-17
 
 The store format (`meta/schema_version` 2) and the plugin protocol (1) are

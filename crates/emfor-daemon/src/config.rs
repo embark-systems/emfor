@@ -219,26 +219,41 @@ pub const MIN_SECRET_LEN: usize = 32;
 /// Read a peer secret: the file's bytes without one trailing line feed.
 /// Errors are the messages config validation reports for `secret_file`.
 pub fn read_secret(path: &Path) -> Result<Vec<u8>, String> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     if !path.is_absolute() {
         return Err("must be an absolute path".into());
     }
-    let meta =
-        std::fs::metadata(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    if meta.permissions().mode() & 0o004 != 0 {
+    // Open first and check the file that was opened (not the name, which
+    // could be pointed at another file in between), as `read_trusted` does.
+    // O_NONBLOCK: opening a FIFO for reading must not wait for a writer; it
+    // has no effect on a regular file.
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let meta = f
+        .metadata()
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    if !meta.is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
+    if meta.mode() & 0o004 != 0 {
         return Err(format!(
             "{} must not be readable by other users (chmod o-r)",
             path.display()
         ));
     }
-    if meta.permissions().mode() & 0o022 != 0 {
+    if meta.mode() & 0o022 != 0 {
         return Err(format!(
             "{} must not be writable by group or other users (chmod go-w)",
             path.display()
         ));
     }
-    let mut bytes =
-        std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let mut bytes = Vec::new();
+    f.read_to_end(&mut bytes)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
     }
@@ -2083,6 +2098,26 @@ backends = ["10.0.0.1:80"]
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
             .expect("the temporary secret file's mode can be set");
         (dir, path)
+    }
+
+    /// `read_secret` checks the file it opened: a link to a good file works,
+    /// and a FIFO is refused without waiting for a writer.
+    #[test]
+    fn read_secret_follows_links_and_refuses_a_fifo() {
+        let (dir, key) = secret_file(&[b'k'; 40], 0o600);
+        let link = dir.path().join("link.key");
+        std::os::unix::fs::symlink(&key, &link).unwrap();
+        assert_eq!(read_secret(&link).unwrap(), vec![b'k'; 40]);
+
+        let fifo = dir.path().join("fifo.key");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(read_secret(&fifo)).unwrap());
+        let got = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("read_secret waited on a FIFO");
+        assert!(got.unwrap_err().contains("not a regular file"));
     }
 
     fn peers_conf(site: &str, peers: &str, secret: &Path) -> String {
