@@ -126,6 +126,9 @@ async fn start(config_path: PathBuf, check_only: bool, show: bool) -> ExitCode {
         }
         return match loaded {
             Ok(c) => {
+                for w in credential_warnings(&c) {
+                    eprintln!("{w}");
+                }
                 let ok = format!(
                     "config ok: {} services, {} backends",
                     c.services.len(),
@@ -418,6 +421,7 @@ async fn run(
         tracing::info!("DNS server for zone {} on {}", d.zone, addrs.join(", "));
     }
     warn_dns(&config);
+    warn_credentials(&config);
     // Kept until the daemon exits; dropping it stops the server.
     let _metrics_server = match &config.metrics {
         Some(m) => match metrics::serve(&m.listen, live.clone()).await {
@@ -559,6 +563,7 @@ async fn run(
                             tx.send_replace(dns_settings(d));
                         }
                         warn_dns(&new);
+                        warn_credentials(&new);
                         if let (Some(h), Some(p)) = (&peers, &new.peers) {
                             h.reload(p, &peer_site(&new));
                         }
@@ -645,6 +650,92 @@ fn port_warnings(config: &Config) -> Vec<String> {
             })
         })
         .collect()
+}
+
+/// One `warn` line for each warning of [`credential_warnings`].
+fn warn_credentials(config: &Config) {
+    for m in credential_warnings(config) {
+        tracing::warn!("{m}");
+    }
+}
+
+/// The `check_options` that name a file holding a secret.
+const SECRET_FILE_KEYS: [&str; 3] = ["password_file", "secret_file", "tls_key_file"];
+
+/// Warnings about how the checks' credentials are kept. Never an error: a
+/// config that works keeps working.
+///
+/// - A secret file (`password_file`, `secret_file`, `tls_key_file` in a
+///   service's `check_options`, for built-in checks and plugins alike) that
+///   other users can read, or that group or others can write. One message
+///   for each file, naming the services that use it.
+/// - A check named `redis` or `ldap` with a `password_file` and neither `tls` nor
+///   (ldap) `starttls`: the password crosses the network in clear text. The
+///   other checks are not listed: whether a mysql, pgsql or mongodb password
+///   is sent in clear depends on the server's authentication method.
+///
+/// A file that cannot be stat'ed is left to the check, which reports it.
+fn credential_warnings(config: &Config) -> Vec<String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let mut out = Vec::new();
+    // (key, path) -> services, in the order of the config.
+    let mut files: BTreeMap<(&str, PathBuf), Vec<&str>> = BTreeMap::new();
+    for svc in &config.services {
+        for key in SECRET_FILE_KEYS {
+            if let Some(toml::Value::String(p)) = svc.check_options.get(key) {
+                files
+                    .entry((key, PathBuf::from(p)))
+                    .or_default()
+                    .push(&svc.name);
+            }
+        }
+        let is_on = |k: &str| svc.check_options.get(k) == Some(&toml::Value::Boolean(true));
+        // redis and ldap come from the `emfor-check` plugin, declared under
+        // these names in the manual; any check named so is taken for them.
+        let kind = svc.check.as_str();
+        if (kind == "redis" || kind == "ldap")
+            && svc.check_options.contains_key("password_file")
+            && !is_on("tls")
+            && !(kind == "ldap" && is_on("starttls"))
+        {
+            out.push(format!(
+                "service {}: check_options has a password_file but {}: the password is sent in clear text, and anyone who can see the traffic can read it",
+                svc.name,
+                if kind == "ldap" {
+                    "neither tls nor starttls is true"
+                } else {
+                    "tls is not true"
+                },
+            ));
+        }
+    }
+    for ((key, path), services) in files {
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let mode = meta.mode() & 0o777;
+        let problem = if mode & 0o007 != 0 {
+            "can be read by every user on this host"
+        } else if mode & 0o022 != 0 {
+            "can be changed by users other than its owner"
+        } else {
+            continue;
+        };
+        let shown: Vec<&str> = services.iter().take(3).copied().collect();
+        let more = services.len() - shown.len();
+        out.push(format!(
+            "{key} {} (mode {mode:04o}) {problem}; used by {}{}. Limit it to its owner and the daemon's group, for example chmod 0640",
+            path.display(),
+            shown.join(", "),
+            if more > 0 {
+                format!(" and {more} more")
+            } else {
+                String::new()
+            },
+        ));
+    }
+    out
 }
 
 /// One `warn` line per service that DNS cannot answer for.
@@ -778,6 +869,160 @@ mod tests {
         let config =
             config::parse(&text, &Registry::builtin()).unwrap_or_else(|e| panic!("errors: {e:?}"));
         port_warnings(&config)
+    }
+
+    /// A stand-in for the redis and ldap plugins: any options are valid.
+    struct FakePlugin(&'static str);
+
+    impl crate::checker::CheckerFactory for FakePlugin {
+        fn kind(&self) -> &str {
+            self.0
+        }
+        fn validate(
+            &self,
+            _options: &toml::Table,
+        ) -> Result<std::sync::Arc<dyn crate::checker::Checker>, Vec<crate::checker::OptionError>>
+        {
+            crate::checker::tcp::TcpFactory.validate(&toml::Table::new())
+        }
+    }
+
+    fn plugin_registry() -> Registry {
+        let mut r = Registry::builtin();
+        r.register(std::sync::Arc::new(FakePlugin("redis")));
+        r.register(std::sync::Arc::new(FakePlugin("ldap")));
+        r
+    }
+
+    /// A config with one redis service per `(name, extra check_options)`,
+    /// all using the password file `pass`.
+    fn credential_config(pass: &Path, services: &[(&str, &str)]) -> Config {
+        let mut text = String::new();
+        for (name, extra) in services {
+            text.push_str(&format!(
+                "[services.\"{name}\"]\ncheck = \"redis\"\nbackends = [\"10.0.0.1:6379\"]\n\
+                 [services.\"{name}\".check_options]\npassword_file = \"{}\"\n{extra}\n",
+                pass.display()
+            ));
+        }
+        config::parse(&text, &plugin_registry()).unwrap_or_else(|e| panic!("errors: {e:?}"))
+    }
+
+    fn pass_file(dir: &tempfile::TempDir, mode: u32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.path().join("pass");
+        std::fs::write(&path, "secret\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        path
+    }
+
+    /// A secret file other users can read is reported once, with the
+    /// services that use it; owner and group access alone is not.
+    #[test]
+    fn secret_file_readable_by_others_is_reported_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let pass = pass_file(&dir, 0o644);
+        let tls = "tls = true";
+        let w = credential_warnings(&credential_config(&pass, &[("a.svc", tls), ("b.svc", tls)]));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("password_file"), "{w:?}");
+        assert!(w[0].contains("0644"), "{w:?}");
+        assert!(w[0].contains("read by every user"), "{w:?}");
+        assert!(w[0].contains("a.svc, b.svc"), "{w:?}");
+        // Not the file's contents.
+        assert!(
+            !w[0].contains("secret\n") && !w[0].contains(": secret"),
+            "{w:?}"
+        );
+        for ok in [0o600, 0o640, 0o440] {
+            let pass = pass_file(&dir, ok);
+            let w = credential_warnings(&credential_config(&pass, &[("a.svc", tls)]));
+            assert!(w.is_empty(), "mode {ok:o}: {w:?}");
+        }
+    }
+
+    /// Group or other write access is its own message.
+    #[test]
+    fn secret_file_writable_by_others_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let pass = pass_file(&dir, 0o660);
+        let w = credential_warnings(&credential_config(&pass, &[("a.svc", "tls = true")]));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].contains("0660") && w[0].contains("changed by users other than"),
+            "{w:?}"
+        );
+    }
+
+    /// A file that is not there is the check's to report, not a warning.
+    #[test]
+    fn missing_secret_file_is_not_a_warning_here() {
+        let dir = tempfile::tempdir().unwrap();
+        let pass = pass_file(&dir, 0o600);
+        let config = credential_config(&pass, &[("a.svc", "tls = true")]);
+        std::fs::remove_file(&pass).unwrap();
+        assert!(credential_warnings(&config).is_empty());
+    }
+
+    /// A redis password without TLS is reported for each service; with `tls`
+    /// it is not.
+    #[test]
+    fn redis_password_without_tls_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let pass = pass_file(&dir, 0o600);
+        let w = credential_warnings(&credential_config(
+            &pass,
+            &[
+                ("a.svc", ""),
+                ("b.svc", "tls = false"),
+                ("c.svc", "tls = true"),
+            ],
+        ));
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(
+            w[0].starts_with("service a.svc:") && w[0].contains("clear text"),
+            "{w:?}"
+        );
+        assert!(w[1].starts_with("service b.svc:"), "{w:?}");
+    }
+
+    /// ldap is protected by `tls` or by `starttls`.
+    #[test]
+    fn ldap_password_needs_tls_or_starttls() {
+        let dir = tempfile::tempdir().unwrap();
+        let pass = pass_file(&dir, 0o600);
+        let text = |name: &str, extra: &str| {
+            format!(
+                "[services.\"{name}\"]\ncheck = \"ldap\"\nbackends = [\"10.0.0.1:389\"]\n\
+                 [services.\"{name}\".check_options]\npassword_file = \"{}\"\n{extra}\n",
+                pass.display()
+            )
+        };
+        let all = [
+            text("a.svc", ""),
+            text("b.svc", "starttls = true"),
+            text("c.svc", "tls = true"),
+        ]
+        .join("\n");
+        let config = config::parse(&all, &plugin_registry()).unwrap();
+        let w = credential_warnings(&config);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].starts_with("service a.svc:") && w[0].contains("neither tls nor starttls"),
+            "{w:?}"
+        );
+    }
+
+    /// A config with no secret files and no passwords has no warnings.
+    #[test]
+    fn no_credentials_no_warnings() {
+        assert!(warnings(false, "a.svc", &["10.0.0.1:80"]).is_empty());
+        let config = config::parse(
+            "[services.\"a.svc\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
+            &Registry::builtin(),
+        )
+        .unwrap();
+        assert!(credential_warnings(&config).is_empty());
     }
 
     /// Spec dns-server "Rate limit": a warning for each listen address

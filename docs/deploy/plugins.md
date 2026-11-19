@@ -129,6 +129,8 @@ MariaDB Galera, multi-source replication (only the default connection is read), 
 `password_file` names a file whose content is the password; one trailing newline (`\n` or `\r\n`) is removed. The plugin reads the file on every check, so you can change the password on the server and in the file without reloading emfor.
 
 - Make the file readable only by the account emfor runs as: `install -m 0600 -o emfor /dev/stdin /etc/emfor/pg.pass`.
+- emfor warns when a secret file (`password_file`, `secret_file`, `tls_key_file` in a service's `check_options`) can be read by every user (any "other" permission bit) or written by anyone but its owner (a group or other write bit). The warning is one line for each file, naming up to three of the services that use it: it is printed by `emfor check-config` on standard error, and logged at startup and on reload. It is only a warning: the config stays valid, the exit status of `check-config` is unchanged, and a file that cannot be read is left to the check to report. A file that only its owner and the group can read (`0640`) gives no warning.
+- emfor also warns about a check named `redis` or `ldap` that has a `password_file` and neither `tls = true` nor (`ldap`) `starttls = true`: the password then crosses the network in clear text. It does not warn for `mysql`, `pgsql` or `mongodb`, where whether the password is sent in clear depends on the server's authentication method.
 - Give emfor its own account with the least rights the check needs: login, `SELECT 1`, and for `role` the role query.
 - The password never appears in check reasons, in emfor's log, or in the plugin's stderr.
 

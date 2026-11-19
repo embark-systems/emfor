@@ -46,6 +46,18 @@ parser's uses pass, and a new test lists forms that parse and forms that do not;
 not compared against `humantime` on a large corpus, so a form that only it
 accepted may be refused now.
 
+**Warnings about secret files and clear-text passwords.** `emfor check-config`
+(on standard error), the daemon at startup and on reload now warn when a
+`password_file`, `secret_file` or `tls_key_file` in a service's `check_options`
+can be read by every user or written by anyone but its owner, one line for each
+file naming the services that use it, and when a `redis` or `ldap` check has a
+`password_file` without `tls` (or `starttls` for ldap). Nothing is refused and
+the exit status of `check-config` is the same; a config that works keeps
+working. From the CASA self-assessment (docs/TODO.md 67). Checked on Debian with
+unit tests of the warnings; the `check-config` and log output was not run
+against a real redis or ldap plugin, and mysql, pgsql and mongodb are not
+warned about (whether their password is sent in clear depends on the server).
+
 ## 0.6.0 — 2026-11-17
 
 The store format (`meta/schema_version` 2) and the plugin protocol (1) are
