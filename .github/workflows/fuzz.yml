@@ -1,0 +1,79 @@
+name: Fuzz
+
+# The six fuzz targets of fuzz/ (fuzz/README.md), each for a few minutes every
+# night, and by hand from the Actions tab. The release procedure still runs
+# every target for 10 minutes (RELEASING.md, step 5); this finds a crash
+# earlier. A crash fails the job and uploads the input that caused it.
+#
+# The corpus a target found is kept between runs (actions/cache), so each
+# night starts where the last one ended; GitHub drops a cache that was not
+# used for a week.
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds each target runs"
+        default: "300"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # The same cargo-fuzz for every run; change it on purpose.
+  CARGO_FUZZ_VERSION: "0.13.2"
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # `args` are what RELEASING.md gives each target: plugins runs without
+        # length control, and plugins, peers and dns start from fuzz/seeds.
+        include:
+          - target: plugins
+            args: "corpus/plugins seeds/plugins -- -len_control=0"
+          - target: peers
+            args: "corpus/peers seeds/peers --"
+          - target: dns
+            args: "corpus/dns seeds/dns --"
+          - target: metrics
+            args: "--"
+          - target: plugin_line
+            args: "--"
+          - target: config
+            args: "--"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked --version "$CARGO_FUZZ_VERSION"
+      - name: Restore the corpus
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Fuzz
+        working-directory: fuzz
+        run: |
+          mkdir -p corpus/${{ matrix.target }}
+          cargo +nightly fuzz run -O ${{ matrix.target }} ${{ matrix.args }} \
+            -max_total_time="${{ github.event.inputs.seconds || 300 }}"
+      - name: Keep the input that crashed
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
