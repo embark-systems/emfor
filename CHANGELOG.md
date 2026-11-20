@@ -13,20 +13,23 @@ check-config` and at reload, with an error at `peers.secret_file` that names
 the owner's uid. To fix it, `chown root:emfor` (or `emfor:emfor`) the file on
 every host before updating. `emfor check-config` compares the owner with the
 user that runs it, so a secret owned by the emfor user is refused when another
-account (not root) runs it; a secret owned by root is accepted for everyone. A daemon that is running when the owner of the file
-changes keeps the last valid secret and logs a warning, as it does for any
-secret file it can no longer read. Checked with the unit tests in a Debian container (as root, so the
-refusal of a file owned by another uid ran); not on macOS or FreeBSD by hand.
+account (not root) runs it; a secret owned by root is accepted for everyone.
+A daemon that is running when the owner of the file changes keeps the last
+valid secret and logs a warning, as it does for any secret file it can no
+longer read. Checked with the unit tests in a Debian container (as root, so
+the refusal of a file owned by another uid ran); not on macOS or FreeBSD by
+hand.
 
 **The systemd unit hides other processes and sets a umask.** The packaged unit
 and `examples/systemd/emfor.service` now set `UMask=0027`, `ProtectProc=invisible`
 and `ProcSubset=pid`, and carry a commented `#MemoryDenyWriteExecute=yes` for
 setups whose plugins do not generate code at run time. The store files set their
-own modes, so clients still read the store (the writer lock file is 0640). `systemd-analyze security` rates the unit 1.5 (it was 1.7).
+own modes, so clients still read the store (the writer lock file is 0640).
+`systemd-analyze security` rates the unit 1.5 (it was 1.7).
 Checked with the deb in a Debian 12 (arm64) container running systemd 252: the
 daemon, the `dns` plugin, `emfor lookup` as another user and `systemctl reload`
-work, also with `MemoryDenyWriteExecute=yes`; not on Rocky Linux or FreeBSD. A copy
-of the example unit has to be updated by hand.
+work, also with `MemoryDenyWriteExecute=yes`; not on Rocky Linux or FreeBSD.
+A copy of the example unit has to be updated by hand.
 
 **The peer secret is wiped from memory when it is dropped.** `Secret` in the
 daemon zeroizes the secret and the keys derived from it (the `zeroize` crate,
@@ -95,9 +98,8 @@ is checked (mode, and that it is a regular file) and read, as the `include_dir`
 fragments already were; before, the mode was checked on the name and the file
 read from the name afterwards, so the file could be replaced in between, and a
 FIFO named as the secret made the once-a-second re-read wait for a writer. A link
-to a good file still works. The owner of the file is not checked: it would refuse
-a working setup (a `0640` file made by an administrator other than root, with the
-daemon's group). From the CASA self-assessment (docs/TODO.md 67). Checked on
+to a good file still works. The owner of the file is checked too, by the entry
+above. From the CASA self-assessment (docs/TODO.md 67). Checked on
 Debian with a unit test (a link works, a FIFO is refused without waiting); not on
 macOS or FreeBSD by hand.
 
@@ -419,7 +421,7 @@ this host last connected to it.
 - FreeBSD has been tested on 15.1-RELEASE (arm64, in a VM): the tests, the
   rc.d script, the port with `make stage check-plist install`, the fork
   tests, and the nginx, HAProxy and pf recipes by hand. Not tested:
-  poudriere, 13.x, 14.x, amd64 (the optional CI job covers 14.3 on amd64).
+  poudriere, 13.x, 14.x, amd64 (the CI job covers 14.5 and 15.1 on amd64).
 - HAProxy 3.4.4 on FreeBSD answered 503 for a while after a `server-template`
   slot came up with port 0, also with one name server; the cause is not
   known (the same test passes on Linux).
