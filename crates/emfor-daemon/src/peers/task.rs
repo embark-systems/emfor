@@ -706,7 +706,9 @@ mod tests {
         assert!(
             read.as_ref()
                 .is_err_and(|e| e.contains("owned by uid 4242")),
-            "{read:?}"
+            // Only the error: an Ok value would be the secret itself.
+            "expected an owner error, got {:?}",
+            read.as_ref().err()
         );
         apply_secret(&mut g, read, &mut warned, now);
         assert_eq!(g.keys.current(), &[1u8; 40], "keeps the last valid secret");
