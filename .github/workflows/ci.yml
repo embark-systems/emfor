@@ -113,6 +113,9 @@ jobs:
           prepare: pkg install -y rust cargo-c pkgconf python3 php84 php84-ffi php84-dba
           run: |
             rustc --version
+            # The tests that chown a file or switch users return at once
+            # unless this is 0 (the log shows whether they ran).
+            id -u
             cargo test --locked --workspace --all-features
             # The Rust fork tests (fork_threads, fork_guard*) ran above; the
             # C ones need this script (BSD make cannot run clients/Makefile).
