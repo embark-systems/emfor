@@ -6,7 +6,13 @@
 #
 # A crate update changes Cargo.lock. packages/freebsd/Makefile.crates is
 # generated from Cargo.lock (RELEASING.md), so regenerate it in the same pull
-# request before merging.
+# request before merging. fuzz/Cargo.lock is not touched by an update of the
+# main workspace: when the update changes a dependency of a crate the fuzz
+# targets use, update fuzz/Cargo.lock in the same pull request too (a `cargo
+# check --manifest-path fuzz/Cargo.toml --bins` without `--locked` rewrites it;
+# `cargo update` would also move crates the update did not touch). CI fails
+# until both are done: the test freebsd_port_lists_the_locked_crates for
+# Makefile.crates, and the fuzz-build job (`--locked`) for fuzz/Cargo.lock.
 version: 2
 updates:
   - package-ecosystem: cargo
