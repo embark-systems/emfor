@@ -1,0 +1,12 @@
+name: emfor CodeQL config
+
+# Files that CodeQL does not analyze. Both only build test data:
+#  - fuzz/seeds: seed inputs for the fuzz targets, with fixed keys and the MD5
+#    that the RADIUS protocol (RFC 2865) prescribes.
+#  - peers/test_support.rs: a test-only module with fixed secrets.
+# The tests that sit in #[cfg(test)] modules inside source files are not listed:
+# paths-ignore works on whole files, and those files hold production code too.
+# Alerts in them are closed by hand in the repository's Security tab.
+paths-ignore:
+  - fuzz/seeds
+  - crates/emfor-daemon/src/peers/test_support.rs
