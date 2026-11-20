@@ -307,6 +307,80 @@ fn check_config_rejects_a_service_of_only_backups() {
     );
 }
 
+/// "Peer secret file owner", `emfor check-config` scenarios: the owner is
+/// compared with the user that runs the command, and only after the file has
+/// been opened. This runs the real binary as uid 1001, so it needs root to
+/// switch users and to give files away (the Docker test run is root); as
+/// another user it has nothing to check.
+#[test]
+fn check_config_compares_the_secret_owner_with_the_user_that_runs_it() {
+    use std::os::unix::fs::{PermissionsExt, chown};
+    use std::os::unix::process::CommandExt;
+    if nix::unistd::geteuid().as_raw() != 0 {
+        return;
+    }
+    // The checking user: not root, not the owner of the files below.
+    let user = 1001;
+    let dir = tempfile::tempdir().unwrap();
+    // A user other than root has to reach the files: the directory of a
+    // temporary directory is 0700.
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let key = dir.path().join("peers.key");
+    std::fs::write(&key, [b'k'; 40]).unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "site = \"dc1\"\n\n[store]\npath = \"{}\"\nmap_size = \"4MiB\"\n\n[peers]\nlisten = \"127.0.0.1:7001\"\nmembers = [\"127.0.0.1:7001\", \"127.0.0.1:7002\"]\nsecret_file = \"{}\"\n\n[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
+            dir.path().join("state.mdb").display(),
+            key.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let check = || {
+        Command::new(cargo_bin("emfor"))
+            .args(["check-config", "--config"])
+            .arg(&cfg)
+            .uid(user)
+            .gid(user)
+            .output_locked()
+            .unwrap()
+    };
+
+    // Owned by root, readable through the group: accepted.
+    chown(&key, Some(0), Some(user)).unwrap();
+    let out = check();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+
+    // Owned by the user that runs the command: accepted.
+    chown(&key, Some(user), Some(user)).unwrap();
+    let out = check();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+
+    // Owned by another user (the daemon's, say), readable through the
+    // group: refused, naming that uid and the checking user's.
+    chown(&key, Some(1000), Some(user)).unwrap();
+    let out = check();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("owned by uid 1000, not root or the user running emfor (uid 1001)"),
+        "{err}"
+    );
+
+    // Owned by another user and not readable by the checking user: the
+    // owner is checked after the file is opened, so the error is that the
+    // file cannot be read, not who owns it.
+    chown(&key, Some(1000), Some(0)).unwrap();
+    let out = check();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("cannot read"), "{err}");
+    assert!(!err.contains("owned by uid"), "{err}");
+}
+
 /// A `conf.d` next to `dir`'s config, mode 0755 as a package makes it.
 fn conf_d(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
