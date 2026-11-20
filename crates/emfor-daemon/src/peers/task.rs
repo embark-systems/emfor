@@ -680,6 +680,49 @@ mod tests {
         assert_eq!(warned, Some(start + Duration::from_secs(61)));
     }
 
+    /// A running daemon whose secret file changes owner to someone else keeps
+    /// the last valid secret and warns, as for a file it cannot read; the new
+    /// content is taken once the owner is trusted again. Only root can give a
+    /// file away, so this runs as root only (the Docker test run is root).
+    #[test]
+    fn secret_file_owner_change_keeps_the_last_secret() {
+        if nix::unistd::geteuid().as_raw() != 0 {
+            return;
+        }
+        let start = Instant::now();
+        let (_d, path) = secret_file(&[1u8; 40], 0o640);
+        let mut g = group(start);
+        let mut warned = None;
+        apply_secret(&mut g, read_secret(&path), &mut warned, start);
+        assert_eq!(g.keys.current(), &[1u8; 40]);
+        assert_eq!(warned, None);
+
+        // The file gets new content and an owner that is neither root nor the
+        // user running the test.
+        std::fs::write(&path, [2u8; 40]).expect("the temporary secret file can be rewritten");
+        std::os::unix::fs::chown(&path, Some(4242), None).expect("root can chown the file");
+        let now = start + Duration::from_secs(1);
+        let read = read_secret(&path);
+        assert!(
+            read.as_ref()
+                .is_err_and(|e| e.contains("owned by uid 4242")),
+            "{read:?}"
+        );
+        apply_secret(&mut g, read, &mut warned, now);
+        assert_eq!(g.keys.current(), &[1u8; 40], "keeps the last valid secret");
+        assert_eq!(warned, Some(now), "and warns");
+
+        // Owned by root again: the new content is accepted.
+        std::os::unix::fs::chown(&path, Some(0), None).expect("root can chown the file");
+        apply_secret(
+            &mut g,
+            read_secret(&path),
+            &mut warned,
+            start + Duration::from_secs(2),
+        );
+        assert_eq!(g.keys.current(), &[2u8; 40]);
+    }
+
     /// Two peer tasks on 127.0.0.1 (real time).
     async fn pair(
         targets_a: Targets,
