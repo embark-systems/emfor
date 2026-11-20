@@ -239,6 +239,14 @@ pub fn read_secret(path: &Path) -> Result<Vec<u8>, String> {
     if !meta.is_file() {
         return Err(format!("{} is not a regular file", path.display()));
     }
+    let euid = nix::unistd::geteuid().as_raw();
+    if !owner_trusted(meta.uid(), euid) {
+        return Err(format!(
+            "{} is owned by uid {}, not root or the user running emfor (uid {euid})",
+            path.display(),
+            meta.uid()
+        ));
+    }
     if meta.mode() & 0o004 != 0 {
         return Err(format!(
             "{} must not be readable by other users (chmod o-r)",
@@ -773,6 +781,13 @@ fn list_fragments(
     files
 }
 
+/// Whether a file owned by `uid` can be trusted by a daemon whose effective
+/// user is `euid`: root, or the daemon's own user. Anyone else who owns a
+/// file can rewrite it, whatever its mode says.
+fn owner_trusted(uid: u32, euid: u32) -> bool {
+    uid == 0 || uid == euid
+}
+
 /// Why a config directory or file cannot be trusted, or `None`. A fragment
 /// can declare a plugin `command`, which runs with the daemon's rights, so
 /// whoever can write the directory or the file, or owns it, decides what the
@@ -786,7 +801,7 @@ fn untrusted(mode: u32, uid: u32, euid: u32) -> Option<String> {
             mode & 0o7777
         ));
     }
-    if uid != 0 && uid != euid {
+    if !owner_trusted(uid, euid) {
         return Some(format!(
             "owned by uid {uid}, not root or the user running emfor (uid {euid}); refusing to load it"
         ));
@@ -2120,6 +2135,61 @@ backends = ["10.0.0.1:80"]
         assert!(got.unwrap_err().contains("not a regular file"));
     }
 
+    /// The rows of the example table of "Peer secret file owner" in the
+    /// peer-group spec: root and the daemon's own user own a trusted secret,
+    /// nobody else does.
+    #[test]
+    fn peer_secret_owner_is_root_or_the_daemon_user() {
+        for (owner, euid, ok) in [
+            (0, 998, true),
+            (998, 998, true),
+            (1000, 998, false),
+            (0, 0, true),
+            (1000, 0, false),
+        ] {
+            assert_eq!(owner_trusted(owner, euid), ok, "owner {owner}, euid {euid}");
+        }
+    }
+
+    /// A secret the daemon's own user owns is read at mode 0600 and 0640,
+    /// and through a link; the owner check does not look at the group.
+    #[test]
+    fn read_secret_accepts_a_secret_the_daemon_user_owns() {
+        for mode in [0o600, 0o640] {
+            let (dir, key) = secret_file(&[b'k'; 40], mode);
+            assert_eq!(read_secret(&key).unwrap(), vec![b'k'; 40], "mode {mode:o}");
+            let link = dir.path().join("link.key");
+            std::os::unix::fs::symlink(&key, &link).unwrap();
+            assert_eq!(
+                read_secret(&link).unwrap(),
+                vec![b'k'; 40],
+                "link, {mode:o}"
+            );
+        }
+    }
+
+    /// A secret that is owned by someone else is refused with the owner's
+    /// uid. Only root can give a file away, so this runs as root only (the
+    /// Docker test run is root); as another user it has nothing to check.
+    #[test]
+    fn read_secret_refuses_a_secret_another_user_owns() {
+        if nix::unistd::geteuid().as_raw() != 0 {
+            return;
+        }
+        // Uid 4242 is neither root nor the user running this test.
+        let (dir, key) = secret_file(&[b'k'; 40], 0o640);
+        std::os::unix::fs::chown(&key, Some(4242), None).unwrap();
+        let err = read_secret(&key).unwrap_err();
+        assert!(err.contains("owned by uid 4242"), "{err}");
+        let link = dir.path().join("link.key");
+        std::os::unix::fs::symlink(&key, &link).unwrap();
+        assert!(
+            read_secret(&link)
+                .unwrap_err()
+                .contains("owned by uid 4242")
+        );
+    }
+
     fn peers_conf(site: &str, peers: &str, secret: &Path) -> String {
         format!(
             "{site}[peers]\n{peers}secret_file = \"{}\"\n{SVC}",
@@ -2151,6 +2221,40 @@ backends = ["10.0.0.1:80"]
             "listen = \"10.0.0.5:5302\"\nmembers = [\"10.0.0.5:5302\", \"10.0.0.6:5302\"]\n",
             &key,
         ));
+    }
+
+    /// A peer secret, and a previous one, that another user owns are refused
+    /// at their own keys. Only root can give a file away, so this runs as
+    /// root only (the Docker test run is root).
+    #[test]
+    fn peer_secret_owned_by_another_user_is_refused() {
+        if nix::unistd::geteuid().as_raw() != 0 {
+            return;
+        }
+        let (_d, good) = secret_file(&[b'k'; 64], 0o640);
+        let (_d2, foreign) = secret_file(&[b'k'; 64], 0o640);
+        std::os::unix::fs::chown(&foreign, Some(4242), None).unwrap();
+        let site = "site = \"dc1\"\n\n";
+        let members =
+            "listen = \"10.0.0.5:5302\"\nmembers = [\"10.0.0.5:5302\", \"10.0.0.6:5302\"]\n";
+
+        let e = parse_err(&peers_conf(site, members, &foreign));
+        assert!(
+            e.iter()
+                .any(|e| e.path == "peers.secret_file" && e.message.contains("owned by uid 4242")),
+            "{e:?}"
+        );
+
+        let previous = format!(
+            "{members}previous_secret_file = \"{}\"\n",
+            foreign.display()
+        );
+        let e = parse_err(&peers_conf(site, &previous, &good));
+        assert!(
+            e.iter().any(|e| e.path == "peers.previous_secret_file"
+                && e.message.contains("owned by uid 4242")),
+            "{e:?}"
+        );
     }
 
     const LISTEN_MEMBERS: &str =

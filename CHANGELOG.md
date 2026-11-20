@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+**A peer secret that another account owns is refused (compatibility change).**
+`secret_file` and `previous_secret_file` must now be owned by root or by the
+user running emfor, as `include_dir` fragments already had to be: whoever owns
+a file can rewrite it, whatever its mode says, and the secret authenticates and
+encrypts every peer message. The group does not matter, and the modes
+(0600 or 0640) are unchanged. A secret created by another account, for example
+`alice` with mode 0640 and group `emfor`, is refused at start, by `emfor
+check-config` and at reload, with an error at `peers.secret_file` that names
+the owner's uid. To fix it, `chown root:emfor` (or `emfor:emfor`) the file on
+every host before updating. `emfor check-config` compares the owner with the
+user that runs it, so a secret owned by the emfor user is refused when another
+account (not root) runs it; a secret owned by root is accepted for everyone. A daemon that is running when the owner of the file
+changes keeps the last valid secret and logs a warning, as it does for any
+secret file it can no longer read. Checked with the unit tests in a Debian container (as root, so the
+refusal of a file owned by another uid ran); not on macOS or FreeBSD by hand.
+
 **The systemd unit hides other processes and sets a umask.** The packaged unit
 and `examples/systemd/emfor.service` now set `UMask=0027`, `ProtectProc=invisible`
 and `ProcSubset=pid`, and carry a commented `#MemoryDenyWriteExecute=yes` for
