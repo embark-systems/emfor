@@ -711,9 +711,7 @@ mod tests {
     #[tokio::test]
     async fn tcp_port_closed_is_down_connect() {
         let settings = parse(&options(json!({ "name": "a.example", "transport": "tcp" }))).unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let addr = emfor_fixture::refused_addr();
         match check(&req(addr), &settings).await {
             CheckOutcome::Down(reason) => assert!(reason.starts_with("connect: "), "{reason}"),
             other => panic!("expected down, got {other:?}"),

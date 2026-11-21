@@ -364,16 +364,8 @@ mod tests {
 
     #[tokio::test]
     async fn nothing_listening_is_connect() {
-        let mut outcome = CheckOutcome::Up;
-        for _ in 0..5 {
-            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = l.local_addr().unwrap();
-            drop(l);
-            outcome = check(&req(addr), &settings(None)).await;
-            if !matches!(&outcome, CheckOutcome::Down(r) if r.starts_with("auth: 28P01")) {
-                break;
-            }
-        }
+        let addr = emfor_fixture::refused_addr();
+        let outcome = check(&req(addr), &settings(None)).await;
         match outcome {
             CheckOutcome::Down(r) => assert!(r.starts_with("connect: "), "{r}"),
             other => panic!("expected down, got {other:?}"),

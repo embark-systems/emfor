@@ -450,17 +450,8 @@ mod tests {
 
     #[tokio::test]
     async fn nothing_listening_is_down_connect() {
-        // Retry with a fresh port if a parallel test takes the freed one.
-        let mut outcome = None;
-        for _ in 0..5 {
-            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = l.local_addr().unwrap();
-            drop(l);
-            if let Err(o) = open(addr.ip(), addr.port(), None, T).await {
-                outcome = Some(o);
-                break;
-            }
-        }
+        let addr = emfor_fixture::refused_addr();
+        let outcome = open(addr.ip(), addr.port(), None, T).await.err();
         match outcome {
             Some(CheckOutcome::Down(r)) => assert!(r.starts_with("connect: "), "{r}"),
             other => panic!("expected down, got {other:?}"),

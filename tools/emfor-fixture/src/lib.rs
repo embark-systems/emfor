@@ -11,6 +11,8 @@
 //!   `recovered_ago_ms` (test data only) becomes `recovered_at` = now minus
 //!   that many milliseconds and is not written itself.
 //! - `raw`: extra keys written verbatim, for malformed records.
+//!
+//! It also holds [`refused_addr`], a helper for tests that need a closed port.
 
 use std::path::Path;
 
@@ -18,6 +20,35 @@ use emfor_format::{KEY_HEARTBEAT, KEY_SCHEMA_VERSION, service_key};
 use heed::types::Str;
 use heed::{CommitOrAbort, Database, EnvFlags, EnvOpenOptions};
 use serde_json::Value;
+
+/// An address on the loopback where nothing listens, so that a connection to
+/// it is refused at once.
+///
+/// A test that binds a port and drops the listener to get such an address
+/// races with tests running in parallel: another `bind("127.0.0.1:0")` can
+/// take the freed port, and then the connection succeeds (and the other test
+/// sees a stray connection). Binding without listening holds the port but
+/// does not work on macOS, which drops the SYN instead of refusing it. This
+/// takes a privileged port instead: tests bind to port 0, which never gives
+/// one, so nothing in the test run uses it. It probes the ports from 1 up
+/// and returns the first one whose connection is refused.
+///
+/// # Panics
+///
+/// When no port below 1024 refuses a connection (all of them taken, or filtered).
+pub fn refused_addr() -> std::net::SocketAddr {
+    use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+    use std::time::Duration;
+    (1..1024)
+        .map(|port| SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+        .find(|addr| {
+            matches!(
+                TcpStream::connect_timeout(addr, Duration::from_millis(500)),
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused
+            )
+        })
+        .expect("a loopback port below 1024 that refuses connections")
+}
 
 /// Current Unix time in milliseconds.
 pub fn now_ms() -> u64 {

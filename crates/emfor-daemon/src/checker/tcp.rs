@@ -298,26 +298,8 @@ mod tests {
 
     #[tokio::test]
     async fn closed_port_is_down_refused() {
-        // A test running in parallel may grab the freed port and listen on
-        // it, which makes the check Up, or accept and then reset the
-        // connection, which makes it Down for a reason other than refused.
-        // Try a fresh port on any result that is not a refused connection.
-        // (Binding without listening would hold the port, but macOS drops
-        // the SYN instead of refusing it.)
-        let refused = |r: &CheckResult| match r {
-            CheckResult::Down(reason) => reason.to_lowercase().contains("refused"),
-            _ => false,
-        };
-        let mut result = CheckResult::Up;
-        for _ in 0..10 {
-            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = l.local_addr().unwrap();
-            drop(l);
-            result = checker("").unwrap().check(req(addr)).await;
-            if refused(&result) {
-                break;
-            }
-        }
+        let addr = emfor_fixture::refused_addr();
+        let result = checker("").unwrap().check(req(addr)).await;
         match result {
             CheckResult::Down(r) => assert!(r.to_lowercase().contains("refused"), "reason: {r}"),
             other => panic!("expected down, got {other:?}"),

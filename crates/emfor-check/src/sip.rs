@@ -1102,9 +1102,7 @@ mod tests {
 
     #[tokio::test]
     async fn tcp_port_closed_is_down_connect() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let addr = emfor_fixture::refused_addr();
         let s = parse(&options(json!({ "transport": "tcp" })), true).unwrap();
         match check(&req(addr), &s).await {
             CheckOutcome::Down(r) => assert!(r.starts_with("connect: "), "{r}"),

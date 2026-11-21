@@ -683,9 +683,7 @@ path = "/healthz""#,
 
     #[tokio::test]
     async fn refused_is_down() {
-        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = l.local_addr().unwrap();
-        drop(l);
+        let addr = emfor_fixture::refused_addr();
         assert!(matches!(
             checker("").check(req(addr)).await,
             CheckResult::Down(_)
@@ -952,9 +950,7 @@ tls_verify = "yes""#)
 
     #[tokio::test]
     async fn refused_connection_reason_has_no_url() {
-        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = l.local_addr().unwrap();
-        drop(l);
+        let addr = emfor_fixture::refused_addr();
         let reason = reason_of(checker(TOKEN_PATH).check(req(addr)).await);
         assert_no_url(&reason);
         assert!(reason.to_lowercase().contains("connect"), "{reason}");

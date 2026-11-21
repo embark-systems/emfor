@@ -34,6 +34,7 @@ tokio-postgres-rustls = "0.14.0"
 tokio-rustls = "0.26.6"
 
 [dev-dependencies]
+emfor-fixture = { path = "../../tools/emfor-fixture" }
 emfor-tls = { path = "../emfor-tls", features = ["testing"] }
 serde_json.workspace = true
 sha2 = "0.11"
