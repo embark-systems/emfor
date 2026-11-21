@@ -648,10 +648,17 @@ mod tests {
 
     /// Replacement checks are at most `REPLACE_CHECK_MS` apart: a lookup
     /// right after one keeps the open store, a later one follows.
+    ///
+    /// This does not depend on how long the test takes: the window is an
+    /// hour, so a slow machine (writing the new store can take longer than
+    /// `REPLACE_CHECK_MS`) cannot let it pass, and "later" is the time of
+    /// the last check set back to the start of the clock.
     #[test]
     fn replacement_checks_are_spaced() {
         let dir = tempfile::tempdir().unwrap();
-        let c = Client::new(stale_store(dir.path(), "10.0.0.11"), Ok(3000));
+        let mut c = Client::new(stale_store(dir.path(), "10.0.0.11"), Ok(3000));
+        assert_eq!(c.replace_check_ms, REPLACE_CHECK_MS);
+        c.replace_check_ms = 3_600_000;
         assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
         replace(
             dir.path(),
@@ -661,9 +668,9 @@ mod tests {
         assert_eq!(
             c.lookup("api.svc.emfor", None).unwrap(),
             "10.0.0.11:8080",
-            "checked less than {REPLACE_CHECK_MS}ms ago"
+            "checked less than the window ago"
         );
-        std::thread::sleep(std::time::Duration::from_millis(REPLACE_CHECK_MS + 20));
+        c.last_replace_check.store(0, Ordering::Relaxed);
         assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.22:8080");
     }
 
