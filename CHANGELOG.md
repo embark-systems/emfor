@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+**Plugin log text is escaped, the redis checker hides the AUTH password, the writer lock file is 0600 (bug fixes).**
+A plugin's stderr lines and the name and version in its handshake reached the
+log as sent, so a control character or a bidi override could forge a log line;
+they now get the escaping that check reasons already had. A redis server that
+echoed the AUTH password in its error put it into the check reason; the
+password is now written as `***`. The `<store>.writer` lock file followed the
+umask; it is now 0600, and an older file is set to 0600 at start (a failure
+only warns). Checked in a Debian container: fmt, clippy `-D warnings` and
+1041 tests pass, 17 ignored; five new unit tests. Not verified: a real redis that echoes
+the password; a real package upgrade over an existing 0644 lock file; the
+chmod failure path of the lock file; the plugin start line is tested through
+its formatting function, not through a real handshake; the new tests were not
+run against the old code.
+
 **Three small fixes in the reading of `peers.secret_file` (bug fixes).**
 A read of the old path that returned after a reload had changed `secret_file`
 was applied as the current secret; it is now dropped, and the new path is

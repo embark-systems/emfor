@@ -17,6 +17,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use super::protocol::{PROTOCOL, Request, Response};
+use crate::checker::escape_unprintable;
 use crate::live::PluginStatus;
 
 /// How long a plugin has to answer the handshake.
@@ -388,7 +389,7 @@ async fn log_stderr<R: AsyncBufRead + Unpin>(name: &str, mut stderr: R) {
         };
         if limit.admit() {
             limit.summarize(name, "stderr");
-            tracing::info!(plugin = %name, "plugin {}: {}", name, cut(&line, STDERR_LINE_CHARS));
+            tracing::info!(plugin = %name, "plugin {}: {}", name, escape_unprintable(&cut(&line, STDERR_LINE_CHARS)));
         }
     }
     limit.summarize(name, "stderr");
@@ -425,6 +426,16 @@ impl Drop for GroupGuard {
             kill_group(pid);
         }
     }
+}
+
+/// The log line for a plugin that answered the handshake; the name and
+/// version come from the plugin, so they are escaped.
+fn started_line(name: &str, pid: u32, plugin_name: &str, version: &str) -> String {
+    format!(
+        "plugin {name} started (pid {pid}, {} {})",
+        escape_unprintable(plugin_name),
+        escape_unprintable(version)
+    )
 }
 
 fn cut(s: &str, chars: usize) -> String {
@@ -525,10 +536,7 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
             ));
         }
     };
-    tracing::info!(
-        plugin = %name,
-        "plugin {name} started (pid {pid}, {plugin_name} {version})"
-    );
+    tracing::info!(plugin = %name, "{}", started_line(name, pid, &plugin_name, &version));
 
     let pending: Pending = Arc::default();
     let router_pending = pending.clone();
@@ -852,6 +860,24 @@ mod tests {
             assert!(l.admit());
         }
         assert!(!l.admit());
+    }
+
+    /// The start line shows a plugin's name and version as escapes.
+    #[test]
+    fn started_line_escapes_hello_text() {
+        let line = started_line("p", 7, "evil\r\u{202e}", "1\u{1b}[0m");
+        assert_eq!(
+            line,
+            "plugin p started (pid 7, evil\\r\\u{202e} 1\\u{1b}[0m)"
+        );
+    }
+
+    /// A stderr line with CR or a bidi override is logged as escapes.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn stderr_lines_are_escaped() {
+        log_stderr("p", "ok\r\u{202e}evil\n".as_bytes()).await;
+        assert!(logs_contain("plugin p: ok\\r\\u{202e}evil"));
     }
 
     /// Spec checker-plugins "Plugin log lines are rate limited".

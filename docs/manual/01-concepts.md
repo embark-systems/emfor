@@ -191,5 +191,5 @@ checks per `interval` instead of N.
 | `/etc/emfor/emfor.toml` | The config. Another path with `--config`. |
 | `<store>` (`/var/lib/emfor/state.mdb`) | The state store. |
 | `<store>-lock` | LMDB's lock file. Every reader registers in it, so applications need write access to it. |
-| `<store>.writer` | Held locked by the running daemon, so that only one daemon writes a store. |
+| `<store>.writer` | Held locked by the running daemon, so that only one daemon writes a store. Mode 0600 (an older file is set to 0600 at start). |
 | `<store>.corrupt` | A damaged store moved aside at start, kept for inspection. |

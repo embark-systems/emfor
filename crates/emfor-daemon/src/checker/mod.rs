@@ -50,17 +50,25 @@ pub const REASON_MAX_CHARS: usize = 512;
 /// Backslashes stay as they are, so an excerpt that is already escaped
 /// (the tcp checker's `expect: got "..."`) is not escaped twice.
 pub fn normalize_reason(reason: &str) -> String {
-    let mut out = String::with_capacity(reason.len());
-    for c in reason.chars() {
+    let mut out = escape_unprintable(reason);
+    if out.chars().count() > REASON_MAX_CHARS {
+        out = out.chars().take(REASON_MAX_CHARS - 1).collect();
+        out.push('…');
+    }
+    out
+}
+
+/// `text` with every control character and every invisible format character
+/// (see [`is_format_control`]) written as an escape (`\r`, `\u{1b}`, ...);
+/// no length limit. Used for any text from outside that reaches a log line.
+pub fn escape_unprintable(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
         if c.is_control() || is_format_control(c) {
             out.extend(c.escape_default());
         } else {
             out.push(c);
         }
-    }
-    if out.chars().count() > REASON_MAX_CHARS {
-        out = out.chars().take(REASON_MAX_CHARS - 1).collect();
-        out.push('…');
     }
     out
 }

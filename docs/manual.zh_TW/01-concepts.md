@@ -113,5 +113,5 @@ daemon 啟動時會把每筆服務記錄重寫一遍，所有 backend 都是 `un
 | `/etc/emfor/emfor.toml` | 設定檔。可用 `--config` 指定其他路徑。 |
 | `<store>`（`/var/lib/emfor/state.mdb`） | state store。 |
 | `<store>-lock` | LMDB 的 lock 檔。每個讀取者都要在裡面登記，所以應用程式需要它的寫入權限。 |
-| `<store>.writer` | 執行中的 daemon 鎖住它，確保一個 store 只有一個 daemon 寫入。 |
+| `<store>.writer` | 執行中的 daemon 鎖住它，確保一個 store 只有一個 daemon 寫入。權限為 0600（舊版建立的檔案在啟動時改為 0600）。 |
 | `<store>.corrupt` | 啟動時被移到一旁的損毀 store，留著供檢查。 |

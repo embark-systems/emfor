@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions, Permissions};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use heed::types::{Bytes, DecodeIgnore, Str};
@@ -130,8 +130,14 @@ impl Store {
             .create(true)
             .truncate(false)
             .write(true)
+            .mode(0o600)
             .open(&lock_path)
             .map_err(io(&lock_path))?;
+        // A lock file made by an older version follows the umask; tighten it.
+        // Best effort: a failure must not stop the start.
+        if let Err(e) = lock_file.set_permissions(Permissions::from_mode(0o600)) {
+            tracing::warn!("cannot set mode 0600 on {}: {e}", lock_path.display());
+        }
         let writer_lock =
             Flock::lock(lock_file, FlockArg::LockExclusiveNonblock).map_err(|(_, errno)| {
                 if errno == Errno::EWOULDBLOCK || errno == Errno::EAGAIN {
@@ -423,6 +429,26 @@ pub(crate) mod tests {
                 ("hist/b".into(), Some("2".into()))
             ]
         );
+    }
+
+    /// Spec state-store "Writer lock file mode": new and old lock files end 0600.
+    /// Not covered: the chmod failure path (it only warns); a failing chmod on
+    /// a file we just opened cannot be made in a test without a special fs.
+    #[test]
+    fn writer_lock_file_is_0600() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = writer_lock_path(&cfg(dir.path()).path);
+        for pre_existing in [false, true] {
+            if pre_existing {
+                std::fs::remove_file(&lock).unwrap();
+                std::fs::write(&lock, "").unwrap();
+                std::fs::set_permissions(&lock, Permissions::from_mode(0o644)).unwrap();
+            }
+            let store = Store::open(&cfg(dir.path())).unwrap();
+            let mode = std::fs::metadata(&lock).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "pre_existing={pre_existing}");
+            drop(store);
+        }
     }
 
     #[test]

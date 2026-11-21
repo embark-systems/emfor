@@ -42,9 +42,14 @@ async fn session(
         };
         match call(conn, &mut reader, &cmd, "auth: ").await {
             Ok(Reply::Simple(s)) if s == "OK" => {}
-            Ok(Reply::Error(e)) => return CheckOutcome::Down(format!("auth: {e}")),
+            Ok(Reply::Error(e)) => {
+                return CheckOutcome::Down(format!("auth: {}", redact(&e, password)));
+            }
             Ok(other) => {
-                return CheckOutcome::Down(format!("auth: unexpected reply {}", describe(&other)));
+                return CheckOutcome::Down(format!(
+                    "auth: unexpected reply {}",
+                    redact(&describe(&other), password)
+                ));
             }
             Err(outcome) => return outcome,
         }
@@ -154,6 +159,16 @@ async fn call(
     })
 }
 
+/// `text` with every occurrence of `password` written as `***`: a server may
+/// echo the AUTH argument in its error, and a reason is stored and printed.
+fn redact(text: &str, password: &str) -> String {
+    if password.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(password, "***")
+    }
+}
+
 /// A short description of a reply for a reason; never echoes bulk data.
 fn describe(reply: &Reply) -> String {
     match reply {
@@ -175,6 +190,43 @@ mod tests {
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn redact_hides_the_password() {
+        assert_eq!(
+            redact("ERR bad s3cret here s3cret", "s3cret"),
+            "ERR bad *** here ***"
+        );
+        assert_eq!(redact("ERR x", ""), "ERR x");
+    }
+
+    /// A server that echoes the AUTH password in its error: the reason does not.
+    /// The other `auth: ` reasons (`call`'s I/O and protocol errors) hold only
+    /// fixed texts and the OS error, never reply bytes, so they need no redaction.
+    #[tokio::test]
+    async fn auth_error_does_not_echo_the_password() {
+        let addr = fake_redis(|cmd| match cmd {
+            [a, p] if a == "AUTH" => format!("-ERR invalid password {p}\r\n").into_bytes(),
+            _ => b"+PONG\r\n".to_vec(),
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pw");
+        std::fs::write(&file, "hunter2hunter2\n").unwrap();
+        std::fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+            .unwrap();
+        let settings = Settings {
+            password_file: Some(file),
+            ..Settings::default()
+        };
+        match check(&req(addr), &settings).await {
+            CheckOutcome::Down(r) => {
+                assert!(r.contains("***"), "{r}");
+                assert!(!r.contains("hunter2"), "{r}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 
     /// A fake redis server: `answer` maps each command (its words) to the
     /// raw reply bytes.
