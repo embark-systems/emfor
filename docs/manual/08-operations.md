@@ -721,6 +721,11 @@ file of 0.6.0 and of 0.7.0 are the same, and the flag of the new package is the
 one an upgrade follows). The other changes of 0.7.0 that need an action are
 in [CHANGELOG.md](../../CHANGELOG.md).
 
+If the group uses `previous_secret_file`, do not start 0.7.0 for the first time
+in the middle of a secret change: it has no record yet of the secrets the daemon
+used, so it ignores that file until the next change (see
+[`[peers]`](03-configuration.md#peers)).
+
 After the restart, applications that were already running the new library
 follow the restarted daemon's store without another restart.
 

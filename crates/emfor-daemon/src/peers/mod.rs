@@ -24,6 +24,7 @@
 
 mod crypto;
 mod group;
+mod record;
 mod stats;
 mod targets;
 mod task;

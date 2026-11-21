@@ -123,7 +123,7 @@ secret_file = "/etc/emfor/peers.key"
 | `listen` | required | This daemon's UDP address in the group, one of `members`. A specific address, not `0.0.0.0` or `::`; other members check that messages come from it. 5302 is the usual port. |
 | `members` | required | Every member's `listen`, this daemon included: 2 to 64 addresses, no repeats, all IPv4 or all IPv6 like `listen`. The same list can go on every host of the site. A script can write it for a group whose hosts come and go: see [Peer members from a cloud API](08-operations.md#peer-members-from-a-cloud-api). |
 | `secret_file` | required | Absolute path to the shared secret that authenticates and encrypts every message: at least 32 bytes after one trailing line feed is removed, not readable by other users and not writable by group or others (`chmod 600` or `640`), and owned by root or by the user running emfor (any group). |
-| `previous_secret_file` | none | Optional. Absolute path to the secret `secret_file` held before its last change, with the same conditions. Read only at start, so that a daemon restarted during a secret change keeps signing with and accepting the previous secret as if it had not restarted (see below). |
+| `previous_secret_file` | none | Optional. Absolute path to the secret `secret_file` held before its last change, with the same conditions. Read only at start, so that a daemon restarted during a secret change keeps signing with and accepting the previous secret as if it had not restarted; used only when it is the secret the daemon replaced (see below). |
 | `encrypt` | `true` | `true` sends every message encrypted, with keys derived from the secret: `EMP3` (XChaCha20-Poly1305, 24-byte random nonce) to members that run this release, `EMP2` (ChaCha20-Poly1305, 12-byte random nonce) to the others, picked per member as described below. `false` sends them only signed (`EMP1`: HMAC-SHA256), so backend names, addresses and reasons can be read on the network. `EMP2` and `EMP3` are accepted either way; `EMP1` only while `accept_plaintext` is `true`, and while it is accepted and `encrypt` is `true` the daemon logs a warning, once a minute per member, for each member that still sends `EMP1`. |
 | `accept_plaintext` | `false` when `encrypt` is `true`, `true` when `encrypt` is `false` | `false` drops every `EMP1` message (counted as `plaintext` in `emfor_peer_messages_rejected_total`), so nobody who learns the secret can make this daemon read a signed but unencrypted message. With the default, a daemon that encrypts therefore does not hear a member that has `encrypt = false` or runs 0.3.0: that member is not live here. Set `true` on a host while some member of the group still sends `EMP1` (see below); `false` needs `encrypt = true`. Before 0.7.0 the default was `true` whatever `encrypt` was. |
 
@@ -152,8 +152,8 @@ changes again within those 60 seconds (say, to fix a wrong secret), the
 host keeps signing with the secret it signed with before, for 60 seconds
 after the latest change.
 
-The previous secret is kept only in memory. A daemon restarted during a
-change knows only the new secret: members whose file has not changed yet
+The previous secret is kept only in memory, and a daemon restarted during a
+change would know only the new secret: members whose file has not changed yet
 drop its messages (`auth`), and it theirs, until their files change. To
 restart safely during a change, keep the old secret in a second file and
 name it in `previous_secret_file`, for example:
@@ -163,10 +163,21 @@ cp -p /etc/emfor/peers.key /etc/emfor/peers.key.old  # keeps the mode
 cat new.key > /etc/emfor/peers.key  # the same new secret on every host; keeps the mode
 ```
 
-A daemon that starts within 120 seconds of the change to `secret_file`
-(by the file's modification time) then signs with the old secret until 60
-seconds after that change and accepts it until 120 seconds after it. Later
-starts ignore `previous_secret_file`, so it can stay in the config.
+The daemon keeps a record of the secrets it has used in a file next to the
+store, `state.mdb-peers` for the default store path (`<store path>-peers`,
+mode 0600): a SHA-256 fingerprint of the current secret and of the one it
+replaced, and when; never a secret. A daemon that starts less than 120
+seconds after it replaced the secret that `previous_secret_file` holds (a
+change it made while running, or one made while it was stopped, dated by the
+file's modification time) signs with that secret until 60 seconds after the
+change and accepts it until 120 seconds after it. In every other case
+`previous_secret_file` has no effect, and the daemon logs one line at `info`
+level saying so: a secret that was retired by an earlier change, or that the
+daemon never used, is not used again because a file holds it or because
+`secret_file` was touched, so the file can stay in the config. A daemon that
+finds no record, as at the first start of 0.7.0, ignores
+`previous_secret_file` (it is used from the next change on); when the record
+cannot be written it logs a warning, at most once a minute, and keeps running.
 
 Messages more than 5 seconds off the receiver's clock are dropped, so keep
 the hosts' clocks in sync (NTP).

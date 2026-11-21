@@ -204,6 +204,9 @@ pub struct Keys {
     /// Other secrets replaced, with when: each is accepted until
     /// [`ACCEPT_PREVIOUS_FOR`] after it was replaced.
     replaced: Vec<(Secret, Instant)>,
+    /// Where a change of the current secret is recorded, when the daemon
+    /// keeps a record (see [`super::record`]).
+    record: Option<std::sync::Arc<super::record::RecordFile>>,
 }
 
 impl Keys {
@@ -212,7 +215,14 @@ impl Keys {
             current: Secret::new(current),
             previous: None,
             replaced: Vec::new(),
+            record: None,
         }
+    }
+
+    /// Record every later change of the current secret in `record`.
+    pub(super) fn with_record(mut self, record: std::sync::Arc<super::record::RecordFile>) -> Keys {
+        self.record = Some(record);
+        self
     }
 
     /// The secrets at start (spec peer-group "Peer secret reload"): when
@@ -265,6 +275,9 @@ impl Keys {
             return false;
         }
         let old = std::mem::replace(&mut self.current, Secret::new(new));
+        if let Some(record) = &self.record {
+            record.replaced(&old.raw, &self.current.raw, super::record::unix_now());
+        }
         self.replaced
             .retain(|(_, at)| now.duration_since(*at) < ACCEPT_PREVIOUS_FOR);
         match &mut self.previous {

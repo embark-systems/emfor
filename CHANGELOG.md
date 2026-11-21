@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+**`previous_secret_file` is used only for the secret the daemon replaced (compatibility change).**
+A daemon that starts with `previous_secret_file` used it whenever it held a
+secret other than the current one and `secret_file` had been modified less
+than 120 seconds before. A retired secret could come back: after a later
+change (K1 to K2) with `previous_secret_file` still holding K0, a restart within
+120 seconds signed with K0 for 60 seconds and accepted it for 120, and the
+members that had dropped K0 stopped hearing the host; `touch` or a restored
+`secret_file` did the same. The daemon now keeps a record of the secrets it
+has used in `<store path>-peers` (`state.mdb-peers` by default, mode 0600): a
+SHA-256 fingerprint of the current secret and of the one it replaced, and when,
+and never a secret. It is written at start (synchronously, once) and at each
+change of the secret, on a thread of its own that the peer loop never waits for. At start `previous_secret_file` is used only when it
+holds the secret the record says was replaced less than 120 seconds ago; a
+change made while the daemon was stopped is dated by the modification time of
+`secret_file`, as before. Otherwise it has no effect, with one `info` line that
+says why. The first start of this version has no record, so it ignores
+`previous_secret_file`, and a start in the middle of a secret change at that
+moment behaves as when the option is not set; the next change is covered. A
+record that cannot be written gives a warning, at most once a minute. Checked
+in a Debian container: fmt, clippy `-D warnings` and the tests pass,
+including new unit tests for the record (a round trip with mode 0600, no secret
+in it, a garbled or missing file), for the decision (a secret replaced while
+running, a change made while stopped, a secret retired earlier, a touched
+file, no record) and for the write after a change of the running daemon, and
+the restart test of the peer task changed to the new rule. Not verified: the new
+tests were not run against the old code (it has no function to call; by
+construction the old rule used K0 in the retired and touched cases), a real
+rotation across several hosts, a record directory that is slow or full.
+
 **The deploy scripts run `emfor check-config` as the daemon's user.**
 `examples/deploy/emfor-peers-sync.sh` and `emfor-drain.sh` ran
 `emfor check-config` as root, and check-config starts the plugins the config

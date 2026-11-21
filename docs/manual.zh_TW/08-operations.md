@@ -354,6 +354,8 @@ check_options = { command = ["/usr/local/libexec/emfor-exec.sh",
 
 會改變做法的版本說明：0.4.0 寫入 store 格式版本 2，並預設加密 peer 訊息（聯防群組一台一台升級，升級時先設 `encrypt = false`，見[聯防群組](#聯防群組)）；0.5.0 更嚴格地驗證設定；0.7.0 會拒絕 group 或其他人可寫、或由別的使用者擁有的主設定檔，就像它本來就拒絕這樣的片段檔（重新啟動前用 `chmod g-w,o-w /etc/emfor/emfor.toml` 或 `chown root /etc/emfor/emfor.toml` 修正；上面第 2 步的 `emfor check-config` 會回報它；deb 與 rpm 套件安裝的檔案是 root 擁有、權限 `0644`，不受影響）；0.7.0 的 rpm 把 `/etc/emfor/emfor.toml` 標成 `%config(noreplace)`，所以升級會保留你改過的檔案，並把套件附的檔案寫在旁邊成為 `emfor.toml.rpmnew`（0.6.0 的 rpm 標成 `%config`，套件附的檔案與舊版不同時會取代你改過的檔案，並把你的存成 `emfor.toml.rpmsave`；0.6.0 與 0.7.0 附的檔案相同，而升級依新套件的旗標處理）。0.7.0 其他需要處理的變更見 [CHANGELOG.md](../../CHANGELOG.md)。
 
+若聯防群組使用 `previous_secret_file`，不要在更換密鑰的途中第一次啟動 0.7.0：它還沒有用過哪些密鑰的記錄，所以到下一次更換密鑰之前會忽略那個檔案（見[設定](03-configuration.md#peers)）。
+
 重新啟動之後，已經在用新函式庫的應用程式會跟上重新啟動後 daemon 的 store，不必再重新啟動。
 
 ### 重新啟動時應用程式會看到什麼

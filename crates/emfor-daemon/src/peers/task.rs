@@ -15,6 +15,7 @@ use tokio::time::Instant;
 
 use super::crypto::{ACCEPT_PREVIOUS_FOR, Keys, SIGN_PREVIOUS_FOR};
 use super::group::{Group, Outgoing, WARN_EVERY};
+use super::record;
 use super::stats::PeerStats;
 use super::targets::{DIGEST_DIFFERS, Targets};
 use super::watch::SecretWatch;
@@ -157,6 +158,7 @@ impl Drop for PeersHandle {
 /// go to `writer`.
 pub async fn start(
     config: &PeersConfig,
+    store_path: &Path,
     site: &str,
     targets: Targets,
     writer: Option<mpsc::UnboundedSender<WriterMsg>>,
@@ -166,7 +168,7 @@ pub async fn start(
         .await
         .map_err(|e| format!("cannot bind peer address {}: {e}", config.listen))?;
     let key = read_secret(&config.secret_file).map_err(|e| format!("peers.secret_file: {e}"))?;
-    let keys = start_keys(config, key, Instant::now())?;
+    let keys = start_keys(config, &record::path_of(store_path), key, Instant::now())?;
     Ok(start_on(
         socket,
         config,
@@ -179,31 +181,64 @@ pub async fn start(
 }
 
 /// The secrets at start: `current`, read from `secret_file`, and with
-/// `previous_secret_file` the secret it replaced, as [`Keys::resumed`]
-/// decides from when `secret_file` was last modified.
-fn start_keys(config: &PeersConfig, current: Vec<u8>, now: Instant) -> Result<Keys, String> {
-    let Some(path) = &config.previous_secret_file else {
-        return Ok(Keys::new(current));
+/// `previous_secret_file` the secret it replaced, when the record of the
+/// secrets this daemon used (`record_path`, see [`record`]) says that it
+/// replaced that one less than [`ACCEPT_PREVIOUS_FOR`] ago.
+fn start_keys(
+    config: &PeersConfig,
+    record_path: &Path,
+    current: Vec<u8>,
+    now: Instant,
+) -> Result<Keys, String> {
+    let previous = match &config.previous_secret_file {
+        Some(path) => {
+            Some(read_secret(path).map_err(|e| format!("peers.previous_secret_file: {e}"))?)
+        }
+        None => None,
     };
-    let previous = read_secret(path).map_err(|e| format!("peers.previous_secret_file: {e}"))?;
-    let changed = std::fs::metadata(&config.secret_file)
+    let modified = std::fs::metadata(&config.secret_file)
         .and_then(|m| m.modified())
         .map_err(|e| {
             format!(
                 "peers.secret_file: cannot read the modification time of {}: {e}",
                 config.secret_file.display()
             )
-        })?;
-    // A modification time ahead of the clock counts as now.
-    let changed_ago = changed.elapsed().unwrap_or(Duration::ZERO);
-    let keys = Keys::resumed(current, Some(previous), changed_ago, now);
-    if keys.previous.is_some() {
+        })?
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let loaded = record::Record::load(record_path);
+    let resumed = record::resume(
+        loaded.clone(),
+        &current,
+        previous.as_deref(),
+        modified,
+        record::unix_now(),
+    );
+    let file = record::RecordFile::new(record_path.to_path_buf(), resumed.record.clone());
+    if loaded.as_ref() != Some(&resumed.record) {
+        file.write();
+    }
+    let changed_ago = resumed.previous.unwrap_or(Duration::ZERO);
+    let keys =
+        Keys::resumed(current, resumed.previous.and(previous), changed_ago, now).with_record(file);
+    if resumed.previous.is_some() {
         tracing::info!(
-            "peer secret file changed {}s ago; messages are signed with the previous secret (previous_secret_file) until {}s and it is accepted until {}s after that change",
+            "peer secret changed {}s ago; messages are signed with the previous secret (previous_secret_file) until {}s and it is accepted until {}s after that change",
             changed_ago.as_secs(),
             SIGN_PREVIOUS_FOR.as_secs(),
             ACCEPT_PREVIOUS_FOR.as_secs()
         );
+    }
+    match resumed.ignored {
+        Some(record::Ignored::NoRecord) => tracing::info!(
+            "peers.previous_secret_file is ignored: there is no record of the secrets this daemon used ({}), as at the first start of this version; it is used from the next change on",
+            record_path.display()
+        ),
+        Some(record::Ignored::NotReplaced) => tracing::info!(
+            "peers.previous_secret_file is ignored: it is not the secret this daemon replaced less than {}s ago",
+            ACCEPT_PREVIOUS_FOR.as_secs()
+        ),
+        None => {}
     }
     Ok(keys)
 }
@@ -873,10 +908,11 @@ mod tests {
         assert!(quorum.member_tags(from).is_empty());
     }
 
-    /// Spec peer-group "Restart during a secret change": with
-    /// `previous_secret_file`, a daemon restarted 30 seconds after its
-    /// file changed signs and accepts as if it had not restarted, so a
-    /// member whose file has not changed yet keeps accepting it.
+    /// Spec peer-group "Restart during a secret change" and "Stop, change
+    /// the secret, start": with `previous_secret_file`, a daemon that last
+    /// ran with the old secret and is restarted 30 seconds after its file
+    /// changed signs and accepts as if it had not restarted, so a member
+    /// whose file has not changed yet keeps accepting it.
     #[test]
     fn previous_secret_file_survives_a_restart() {
         let new = vec![9u8; 32];
@@ -900,8 +936,20 @@ mod tests {
         };
         let now = Instant::now();
         let at = |s| now + Duration::from_secs(s);
+        // The record of a daemon that last ran with the old secret.
+        let rec_dir = tempfile::tempdir().expect("a temporary directory");
+        let rec = rec_dir.path().join("state.mdb-peers");
+        let ran_with_old = || {
+            record::Record {
+                current: record::fingerprint(KEY),
+                replaced: None,
+            }
+            .save(&rec)
+            .expect("the record can be written");
+        };
+        ran_with_old();
         changed(30);
-        let keys = start_keys(&conf(Some(old_path.clone())), new.clone(), now)
+        let keys = start_keys(&conf(Some(old_path.clone())), &rec, new.clone(), now)
             .expect("both secret files are valid");
         // A restarted with the new secret, B not changed yet: both ways.
         let t = 1_763_000_000_000u64;
@@ -934,14 +982,23 @@ mod tests {
         assert!(keys.accepted(at(89)).any(|k| k.raw() == KEY));
         assert!(!keys.accepted(at(90)).any(|k| k.raw() == KEY));
         // A change long ago, or no previous_secret_file: the new one only.
+        ran_with_old();
         changed(200);
-        let keys = start_keys(&conf(Some(old_path)), new.clone(), now)
+        let keys = start_keys(&conf(Some(old_path.clone())), &rec, new.clone(), now)
             .expect("both secret files are valid");
         assert_eq!(keys.accepted(now).count(), 1);
+        ran_with_old();
         changed(30);
-        let keys = start_keys(&conf(None), new.clone(), now).expect("no previous file to read");
+        let keys =
+            start_keys(&conf(None), &rec, new.clone(), now).expect("no previous file to read");
         assert_eq!(keys.accepted(now).count(), 1);
         assert_eq!(keys.signing(now).raw(), &new[..]);
+        // No record (the first start of this version): the new one only.
+        std::fs::remove_file(&rec).expect("the record can be removed");
+        let keys = start_keys(&conf(Some(old_path)), &rec, new.clone(), now)
+            .expect("both secret files are valid");
+        assert_eq!(keys.accepted(now).count(), 1);
+        assert!(rec.exists(), "and the record is written");
     }
 
     #[test]

@@ -456,6 +456,7 @@ async fn run(
             let off = config.services_off();
             match peers::start(
                 p,
+                &config.store.path,
                 &peer_site(&config),
                 targets.clone(),
                 Some(tx.clone()),
