@@ -1149,6 +1149,18 @@ mod tests {
         assert!(w.is_empty(), "{w:?}");
     }
 
+    /// A plugin that is not `emfor-check` but is named `redis` or `ldap` is
+    /// still reported by its name, as before the kind was read from the
+    /// command.
+    #[test]
+    fn plugin_named_redis_that_is_not_emfor_check_is_still_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let pass = pass_file(&dir, 0o600);
+        let other = format!("[\"{}\"]", fake_program(&dir, "other-plugin"));
+        let w = credential_warnings(&plugin_credential_config(&pass, "redis", Some(&other), ""));
+        assert_eq!(w.len(), 1, "{w:?}");
+    }
+
     /// The table "which modes warn" of the spec: a mode that lets other
     /// users write warns, and each line carries the four things that let the
     /// reader of `emfor check-config` act on it.

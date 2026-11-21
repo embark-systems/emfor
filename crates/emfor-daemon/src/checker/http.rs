@@ -901,6 +901,9 @@ tls_verify = "yes""#)
         assert!(reason.to_lowercase().contains("connect"), "{reason}");
     }
 
+    /// Matches the spec scenario for a body failure, but cannot catch a
+    /// regression: the client puts no URL in this error, with or without
+    /// `client_reason`.
     #[tokio::test]
     async fn body_failure_reason_has_no_url() {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -930,6 +933,11 @@ tls_verify = "yes""#)
         let opts = format!("{TOKEN_PATH}\nscheme = \"https\"");
         let reason = reason_of(checker(&opts).check(req(addr)).await);
         assert_no_url(&reason);
-        assert!(!reason.is_empty());
+        // "error sending request: client error (Connect): received corrupt
+        // message of type InvalidContentType"
+        assert!(
+            reason.to_lowercase().contains("corrupt message"),
+            "{reason}"
+        );
     }
 }

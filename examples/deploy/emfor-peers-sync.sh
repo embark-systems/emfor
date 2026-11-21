@@ -34,7 +34,6 @@ set -eu
 
 die() { echo "emfor-peers-sync: $*" >&2; exit 1; }
 reload=${EMFOR_RELOAD:-systemctl reload emfor}
-emfor_cmd() { if [ -n "${EMFOR_CONFIG:-}" ]; then c=$1; shift; emfor "$c" --config "$EMFOR_CONFIG" "$@"; else emfor "$@"; fi; }
 
 # check-config starts the plugins the config declares, so it runs as the
 # daemon's user (as the service does, and as the FreeBSD rc script does), not
