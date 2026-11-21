@@ -1,5 +1,5 @@
 # nginx with emfor, for tests/nginx/run.sh: the recipe of
-# docs/manual/07-dns-recipes.md, section "Using it with nginx".
+# docs/manual/14-integrations.md, section "nginx".
 #
 #   docker build -f tests/nginx/Dockerfile --build-arg NGINX_IMAGE=nginx:stable .
 ARG NGINX_IMAGE=nginx:mainline

@@ -12,7 +12,7 @@ site = "dc1"
 # 99-); a later file overrides an earlier one. Relative to this file's
 # directory. The directory must exist and must not be writable by group or
 # others. [store] and include_dir itself stay in this file. Must come before
-# the first table. See docs/manual/03-configuration.md.
+# the first table. See docs/manual/05-configuring.md.
 # include_dir = "conf.d"
 
 [store]
@@ -58,7 +58,7 @@ rate_limit = 100             # UDP responses a second per client network; 0: non
 # listen = ["127.0.0.1:5301"]
 
 # Peer group: the emfor daemons of this site that pass backend failures on
-# to each other over UDP (see docs/manual/03-configuration.md). Every member
+# to each other over UDP (see docs/manual/05-configuring.md). Every member
 # lists the same members, including itself; listen is this host's entry.
 # The secret file needs at least 32 bytes and mode 0600 or 0640.
 # Messages are encrypted with a key derived from the secret; set

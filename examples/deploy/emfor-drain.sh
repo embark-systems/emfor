@@ -1,6 +1,6 @@
 #!/bin/sh
 # Take a backend out of rotation for a deploy, and put it back.
-# The recipe is docs/manual/08-operations.md, "Rolling deploy with drain".
+# The recipe is docs/manual/12-operating.md, "A rolling deploy with drain".
 #
 #   emfor-drain.sh on  FILE ADDR       set drain = true on ADDR's line in FILE,
 #                                      check the config, reload emfor, and wait

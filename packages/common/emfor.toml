@@ -1,5 +1,5 @@
 # emfor config. Every option, with comments, is in
-# /usr/share/doc/emfor/examples/emfor.toml, and the manual is chapter 3,
+# /usr/share/doc/emfor/examples/emfor.toml, and the manual is chapter 5,
 # "Configuration".
 #
 # Put the services in files of conf.d, read in file name order (01-, 10-,

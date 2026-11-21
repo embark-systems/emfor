@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs inside the test container, after inside.sh: what the HAProxy section of
-# docs/manual/07-dns-recipes.md says about `mode tcp`, TLS to the backends and
+# docs/manual/14-integrations.md says about `mode tcp`, TLS to the backends and
 # several name servers. Two backends (HAProxy answering on 9001 and 9002 with
 # its port, in HTTP over TLS when asked to), emfor with the DNS server on
 # 5300 (and a second emfor on 5301), and the HAProxy under test in front.

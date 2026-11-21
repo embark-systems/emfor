@@ -27,7 +27,7 @@ Change the current version to `X.Y.Z` in each of these:
 | `clients/perl/lib/Emfor.pm` | `our $VERSION` |
 | `clients/php/emfor.c` | `PHP_EMFOR_VERSION` |
 | `clients/go/README.md` | the `go get ...@vX.Y.Z` line |
-| `docs/manual/02-installation.md`, `docs/manual.zh_TW/02-installation.md` | the `go get ...@vX.Y.Z` line in the table of languages |
+| `docs/manual/04-installing.md`, `docs/manual/09-clients.md` and the same two files in `docs/manual.zh_TW/` | the `go get ...@vX.Y.Z` line |
 | `docs/compatibility.md` | the `libemfor.so.X.Y` example |
 | `packages/freebsd/Makefile` | `DISTVERSION` |
 

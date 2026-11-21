@@ -1,6 +1,6 @@
 # emfor with the Nagios examples, for tests/nagios/run.sh: examples/nagios/
-# check_emfor.sh and examples/nagios/emfor-exec.sh, as docs/manual/08-operations.md,
-# section "Watching emfor from Nagios", says.
+# check_emfor.sh and examples/nagios/emfor-exec.sh, as docs/manual/12-operating.md,
+# section "Nagios, Icinga and other monitoring", says.
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./

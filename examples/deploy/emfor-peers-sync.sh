@@ -1,7 +1,7 @@
 #!/bin/sh
 # Set the members of this host's peer group from a list, for a group whose
 # hosts come and go (an autoscaling group, a managed instance group).
-# The recipe is docs/manual/08-operations.md, "Peer members from a cloud API".
+# The recipe is docs/manual/11-peer-groups.md, "Members from a cloud API".
 #
 #   some-command-that-lists-the-hosts | emfor-peers-sync.sh FILE
 #

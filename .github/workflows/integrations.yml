@@ -1,10 +1,10 @@
 name: Integrations
 
 # emfor with other software: nginx and HAProxy taking their servers from
-# emfor's SRV answers (docs/manual/07-dns-recipes.md, "Using it with nginx" and "Using
+# emfor's SRV answers (docs/manual/14-integrations.md, "nginx" and "Using
 # it with HAProxy"), and a rolling deploy over nginx with drain
-# (docs/manual/08-operations.md, "Rolling deploy with drain"), Prometheus and
-# Caddy finding their targets from them ("Using it with Prometheus" and "Using
+# (docs/manual/12-operating.md, "A rolling deploy with drain"), Prometheus and
+# Caddy finding their targets from them ("Prometheus" and "Using
 # it with Caddy"). What these tests
 # can catch is a new nginx or HAProxy that behaves differently (the images are
 # the floating tags stable, mainline and lts), and a change in emfor's answers.

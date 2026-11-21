@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs inside the test container: two backends (nginx on 9001 and 9002, each
 # answering its port), emfor with the DNS server on 5300, and the nginx under
-# test in front, configured as docs/manual/07-dns-recipes.md says.
+# test in front, configured as docs/manual/14-integrations.md says.
 set -u
 
 fail() { echo "FAIL: $*" >&2; echo "--- emfor:" >&2; tail -5 /tmp/emfor.log >&2; echo "--- nginx:" >&2; tail -5 /tmp/ngx.err >&2; exit 1; }

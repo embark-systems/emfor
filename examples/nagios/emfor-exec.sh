@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run a Nagios-style plugin as an emfor `exec` check.
-# The recipe is docs/manual/08-operations.md, "Watching emfor from Nagios".
+# The recipe is docs/manual/14-integrations.md, "Nagios, Icinga and other monitoring".
 #
 #   emfor-exec.sh [--warning up|down] [--host-flag F] [--port-flag F] PLUGIN [ARGS...]
 #

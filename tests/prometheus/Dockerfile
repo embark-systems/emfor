@@ -1,5 +1,5 @@
 # Prometheus with emfor, for tests/prometheus/run.sh: the recipe of
-# docs/manual/07-dns-recipes.md, section "Using it with Prometheus". The prometheus
+# docs/manual/14-integrations.md, section "Prometheus". The prometheus
 # binary (static) is taken from its image into an nginx image, which also
 # serves as the scraped backends.
 #

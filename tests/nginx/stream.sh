@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs inside the test container, after inside.sh: what the nginx section of
-# docs/manual/07-dns-recipes.md says about the `stream` module (TCP). Two backends
+# docs/manual/14-integrations.md says about the `stream` module (TCP). Two backends
 # (nginx on 9001 and 9002, each answering its port over HTTP, which a TCP
 # proxy passes on; /slow is a 1200 byte file sent at 200 bytes a second),
 # emfor with the DNS server on 5300, and the nginx under test in front with

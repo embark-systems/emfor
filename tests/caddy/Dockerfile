@@ -1,5 +1,5 @@
 # Caddy with emfor, for tests/caddy/run.sh: the recipe of
-# docs/manual/07-dns-recipes.md, section "Using it with Caddy". The caddy binary
+# docs/manual/14-integrations.md, section "Caddy". The caddy binary
 # (static) is taken from its image into an nginx image, which also serves as
 # the two backends.
 #

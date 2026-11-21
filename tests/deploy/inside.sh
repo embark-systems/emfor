@@ -2,7 +2,7 @@
 # Runs inside the test container: two backends (nginx on 9001 and 9002, each
 # answering its port; /slow is a 1200 byte file sent at 200 bytes a second),
 # emfor with its DNS server on 5300 and the service in a conf.d file, and the
-# nginx under test in front (the recipe of docs/manual/07-dns-recipes.md). A client
+# nginx under test in front (the recipe of docs/manual/14-integrations.md). A client
 # sends a POST every 50 ms all the time. First a backend is stopped without
 # drain while a slow request is in flight; then both backends are deployed in
 # turn with examples/deploy/emfor-drain.sh. This test config uses a 200 ms

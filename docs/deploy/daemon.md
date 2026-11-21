@@ -248,7 +248,7 @@ Services are listed by name and backends in config order. One service of 10 unre
 
 ## Peer groups
 
-The daemons of one site can pass backend failures on to each other and, with three or more members, vote on each backend (see docs/manual/01-concepts.md, "Peer groups"). To set one up:
+The daemons of one site can pass backend failures on to each other and, with three or more members, vote on each backend (see docs/manual/11-peer-groups.md). To set one up:
 
 1. Make a secret and put the same file on every host of the site:
 

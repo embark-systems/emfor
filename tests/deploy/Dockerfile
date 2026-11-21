@@ -1,5 +1,5 @@
 # nginx with emfor, for tests/deploy/run.sh: the rolling deploy of
-# docs/manual/08-operations.md, section "Rolling deploy with drain".
+# docs/manual/12-operating.md, section "A rolling deploy with drain".
 #
 #   docker build -f tests/deploy/Dockerfile --build-arg NGINX_IMAGE=nginx:stable .
 ARG NGINX_IMAGE=nginx:mainline

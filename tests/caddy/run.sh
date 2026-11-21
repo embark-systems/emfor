@@ -1,8 +1,8 @@
 #!/bin/sh
 # Usage: tests/caddy/run.sh [caddy image]      (default caddy)
 # Builds emfor in Docker next to a Caddy (its binary, in an nginx image that
-# serves two backends) and checks the recipe of docs/manual/07-dns-recipes.md, section
-# "Using it with Caddy": reverse_proxy takes its upstreams from emfor's SRV
+# serves two backends) and checks the recipe of docs/manual/14-integrations.md, section
+# "Caddy": reverse_proxy takes its upstreams from emfor's SRV
 # answers with `dynamic srv`.
 set -eu
 image="${1:-caddy}"

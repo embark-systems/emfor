@@ -11,7 +11,7 @@ configure)
             --shell /usr/sbin/nologin --gecos "emfor daemon" emfor
     fi
     # The config directory must be owned by root and not writable by others,
-    # or emfor refuses it (docs/manual/03-configuration.md).
+    # or emfor refuses it (docs/manual/05-configuring.md).
     chown root:root /etc/emfor /etc/emfor/conf.d
     chmod 0755 /etc/emfor /etc/emfor/conf.d
     ;;

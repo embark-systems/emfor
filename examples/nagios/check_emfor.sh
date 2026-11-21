@@ -1,7 +1,7 @@
 #!/bin/sh
 # A Nagios, Icinga or Zabbix-style check of what emfor reports: the state of
 # the daemon and of the backends of its services (`emfor status --json`).
-# The recipe is docs/manual/08-operations.md, "Watching emfor from Nagios".
+# The recipe is docs/manual/14-integrations.md, "Nagios, Icinga and other monitoring".
 #
 #   check_emfor.sh [-s SERVICE] [-w N] [-c N] [-C CONFIG] [-e EMFOR]
 #

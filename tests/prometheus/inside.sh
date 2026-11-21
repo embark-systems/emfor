@@ -3,7 +3,7 @@
 # serving /metrics), emfor with the DNS server on 127.0.0.1:53 as the only
 # resolver of the container (a Prometheus asks the system resolver and cannot
 # be given another name server or port), and a Prometheus that finds its
-# targets with dns_sd_configs of type SRV, as docs/manual/07-dns-recipes.md says.
+# targets with dns_sd_configs of type SRV, as docs/manual/14-integrations.md says.
 set -u
 
 SVC=api.svc.emfor

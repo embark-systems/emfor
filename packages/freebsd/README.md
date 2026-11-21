@@ -16,7 +16,7 @@ yet through poudriere, and not on 14.x or amd64.
 | `Makefile` | The port. `DISTVERSION` follows the emfor release. |
 | `pkg-descr` | Package description. |
 | `Makefile.crates` | Every crate in the release's `Cargo.lock`, as `CARGO_CRATES`. `USES=cargo` includes it from the port's directory. |
-| `files/emfor.in` | The rc.d script, installed by `USE_RC_SUBR`, which fills in `%%PREFIX%%`. It is the only copy: to use it without the port, see [Running on FreeBSD](../../docs/manual/02-installation.md#running-on-freebsd). |
+| `files/emfor.in` | The rc.d script, installed by `USE_RC_SUBR`, which fills in `%%PREFIX%%`. It is the only copy: to use it without the port, see [Running on FreeBSD](../../docs/manual/04-installing.md#freebsd). |
 
 ## Making the port
 
