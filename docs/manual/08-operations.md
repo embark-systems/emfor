@@ -523,6 +523,92 @@ application. `tests/deploy/inside.sh` itself calls `ss` and writes
 workflow runs the test on Linux every week and when the test or the script
 changes.
 
+## Peer members from a cloud API
+
+`[peers] members` is a fixed list of IP addresses. In a group whose hosts
+come and go (an autoscaling group, a managed instance group) the list
+changes with them, and emfor does not ask the cloud itself. The list can be
+written by a script instead: a reload applies a new `members` to a running
+daemon, a member that is added starts as not live and becomes live with its
+first accepted message, and a member that is removed is dropped from the
+votes at once ([chapter 3](03-configuration.md#peers)).
+
+Put `members` alone in its own `conf.d` file, and keep `listen` and
+`secret_file` in the main file. A list is replaced as a whole, so no other
+file may set `members`; [Splitting the config over a
+directory](03-configuration.md#splitting-the-config-over-a-directory)
+explains the merge.
+
+[examples/deploy/emfor-peers-sync.sh](../../examples/deploy/emfor-peers-sync.sh)
+writes that file from a list of addresses, one per line, on its standard
+input:
+
+```sh
+# On every host of the group, from a cron job or a systemd timer, as root:
+list-the-hosts-of-my-group | emfor-peers-sync.sh /etc/emfor/conf.d/50-peers.toml
+```
+
+The script:
+
+- does nothing, and does not reload, when the list is the one the file
+  already holds (the addresses are sorted, so the order does not matter);
+- refuses, and leaves the file alone, a list of fewer than 2 or more than 64
+  addresses, an empty answer, and any line that is not `IPv4:port` or
+  `[IPv6]:port`. An empty answer from a failed cloud call therefore keeps the
+  old group; and a tag or name that someone else can set cannot put anything
+  but an address into the file;
+- writes the list to `FILE.new`, moves it over the file, runs
+  `emfor check-config`, and puts the old file back (or removes the new one
+  when there was none) if it refuses; only then does it reload. `check-config`
+  also refuses a list that does not contain this host's own `listen` address;
+- is meant to be run as root on the host that runs emfor, as `emfor-drain.sh`
+  is (`check-config` run as root accepts only conf.d files that root owns),
+  and uses `EMFOR_RELOAD` and `EMFOR_CONFIG` the same way.
+
+No package installs it; copy it to the host. The two commands below list the
+private addresses of the running hosts that carry a label, and are examples to
+adapt: change the label, the port (5302 here) and the query to your account.
+The host needs permission to read the instance list only (`ec2:DescribeInstances`
+on AWS; `compute.instances.list` on GCP).
+
+```sh
+# AWS: running instances with the tag emfor-group=web
+aws ec2 describe-instances \
+  --filters "Name=tag:emfor-group,Values=web" "Name=instance-state-name,Values=running" \
+  --query 'Reservations[].Instances[].PrivateIpAddress' --output text |
+  tr '\t' '\n' | sed 's/$/:5302/'
+
+# Google Cloud: running instances with the label emfor-group=web
+gcloud compute instances list \
+  --filter="labels.emfor-group=web AND status=RUNNING" \
+  --format="value(networkInterfaces[0].networkIP)" | sed 's/$/:5302/'
+```
+
+What to expect:
+
+- Each host asks the cloud at its own time, so for a while two hosts can
+  hold different lists. Two hosts see each other as live only when each
+  lists the other: a host sends only to the members on its list, and drops
+  the messages of a host that is not. Until both lists have the address,
+  `emfor status` shows the other host as not live. The lists agree again
+  after the next run of every host. A member that was added or removed
+  shows as live or not live within a few seconds of the reload.
+- Votes need three live hosts, this one included. With fewer, each host
+  decides from its own checks, whatever the list says.
+- The list is the only thing that lets a host into the group, besides the
+  shared secret. Whoever can set the label or tag you filter on can add an
+  address to the list, so restrict that permission, and keep the secret
+  ([chapter 3](03-configuration.md#peers)) as private as before.
+- A new host must be on the list before emfor starts on it: without
+  `members` the config is invalid. Run the script once, and start emfor
+  after it succeeded; the cloud may not list the host for a few seconds, and
+  `check-config` then refuses a list without its own address.
+- `listen` is the host's own address and cannot be changed by a reload; a host
+  whose address changes needs a restart.
+- The script reloads emfor on every change, so a list that flaps (a host
+  that starts and stops every minute) reloads every host every minute. Run
+  the script every minute or two, not more often.
+
 ## Watching emfor from Nagios, Icinga or Zabbix
 
 Two small scripts connect emfor to a monitoring system that speaks the Nagios

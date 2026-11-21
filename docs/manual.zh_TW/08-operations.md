@@ -261,6 +261,50 @@ emfor-drain.sh off /etc/emfor/conf.d/20-api.toml 10.0.0.11:8080
 
 沒有試過：HAProxy（它同樣會重試，也有自己的 session）、HTTPS、自己維護連線池到 backend 的 client（drain 不會關掉池裡的連線）、多台 emfor 主機。腳本與測試只在 Linux 上跑過。腳本的較早版本（`wait-ready` 還不會等穩定、也還沒有 `EMFOR_CONFIG`、`EMFOR_SERVICE` 與放回舊檔之前）在 FreeBSD 15.1（套件裡的 nginx 1.30.6 與 `jq`）上，把 `wait-idle` 換成固定等 8 秒，手動執行測試通過；現在的腳本沒有在那裡跑過。`wait-idle` 需要 Linux 的 `ss`，在別處會直接停下並說明：請等一段固定時間，至少是最長的請求加上 proxy 重新查詢所需的時間，或在應用程式裡計算請求數。`tests/deploy/inside.sh` 本身也呼叫 `ss`、並寫入 `/etc/nginx/nginx.conf`，所以在 FreeBSD 上跑它需要先改。Integrations workflow 每週在 Linux 上執行一次，測試或腳本有改動時也會執行。
 
+## 從雲端 API 取得 peers 成員
+
+`[peers] members` 是固定的 IP 位址清單。在主機會來來去去的群組（autoscaling group、managed instance group）裡，清單會跟著變，而 emfor 不會自己去問雲端。清單可以改由腳本寫入：reload 會把新的 `members` 套用到執行中的 daemon；新加入的成員從不存活開始，收到它第一則被接受的訊息後才算存活；被移除的成員立刻不再參與投票（[第 3 章](03-configuration.md#peers)）。
+
+請把 `members` 單獨放在自己的 `conf.d` 檔案，`listen` 與 `secret_file` 留在主檔。清單是整個被取代，所以不能有別的檔案設定 `members`；合併的規則見[把設定拆到目錄](03-configuration.md#把設定拆到目錄)。
+
+[examples/deploy/emfor-peers-sync.sh](../../examples/deploy/emfor-peers-sync.sh) 從標準輸入的位址清單（每行一個）寫出那個檔案：
+
+```sh
+# 在群組的每一台主機上，以 root 從 cron 或 systemd timer 執行：
+list-the-hosts-of-my-group | emfor-peers-sync.sh /etc/emfor/conf.d/50-peers.toml
+```
+
+這支腳本：
+
+- 清單和檔案裡已有的一樣時什麼都不做，也不 reload（位址會先排序，所以順序不影響）；
+- 遇到少於 2 個或多於 64 個位址、空的回應、以及不是 `IPv4:port` 或 `[IPv6]:port` 的行，就拒絕並不動檔案。因此雲端呼叫失敗而得到空回應時，會保留舊的群組；別人可以設定的標籤或名稱，也不可能在檔案裡放進位址以外的東西；
+- 把清單寫到 `FILE.new`，用它取代原檔，執行 `emfor check-config`，被拒絕就把舊檔放回去（原本沒有檔案就移除新檔）；之後才 reload。`check-config` 也會拒絕不含這台主機自己 `listen` 位址的清單；
+- 和 `emfor-drain.sh` 一樣，要在執行 emfor 的主機上以 root 執行（以 root 執行的 `check-config` 只接受 root 擁有的 conf.d 檔案），並以同樣方式使用 `EMFOR_RELOAD` 與 `EMFOR_CONFIG`。
+
+沒有任何套件會安裝它，請複製到主機上。下面兩個指令列出帶有某個標籤的執行中主機的私有位址，是要你改寫的範例：請換成你的標籤、port（這裡是 5302）和查詢。主機只需要讀取執行個體清單的權限（AWS 是 `ec2:DescribeInstances`；GCP 是 `compute.instances.list`）。
+
+```sh
+# AWS：標籤 emfor-group=web 的執行中執行個體
+aws ec2 describe-instances \
+  --filters "Name=tag:emfor-group,Values=web" "Name=instance-state-name,Values=running" \
+  --query 'Reservations[].Instances[].PrivateIpAddress' --output text |
+  tr '\t' '\n' | sed 's/$/:5302/'
+
+# Google Cloud：標籤 emfor-group=web 的執行中執行個體
+gcloud compute instances list \
+  --filter="labels.emfor-group=web AND status=RUNNING" \
+  --format="value(networkInterfaces[0].networkIP)" | sed 's/$/:5302/'
+```
+
+要預期的事：
+
+- 每台主機在自己的時間問雲端，所以一段時間內兩台主機的清單可能不同。兩台主機只有在彼此都列了對方時才互相視為存活：主機只送給清單上的成員，也會丟掉不在清單上的主機的訊息。在兩邊的清單都有那個位址之前，`emfor status` 會把對方顯示為不存活。每台主機再跑過一次之後，清單就一致了。加入或移除的成員，在 reload 後幾秒內就會顯示為存活或不存活。
+- 投票需要三台存活的主機（包含這一台）。少於三台時，每台主機只用自己的檢查決定，不管清單怎麼寫。
+- 除了共用 secret，清單是讓主機進入群組的唯一條件。誰能設定你過濾所用的標籤，誰就能在清單裡加一個位址，所以請限制這個權限，並像從前一樣保管好 secret（[第 3 章](03-configuration.md#peers)）。
+- 新主機必須在 emfor 啟動之前就在清單上：沒有 `members` 的設定是無效的。請先執行一次腳本，成功後再啟動 emfor；雲端可能過幾秒才列出這台主機，在那之前 `check-config` 會拒絕不含它自己位址的清單。
+- `listen` 是主機自己的位址，reload 改不了；位址會變的主機要重啟。
+- 腳本每次有變動就 reload emfor，所以不穩定的清單（一台主機每分鐘啟動又停止）會讓每台主機每分鐘 reload 一次。請每一到兩分鐘跑一次，不要更頻繁。
+
 ## 從 Nagios、Icinga 或 Zabbix 監看 emfor
 
 兩支小腳本把 emfor 接到使用 Nagios 外掛慣例的監控系統（結束狀態 0 OK、1 WARNING、2 CRITICAL、3 UNKNOWN，第一行文字，`|` 後面是 perfdata）。它們是給你複製的範例，在 [examples/nagios/](../../examples/nagios/check_emfor.sh)。

@@ -89,7 +89,7 @@ secret_file = "/etc/emfor/peers.key"
 | Key | 預設值 | 意義 |
 | --- | --- | --- |
 | `listen` | 必填 | 這個 daemon 在群組中的 UDP 位址，必須是 `members` 之一。要寫具體位址，不能是 `0.0.0.0` 或 `::`；其他成員會檢查訊息是否來自這個位址。慣用的 port 是 5302。 |
-| `members` | 必填 | 每個成員的 `listen`，包含這個 daemon 自己：2 到 64 個位址，不可重複，和 `listen` 一樣全是 IPv4 或全是 IPv6。同一個機房的每台主機可以用同一份清單。 |
+| `members` | 必填 | 每個成員的 `listen`，包含這個 daemon 自己：2 到 64 個位址，不可重複，和 `listen` 一樣全是 IPv4 或全是 IPv6。同一個機房的每台主機可以用同一份清單。主機會來來去去的群組可以用腳本寫入：見[從雲端 API 取得 peers 成員](08-operations.md#從雲端-api-取得-peers-成員)。 |
 | `secret_file` | 必填 | 共用密鑰的絕對路徑，用來驗證並加密每則訊息：去掉一個結尾換行後至少 32 bytes，其他使用者不能讀取、group 與其他人不能寫入（`chmod 600` 或 `640`），擁有者是 root 或執行 emfor 的使用者（group 不限）。 |
 | `previous_secret_file` | 無 | 選用。`secret_file` 上次改變前那把密鑰的絕對路徑，條件與 `secret_file` 相同。只在啟動時讀取，讓更換密鑰期間重新啟動的 daemon 仍像沒有重新啟動一樣，用舊密鑰簽署並接受它（見下文）。 |
 | `encrypt` | `true` | `true` 時每則訊息都加密送出，金鑰由密鑰導出：送給執行這個版本的成員用 `EMP3`（XChaCha20-Poly1305，24 bytes 隨機 nonce），送給其他成員用 `EMP2`（ChaCha20-Poly1305，12 bytes 隨機 nonce），依成員各自選擇，見下文。`false` 時只簽署（`EMP1`：HMAC-SHA256），網路上看得到 backend 名稱、位址與原因。`EMP2` 與 `EMP3` 一律接受；`EMP1` 只在 `accept_plaintext` 為 `true` 時接受，而且接受時若 `encrypt` 為 `true`，對仍送 `EMP1` 的每個成員，daemon 每分鐘記一行警告。 |

@@ -158,6 +158,20 @@ health-checking spec lists the characters (Spectra change
 `emfor-reason-format-chars`). Checked on Debian with unit tests; not on macOS or
 FreeBSD by hand.
 
+**Peer members from a cloud API (manual chapter 8, both languages).**
+`examples/deploy/emfor-peers-sync.sh` writes `[peers] members` into a `conf.d`
+file from a list of addresses on its standard input, for a group whose hosts
+come and go, and reloads emfor. It changes nothing for an unchanged list, an
+empty answer, fewer than 2 or more than 64 addresses, or a line that is not an
+address; it runs `emfor check-config` and puts the old file back if that
+refuses. The chapter gives example commands for AWS and Google Cloud, and says
+what a group sees while the hosts hold different lists. No change to the
+daemon. Checked in a Debian container with three daemons on 127.0.0.1 to
+127.0.0.3: a member added and removed by the script, unchanged and refused
+inputs, and the rollback of a list that `check-config` refuses. Not run
+against a real AWS or Google Cloud account, with systemd (`systemctl reload`)
+or on FreeBSD.
+
 ## 0.6.0 — 2026-11-17
 
 The store format (`meta/schema_version` 2) and the plugin protocol (1) are
