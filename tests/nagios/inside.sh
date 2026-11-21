@@ -133,7 +133,8 @@ echo "ok: every backend down: CRITICAL, exit 2 ($(echo "$out" | cut -c1-90)...)"
 # a "|" in a backend's reason must not start the perfdata early
 echo pipe > /tmp/state-7002; settle
 run -s web.svc.emfor
-[ "$(printf '%s' "$out" | tr -cd '|' | wc -c)" = 1 ] || fail "a pipe in the reason: '$out'"
+# (wc -c pads its number with spaces on FreeBSD: compare as numbers)
+[ "$(printf '%s' "$out" | tr -cd '|' | wc -c)" -eq 1 ] || fail "a pipe in the reason: '$out'"
 case "$out" in *"CRITICAL - a/b on 7002"*" | 'web.svc.emfor_healthy'="*) ;; *) fail "a pipe in the reason: '$out'" ;; esac
 echo "ok: a '|' in a reason is shown as '/', the only '|' is the one before the perfdata ($out)"
 
