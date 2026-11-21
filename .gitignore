@@ -1,7 +1,6 @@
 # Spectra app data
 .spectra/
 /target
-docs/spectra/.vector-search.db*
 /clients/build/
 # deb and rpm built by packages/build.sh, and what tools/sign-packages.sh adds
 /packages/dist/
