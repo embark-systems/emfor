@@ -431,8 +431,8 @@ pub(crate) mod tests {
         let c = cfg(dir.path());
         let _store = Store::open(&c).unwrap();
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(&c.path), 0o644);
-        assert_eq!(mode(&dir.path().join("state.mdb-lock")), 0o666);
+        assert_eq!(mode(&c.path), 0o640);
+        assert_eq!(mode(&dir.path().join("state.mdb-lock")), 0o660);
         assert!(
             std::fs::metadata(&c.path).unwrap().is_file(),
             "single file, not a directory"
@@ -440,17 +440,36 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn existing_files_get_the_default_modes_at_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        let lock = lock_file_path(&c.path);
+        // Files as 0.6 left them: the old defaults.
+        let old = StoreConfig {
+            file_mode: 0o644,
+            lock_file_mode: 0o666,
+            ..cfg(dir.path())
+        };
+        drop(Store::open(&old).unwrap());
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!((mode(&c.path), mode(&lock)), (0o644, 0o666));
+        // A start without file_mode and lock_file_mode changes them.
+        drop(Store::open(&c).unwrap());
+        assert_eq!((mode(&c.path), mode(&lock)), (0o640, 0o660));
+    }
+
+    #[test]
     fn custom_modes() {
         let dir = tempfile::tempdir().unwrap();
         let c = StoreConfig {
-            file_mode: 0o640,
-            lock_file_mode: 0o660,
+            file_mode: 0o644,
+            lock_file_mode: 0o666,
             ..cfg(dir.path())
         };
         let _store = Store::open(&c).unwrap();
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(&c.path), 0o640);
-        assert_eq!(mode(&lock_file_path(&c.path)), 0o660);
+        assert_eq!(mode(&c.path), 0o644);
+        assert_eq!(mode(&lock_file_path(&c.path)), 0o666);
     }
 
     #[test]

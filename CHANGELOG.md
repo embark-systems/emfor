@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+**The store files are only for the daemon's group by default (compatibility change).**
+`[store] file_mode` and `lock_file_mode` now default to `"0640"` and `"0660"`
+instead of `"0644"` and `"0666"`, so that only the daemon's user and its group
+can read the store and write the lock file; the lock file holds LMDB's reader
+table and the lock the daemon takes for every commit, and it was writable by
+every local user. The daemon sets these modes on the existing files at every
+start, so the first start of 0.7.0 changes the files that 0.6 left, and an
+application whose user is not in the daemon's group (`emfor` in the deb and rpm
+packages, which ship an `emfor.toml` without `[store]` keys and so take the
+new defaults) gets `UNAVAILABLE` from the client. Before the upgrade, add the
+application users to the group of the daemon (`usermod -aG emfor <user>`), or
+write `file_mode = "0644"` and `lock_file_mode = "0666"` in `[store]` to keep
+the old behaviour. `emfor check-config` and the daemon at start now warn, in
+one line for each option, about a `file_mode` or `lock_file_mode` that other
+users can write; the line says what the mode allows, what to set instead and
+that the value takes effect at the next start. The warning is not an error and
+is not repeated at a reload, because `[store]` is applied at start. Checked
+with unit and integration tests in a Debian container (the defaults, the modes
+set on existing files, the warning in `check-config` and at start). Not run on
+macOS or FreeBSD by hand, and not tried on a real deb or rpm upgrade or with a
+client in another group.
+
 **Unencrypted peer messages are refused by default (compatibility change).**
 `[peers] accept_plaintext` no longer defaults to `true`. Without a value it is
 `false` while `encrypt` is `true` (the default since 0.4.0) and `true` while

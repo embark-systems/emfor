@@ -18,19 +18,21 @@ site = "dc1"
 [store]
 path = "/var/lib/emfor/state.mdb"
 map_size = "64MiB"
-file_mode = "0644"
-# Readers (the emfor clients in your applications) register themselves in the
-# "<path>-lock" file, so every application user needs write access to it.
-# The default 0666 lets any local user not only read the store but also
-# write the lock file, which holds LMDB's reader table and write lock: a
-# hostile local user can stop the daemon's commits (every client then sees
-# a stale store) or make lookups read pages being rewritten. Keep 0666 only
-# where every local user is trusted. Otherwise run the daemon with a group
-# that only your applications' users are in, and use:
-#   lock_file_mode = "0660"
-#   file_mode = "0640"
+# Only the daemon's user and group can use the store by default: the data
+# file is 0640 and the lock file 0660, so the users of your applications
+# (the emfor clients) have to be in the group of the daemon ("emfor" in the
+# deb and rpm packages). Readers register themselves in the "<path>-lock"
+# file, so every application user needs write access to it.
+file_mode = "0640"
+# To let every local user query the store instead, set file_mode = "0644"
+# and lock_file_mode = "0666". The price: any local user can then write the
+# lock file, which holds LMDB's reader table and write lock, so a hostile
+# local user can stop the daemon's commits (every client then sees a stale
+# store) or make lookups read pages being rewritten. The daemon warns at
+# start, and `emfor check-config` warns, about a mode other users can write.
+# The daemon sets both modes on the existing files at every start.
 # See "Who can use the store" in docs/deploy/daemon.md.
-lock_file_mode = "0666"
+lock_file_mode = "0660"
 # Commits do not wait for the disk by default, so a slow or stalled disk
 # cannot make the store look stale to every client. The store is rewritten
 # on every start; after a power loss it may be damaged, and the daemon then

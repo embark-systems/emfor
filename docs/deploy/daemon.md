@@ -88,18 +88,21 @@ Set `sync = true` to flush every commit before it completes, as emfor did before
 
 ## Who can use the store
 
-Applications read the store through the emfor client and register their reads in the lock file `<path>-lock`, so each application user needs to read the data file and write the lock file. `[store] file_mode` (default `0644`) and `lock_file_mode` (default `0666`) set the modes the daemon creates them with.
+Applications read the store through the emfor client and register their reads in the lock file `<path>-lock`, so each application user needs to read the data file and write the lock file. `[store] file_mode` (default `0640`) and `lock_file_mode` (default `0660`) are the modes the daemon sets on them at every start, on files it creates and on files that already exist: only the daemon's user and its group can use the store, so the users of your applications have to be in the group of the daemon (`emfor` in the deb and rpm packages; with the FreeBSD port, the group of the daemon's user).
 
 If `<path>-lock` is missing while the data file exists, the first client that opens the store creates it (mode `0644`, owned by that client's user), and the daemon may then fail to start because it cannot open a lock file that belongs to another user. Start the daemon before applications that run as another user, and do not delete the lock file alone ([chapter 6](../manual/06-clients.md)).
 
-The lock file holds LMDB's reader table and the lock the daemon takes for each commit. Anyone who can write it can take the lock and stop the daemon's commits (the heartbeat stops and every client on the host sees a stale store), fill the reader table so lookups fail, or clear reader entries so that a lookup reads pages the daemon is rewriting. With the default `0666`, that is any local user. Keep it only on hosts where every local user is trusted; the default stays `0666` so that an upgrade does not lock out applications.
+The lock file holds LMDB's reader table and the lock the daemon takes for each commit. Anyone who can write it can take the lock and stop the daemon's commits (the heartbeat stops and every client on the host sees a stale store), fill the reader table so lookups fail, or clear reader entries so that a lookup reads pages the daemon is rewriting. That is why the default keeps it to the daemon's group.
 
-To limit the store to your applications, give them a group of their own and let the daemon create the files with it:
+To let the users of your applications in, add each of them to the group of the daemon (for the deb and rpm packages: `usermod -aG emfor <user>`; they log in again, or the service restarts, to get the group) and make sure the existing files have that group (`chgrp emfor /var/lib/emfor/state.mdb /var/lib/emfor/state.mdb-lock`; files the daemon creates take the group of the daemon). To use a group of your own instead of the daemon's:
 
 1. Create a group, for example `emfor-clients`, and add each application user to it.
 2. Make it the daemon's group. Under systemd, add `Group=emfor-clients` with `systemctl edit emfor`, and change `StateDirectoryMode=0755` to `0750` there; systemd then gives `/var/lib/emfor` that group. Under FreeBSD, `chgrp emfor-clients` and `chmod 0750` the store's directory (`/var/db/emfor` with the port): new files take the directory's group.
-3. Set `lock_file_mode = "0660"` and `file_mode = "0640"` in `[store]`.
-4. Existing store files keep their group: `chgrp emfor-clients /var/lib/emfor/state.mdb /var/lib/emfor/state.mdb-lock`, then restart the daemon, which sets the modes at every start.
+3. Existing store files keep their group: `chgrp emfor-clients /var/lib/emfor/state.mdb /var/lib/emfor/state.mdb-lock`, then restart the daemon.
+
+To let every local user query the store instead, set `file_mode = "0644"` and `lock_file_mode = "0666"` in `[store]` and restart the daemon. That is the behavior before 0.7.0. Do it only on a host where every local user is trusted: `emfor check-config` and the daemon at start then warn, in one line for each option, about a mode that other users can write.
+
+**Upgrading from 0.6 or earlier.** The defaults changed in 0.7.0 from `0644` and `0666` to `0640` and `0660`, and the daemon applies them to the existing files at its first start. An application whose user is not in the daemon's group then gets `UNAVAILABLE` from the client. Before the upgrade, add the application users to the group of the daemon, or write the two old values in `[store]`. The deb and rpm packages ship an `emfor.toml` without `[store]` keys, so they take the new defaults.
 
 ## emfor status
 

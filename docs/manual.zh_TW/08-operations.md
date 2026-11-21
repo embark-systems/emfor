@@ -194,12 +194,17 @@ store 裡沒有任何東西需要在重開機後保留，所以可以放在 tmpf
 
 ## 誰能使用 store
 
-應用程式讀取資料檔，並在 lock 檔 `<store>-lock` 中登記讀取，所以每個應用程式使用者都需要 store 的讀取權限與 lock 檔的寫入權限。預設值（`file_mode = "0644"`、`lock_file_mode = "0666"`）讓每個本機使用者都能這麼做，但也讓任何能寫 lock 檔的本機使用者可以卡住 daemon 的 commit 或干擾查詢。只有在每個本機使用者都可信任的主機上才保留預設值。否則，為你的應用程式建立一個群組：
+應用程式讀取資料檔，並在 lock 檔 `<store>-lock` 中登記讀取，所以每個應用程式使用者都需要 store 的讀取權限與 lock 檔的寫入權限。預設值（`file_mode = "0640"`、`lock_file_mode = "0660"`）只給 daemon 的使用者與它的群組，所以你的應用程式的使用者要在 daemon 的群組裡（deb 與 rpm 套件是 `emfor`）。daemon 每次啟動都會設定資料檔與 lock 檔的權限，新建的檔與既有的檔都一樣。
+
+要讓一個應用程式能用，把它的使用者加進那個群組（例如 `usermod -aG emfor <user>`；那個使用者的服務要重新啟動才拿得到群組），並確認既有的 store 檔屬於那個群組（`chgrp emfor <store> <store>-lock`）。要改用你自己的群組：
 
 1. 建立一個群組，例如 `emfor-clients`，把每個應用程式使用者加進去。
 2. 把它設為 daemon 的群組。systemd 下：`systemctl edit emfor`，加上 `Group=emfor-clients` 並設定 `StateDirectoryMode=0750`。FreeBSD 用 port 時：`chgrp emfor-clients /var/db/emfor && chmod 0750 /var/db/emfor`。
-3. 在 `[store]` 中設定 `file_mode = "0640"` 與 `lock_file_mode = "0660"`。
-4. 對既有的 store 與 lock 檔執行 `chgrp emfor-clients`，然後重新啟動 daemon（它每次啟動都會設定權限）。
+3. 對既有的 store 與 lock 檔執行 `chgrp emfor-clients`，然後重新啟動 daemon（它每次啟動都會設定權限）。
+
+要讓每個本機使用者都能查詢 store，在 `[store]` 設定 `file_mode = "0644"` 與 `lock_file_mode = "0666"` 並重新啟動 daemon。只有在每個本機使用者都可信任的主機上才這樣做：任何能寫 lock 檔的人可以卡住 daemon 的 commit（每個 client 就會看到過期的 store）或干擾查詢。`emfor check-config` 與 daemon 啟動時，對其他人可寫的權限每個選項警告一行；那一行會說明這個權限讓人能做什麼、該改成什麼，以及新值在下次啟動才生效。
+
+**從 0.6 或更早的版本升級。** 0.7.0 之前的預設值是 `"0644"` 與 `"0666"`。0.7.0 第一次啟動就把新的權限套到既有的檔案上，使用者不在 daemon 群組的應用程式會因此得到 `UNAVAILABLE`。升級之前，先把應用程式的使用者加進 daemon 的群組，或在 `[store]` 寫回那兩個舊值。deb 與 rpm 套件裝的 `emfor.toml` 沒有 `[store]` 的鍵，所以它們用新的預設值。
 
 ## 用 drain 做滾動部署
 
@@ -273,7 +278,7 @@ $ echo $?
 - WARNING：健康的少於 `-w` 個（預設：每一個沒有被 drain 的 backend）。
 - UNKNOWN：`emfor` 或 `jq` 無法執行、讀不到 store，或 service 不存在。
 - 被 drain 的 backend 不計入（它是刻意被拿掉的），但會在文字裡點名。`-s` 選一個 service（預設全部），`-C` 指定寫著 store 的設定檔。
-- 監控程式所用的使用者必須能讀 store、也能寫它的 lock 檔（[誰能使用 store](#誰能使用-store)）；採用建議的 `lock_file_mode = "0660"` 時，這個使用者必須在那個群組裡。用 NRPE 或 SSH 時，腳本在有 store 的那台主機上執行。
+- 監控程式所用的使用者必須能讀 store、也能寫它的 lock 檔（[誰能使用 store](#誰能使用-store)）；採用預設的 `lock_file_mode = "0660"` 時，這個使用者必須在 daemon 的群組裡。用 NRPE 或 SSH 時，腳本在有 store 的那台主機上執行。
 
 **把 Nagios 外掛當成檢查：`emfor-exec.sh`。** emfor 的 [`exec` 檢查](04-health-checks.md#exec)不經 shell 啟動程式，並把 backend 放在環境變數（`EMFOR_IP`、`EMFOR_PORT`），所以設定檔裡沒辦法給外掛 `-H $EMFOR_IP`。`emfor-exec.sh` 就是做這件事並執行外掛：
 

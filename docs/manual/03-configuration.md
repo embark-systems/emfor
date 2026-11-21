@@ -38,8 +38,8 @@ site = "dc1"
 [store]
 path = "/var/lib/emfor/state.mdb"
 map_size = "64MiB"
-file_mode = "0644"
-lock_file_mode = "0666"
+file_mode = "0640"
+lock_file_mode = "0660"
 sync = false
 ```
 
@@ -47,8 +47,8 @@ sync = false
 | --- | --- | --- |
 | `path` | `/var/lib/emfor/state.mdb` | The store file. Clients look here unless `EMFOR_STORE` says otherwise. |
 | `map_size` | `"64MiB"` | Largest size the store can grow to; at least `1MiB`, rounded up to a multiple of `64KiB` (LMDB needs a multiple of the page size). Commits fail with `MDB_MAP_FULL` when it is reached. |
-| `file_mode` | `"0644"` | Mode the store file is created with. Applications need to read it. |
-| `lock_file_mode` | `"0666"` | Mode of `<path>-lock`. Applications need to write it. See [who can use the store](08-operations.md#who-can-use-the-store) before keeping the default. |
+| `file_mode` | `"0640"` | Mode of the store file, set at every start on a new or an existing file. Applications need to read it, so their users have to be in the daemon's group; `"0644"` lets every local user read it. |
+| `lock_file_mode` | `"0660"` | Mode of `<path>-lock`, set at every start. Applications need to write it, so their users have to be in the daemon's group; `"0666"` lets every local user, and `emfor check-config` and the daemon warn about a mode other users can write. See [who can use the store](08-operations.md#who-can-use-the-store). Changed from `"0644"` and `"0666"` in 0.7.0. |
 | `sync` | `false` | `true` flushes every commit to disk. See [the store on disk](08-operations.md#the-store-on-disk). |
 
 ## [log]

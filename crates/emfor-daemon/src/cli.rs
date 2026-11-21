@@ -13,7 +13,9 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, reload};
 
-use crate::config::{self, Config, ConfigError, DEFAULT_CONFIG_PATH, DnsConfig, in_zone};
+use crate::config::{
+    self, Config, ConfigError, DEFAULT_CONFIG_PATH, DnsConfig, StoreConfig, in_zone,
+};
 use crate::dns::{self, DnsSettings};
 use crate::live::LiveState;
 use crate::metrics;
@@ -127,6 +129,9 @@ async fn start(config_path: PathBuf, check_only: bool, show: bool) -> ExitCode {
         return match loaded {
             Ok(c) => {
                 for w in credential_warnings(&c) {
+                    eprintln!("{w}");
+                }
+                for w in store_mode_warnings(&c.store) {
                     eprintln!("{w}");
                 }
                 let ok = format!(
@@ -422,6 +427,10 @@ async fn run(
     }
     warn_dns(&config);
     warn_credentials(&config);
+    // Only here: `[store]` is applied at start, a reload does not change it.
+    for m in store_mode_warnings(&config.store) {
+        tracing::warn!("{m}");
+    }
     // Kept until the daemon exits; dropping it stops the server.
     let _metrics_server = match &config.metrics {
         Some(m) => match metrics::serve(&m.listen, live.clone()).await {
@@ -657,6 +666,38 @@ fn warn_credentials(config: &Config) {
     for m in credential_warnings(config) {
         tracing::warn!("{m}");
     }
+}
+
+/// One warning for each of `[store] lock_file_mode` and `file_mode` that
+/// lets other users write (`0002`). Never an error. Each line says what the
+/// mode allows, what to set instead, where to read more, and that the value
+/// reaches the existing files at the next start, because the reader of
+/// `emfor check-config` is about to change the config.
+fn store_mode_warnings(store: &StoreConfig) -> Vec<String> {
+    const WRITE_BY_OTHERS: u32 = 0o002;
+    let mut out = Vec::new();
+    for (option, mode, can, instead) in [
+        (
+            "file_mode",
+            store.file_mode,
+            "write the data file that the emfor clients read: any local user can change what every lookup returns",
+            "0640",
+        ),
+        (
+            "lock_file_mode",
+            store.lock_file_mode,
+            "write the lock file, which holds LMDB's reader table and the lock the daemon takes for every commit: any local user can stop the daemon's commits, and every client then sees a stale store",
+            "0660",
+        ),
+    ] {
+        if mode & WRITE_BY_OTHERS == 0 {
+            continue;
+        }
+        out.push(format!(
+            "[store] {option} = \"{mode:04o}\" lets every user on this host {can}. Use \"{instead}\" (the default) and put the users of your applications in the group of the emfor daemon. The daemon sets this mode on the existing files at every start, so a change takes effect at the next start. See \"Who can use the store\" in the operations chapter of the manual",
+        ));
+    }
+    out
 }
 
 /// The `check_options` that name a file holding a secret.
@@ -984,6 +1025,69 @@ mod tests {
             "{w:?}"
         );
         assert!(w[1].starts_with("service b.svc:"), "{w:?}");
+    }
+
+    /// The table "which modes warn" of the spec: a mode that lets other
+    /// users write warns, and each line carries the four things that let the
+    /// reader of `emfor check-config` act on it.
+    #[test]
+    fn store_mode_warnings_follow_the_other_users_write_bit() {
+        // (file_mode, lock_file_mode, [(option, mode shown, recommended)])
+        type Warned = &'static [(&'static str, &'static str, &'static str)];
+        let rows: [(u32, u32, Warned); 6] = [
+            (0o640, 0o660, &[]),
+            (0o644, 0o660, &[]),
+            (0o644, 0o666, &[("lock_file_mode", "0666", "0660")]),
+            (0o666, 0o660, &[("file_mode", "0666", "0640")]),
+            (
+                0o666,
+                0o666,
+                &[
+                    ("file_mode", "0666", "0640"),
+                    ("lock_file_mode", "0666", "0660"),
+                ],
+            ),
+            (0o662, 0o640, &[("file_mode", "0662", "0640")]),
+        ];
+        for (file_mode, lock_file_mode, expected) in rows {
+            let store = StoreConfig {
+                file_mode,
+                lock_file_mode,
+                ..StoreConfig::default()
+            };
+            let w = store_mode_warnings(&store);
+            assert_eq!(
+                w.len(),
+                expected.len(),
+                "{file_mode:o} {lock_file_mode:o}: {w:?}"
+            );
+            for (line, (option, shown, recommended)) in w.iter().zip(expected) {
+                let at = format!("{file_mode:o} {lock_file_mode:o}: {line}");
+                // The option and its mode.
+                assert!(
+                    line.starts_with(&format!("[store] {option} = \"{shown}\"")),
+                    "{at}"
+                );
+                // What the mode allows.
+                let can = if *option == "lock_file_mode" {
+                    "stop the daemon's commits"
+                } else {
+                    "change what every lookup returns"
+                };
+                assert!(line.contains(can), "{at}");
+                // What to set instead, and the group.
+                assert!(line.contains(&format!("Use \"{recommended}\"")), "{at}");
+                assert!(line.contains("in the group of the emfor daemon"), "{at}");
+                // Where to read more, and when it takes effect.
+                assert!(line.contains("\"Who can use the store\""), "{at}");
+                assert!(line.contains("at the next start"), "{at}");
+                // One line.
+                assert!(!line.contains('\n'), "{at}");
+            }
+        }
+        // The default settings do not warn, and the mode bit for other
+        // users to read alone does not either.
+        assert!(store_mode_warnings(&StoreConfig::default()).is_empty());
     }
 
     /// ldap is protected by `tls` or by `starttls`.

@@ -33,8 +33,8 @@ site = "dc1"
 [store]
 path = "/var/lib/emfor/state.mdb"
 map_size = "64MiB"
-file_mode = "0644"
-lock_file_mode = "0666"
+file_mode = "0640"
+lock_file_mode = "0660"
 sync = false
 ```
 
@@ -42,8 +42,8 @@ sync = false
 | --- | --- | --- |
 | `path` | `/var/lib/emfor/state.mdb` | store 檔案。client 也找這裡，除非 `EMFOR_STORE` 另有指定。 |
 | `map_size` | `"64MiB"` | store 能成長到的最大大小；至少 `1MiB`，並無條件進位到 `64KiB` 的倍數（LMDB 要求是 page size 的倍數）。達到上限時 commit 會以 `MDB_MAP_FULL` 失敗。 |
-| `file_mode` | `"0644"` | 建立 store 檔案時的權限。應用程式需要能讀取。 |
-| `lock_file_mode` | `"0666"` | `<path>-lock` 的權限。應用程式需要能寫入。保留預設值前請先看[誰能使用 store](08-operations.md#誰能使用-store)。 |
+| `file_mode` | `"0640"` | store 檔的權限，每次啟動都會設定，新檔與既有的檔都一樣。應用程式需要能讀取，所以它們的使用者要在 daemon 的群組裡；`"0644"` 讓每個本機使用者都能讀。 |
+| `lock_file_mode` | `"0660"` | `<path>-lock` 的權限，每次啟動都會設定。應用程式需要能寫入，所以它們的使用者要在 daemon 的群組裡；`"0666"` 讓每個本機使用者都能寫，`emfor check-config` 與 daemon 啟動時會對其他人可寫的權限發出警告。見[誰能使用 store](08-operations.md#誰能使用-store)。0.7.0 起從 `"0644"` 與 `"0666"` 改成這兩個值。 |
 | `sync` | `false` | `true` 會在每次 commit 時寫入磁碟。見[磁碟上的 store](08-operations.md#磁碟上的-store)。 |
 
 ## [log]

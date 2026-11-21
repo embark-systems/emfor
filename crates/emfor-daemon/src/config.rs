@@ -122,8 +122,11 @@ impl Default for StoreConfig {
         Self {
             path: PathBuf::from("/var/lib/emfor/state.mdb"),
             map_size: 64 * 1024 * 1024,
-            file_mode: 0o644,
-            lock_file_mode: 0o666,
+            // Only the daemon's user and group can use the store; the
+            // applications' users have to be in that group. 0644 and 0666
+            // (every local user) have to be written out.
+            file_mode: 0o640,
+            lock_file_mode: 0o660,
             sync: false,
         }
     }

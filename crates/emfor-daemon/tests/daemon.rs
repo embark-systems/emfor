@@ -381,6 +381,106 @@ fn check_config_compares_the_secret_owner_with_the_user_that_runs_it() {
     assert!(!err.contains("owned by uid"), "{err}");
 }
 
+/// Spec "Store file mode warning", `emfor check-config` scenario: a mode that
+/// lets other users write is a warning on standard error that says what to
+/// do, not an error; the default settings give none.
+#[test]
+fn check_config_warns_about_a_store_mode_that_others_can_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    let svc = "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n";
+    let check = |text: &str| {
+        std::fs::write(&cfg, text).unwrap();
+        Command::new(cargo_bin("emfor"))
+            .args(["check-config", "--config"])
+            .arg(&cfg)
+            .output_locked()
+            .unwrap()
+    };
+
+    let out = check(&format!(
+        "[store]\npath = \"{}\"\nlock_file_mode = \"0666\"\n\n{svc}",
+        dir.path().join("state.mdb").display()
+    ));
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "config ok: 1 services, 1 backends"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = err
+        .lines()
+        .filter(|l| l.contains("lock_file_mode"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{err}");
+    for part in [
+        "\"0666\"",
+        "stop the daemon's commits",
+        "Use \"0660\"",
+        "in the group of the emfor daemon",
+        "Who can use the store",
+        "at the next start",
+    ] {
+        assert!(lines[0].contains(part), "{part}: {err}");
+    }
+
+    // The default settings: nothing to warn about.
+    let out = check(svc);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.contains("file_mode") && !err.contains("Who can use the store"),
+        "{err}"
+    );
+}
+
+/// Spec "Store file mode warning", daemon scenario: one `warn` line at
+/// start, the daemon runs, and a reload does not repeat it.
+#[test]
+fn daemon_warns_at_start_about_a_store_mode_that_others_can_write() {
+    let (_l, addr) = listener();
+    let svc = tcp_service("api.svc.emfor", &addr);
+    let mut d = Daemon::spawn_with(
+        |dir| {
+            format!(
+                "[store]\npath = \"{}\"\nmap_size = \"4MiB\"\nfile_mode = \"0666\"\n\n{svc}",
+                dir.join("state.mdb").display()
+            )
+        },
+        &[],
+    );
+    d.wait_log("emfor started");
+    assert!(d.running());
+    let log = d.log();
+    let lines: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("Who can use the store"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{log}");
+    for part in [
+        "WARN",
+        "file_mode",
+        "\"0666\"",
+        "change what every lookup returns",
+        "Use \"0640\"",
+        "in the group of the emfor daemon",
+    ] {
+        assert!(lines[0].contains(part), "{part}: {log}");
+    }
+
+    // A reload applies the new service and does not log the warning again.
+    let r = Reader::open(&d.store());
+    d.write_whole_config(&format!(
+        "[store]\npath = \"{}\"\nmap_size = \"4MiB\"\nfile_mode = \"0666\"\n\n{svc}{}",
+        d.store().display(),
+        tcp_service("web.svc.emfor", &addr)
+    ));
+    d.signal(Signal::SIGHUP);
+    wait_for(|| r.service("web.svc.emfor").is_some());
+    assert_eq!(d.log().matches("Who can use the store").count(), 1);
+    assert!(d.running());
+}
+
 /// A `conf.d` next to `dir`'s config, mode 0755 as a package makes it.
 fn conf_d(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;

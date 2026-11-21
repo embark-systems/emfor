@@ -54,12 +54,13 @@ is a vulnerability.
 - **Local users and the store.** Applications read the store through its
   lock file, so every application user needs write access to
   `<store>-lock`. Anyone who can write that file can stop the daemon's
-  commits or disturb lookups. With the default `lock_file_mode = "0666"`
-  that is every local user; this is documented, and hosts with untrusted
-  local users should restrict the store to a group (see "Who can use the
-  store" in [docs/deploy/daemon.md](docs/deploy/daemon.md)). Reports that
-  only restate this are not vulnerabilities; ways around the group
-  restriction are.
+  commits or disturb lookups. The default `lock_file_mode = "0660"` limits
+  that to the daemon's user and group; with `"0666"` (a choice of the
+  operator, which `emfor check-config` and the daemon warn about) it is
+  every local user. This is documented (see "Who can use the store" in
+  [docs/deploy/daemon.md](docs/deploy/daemon.md)). Reports that only
+  restate this are not vulnerabilities; ways around the group restriction
+  are.
 - **The DNS server and `/metrics`** listen on loopback by default and have
   no authentication. Exposing them to other hosts is the operator's choice;
   firewall them to the clients that need them. Remote crashes, memory
