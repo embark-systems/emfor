@@ -708,7 +708,13 @@ write or that another user owns, as it already refused such a fragment (fix
 it before the restart with `chmod g-w,o-w /etc/emfor/emfor.toml` or `chown
 root /etc/emfor/emfor.toml`; `emfor check-config` of step 2 reports it, and
 the deb and rpm packages install the file root-owned with mode `0644`, so
-they are not affected). The other changes of 0.7.0 that need an action are
+they are not affected); the rpm of 0.7.0 marks `/etc/emfor/emfor.toml`
+`%config(noreplace)`, so an upgrade keeps a file you changed and writes the
+packaged one next to it as `emfor.toml.rpmnew` (the rpm of 0.6.0 marked it
+`%config`, which replaced a changed file by the packaged one when the
+packaged one differed, and saved yours as `emfor.toml.rpmsave`; the packaged
+file of 0.6.0 and of 0.7.0 are the same, and the flag of the new package is the
+one an upgrade follows). The other changes of 0.7.0 that need an action are
 in [CHANGELOG.md](../../CHANGELOG.md).
 
 After the restart, applications that were already running the new library

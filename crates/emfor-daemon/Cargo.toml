@@ -118,7 +118,7 @@ assets = [
     { source = "target/release/emfor", dest = "/usr/bin/emfor", mode = "755" },
     { source = "target/release/emfor-check", dest = "/usr/bin/emfor-check", mode = "755" },
     { source = "../../packages/common/emfor.service", dest = "/usr/lib/systemd/system/emfor.service", mode = "644" },
-    { source = "../../packages/common/emfor.toml", dest = "/etc/emfor/emfor.toml", mode = "644", config = true },
+    { source = "../../packages/common/emfor.toml", dest = "/etc/emfor/emfor.toml", mode = "644", config = "noreplace" },
     { source = "../../packages/common/conf.d-README", dest = "/etc/emfor/conf.d/README", mode = "644", config = "noreplace" },
     { source = "../../examples/emfor.toml", dest = "/usr/share/doc/emfor/examples/emfor.toml", mode = "644", doc = true },
     { source = "../../LICENSE", dest = "/usr/share/licenses/emfor/LICENSE", mode = "644", license = true },

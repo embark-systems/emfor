@@ -199,6 +199,27 @@ inputs, and the rollback of a list that `check-config` refuses. Not run
 against a real AWS or Google Cloud account, with systemd (`systemctl reload`)
 or on FreeBSD.
 
+**The rpm keeps a changed main config file on upgrade (bug fix).**
+The rpm marked `/etc/emfor/emfor.toml` as `%config` and not `%config(noreplace)`
+(`conf.d/README` already was). When the packaged file differs between two
+versions, an upgrade then replaced a file the administrator had changed with
+the packaged one, which holds only `include_dir`, and saved the changed one as
+`emfor.toml.rpmsave`; the services, `[peers]` and `[store]` written in the main
+file were gone, and the restart of the package script started the daemon
+without them. The flag is now `noreplace`: an upgrade keeps the changed file
+and writes the packaged one as `emfor.toml.rpmnew`. The packaged file is the
+same in 0.6.0 and 0.7.0, so an upgrade from 0.6.0 does not meet the difference
+in any case. Checked in a Rocky Linux 9 container with `rpm`: the flags of the
+built package are `cn` for `emfor.toml` and `conf.d/README` (the 0.6.0 package
+has `c` for `emfor.toml`); two test packages whose packaged `emfor.toml` has one
+more line, built with each flag, upgraded from the 0.6.0 package after a local
+edit: with `%config` the local file was replaced and `emfor.toml.rpmsave`
+written, with `noreplace` the local file stayed and `emfor.toml.rpmnew` was
+written (the scripts were not run: `--noscripts`, `--nodeps`). Not verified:
+the real packaged scripts on an upgrade, a systemd start, other rpm versions
+than the one of Rocky Linux 9, and the deb (dpkg asks about a changed
+conffile and was not changed).
+
 ## 0.6.0 — 2026-11-17
 
 The store format (`meta/schema_version` 2) and the plugin protocol (1) are
