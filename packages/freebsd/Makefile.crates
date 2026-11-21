@@ -35,9 +35,9 @@ CARGO_CRATES=	adler2-2.0.1 \
 		chacha20-0.10.2 \
 		chacha20poly1305-0.11.0 \
 		cipher-0.5.2 \
-		clap-4.6.7 \
+		clap-4.6.8 \
 		clap_builder-4.6.7 \
-		clap_derive-4.6.7 \
+		clap_derive-4.6.8 \
 		clap_lex-1.1.1 \
 		cmake-0.1.58 \
 		cmov-0.5.4 \
