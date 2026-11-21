@@ -6,8 +6,8 @@ name: Fuzz
 # earlier. A crash fails the job and uploads the input that caused it.
 #
 # The corpus a target found is kept between runs (actions/cache), so each
-# night starts where the last one ended; GitHub drops a cache that was not
-# used for a week.
+# night starts where the last one ended, also after a night that found a
+# crash; GitHub drops a cache that was not used for a week.
 on:
   schedule:
     - cron: "30 2 * * *"
@@ -59,7 +59,7 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked --version "$CARGO_FUZZ_VERSION"
       - name: Restore the corpus
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: fuzz/corpus
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
@@ -70,6 +70,15 @@ jobs:
           mkdir -p corpus/${{ matrix.target }}
           cargo +nightly fuzz run -O ${{ matrix.target }} ${{ matrix.args }} \
             -max_total_time="${{ github.event.inputs.seconds || 300 }}"
+      # Also after a crash, which fails the step above: the night that finds
+      # a crash is the one whose corpus is worth keeping. Not when the run
+      # was cancelled.
+      - name: Keep the corpus
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
       - name: Keep the input that crashed
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
