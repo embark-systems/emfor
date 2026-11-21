@@ -1,35 +1,61 @@
-# emfor user manual
+# The emfor manual
 
-English | [繁體中文](../manual.zh_TW/README.md)
+This manual is for people who have never used emfor: the administrator who
+installs and runs it, and the developer whose application asks it which
+backend to connect to. It describes **emfor 0.7.0**.
 
-This manual is for the people who install emfor, configure it, and write
-the applications that use it. It explains how the pieces fit together and
-walks through each task; the documents under [docs/deploy/](../deploy/) and
-the client READMEs hold the full detail and are linked where they apply.
+Start with chapter 1 to see whether emfor fits your problem, then do the
+quick start in chapter 2. It takes about ten minutes on one Linux host.
+After that, read the chapters you need. Chapter 18 has every config key in
+one table.
 
-The manual describes emfor 0.5.
+## Chapters
 
-| Chapter | What it covers |
-| --- | --- |
-| [1. Concepts](01-concepts.md) | The daemon, the state store, clients, DNS, health states, and what happens when something fails |
-| [2. Installation](02-installation.md) | Building, install prefixes, systemd, FreeBSD, and the client libraries |
-| [3. Configuration](03-configuration.md) | Every table and key of `emfor.toml`, validation, and what a reload can change |
-| [4. Health checks](04-health-checks.md) | `tcp`, `http`, `exec`, plugins and `emfor-check`; rise, fall, scheduling and reasons |
-| [5. Choosing a backend](05-backend-selection.md) | The `balance` methods, `on_all_down`, and a stale store |
-| [6. Client libraries](06-clients.md) | Looking up a backend from Rust, C, Go, Python, Perl and PHP |
-| [7. DNS](07-dns.md) | The DNS server, its answers, SRV records, forwarding from the host resolver, and caching |
-| [7b. DNS recipes](07-dns-recipes.md) | nginx, HAProxy, Caddy, Prometheus and pf on emfor's DNS answers, and clients that ask for SRV records themselves |
-| [8. Operations](08-operations.md) | Commands, signals and reload, `emfor status`, `emfor lookup`, metrics, logs, exit codes, the store on disk, upgrading |
-| [9. Troubleshooting](09-troubleshooting.md) | Symptoms, their causes, and what to do |
-| [10. Moving from HAProxy or Consul](10-migrating.md) | What the same configuration looks like in emfor, what has no equivalent, and how to try emfor next to what you have |
-
-New to emfor? Read chapter 1, then follow the quick start in the
-[README](../../README.md#quick-start), then chapter 3.
+| # | Chapter | Read it when you want to |
+| --- | --- | --- |
+| 1 | [What emfor is, and what it is not](01-what-emfor-is.md) | decide whether emfor fits |
+| 2 | [Quick start](02-quick-start.md) | see it work on one host in ten minutes |
+| 3 | [Concepts](03-concepts.md) | understand services, backends, health states, tiers and the store |
+| 4 | [Installing](04-installing.md) | install the daemon, the packages, the service unit and the client libraries |
+| 5 | [Configuring emfor](05-configuring.md) | lay out the config files, check them and reload them |
+| 6 | [Health checks: tcp, http and exec](06-health-checks.md) | choose and tune the built-in checks |
+| 7 | [Plugins and emfor-check](07-plugins.md) | check databases, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB, gRPC or QUIC, or write your own check |
+| 8 | [How a backend is chosen](08-choosing-a-backend.md) | pick a `balance` method and use backups, drain and slow start |
+| 9 | [Client libraries](09-clients.md) | look up a backend from Rust, C, Go, Python, Perl or PHP |
+| 10 | [DNS](10-dns.md) | serve programs that cannot use a client library |
+| 11 | [Peer groups](11-peer-groups.md) | let the hosts of a data centre share check results |
+| 12 | [Operating emfor](12-operating.md) | use `emfor status` and `emfor lookup`, reload, read metrics and logs, look after the store |
+| 13 | [Security model](13-security.md) | know who can do what, and what to lock down |
+| 14 | [Integrations](14-integrations.md) | feed nginx, HAProxy, Caddy, Prometheus or pf, or monitor emfor from Nagios |
+| 15 | [Upgrading](15-upgrading.md) | upgrade from 0.6 (or older) to 0.7.0 |
+| 16 | [Troubleshooting](16-troubleshooting.md) | fix something, starting from the error message |
+| 17 | [Migrating from HAProxy or Consul](17-migrating.md) | translate an existing setup |
+| 18 | [Configuration reference](18-config-reference.md) | look up a key, its default and its limits |
+| 19 | [Glossary](19-glossary.md) | look up a term |
 
 ## Conventions
 
-- Service names in the examples end in `.svc.emfor`, the default DNS zone.
-  Any host-name-like name works; only names under the zone resolve over DNS.
-- Paths are the defaults: the config at `/etc/emfor/emfor.toml`, the store
-  at `/var/lib/emfor/state.mdb`.
-- `$` starts a command you type; lines without it are output.
+- `$` starts a command you type as a normal user, `#` one you type as root.
+  Lines without either are output.
+- The paths are the defaults: the config is `/etc/emfor/emfor.toml`, the store
+  is `/var/lib/emfor/state.mdb`, and the plugin program is
+  `/usr/bin/emfor-check` (where the deb and rpm packages put it).
+- Service names end in `.svc.emfor`, the default DNS zone. Any host-name-like
+  name works, but only names under the DNS zone can be resolved over DNS.
+- The examples use private addresses such as `10.0.0.11`. The quick start uses
+  `127.0.0.1` and `127.0.0.2` so that it runs on one machine.
+
+## What "tested" means in this manual
+
+Every complete TOML example in this manual was checked with
+`emfor check-config` of 0.7.0 in a Debian 13 container. The command output
+shown was produced by emfor 0.7.0 in such a container, except where the text
+says otherwise. Some statements come from emfor's own test suite (for example
+the nginx and HAProxy recipes) and say so. Where something has not been run
+(macOS, FreeBSD on amd64, real hardware, real database servers), the text says
+so where it matters.
+
+The more detailed reference documents in the repository are linked where
+they apply: [docs/deploy/](../deploy/) for daemon, DNS and plugin details,
+[docs/plugins/protocol-v1.md](../plugins/protocol-v1.md) for the plugin
+protocol, and each client's README under [clients/](../../clients/).
