@@ -85,7 +85,7 @@ A lookup that cannot return an address SHALL fail with exactly one of these code
 3. `NOT_FOUND` — no `svc/<name>` key exists for the normalized name.
 4. `ALL_DOWN` — no backend is usable and the service's `on_all_down` is `closed`.
 
-Each failure SHALL carry a human-readable message naming the cause. Each language SHALL expose the code in its own idiom (a status value in the C library, an error value in Rust) with the code's name available as the exact strings above. A store that LMDB reports as damaged, and a data file that is already shorter than the last page its LMDB meta page records when the client opens it, SHALL NOT make the lookup crash, panic or abort. When the client opens the store it SHALL compare the length of the file it opened, measured after reading the meta page, with (last page number + 1) × page size as recorded by that meta page, before any read of a data page, and SHALL fail a shorter file with `UNAVAILABLE` and a message containing the store path, `truncated`, the file length and the recorded length; such a failure counts as a store file that exists but cannot be opened. A data file changed in place (overwritten or truncated) after the client opened it, and a disk read error, are outside this guarantee: reading it through the memory map can end the process with `SIGBUS`.
+Each failure SHALL carry a human-readable message naming the cause. Each language SHALL expose the code in its own idiom (a status value in the C library, an error value in Rust) with the code's name available as the exact strings above. A store that LMDB reports as damaged, and a data file that is already shorter than the last page its LMDB meta page records when the client opens it, SHALL NOT make the lookup crash, panic or abort. When the client opens the store it SHALL compare the length of the file it opened, measured after reading the meta page, with (last page number + 1) × page size as recorded by that meta page, before any read of a data page. A shorter file can be one that the daemon has committed and not yet padded to its recorded length, so the client SHALL read the meta page and measure the length again after a short pause, up to 5 times with 20 milliseconds between them, and SHALL open the store when a check finds the file long enough; it SHALL fail a file that is still shorter after the last check with `UNAVAILABLE` and a message containing the store path, `truncated`, the file length and the recorded length; such a failure counts as a store file that exists but cannot be opened. Any other open error SHALL fail at once, without these checks. A data file changed in place (overwritten or truncated) after the client opened it, and a disk read error, are outside this guarantee: reading it through the memory map can end the process with `SIGBUS`.
 
 #### Scenario: Error code by store condition
 
@@ -124,16 +124,32 @@ Each failure SHALL carry a human-readable message naming the cause. Each languag
 
 #### Scenario: Truncated store fails instead of crashing
 
-- **WHEN** a store with a record of `api.svc.emfor` is cut short by its last page (the length becomes the recorded length minus one page) before any client opens it, and a client looks up `api.svc.emfor`
+- **WHEN** a store with a record of `api.svc.emfor` is cut short by its last page (the length becomes the recorded length minus one page) before any client opens it, and it stays that short, and a client looks up `api.svc.emfor`
 - **THEN** the lookup fails with `UNAVAILABLE`, its message contains the store path and `truncated`, and the process goes on running
+
+#### Scenario: Store padded while the client opens it
+
+- **WHEN** a client opens a store whose file is one page shorter than its meta page records, and the daemon pads the file to the recorded length 10 milliseconds later, and the client looks up `api.svc.emfor`
+- **THEN** the lookup returns an address, and a lookup right after it does not fail with a cached `UNAVAILABLE`
 
 ##### Example: length check
 
 | File length | Last page number | Page size | Result |
 | --- | --- | --- | --- |
 | 16384 | 3 | 4096 | opened |
-| 12288 | 3 | 4096 | `UNAVAILABLE`, `truncated: 12288 bytes, LMDB records 16384 bytes` |
-| 20480 | 3 | 4096 | opened (a longer file is not checked further) |
+| 12288 | 3 | 4096 | `UNAVAILABLE`, `truncated: 12288 bytes, LMDB records 16384 bytes` (after the checks) |
+
+
+<!-- @trace
+source: emfor-client-truncated-recheck
+updated: 2026-11-21
+code:
+  - CHANGELOG.md
+  - clients/rust/src/client.rs
+  - clients/rust/src/store.rs
+  - docs/manual.zh_TW/06-clients.md
+  - docs/manual/06-clients.md
+-->
 
 ---
 ### Requirement: Service names are normalized before lookup

@@ -249,6 +249,15 @@ between fail with the same `UNAVAILABLE` error. A missing store file is
 tried on every lookup, so applications started before the daemon find the
 store as soon as it exists.
 
+A store file that is shorter than its LMDB records is usually the daemon
+between a commit and padding the file to its recorded length, a gap of
+microseconds when measured. The client therefore measures it again up to 5
+times, 20 milliseconds apart, and opens the store as soon as it is long
+enough; only a file that stays short fails with `UNAVAILABLE` (message
+containing `truncated`), after about 100 milliseconds, and that failure is
+then tried again at most once a second like the others. Lookups of the same
+client wait during those 100 milliseconds.
+
 Do not delete the lock file (`<store>-lock`) alone. Start the daemon
 before applications that run as root or as the daemon's user: if the lock
 file is missing, the first process to open the store creates it, owned by

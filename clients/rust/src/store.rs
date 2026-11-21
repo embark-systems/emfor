@@ -8,6 +8,7 @@ use std::ffi::{CStr, CString, c_void};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::time::Duration;
 
 use lmdb_master_sys as ffi;
 
@@ -68,30 +69,76 @@ fn open_error(path: &Path, rc: i32) -> Error {
     })
 }
 
+/// How many more times a store that looks truncated is measured, after the
+/// first, before it is refused: the daemon commits and only then pads the
+/// file to the length LMDB records, so a store opened in between is short
+/// for a moment (microseconds when measured, see the change design).
+pub(crate) const LENGTH_RECHECKS: u32 = 5;
+/// The pause before each of those measurements.
+pub(crate) const LENGTH_RECHECK_PAUSE: Duration = Duration::from_millis(20);
+
 /// Fail a store whose data file is shorter than LMDB records it (see
-/// [`emfor_format::truncated_store`]). Reads only the meta pages, and the
-/// length of the file LMDB opened, not of whatever is at the path now.
+/// [`emfor_format::truncated_store`]), after measuring it again a few times
+/// (`rechecks` times, see [`LENGTH_RECHECKS`]). Reads only the meta pages,
+/// and the length of the file LMDB opened, not of whatever is at the path
+/// now.
 ///
 /// # Safety
 ///
 /// `env` is an environment opened by `mdb_env_open`.
-unsafe fn check_length(env: *mut ffi::MDB_env, path: &Path) -> Result<(), Error> {
+unsafe fn check_length(env: *mut ffi::MDB_env, path: &Path, rechecks: u32) -> Result<(), Error> {
+    // SAFETY: the caller's guarantee.
+    unsafe { check_length_with(env, path, rechecks, LENGTH_RECHECK_PAUSE) }
+}
+
+/// [`check_length`] with its number of rechecks and pause given.
+///
+/// # Safety
+///
+/// `env` is an environment opened by `mdb_env_open`.
+unsafe fn check_length_with(
+    env: *mut ffi::MDB_env,
+    path: &Path,
+    rechecks: u32,
+    pause: Duration,
+) -> Result<(), Error> {
+    let failed =
+        |what: String| unavailable(format!("cannot open store {}: {what}", path.display()));
+    let mut attempt = 0;
+    loop {
+        // SAFETY: the caller's guarantee.
+        match unsafe { truncation(env) }.map_err(failed)? {
+            None => return Ok(()),
+            Some(why) if attempt >= rechecks => return Err(failed(why)),
+            Some(_) => {
+                attempt += 1;
+                std::thread::sleep(pause);
+            }
+        }
+    }
+}
+
+/// One measurement: `Ok(Some(why))` when the file is shorter than recorded,
+/// `Err` (the cause) when LMDB or the file system cannot tell.
+///
+/// # Safety
+///
+/// `env` is an environment opened by `mdb_env_open`.
+unsafe fn truncation(env: *mut ffi::MDB_env) -> Result<Option<String>, String> {
     use std::mem::{ManuallyDrop, MaybeUninit};
     use std::os::fd::FromRawFd;
 
-    let failed =
-        |what: String| unavailable(format!("cannot open store {}: {what}", path.display()));
     let mut info = MaybeUninit::uninit();
     let mut stat = MaybeUninit::uninit();
     // SAFETY: `env` is open; both only read its meta pages.
     let (info, stat) = unsafe {
         let rc = ffi::mdb_env_info(env, info.as_mut_ptr());
         if rc != 0 {
-            return Err(failed(strerror(rc)));
+            return Err(strerror(rc));
         }
         let rc = ffi::mdb_env_stat(env, stat.as_mut_ptr());
         if rc != 0 {
-            return Err(failed(strerror(rc)));
+            return Err(strerror(rc));
         }
         (info.assume_init(), stat.assume_init())
     };
@@ -102,15 +149,16 @@ unsafe fn check_length(env: *mut ffi::MDB_env, path: &Path) -> Result<(), Error>
     // SAFETY: `env` is open; LMDB writes its data file descriptor.
     let rc = unsafe { ffi::mdb_env_get_fd(env, fd.as_mut_ptr()) };
     if rc != 0 {
-        return Err(failed(strerror(rc)));
+        return Err(strerror(rc));
     }
     // SAFETY: the descriptor stays LMDB's: ManuallyDrop never closes it.
     let file = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd.assume_init()) });
-    let len = file.metadata().map_err(|e| failed(e.to_string()))?.len();
-    match emfor_format::truncated_store(len, info.me_last_pgno as u64, u64::from(stat.ms_psize)) {
-        Some(why) => Err(failed(why)),
-        None => Ok(()),
-    }
+    let len = file.metadata().map_err(|e| e.to_string())?.len();
+    Ok(emfor_format::truncated_store(
+        len,
+        info.me_last_pgno as u64,
+        u64::from(stat.ms_psize),
+    ))
 }
 
 /// Values read in one read transaction.
@@ -161,7 +209,17 @@ impl Drop for Txn {
 }
 
 impl Env {
+    /// Open the store, measuring a file that looks truncated again
+    /// [`LENGTH_RECHECKS`] times before refusing it. Sleeps up to
+    /// `LENGTH_RECHECKS × LENGTH_RECHECK_PAUSE` on a short file.
     pub fn open(path: &Path) -> Result<Env, Error> {
+        Env::open_rechecking(path, LENGTH_RECHECKS)
+    }
+
+    /// [`Env::open`] with the number of length rechecks given; 0 refuses a
+    /// short file at once, for a caller that holds the client's write lock
+    /// and tries again soon (the switch to a replaced store).
+    pub fn open_rechecking(path: &Path, rechecks: u32) -> Result<Env, Error> {
         // Check first: LMDB would create `<path>-lock` even when the data
         // file is missing, and a lock file owned by an application user can
         // stop the daemon from starting later.
@@ -205,7 +263,7 @@ impl Env {
             }
             // Before any data page is read: a file shorter than LMDB
             // records would be read past its end (`SIGBUS`).
-            if let Err(e) = check_length(env, path) {
+            if let Err(e) = check_length(env, path, rechecks) {
                 ffi::mdb_env_close(env);
                 return Err(e);
             }

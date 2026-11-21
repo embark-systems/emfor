@@ -61,6 +61,21 @@ the member). Not verified: real network reordering between
 hosts (the tests feed messages in the reordered sequence); the new tests were
 not run against the old code as such, only with the comparison removed.
 
+**A client that opens the store while the daemon pads it no longer fails (bug fix).**
+The daemon commits a write and only then extends the data file to the length
+LMDB records, so for a moment the file is shorter than recorded. A client
+that opened the store in that gap refused it as truncated and kept that
+failure for one second. It now measures the file again up to 5 times, 20 ms
+apart (about 100 ms), and opens the store once it is long enough; a file that
+stays short fails as before, with the same message, after those 100 ms (other
+lookups of that client wait meanwhile). The switch to a replaced store does
+not recheck, because it runs under the same lock every 100 ms. Only the Rust client opens the store;
+the other languages use it through libemfor. Checked in a Debian container:
+the gap measured with a temporary test (longest 11.9 µs, one run, Linux
+only); two new tests, both of which fail with the rechecks set to 0, and a time limit added to the replaced-store test, which fails when that path rechecks; the
+existing truncated-store tests are unchanged and pass. Not verified: macOS,
+FreeBSD, a writer that is descheduled for long between commit and padding.
+
 **A hung config file no longer blocks a stop request, and a restarted plugin leaves no tasks behind (bug fixes).**
 On `SIGHUP` the daemon read the config on the thread that runs its main
 loop, so a config on a hung file system kept the daemon from handling

@@ -217,10 +217,13 @@ impl Client {
         if !old.replaced() {
             return true; // switched by another thread meanwhile
         }
+        // No length rechecks here: this runs under the write lock and is
+        // tried again within `REPLACE_CHECK_MS`, so a short replacement
+        // would stall every lookup; the next try finds it padded.
         if old.lock_file_replaced() {
             // Another lock file: open the new store first and keep the old
             // one if that fails (a file still being written, say).
-            match Env::open(&self.path) {
+            match Env::open_rechecking(&self.path, 0) {
                 Ok(env) => {
                     *slot = Some(env); // closes the old environment
                     true
@@ -230,7 +233,7 @@ impl Client {
         } else {
             // The same lock file: the old environment must be closed first.
             *slot = None;
-            match Env::open(&self.path) {
+            match Env::open_rechecking(&self.path, 0) {
                 Ok(env) => {
                     *slot = Some(env);
                     true
@@ -746,9 +749,18 @@ mod tests {
         std::fs::rename(&next, dir.path().join("state.mdb")).unwrap();
         let _ = std::fs::remove_file(dir.path().join("next.mdb-lock"));
         let _ = std::fs::remove_file(dir.path().join("state.mdb-lock"));
+        // The switch runs under the write lock and again on every lookup
+        // here: it must refuse a short file at once, not after rechecks.
+        let started = std::time::Instant::now();
         for _ in 0..2 {
             assert_eq!(c.lookup("api.svc.emfor", None).unwrap(), "10.0.0.11:8080");
         }
+        let took = started.elapsed();
+        let pauses = crate::store::LENGTH_RECHECK_PAUSE * crate::store::LENGTH_RECHECKS;
+        assert!(
+            took < pauses * 3 / 2,
+            "two lookups took {took:?}, as long as rechecks"
+        );
     }
 
     /// A data file replaced under the same lock file is followed too, by
@@ -859,6 +871,74 @@ mod tests {
         assert_eq!(e.code, ErrorCode::Unavailable, "{e}");
         assert!(e.message.contains("truncated"), "{e}");
         assert!(e.message.contains(&path_text), "{e}");
+    }
+
+    /// The store file as the daemon leaves it between commit and padding:
+    /// one page shorter than LMDB records. Returns the path and what a
+    /// writer has to put back (the offset and bytes of the cut-off page).
+    fn store_one_page_short(dir: &Path) -> (PathBuf, u64, Vec<u8>) {
+        use std::os::unix::fs::FileExt;
+        let path = write(
+            dir,
+            serde_json::json!({"schema_version": "1", "services": [svc("api.svc.emfor", serde_json::json!({}))]}),
+        );
+        // SAFETY: sysconf has no preconditions.
+        let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
+        let len = std::fs::metadata(&path).unwrap().len();
+        assert!(len >= 3 * page, "a data page after the two meta pages");
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let mut tail = vec![0; usize::try_from(page).unwrap()];
+        f.read_exact_at(&mut tail, len - page).unwrap();
+        f.set_len(len - page).unwrap();
+        (path, len - page, tail)
+    }
+
+    /// A store opened while the daemon has not yet padded it is opened once
+    /// the file has its length, and the failure is not cached.
+    #[test]
+    fn store_padded_while_opening_is_opened() {
+        use std::os::unix::fs::FileExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (path, at, tail) = store_one_page_short(dir.path());
+        let mut c = Client::new(path.clone(), Ok(FRESH_FOR_TESTS_MS));
+        // A failure cached for this long would fail the second lookup.
+        c.open_retry = Duration::from_secs(600);
+        let padder = std::thread::spawn(move || {
+            // Far enough from the client's 100 ms of rechecks for a slow host.
+            std::thread::sleep(Duration::from_millis(10));
+            let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            f.write_all_at(&tail, at).unwrap();
+        });
+        let first = c.lookup("api.svc.emfor", None);
+        padder.join().unwrap();
+        first.expect("the store was padded while the client was opening it");
+        c.lookup("api.svc.emfor", None)
+            .expect("no cached failure after it");
+    }
+
+    /// A store that stays short is refused after the rechecks, not at once
+    /// and not much later than they take.
+    #[test]
+    fn store_staying_short_is_refused_after_the_rechecks() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _, _) = store_one_page_short(dir.path());
+        let started = std::time::Instant::now();
+        let e = Client::new(path, Ok(FRESH_FOR_TESTS_MS))
+            .lookup("api.svc.emfor", None)
+            .unwrap_err();
+        let took = started.elapsed();
+        assert_eq!(e.code, ErrorCode::Unavailable, "{e}");
+        assert!(e.message.contains("truncated"), "{e}");
+        let pauses = crate::store::LENGTH_RECHECK_PAUSE * crate::store::LENGTH_RECHECKS;
+        assert!(
+            took >= pauses,
+            "refused after {took:?}, before the rechecks"
+        );
+        assert!(took < pauses * 20, "refused after {took:?}");
     }
 
     /// A store file that cannot be opened is tried again only after
