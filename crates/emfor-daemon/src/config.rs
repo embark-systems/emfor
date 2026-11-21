@@ -427,6 +427,8 @@ pub struct Config {
     pub peers: Option<PeersConfig>,
     /// Sorted by name.
     pub services: Vec<ServiceConfig>,
+    /// The valid `[plugins."<name>"]` declarations, sorted by name.
+    pub plugins: Vec<PluginSpec>,
 }
 
 impl Config {
@@ -1208,7 +1210,7 @@ impl Validator {
             ],
         );
         let site = self.site(root, "");
-        self.plugins(root);
+        let plugins = self.plugins(root);
         let store = self.store(root);
         let log = self.log(root);
         let dns = self.dns(root);
@@ -1265,6 +1267,7 @@ impl Validator {
             metrics,
             peers,
             services,
+            plugins,
         }
     }
 

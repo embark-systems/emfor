@@ -700,6 +700,18 @@ fn store_mode_warnings(store: &StoreConfig) -> Vec<String> {
     out
 }
 
+/// The protocol check of `emfor-check` that the plugin called `name` runs:
+/// the first argument of its command, when the command's program is
+/// `emfor-check`. Not the plugin's name: a plugin can be called anything.
+fn emfor_check_kind<'a>(config: &'a Config, name: &str) -> Option<&'a str> {
+    let spec = config.plugins.iter().find(|p| p.name == name)?;
+    let program = Path::new(spec.command.first()?).file_name()?;
+    if program != "emfor-check" {
+        return None;
+    }
+    spec.command.get(1).map(String::as_str)
+}
+
 /// The `check_options` that name a file holding a secret.
 const SECRET_FILE_KEYS: [&str; 3] = ["password_file", "secret_file", "tls_key_file"];
 
@@ -710,10 +722,14 @@ const SECRET_FILE_KEYS: [&str; 3] = ["password_file", "secret_file", "tls_key_fi
 ///   service's `check_options`, for built-in checks and plugins alike) that
 ///   other users can read, or that group or others can write. One message
 ///   for each file, naming the services that use it.
-/// - A check named `redis` or `ldap` with a `password_file` and neither `tls` nor
-///   (ldap) `starttls`: the password crosses the network in clear text. The
-///   other checks are not listed: whether a mysql, pgsql or mongodb password
-///   is sent in clear depends on the server's authentication method.
+/// - A check of kind `redis`, `ldap`, `mysql`, `pgsql` or `amqp` with a
+///   `password_file` and no `tls` (for `ldap`, neither `tls` nor
+///   `starttls`): the password is not protected on the network. The kind is
+///   the first argument of the plugin's command when the plugin runs
+///   `emfor-check`, whatever the plugin is called; a plugin that does not run
+///   `emfor-check` is taken for `redis` or `ldap` by its name alone, as it
+///   always was. `mongodb` is not listed: its SCRAM does not send the
+///   password.
 ///
 /// A file that cannot be stat'ed is left to the check, which reports it.
 fn credential_warnings(config: &Config) -> Vec<String> {
@@ -732,23 +748,34 @@ fn credential_warnings(config: &Config) -> Vec<String> {
             }
         }
         let is_on = |k: &str| svc.check_options.get(k) == Some(&toml::Value::Boolean(true));
-        // redis and ldap come from the `emfor-check` plugin, declared under
-        // these names in the manual; any check named so is taken for them.
-        let kind = svc.check.as_str();
-        if (kind == "redis" || kind == "ldap")
-            && svc.check_options.contains_key("password_file")
-            && !is_on("tls")
-            && !(kind == "ldap" && is_on("starttls"))
-        {
-            out.push(format!(
-                "service {}: check_options has a password_file but {}: the password is sent in clear text, and anyone who can see the traffic can read it",
-                svc.name,
-                if kind == "ldap" {
-                    "neither tls nor starttls is true"
-                } else {
-                    "tls is not true"
-                },
-            ));
+        let from_emfor_check = emfor_check_kind(config, &svc.check);
+        let kind = from_emfor_check.unwrap_or(svc.check.as_str());
+        if !svc.check_options.contains_key("password_file") || is_on("tls") {
+            continue;
+        }
+        match kind {
+            // These two were always taken from the name alone.
+            "redis" | "ldap" => {
+                if kind == "ldap" && is_on("starttls") {
+                    continue;
+                }
+                out.push(format!(
+                    "service {}: check_options has a password_file but {}: the password is sent in clear text, and anyone who can see the traffic can read it",
+                    svc.name,
+                    if kind == "ldap" {
+                        "neither tls nor starttls is true"
+                    } else {
+                        "tls is not true"
+                    },
+                ));
+            }
+            "mysql" | "pgsql" | "amqp" if from_emfor_check.is_some() => {
+                out.push(format!(
+                    "service {}: check_options has a password_file but tls is not true: the password is not protected on the network, and anyone who can see the traffic, or answer in the backend's place, can get it",
+                    svc.name,
+                ));
+            }
+            _ => {}
         }
     }
     for ((key, path), services) in files {
@@ -932,6 +959,9 @@ mod tests {
         let mut r = Registry::builtin();
         r.register(std::sync::Arc::new(FakePlugin("redis")));
         r.register(std::sync::Arc::new(FakePlugin("ldap")));
+        for name in ["mysql", "pgsql", "amqp", "mongodb", "redis-check"] {
+            r.register(std::sync::Arc::new(FakePlugin(name)));
+        }
         r
     }
 
@@ -1025,6 +1055,98 @@ mod tests {
             "{w:?}"
         );
         assert!(w[1].starts_with("service b.svc:"), "{w:?}");
+    }
+
+    /// A config with one service that runs the check `check`, which is the
+    /// plugin `command` (a plugin declaration with that command) when given,
+    /// with a password file and the options `extra`.
+    fn plugin_credential_config(
+        pass: &Path,
+        check: &str,
+        command: Option<&str>,
+        extra: &str,
+    ) -> Config {
+        let plugin = command.map_or(String::new(), |c| {
+            format!("[plugins.\"{check}\"]\ncommand = {c}\n")
+        });
+        let text = format!(
+            "{plugin}[services.\"a.svc\"]\ncheck = \"{check}\"\nbackends = [\"10.0.0.1:5432\"]\n\
+             [services.\"a.svc\".check_options]\npassword_file = \"{}\"\n{extra}\n",
+            pass.display()
+        );
+        config::parse(&text, &plugin_registry()).unwrap_or_else(|e| panic!("errors: {e:?}"))
+    }
+
+    /// An executable file called `name` in `dir` (the config checks that a
+    /// plugin's command can be run); its path.
+    fn fake_program(dir: &tempfile::TempDir, name: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.path().join(name);
+        std::fs::write(&path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.display().to_string()
+    }
+
+    /// Spec-less change emfor-plaintext-credential-warning: a password file
+    /// without TLS is reported for the protocols of `emfor-check` whose
+    /// password is not protected without it, by the plugin's command and not
+    /// by its name.
+    #[test]
+    fn password_without_tls_is_reported_for_every_protocol_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let pass = pass_file(&dir, 0o600);
+        let emfor_check = fake_program(&dir, "emfor-check");
+        for kind in ["mysql", "pgsql", "amqp", "redis", "ldap"] {
+            let command = format!("[\"{emfor_check}\", \"{kind}\"]");
+            let w = credential_warnings(&plugin_credential_config(&pass, kind, Some(&command), ""));
+            assert_eq!(w.len(), 1, "{kind}: {w:?}");
+            assert!(
+                w[0].starts_with("service a.svc:") && w[0].contains("password"),
+                "{kind}: {w:?}"
+            );
+            let w = credential_warnings(&plugin_credential_config(
+                &pass,
+                kind,
+                Some(&command),
+                "tls = true",
+            ));
+            assert!(w.is_empty(), "{kind} with tls: {w:?}");
+        }
+    }
+
+    /// A plugin called something else still runs `emfor-check redis`.
+    #[test]
+    fn renamed_plugin_is_known_by_its_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let pass = pass_file(&dir, 0o600);
+        let command = format!("[\"{}\", \"redis\"]", fake_program(&dir, "emfor-check"));
+        let w = credential_warnings(&plugin_credential_config(
+            &pass,
+            "redis-check",
+            Some(&command),
+            "",
+        ));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("clear text"), "{w:?}");
+    }
+
+    /// `mongodb` (SCRAM sends no password), and a plugin called `pgsql` that
+    /// is not `emfor-check`, are not reported.
+    #[test]
+    fn other_checks_are_not_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let pass = pass_file(&dir, 0o600);
+        let mongo = format!("[\"{}\", \"mongodb\"]", fake_program(&dir, "emfor-check"));
+        let other = format!("[\"{}\"]", fake_program(&dir, "other-plugin"));
+        let w = credential_warnings(&plugin_credential_config(
+            &pass,
+            "mongodb",
+            Some(&mongo),
+            "",
+        ));
+        assert!(w.is_empty(), "{w:?}");
+        let w = credential_warnings(&plugin_credential_config(&pass, "pgsql", Some(&other), ""));
+        assert!(w.is_empty(), "{w:?}");
     }
 
     /// The table "which modes warn" of the spec: a mode that lets other

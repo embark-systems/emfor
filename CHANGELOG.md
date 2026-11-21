@@ -237,6 +237,32 @@ the URL to that error. Not checked: the other plugins of `emfor-check`
 and the `http3` check, which the review did not point at and which were not
 read for this; a TLS failure other than a clear-text answer to a handshake.
 
+**`check-config` and the start-up log warn about more passwords sent without TLS (bug fix).**
+The warning about a `password_file` without `tls` was given only for a check
+named `redis` or `ldap`. It is now also given for `mysql`, `pgsql` and `amqp`
+(when the plugin runs `emfor-check`), and the kind is read from the plugin's
+command, so a plugin called `redis-check` that runs `emfor-check redis` is
+warned about too. The reasons the review gave, read by the reviewer in the
+drivers and not tried against real servers: `amqp` sends the password in
+clear text with SASL PLAIN; with `SslMode::Disable` the `pgsql` driver sends it
+in clear text to a server that asks, and a server that is not the real one
+chooses what to ask; without TLS the `mysql` driver sends it encrypted with a
+key that the server supplies. The old reason for leaving them out, that it
+depends on the server's authentication method, does not hold because the one
+who answers chooses the method. `mongodb` is still not warned about (SCRAM does
+not send the password). It is a warning, never an error, and the defaults are
+unchanged. A config with a `mysql`, `pgsql` or `amqp` check that has a
+`password_file` and no `tls` now prints a line in `emfor check-config` and
+in the start-up log. `docs/deploy/plugins.md` says so. `Config` now carries the
+valid plugin declarations (`plugins`). Checked in a Debian container: fmt,
+clippy `-D warnings` and 1017 tests passed (17 ignored, three of them
+benchmarks); new unit tests for the five kinds with and without `tls`, a
+renamed plugin, `mongodb`, and a plugin called `pgsql` that is not
+`emfor-check`, while the existing `redis` and `ldap` tests pass unchanged. Not
+verified: the new tests were not run against the old code (it could not
+compile them; by construction it never warned for those kinds); no real
+servers; the claims about the drivers.
+
 ## 0.6.0 — 2026-11-17
 
 The store format (`meta/schema_version` 2) and the plugin protocol (1) are
