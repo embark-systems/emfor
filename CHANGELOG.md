@@ -281,6 +281,50 @@ verified: the new tests were not run against the old code (it could not
 compile them; by construction it never warned for those kinds); no real
 servers; the claims about the drivers.
 
+**The peer secret file is watched, and a hung read no longer stops the peer loop (bug fix).**
+The peer task read `[peers] secret_file` every second and waited for the
+read, with no time limit, before it sent the heartbeats, checked which members
+were live and handled received messages. With the file on a network file
+system that does not answer, the read never returned, the whole loop stood
+still, and the other members saw the host as not live after 3 seconds while
+its checks and DNS went on. Two changes. First, the read is on a blocking
+thread that the loop does not wait for: a read that does not finish within 200
+milliseconds stays in flight, the loop goes on with the last valid secret, and
+a new read starts only after the last one has finished, so a stuck read never
+costs more than one thread; a read in flight for more than 5 seconds is warned
+about, at most once a minute. Second, where the system allows it (inotify on
+Linux, kqueue on FreeBSD and macOS) the directory of the file is watched, and
+the file itself with kqueue, so that a write in place and a new file renamed
+over it are seen when they happen and the file is read then, and not every
+second (an event less than 100 milliseconds after the last read, or while a
+read is running, is read by the next heartbeat instead, at most a second
+later); it is also read every 30 seconds, for an event that was lost and for a
+change made from another host to a file on a network file system. When the
+watch cannot be set up or stops working, one `info` line says so and the file
+is read every second as before; the watch is set up on a blocking thread too,
+so a directory on a file system that does not answer does not stop the loop:
+the file is read every heartbeat until the watch is ready. On a file system that answers, a new secret is
+still applied before the next heartbeats. While a read hangs a secret change
+is not seen, so a host whose file is stuck during a rotation signs and checks
+with the old secret and its peers' new-secret messages are dropped as `auth`.
+`nix` gets the features `inotify`, `event` and `poll`; no new crate. Checked in
+a Debian container: fmt, clippy `-D warnings` and 1011 tests pass, 14 ignored
+(twice in a row), including new ones for the reader (one read however many ticks pass, the warning after 5
+seconds and not again within a minute, a slow read, a quick read, a read that
+panics, a path changed during a read), for the watch with inotify (a write in
+place, a rename over the file twice and then a write, a file created later, a
+missing directory, a removed directory), for the source (a read on every tick
+without a watch, a read on events and every 30 seconds with one, a changed
+path, a watch that stops working) and for the loop (two hosts staying live
+while a read hangs, a replaced file read at once with no read on the ticks),
+and for the gap between event reads, an event during a running read, and a
+watch that is slow to start. The watch tests (5) and the test of a watch that
+stops working also passed on macOS (kqueue) once, after a fix: a removed
+directory was not reported when the first events were only of the file. Not
+verified: the kqueue watch on FreeBSD; no real hung
+NFS mount; the 200 milliseconds, the 5 seconds and the 30 seconds are chosen,
+not measured; the new tests were not run against the old code.
+
 ## 0.6.0 — 2026-11-17
 
 The store format (`meta/schema_version` 2) and the plugin protocol (1) are

@@ -131,7 +131,20 @@ Members only share reports for a service when its check is defined the
 same way on both: the same `check`, `check_options` and `timeout`. Other
 settings (`interval`, `rise`, `fall`, the backend list) may differ.
 
-The secret file is read again every second. To change the secret, write the
+The secret file is watched where the system allows it (inotify on Linux, kqueue on
+FreeBSD and macOS): the directory that holds it is watched, so that a change in
+place and a new file renamed over it are both seen when they happen (at the next
+heartbeat at the latest, when a read was running or another event came within
+100 milliseconds before), and the
+file is also read every 30 seconds in case an event was lost, which is also how a
+change made from another host to a file on a network file system is seen. Where
+it cannot be watched (the watch cannot be set up, or the system has no such
+interface) the daemon logs one line at `info` level and reads the file again
+every second. A read that is slow, or that never returns (a file on a network
+file system that does not answer), does not stop the heartbeats: the host goes
+on with the last valid secret, reads the file again only after the read is
+over, and logs a warning, at most once a minute, when a read has been running
+for more than 5 seconds. To change the secret, write the
 new one on every host within a minute of each other: after its own file
 changed, a host still signs with the previous secret for 60 seconds and
 accepts it for 120 seconds, so no message is dropped meanwhile. If the file

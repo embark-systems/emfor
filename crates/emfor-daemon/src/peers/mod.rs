@@ -29,6 +29,7 @@ mod targets;
 mod task;
 #[cfg(test)]
 mod test_support;
+mod watch;
 mod wire;
 
 pub use crypto::{

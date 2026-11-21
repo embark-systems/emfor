@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use rand::RngExt;
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -17,6 +17,7 @@ use super::crypto::{ACCEPT_PREVIOUS_FOR, Keys, SIGN_PREVIOUS_FOR};
 use super::group::{Group, Outgoing, WARN_EVERY};
 use super::stats::PeerStats;
 use super::targets::{DIGEST_DIFFERS, Targets};
+use super::watch::SecretWatch;
 use super::wire::{Down, Kind, MAX_DATAGRAM, Message, Outcome, ResultMsg};
 use crate::config::{PeersConfig, read_secret};
 use crate::quorum::Quorum;
@@ -218,6 +219,31 @@ pub fn start_on(
     writer: Option<mpsc::UnboundedSender<WriterMsg>>,
     services_off: Vec<String>,
 ) -> PeersHandle {
+    start_with_reader(
+        socket,
+        config,
+        site,
+        keys,
+        targets,
+        writer,
+        services_off,
+        SecretIo::system(),
+    )
+}
+
+/// [`start_on`] with the functions that read and watch the secret file; the
+/// tests give others.
+#[allow(clippy::too_many_arguments)]
+fn start_with_reader(
+    socket: UdpSocket,
+    config: &PeersConfig,
+    site: &str,
+    keys: Keys,
+    targets: Targets,
+    writer: Option<mpsc::UnboundedSender<WriterMsg>>,
+    services_off: Vec<String>,
+    io: SecretIo,
+) -> PeersHandle {
     let stats = Arc::new(PeerStats::default());
     let quorum = Arc::new(Quorum::new(config.listen));
     quorum.set_off(services_off);
@@ -254,6 +280,7 @@ pub fn start_on(
             writer,
             last: initial_state.clone(),
         },
+        SecretSource::new(config.secret_file.clone(), io),
     ));
     PeersHandle {
         listen: config.listen,
@@ -267,20 +294,288 @@ pub fn start_on(
     }
 }
 
-/// Re-read the secret file, off the async workers (it is read every
-/// second, and a slow file system must not hold up a worker thread), and
-/// apply it as [`apply_secret`] does.
-async fn refresh_secret(
-    group: &mut Group,
-    path: &Path,
-    warned: &mut Option<Instant>,
-    now: Instant,
-) {
-    let path = path.to_path_buf();
-    let read = tokio::task::spawn_blocking(move || read_secret(&path))
-        .await
-        .unwrap_or_else(|e| Err(format!("cannot read the secret file: {e}")));
-    apply_secret(group, read, warned, now);
+/// How long a tick waits for a read of the secret file it just started.
+/// On a file system that answers, the read is done long before and the new
+/// secret is applied on the same tick, before the heartbeats; past this the
+/// read stays in flight and the tick goes on with the last valid secret.
+const SECRET_READ_WAIT: Duration = Duration::from_millis(200);
+
+/// A read of the secret file in flight for longer than this is warned
+/// about (at most once a minute, like any other problem with the file).
+const SECRET_READ_SLOW: Duration = Duration::from_secs(5);
+
+/// Reads a secret file; [`read_secret`] outside the tests.
+type ReadSecret = fn(&Path) -> Result<Vec<u8>, String>;
+
+/// A read of the secret file on a blocking thread, and when it started.
+type ReadInFlight = (JoinHandle<Result<Vec<u8>, String>>, Instant);
+
+/// The re-reading of the secret file, which never holds up the peer loop.
+///
+/// The file is read on a blocking thread, which cannot be cancelled: a read
+/// that does not return (a file on a network file system that does not
+/// answer) keeps its thread until it does. So at most one read is in flight,
+/// and a new one starts only after the last has finished; a tick waits for
+/// a read it starts for [`SECRET_READ_WAIT`] at most.
+struct SecretReader {
+    read: ReadSecret,
+    /// The read in flight and when it started.
+    pending: Option<ReadInFlight>,
+}
+
+impl SecretReader {
+    fn new(read: ReadSecret) -> Self {
+        Self {
+            read,
+            pending: None,
+        }
+    }
+
+    /// Whether a read is in flight (its result is applied by the next
+    /// [`refresh`](Self::refresh)).
+    fn in_flight(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Apply the result of the read in flight if it has finished, then
+    /// start a new read of `path` unless one is still in flight. A late
+    /// result is applied as any other; `path` is the current one each time
+    /// a read starts, so a path changed by a reload is read as soon as the
+    /// old read is over. Returns whether a read was started: false when the
+    /// one in flight is still running.
+    async fn refresh(
+        &mut self,
+        group: &mut Group,
+        path: &Path,
+        warned: &mut Option<Instant>,
+        now: Instant,
+    ) -> bool {
+        if let Some((handle, started)) = self.pending.take() {
+            if !handle.is_finished() {
+                let ran = now.duration_since(started);
+                if ran > SECRET_READ_SLOW
+                    && warned.is_none_or(|w| now.duration_since(w) >= WARN_EVERY)
+                {
+                    *warned = Some(now);
+                    tracing::warn!(
+                        "peers.secret_file: the read has not finished after {}s; keeping the last valid secret",
+                        ran.as_secs()
+                    );
+                }
+                self.pending = Some((handle, started));
+                return false;
+            }
+            apply_secret(group, joined(handle.await), warned, now);
+        }
+        let read = self.read;
+        let path = path.to_path_buf();
+        let mut handle = tokio::task::spawn_blocking(move || read(&path));
+        match tokio::time::timeout(SECRET_READ_WAIT, &mut handle).await {
+            Ok(done) => apply_secret(group, joined(done), warned, now),
+            Err(_) => self.pending = Some((handle, now)),
+        }
+        true
+    }
+}
+
+/// The result of a read; a read that panicked or was cancelled is a failed
+/// read.
+fn joined(
+    done: Result<Result<Vec<u8>, String>, tokio::task::JoinError>,
+) -> Result<Vec<u8>, String> {
+    done.unwrap_or_else(|e| Err(format!("cannot read the secret file: {e}")))
+}
+
+/// While the secret file is watched, it is read again this often anyway,
+/// so that an event that was lost (a queue that overflowed, a file replaced
+/// at the wrong moment) or never made (a network file system) delays a
+/// change by this much at most.
+const SECRET_SAFETY_READ: Duration = Duration::from_secs(30);
+
+/// An event of the watch is read at once unless the last read started less
+/// than this long ago (or is still running); the next heartbeat reads it
+/// then. A directory with many events (the watch is of the directory) cannot
+/// make a read for each of them.
+const SECRET_EVENT_GAP: Duration = Duration::from_millis(100);
+
+/// Starts the watch of a secret file; [`SecretWatch::start`] outside the
+/// tests.
+type StartWatch = fn(&Path) -> Result<SecretWatch, String>;
+
+/// What reads and what watches the secret file; the tests replace them.
+#[derive(Clone, Copy)]
+struct SecretIo {
+    read: ReadSecret,
+    watch: StartWatch,
+}
+
+impl SecretIo {
+    fn system() -> Self {
+        Self {
+            read: read_secret,
+            watch: SecretWatch::start,
+        }
+    }
+}
+
+/// Keeps the secret of a group current: reads the file when the watch says
+/// it may have changed, and on every heartbeat when it is not watched (the
+/// watch could not be set up, or stopped), and reads it every
+/// [`SECRET_SAFETY_READ`] while it is watched.
+struct SecretSource {
+    reader: SecretReader,
+    start_watch: StartWatch,
+    path: PathBuf,
+    watch: Option<SecretWatch>,
+    /// The watch being set up: opening the directory can block (a network
+    /// file system), so it is not waited for longer than
+    /// [`SECRET_READ_WAIT`]; until it is ready the file is read on every
+    /// heartbeat.
+    starting: Option<tokio::task::JoinHandle<Result<SecretWatch, String>>>,
+    warned: Option<Instant>,
+    last_read: Option<Instant>,
+    /// A change was reported but no read has started since: the next
+    /// heartbeat reads.
+    wanted: bool,
+}
+
+impl SecretSource {
+    /// Nothing is watched until [`begin`](Self::begin).
+    fn new(path: PathBuf, io: SecretIo) -> Self {
+        Self {
+            reader: SecretReader::new(io.read),
+            start_watch: io.watch,
+            path,
+            watch: None,
+            starting: None,
+            warned: None,
+            last_read: None,
+            wanted: false,
+        }
+    }
+
+    /// Start the watch, before the first read, so that a change between the
+    /// two is not missed.
+    async fn begin(&mut self) {
+        self.watch_path().await;
+    }
+
+    /// Watch `self.path`, on a blocking thread that is waited for at most
+    /// [`SECRET_READ_WAIT`].
+    async fn watch_path(&mut self) {
+        self.watch = None;
+        // A start still running for the old path is left to finish; its
+        // watch is dropped, which stops it.
+        self.starting = None;
+        let start = self.start_watch;
+        let path = self.path.clone();
+        let mut handle = tokio::task::spawn_blocking(move || start(&path));
+        match tokio::time::timeout(SECRET_READ_WAIT, &mut handle).await {
+            Ok(done) => self.watch_started(done),
+            Err(_) => {
+                tracing::info!(
+                    "peers.secret_file: the watch of {} is not ready after {}ms; reading it before every heartbeat until it is",
+                    self.path.display(),
+                    SECRET_READ_WAIT.as_millis()
+                );
+                self.starting = Some(handle);
+            }
+        }
+    }
+
+    fn watch_started(&mut self, done: Result<Result<SecretWatch, String>, tokio::task::JoinError>) {
+        match done.map_err(|e| e.to_string()).and_then(|r| r) {
+            Ok(w) => self.watch = Some(w),
+            Err(e) => {
+                self.watch = None;
+                tracing::info!(
+                    "peers.secret_file: cannot watch {}: {e}; reading it before every heartbeat instead",
+                    self.path.display()
+                );
+            }
+        }
+    }
+
+    /// Take the watch that was being set up, when it is ready.
+    async fn finish_watch(&mut self) {
+        if self.starting.as_ref().is_some_and(|h| h.is_finished())
+            && let Some(handle) = self.starting.take()
+        {
+            self.watch_started(handle.await);
+            // A change before the watch was ready made no event.
+            self.wanted = self.wanted || self.watch.is_some();
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Notified when the file may have changed; `None` when it is not
+    /// watched.
+    fn notifier(&self) -> Option<Arc<Notify>> {
+        self.watch.as_ref().map(SecretWatch::notifier)
+    }
+
+    /// Read now; whether a read was started (not when one is still running).
+    async fn read(&mut self, group: &mut Group, now: Instant) -> bool {
+        let started = self
+            .reader
+            .refresh(group, &self.path, &mut self.warned, now)
+            .await;
+        if started {
+            self.last_read = Some(now);
+            self.wanted = false;
+        }
+        started
+    }
+
+    /// The watch made an event (or stopped working).
+    async fn on_event(&mut self, group: &mut Group, now: Instant) {
+        if let Some(why) = self.watch.as_ref().and_then(SecretWatch::failure) {
+            self.watch = None;
+            tracing::info!(
+                "peers.secret_file: the watch of {} stopped working: {why}; reading it before every heartbeat instead",
+                self.path.display()
+            );
+        }
+        if self
+            .last_read
+            .is_some_and(|t| now.duration_since(t) < SECRET_EVENT_GAP)
+            || !self.read(group, now).await
+        {
+            self.wanted = true;
+        }
+    }
+
+    /// A heartbeat is due.
+    async fn on_tick(&mut self, group: &mut Group, now: Instant) {
+        self.finish_watch().await;
+        let due = self.watch.is_none()
+            || self.wanted
+            || self.reader.in_flight()
+            || self
+                .last_read
+                .is_none_or(|t| now.duration_since(t) >= SECRET_SAFETY_READ);
+        if due {
+            self.read(group, now).await;
+        }
+    }
+
+    /// A reload changed `secret_file`.
+    async fn on_path(&mut self, path: PathBuf, group: &mut Group, now: Instant) {
+        self.path = path;
+        self.watch_path().await;
+        self.read(group, now).await;
+    }
+}
+
+/// Wait for the watch of the secret file; for ever when it is not watched.
+async fn watch_event(notifier: &Option<Arc<Notify>>) {
+    match notifier {
+        Some(n) => n.notified().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Apply a secret just read: a changed valid one becomes current; a missing
@@ -382,6 +677,7 @@ impl StateOut {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     socket: UdpSocket,
     mut group: Group,
@@ -390,14 +686,15 @@ async fn run(
     targets: Targets,
     quorum: Arc<Quorum>,
     mut state: StateOut,
+    mut secret: SecretSource,
 ) {
-    let mut secret_file = settings.borrow().secret_file.clone();
-    let mut secret_warned = None;
+    secret.begin().await;
     let mut tick = tokio::time::interval(HEARTBEAT_EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // One byte more than accepted, so an oversized datagram is seen as such.
     let mut buf = vec![0u8; MAX_DATAGRAM + 1];
     loop {
+        let secret_events = secret.notifier();
         tokio::select! {
             r = socket.recv_from(&mut buf) => match r {
                 Ok((n, src)) => {
@@ -410,9 +707,12 @@ async fn run(
                 }
                 Err(e) => tracing::debug!("peer socket receive error: {e}"),
             },
+            _ = watch_event(&secret_events) => {
+                secret.on_event(&mut group, Instant::now()).await;
+            }
             _ = tick.tick() => {
                 let now = Instant::now();
-                refresh_secret(&mut group, &secret_file, &mut secret_warned, now).await;
+                secret.on_tick(&mut group, now).await;
                 group.check_liveness(now);
                 group
                     .stats()
@@ -474,9 +774,10 @@ async fn run(
                 group.set_site(s.site);
                 group.set_encrypt(s.encrypt);
                 group.set_accept_plaintext(s.accept_plaintext);
-                if s.secret_file != secret_file {
-                    secret_file = s.secret_file;
-                    refresh_secret(&mut group, &secret_file, &mut secret_warned, Instant::now()).await;
+                if s.secret_file != secret.path() {
+                    secret
+                        .on_path(s.secret_file, &mut group, Instant::now())
+                        .await;
                 }
             }
         }
@@ -730,6 +1031,32 @@ mod tests {
         targets_a: Targets,
         targets_b: Targets,
     ) -> (PeersHandle, PeersHandle, tempfile::TempDir, PathBuf) {
+        pair_with(targets_a, targets_b, read_secret).await
+    }
+
+    /// [`pair`] where A reads its secret file with `read_a` (and watches it).
+    async fn pair_with(
+        targets_a: Targets,
+        targets_b: Targets,
+        read_a: ReadSecret,
+    ) -> (PeersHandle, PeersHandle, tempfile::TempDir, PathBuf) {
+        pair_with_io(
+            targets_a,
+            targets_b,
+            SecretIo {
+                read: read_a,
+                watch: SecretWatch::start,
+            },
+        )
+        .await
+    }
+
+    /// [`pair`] where A reads and watches its secret file with `io`.
+    async fn pair_with_io(
+        targets_a: Targets,
+        targets_b: Targets,
+        io_a: SecretIo,
+    ) -> (PeersHandle, PeersHandle, tempfile::TempDir, PathBuf) {
         let sa = UdpSocket::bind("127.0.0.1:0").await.expect("bind a");
         let sb = UdpSocket::bind("127.0.0.1:0").await.expect("bind b");
         let (a, b) = (
@@ -745,7 +1072,7 @@ mod tests {
             encrypt: true,
             accept_plaintext: true,
         };
-        let ha = start_on(
+        let ha = start_with_reader(
             sa,
             &conf(a),
             "dc1",
@@ -753,6 +1080,7 @@ mod tests {
             targets_a,
             None,
             Vec::new(),
+            io_a,
         );
         let hb = start_on(
             sb,
@@ -969,4 +1297,605 @@ mod tests {
         })
         .await;
     }
+
+    // The functions below stand for a read of the secret file that does not
+    // return until the test lets it. A function pointer cannot capture, so
+    // each test has its own statics.
+
+    /// Block until `release` is set, as a read on a hung file system does.
+    fn block_until(release: &std::sync::atomic::AtomicBool) {
+        while !release.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Wait (real time) until the read in flight has finished.
+    async fn read_finished(reader: &SecretReader) {
+        let end = std::time::Instant::now() + Duration::from_secs(5);
+        while !reader
+            .pending
+            .as_ref()
+            .is_some_and(|(h, _)| h.is_finished())
+        {
+            assert!(std::time::Instant::now() < end, "the read did not finish");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    fn warnings_about_the_read(lines: &[&str]) -> usize {
+        lines
+            .iter()
+            .filter(|l| {
+                l.contains("has not finished") && l.contains("keeping the last valid secret")
+            })
+            .count()
+    }
+
+    static HANG_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static HANG_RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    fn hang(_: &Path) -> Result<Vec<u8>, String> {
+        HANG_CALLS.fetch_add(1, Ordering::SeqCst);
+        block_until(&HANG_RELEASE);
+        Ok(vec![9u8; 40])
+    }
+
+    /// Spec peer-group "Read of the secret file hangs" (the reader):
+    /// one read however many ticks pass, a warning after 5 seconds and not
+    /// again within a minute, and the result applied when it returns.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn hung_read_stays_one_and_is_warned_about() {
+        let start = Instant::now();
+        let (_d, path) = secret_file(&[1u8; 40], 0o600);
+        let mut g = group(start);
+        let mut warned = None;
+        let mut reader = SecretReader::new(hang);
+        for s in 0..=5 {
+            reader
+                .refresh(&mut g, &path, &mut warned, start + Duration::from_secs(s))
+                .await;
+        }
+        assert_eq!(HANG_CALLS.load(Ordering::SeqCst), 1, "one read in flight");
+        assert!(
+            warned.is_none(),
+            "not warned until the read ran more than 5s"
+        );
+        reader
+            .refresh(&mut g, &path, &mut warned, start + Duration::from_secs(6))
+            .await;
+        assert_eq!(warned, Some(start + Duration::from_secs(6)));
+        for s in 7..=65 {
+            reader
+                .refresh(&mut g, &path, &mut warned, start + Duration::from_secs(s))
+                .await;
+        }
+        assert_eq!(
+            warned,
+            Some(start + Duration::from_secs(6)),
+            "not within a minute"
+        );
+        reader
+            .refresh(&mut g, &path, &mut warned, start + Duration::from_secs(66))
+            .await;
+        assert_eq!(warned, Some(start + Duration::from_secs(66)));
+        logs_assert(|lines: &[&str]| match warnings_about_the_read(lines) {
+            2 => Ok(()),
+            n => Err(format!("{n} warnings")),
+        });
+        assert_eq!(HANG_CALLS.load(Ordering::SeqCst), 1);
+        assert_ne!(
+            g.keys.current(),
+            &[9u8; 40],
+            "the secret is the old one so far"
+        );
+        HANG_RELEASE.store(true, Ordering::SeqCst);
+        read_finished(&reader).await;
+        reader
+            .refresh(&mut g, &path, &mut warned, start + Duration::from_secs(67))
+            .await;
+        assert_eq!(g.keys.current(), &[9u8; 40], "the late result is applied");
+    }
+
+    static SLOW_RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    fn slow(_: &Path) -> Result<Vec<u8>, String> {
+        block_until(&SLOW_RELEASE);
+        Ok(vec![8u8; 40])
+    }
+
+    /// Spec peer-group "Slow read of the secret file": no warning before
+    /// 5 seconds; the secret is applied when the read returns.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn slow_read_is_applied_without_a_warning() {
+        let start = Instant::now();
+        let (_d, path) = secret_file(&[1u8; 40], 0o600);
+        let mut g = group(start);
+        let mut warned = None;
+        let mut reader = SecretReader::new(slow);
+        reader.refresh(&mut g, &path, &mut warned, start).await;
+        reader
+            .refresh(&mut g, &path, &mut warned, start + Duration::from_secs(3))
+            .await;
+        assert_ne!(g.keys.current(), &[8u8; 40]);
+        SLOW_RELEASE.store(true, Ordering::SeqCst);
+        read_finished(&reader).await;
+        reader
+            .refresh(&mut g, &path, &mut warned, start + Duration::from_secs(3))
+            .await;
+        assert_eq!(g.keys.current(), &[8u8; 40]);
+        logs_assert(|lines: &[&str]| match warnings_about_the_read(lines) {
+            0 => Ok(()),
+            n => Err(format!("{n} warnings")),
+        });
+    }
+
+    fn at_once(_: &Path) -> Result<Vec<u8>, String> {
+        Ok(vec![7u8; 40])
+    }
+
+    /// Spec peer-group "Normal read applied at once": a read that returns
+    /// in time is applied by the same call, before the heartbeats.
+    #[tokio::test]
+    async fn quick_read_is_applied_by_the_same_call() {
+        let start = Instant::now();
+        let (_d, path) = secret_file(&[1u8; 40], 0o600);
+        let mut g = group(start);
+        let mut warned = None;
+        let mut reader = SecretReader::new(at_once);
+        reader.refresh(&mut g, &path, &mut warned, start).await;
+        assert_eq!(g.keys.current(), &[7u8; 40]);
+        assert!(reader.pending.is_none(), "nothing is left in flight");
+    }
+
+    static PANIC_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn panics(_: &Path) -> Result<Vec<u8>, String> {
+        PANIC_CALLS.fetch_add(1, Ordering::SeqCst);
+        panic!("the injected read panics");
+    }
+
+    /// A read that panics is a failed read: the last valid secret stays,
+    /// the warning is the usual one, and the next tick reads again.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn read_that_panics_keeps_the_secret_and_is_retried() {
+        let start = Instant::now();
+        let (_d, path) = secret_file(&[1u8; 40], 0o600);
+        let mut g = group(start);
+        let before = g.keys.current().to_vec();
+        let mut warned = None;
+        let mut reader = SecretReader::new(panics);
+        reader.refresh(&mut g, &path, &mut warned, start).await;
+        assert_eq!(g.keys.current(), &before[..]);
+        assert_eq!(warned, Some(start));
+        reader
+            .refresh(&mut g, &path, &mut warned, start + Duration::from_secs(1))
+            .await;
+        assert_eq!(PANIC_CALLS.load(Ordering::SeqCst), 2, "read again");
+        assert!(logs_contain("keeping the last valid secret"));
+    }
+
+    static PATHS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+    static PATH_RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    fn record_path(p: &Path) -> Result<Vec<u8>, String> {
+        PATHS
+            .lock()
+            .expect("the recorded paths are not poisoned")
+            .push(p.to_path_buf());
+        block_until(&PATH_RELEASE);
+        Ok(vec![6u8; 40])
+    }
+
+    /// A reload that changes `secret_file` while a read of the old path is
+    /// in flight starts no second read; the new path is read after the old
+    /// read is over.
+    #[tokio::test]
+    async fn changed_path_is_read_after_the_read_in_flight() {
+        let start = Instant::now();
+        let (_d1, one) = secret_file(&[1u8; 40], 0o600);
+        let (_d2, two) = secret_file(&[2u8; 40], 0o600);
+        let mut g = group(start);
+        let mut warned = None;
+        let mut reader = SecretReader::new(record_path);
+        reader.refresh(&mut g, &one, &mut warned, start).await;
+        reader
+            .refresh(&mut g, &two, &mut warned, start + Duration::from_secs(1))
+            .await;
+        let seen = |n: usize| {
+            let paths = PATHS.lock().expect("the recorded paths are not poisoned");
+            assert_eq!(paths.len(), n);
+            paths.clone()
+        };
+        assert_eq!(seen(1), vec![one.clone()], "no second read yet");
+        PATH_RELEASE.store(true, Ordering::SeqCst);
+        read_finished(&reader).await;
+        reader
+            .refresh(&mut g, &two, &mut warned, start + Duration::from_secs(2))
+            .await;
+        assert_eq!(seen(2), vec![one, two], "the new path after the old read");
+    }
+
+    static LOOP_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static LOOP_RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    fn hang_in_the_loop(_: &Path) -> Result<Vec<u8>, String> {
+        LOOP_CALLS.fetch_add(1, Ordering::SeqCst);
+        block_until(&LOOP_RELEASE);
+        Err("released".into())
+    }
+
+    /// Spec peer-group "Read of the secret file hangs": the peer loop of A
+    /// goes on while its read of the secret file never returns. B stays
+    /// live at A (A handles B's heartbeats) and A at B (A sends its own),
+    /// and the file is read once however many ticks pass.
+    #[tokio::test]
+    async fn heartbeats_go_on_while_the_secret_read_hangs() {
+        let (ha, hb, _dir, _path) =
+            pair_with(Targets::default(), Targets::default(), hang_in_the_loop).await;
+        let (a, b) = (ha.listen, hb.listen);
+        wait_until("b live at a", Duration::from_millis(3000), || {
+            ha.stats.up() == vec![(b, true)]
+        })
+        .await;
+        wait_until("a live at b", Duration::from_millis(3000), || {
+            hb.stats.up() == vec![(a, true)]
+        })
+        .await;
+        // Several more ticks: both stay live, and no second read starts.
+        tokio::time::sleep(Duration::from_millis(3500)).await;
+        assert_eq!(ha.stats.up(), vec![(b, true)]);
+        assert_eq!(hb.stats.up(), vec![(a, true)]);
+        assert_eq!(LOOP_CALLS.load(Ordering::SeqCst), 1);
+        LOOP_RELEASE.store(true, Ordering::SeqCst);
+    }
+
+    // The secret source: what reads the file when. The read functions count
+    // their calls; each test has its own counter.
+
+    fn no_watch(_: &Path) -> Result<SecretWatch, String> {
+        Err("the test has no watch".into())
+    }
+
+    fn count_to(counter: &std::sync::atomic::AtomicUsize) -> Result<Vec<u8>, String> {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(vec![5u8; 40])
+    }
+
+    /// Wait (real time) for the watch of `source` to notify.
+    async fn watched_change(source: &SecretSource) {
+        let notifier = source.notifier().expect("the file is watched");
+        tokio::time::timeout(Duration::from_secs(3), notifier.notified())
+            .await
+            .expect("the change is noticed within 3s");
+    }
+
+    /// Replace `path` by another file with a valid secret.
+    fn replace_secret(path: &Path, key: u8) {
+        use std::os::unix::fs::PermissionsExt;
+        let new = path.with_extension("new");
+        std::fs::write(&new, [key; 40]).expect("the new file can be written");
+        std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o600))
+            .expect("the new file can be made private");
+        std::fs::rename(&new, path).expect("the new file can replace the old one");
+    }
+
+    static UNWATCHED_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn count_unwatched(_: &Path) -> Result<Vec<u8>, String> {
+        count_to(&UNWATCHED_CALLS)
+    }
+
+    /// Spec peer-group "Watch cannot be set up": the file is read before
+    /// each round of heartbeats, and one `info` line says why.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn unwatched_file_is_read_on_every_tick() {
+        let start = Instant::now();
+        let (_d, path) = secret_file(&[1u8; 40], 0o600);
+        let mut g = group(start);
+        let mut source = SecretSource::new(
+            path,
+            SecretIo {
+                read: count_unwatched,
+                watch: no_watch,
+            },
+        );
+        source.begin().await;
+        assert!(source.notifier().is_none());
+        for s in 0..3 {
+            source.on_tick(&mut g, start + Duration::from_secs(s)).await;
+        }
+        assert_eq!(UNWATCHED_CALLS.load(Ordering::SeqCst), 3, "a read per tick");
+        assert!(logs_contain("reading it before every heartbeat instead"));
+        assert!(logs_contain("the test has no watch"));
+    }
+
+    static WATCHED_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn count_watched(_: &Path) -> Result<Vec<u8>, String> {
+        count_to(&WATCHED_CALLS)
+    }
+
+    /// While the file is watched it is read when the watch makes an event
+    /// and every 30 seconds, and not on the other ticks.
+    #[tokio::test]
+    async fn watched_file_is_read_on_events_and_every_30_seconds() {
+        let start = Instant::now();
+        let (_d, path) = secret_file(&[1u8; 40], 0o600);
+        let mut g = group(start);
+        let mut source = SecretSource::new(
+            path.clone(),
+            SecretIo {
+                read: count_watched,
+                watch: SecretWatch::start,
+            },
+        );
+        source.begin().await;
+        for s in 0..30 {
+            source.on_tick(&mut g, start + Duration::from_secs(s)).await;
+        }
+        assert_eq!(
+            WATCHED_CALLS.load(Ordering::SeqCst),
+            1,
+            "the first tick only"
+        );
+        source
+            .on_tick(&mut g, start + Duration::from_secs(30))
+            .await;
+        assert_eq!(WATCHED_CALLS.load(Ordering::SeqCst), 2, "30s later again");
+        replace_secret(&path, 6);
+        watched_change(&source).await;
+        source
+            .on_event(&mut g, start + Duration::from_secs(31))
+            .await;
+        assert_eq!(
+            WATCHED_CALLS.load(Ordering::SeqCst),
+            3,
+            "a read for the event"
+        );
+    }
+
+    static MOVED_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn count_moved(_: &Path) -> Result<Vec<u8>, String> {
+        count_to(&MOVED_CALLS)
+    }
+
+    /// A reload that changes `secret_file` watches the new path and reads
+    /// it at once.
+    #[tokio::test]
+    async fn changed_path_is_watched() {
+        let start = Instant::now();
+        let (_d1, one) = secret_file(&[1u8; 40], 0o600);
+        let (_d2, two) = secret_file(&[2u8; 40], 0o600);
+        let mut g = group(start);
+        let mut source = SecretSource::new(
+            one,
+            SecretIo {
+                read: count_moved,
+                watch: SecretWatch::start,
+            },
+        );
+        source.begin().await;
+        source.on_path(two.clone(), &mut g, start).await;
+        assert_eq!(
+            MOVED_CALLS.load(Ordering::SeqCst),
+            1,
+            "the new path is read"
+        );
+        assert_eq!(source.path(), two);
+        replace_secret(&two, 7);
+        watched_change(&source).await;
+    }
+
+    static GONE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn count_gone(_: &Path) -> Result<Vec<u8>, String> {
+        count_to(&GONE_CALLS)
+    }
+
+    /// A watch that stops working (its directory was removed) is dropped,
+    /// with one `info` line, and the file is read on every tick after it.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn watch_that_stops_working_falls_back_to_reading_every_tick() {
+        let start = Instant::now();
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).expect("the directory can be created");
+        let path = sub.join("secret");
+        std::fs::write(&path, [1u8; 40]).expect("the secret file can be written");
+        let mut g = group(start);
+        let mut source = SecretSource::new(
+            path,
+            SecretIo {
+                read: count_gone,
+                watch: SecretWatch::start,
+            },
+        );
+        source.begin().await;
+        std::fs::remove_dir_all(&sub).expect("the directory can be removed");
+        // The file is removed before its directory: the first notification
+        // can be for that, and the failure comes with a later one.
+        for _ in 0..5 {
+            if source.notifier().is_none() {
+                break;
+            }
+            watched_change(&source).await;
+            source.on_event(&mut g, start).await;
+        }
+        assert!(source.notifier().is_none(), "no longer watched");
+        assert!(logs_contain("stopped working"));
+        let before = GONE_CALLS.load(Ordering::SeqCst);
+        source.on_tick(&mut g, start + Duration::from_secs(1)).await;
+        source.on_tick(&mut g, start + Duration::from_secs(2)).await;
+        assert_eq!(GONE_CALLS.load(Ordering::SeqCst), before + 2);
+    }
+
+    static LOOP_WATCHED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn count_in_the_loop(_: &Path) -> Result<Vec<u8>, String> {
+        LOOP_WATCHED.fetch_add(1, Ordering::SeqCst);
+        Err("a read to count".into())
+    }
+
+    /// Spec peer-group "Secret file replaced by a rename", through the peer
+    /// loop: while the file is watched the ticks do not read it, and a file
+    /// renamed over it is read at once, not at the next poll.
+    #[tokio::test]
+    async fn loop_reads_a_replaced_secret_file_at_once() {
+        let (_ha, _hb, _dir, path) =
+            pair_with(Targets::default(), Targets::default(), count_in_the_loop).await;
+        wait_until("the first read", Duration::from_secs(2), || {
+            LOOP_WATCHED.load(Ordering::SeqCst) >= 1
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert_eq!(
+            LOOP_WATCHED.load(Ordering::SeqCst),
+            1,
+            "no read on the ticks while the file is watched"
+        );
+        replace_secret(&path, 4);
+        wait_until("the read for the rename", Duration::from_secs(1), || {
+            LOOP_WATCHED.load(Ordering::SeqCst) >= 2
+        })
+        .await;
+    }
+
+    static GAP_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn count_gap(_: &Path) -> Result<Vec<u8>, String> {
+        count_to(&GAP_CALLS)
+    }
+
+    /// An event less than 100 ms after the last read is not read at once
+    /// (a busy directory makes many); the next heartbeat reads it.
+    #[tokio::test]
+    async fn event_soon_after_a_read_is_left_to_the_next_tick() {
+        let start = Instant::now();
+        let (_d, path) = secret_file(&[1u8; 40], 0o600);
+        let mut g = group(start);
+        let mut source = SecretSource::new(
+            path,
+            SecretIo {
+                read: count_gap,
+                watch: SecretWatch::start,
+            },
+        );
+        source.begin().await;
+        source.on_tick(&mut g, start).await;
+        assert_eq!(GAP_CALLS.load(Ordering::SeqCst), 1);
+        source
+            .on_event(&mut g, start + Duration::from_millis(10))
+            .await;
+        assert_eq!(GAP_CALLS.load(Ordering::SeqCst), 1, "no read for the event");
+        source.on_tick(&mut g, start + Duration::from_secs(1)).await;
+        assert_eq!(GAP_CALLS.load(Ordering::SeqCst), 2, "the tick reads it");
+        source.on_tick(&mut g, start + Duration::from_secs(2)).await;
+        assert_eq!(GAP_CALLS.load(Ordering::SeqCst), 2, "and only once");
+    }
+
+    static BUSY_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static BUSY_RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    fn slow_first_busy(_: &Path) -> Result<Vec<u8>, String> {
+        if BUSY_CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
+            block_until(&BUSY_RELEASE);
+        }
+        Ok(vec![5u8; 40])
+    }
+
+    /// An event that comes while a read is running is not lost: once that
+    /// read is over the next heartbeat applies it and reads again.
+    #[tokio::test]
+    async fn event_during_a_running_read_is_read_after_it() {
+        let start = Instant::now();
+        let (_d, path) = secret_file(&[1u8; 40], 0o600);
+        let mut g = group(start);
+        let mut source = SecretSource::new(
+            path,
+            SecretIo {
+                read: slow_first_busy,
+                watch: SecretWatch::start,
+            },
+        );
+        source.begin().await;
+        source.on_tick(&mut g, start).await;
+        assert!(source.reader.in_flight(), "the first read is stuck");
+        source
+            .on_event(&mut g, start + Duration::from_secs(1))
+            .await;
+        assert_eq!(BUSY_CALLS.load(Ordering::SeqCst), 1, "no second read");
+        BUSY_RELEASE.store(true, Ordering::SeqCst);
+        read_finished(&source.reader).await;
+        source.on_tick(&mut g, start + Duration::from_secs(2)).await;
+        assert_eq!(BUSY_CALLS.load(Ordering::SeqCst), 2, "read again after it");
+    }
+
+    static SLOW_WATCH_RELEASE: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    static SLOW_WATCH_READS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    fn slow_watch(path: &Path) -> Result<SecretWatch, String> {
+        block_until(&SLOW_WATCH_RELEASE);
+        SecretWatch::start(path)
+    }
+
+    fn count_slow_watch(_: &Path) -> Result<Vec<u8>, String> {
+        count_to(&SLOW_WATCH_READS)
+    }
+
+    /// A watch that takes long to set up (a directory on a file system that
+    /// does not answer) is not waited for: the file is read on every tick
+    /// meanwhile, and watched, with one more read, when the watch is ready.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn slow_watch_start_does_not_hold_the_loop() {
+        let start = Instant::now();
+        let (_d, path) = secret_file(&[1u8; 40], 0o600);
+        let mut g = group(start);
+        let mut source = SecretSource::new(
+            path,
+            SecretIo {
+                read: count_slow_watch,
+                watch: slow_watch,
+            },
+        );
+        let began = std::time::Instant::now();
+        source.begin().await;
+        assert!(
+            began.elapsed() < Duration::from_secs(2),
+            "begin does not wait"
+        );
+        assert!(source.notifier().is_none());
+        assert!(logs_contain("is not ready after"));
+        source.on_tick(&mut g, start).await;
+        source.on_tick(&mut g, start + Duration::from_secs(1)).await;
+        assert_eq!(
+            SLOW_WATCH_READS.load(Ordering::SeqCst),
+            2,
+            "a read per tick"
+        );
+        SLOW_WATCH_RELEASE.store(true, Ordering::SeqCst);
+        let end = std::time::Instant::now() + Duration::from_secs(5);
+        while !source.starting.as_ref().is_some_and(|h| h.is_finished()) {
+            assert!(std::time::Instant::now() < end, "the watch did not start");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        source.on_tick(&mut g, start + Duration::from_secs(2)).await;
+        assert!(source.notifier().is_some(), "watched now");
+        assert_eq!(
+            SLOW_WATCH_READS.load(Ordering::SeqCst),
+            3,
+            "one read for what changed before the watch was ready"
+        );
+    }
 }
+
+#[cfg(test)]
+mod bench;
