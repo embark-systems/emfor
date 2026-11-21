@@ -225,7 +225,7 @@ backends = [
 [examples/deploy/emfor-drain.sh](../../examples/deploy/emfor-drain.sh) 做一台 backend 的這幾步。開始之前：
 
 - 沒有任何套件會安裝這支腳本。請複製到 emfor 的主機（給 `on`、`off`、`wait-ready` 用）與 backend 的主機（給 `wait-idle` 用）。
-- 在 emfor 的主機上以 root 執行：以 root 執行的 `emfor check-config` 只接受 root 擁有的 conf.d 檔案，而且腳本會 reload emfor。
+- 在 emfor 的主機上以 root 執行，腳本會 reload emfor。腳本以 emfor 執行時的使用者（`emfor`；用 `EMFOR_USER` 指定別的）跑 `emfor check-config`，用 `runuser`，沒有 `runuser` 時用 `su -m`：check-config 會啟動設定裡宣告的 plugin，以 root 執行時它們會在服務的沙箱之外執行。該使用者要能讀設定檔與 secret 檔，daemon 也一樣。
 - 需要 `jq`；`wait-idle` 還需要 `ss`（Linux、iproute2）。
 - reload 指令是 `systemctl reload emfor`；要用別的，設 `EMFOR_RELOAD`（FreeBSD：`service emfor reload`，檔案在 `/usr/local/etc/emfor/conf.d`）。
 - 它呼叫 `emfor check-config` 與 `emfor status` 時不帶 `--config`，所以用的是編在 emfor 裡的預設設定檔路徑。要用別的路徑，設 `EMFOR_CONFIG=/path/to/emfor.toml`。
@@ -279,7 +279,7 @@ list-the-hosts-of-my-group | emfor-peers-sync.sh /etc/emfor/conf.d/50-peers.toml
 - 清單和檔案裡已有的一樣時什麼都不做，也不 reload（位址會先排序，所以順序不影響）；
 - 遇到少於 2 個或多於 64 個位址、空的回應、以及不是 `IPv4:port` 或 `[IPv6]:port` 的行，就拒絕並不動檔案。因此雲端呼叫失敗而得到空回應時，會保留舊的群組；別人可以設定的標籤或名稱，也不可能在檔案裡放進位址以外的東西；
 - 把清單寫到 `FILE.new`，用它取代原檔，執行 `emfor check-config`，被拒絕就把舊檔放回去（原本沒有檔案就移除新檔）；之後才 reload。`check-config` 也會拒絕不含這台主機自己 `listen` 位址的清單；
-- 和 `emfor-drain.sh` 一樣，要在執行 emfor 的主機上以 root 執行（以 root 執行的 `check-config` 只接受 root 擁有的 conf.d 檔案），並以同樣方式使用 `EMFOR_RELOAD` 與 `EMFOR_CONFIG`。
+- 和 `emfor-drain.sh` 一樣，要在執行 emfor 的主機上以 root 執行，並以同樣方式使用 `EMFOR_RELOAD`、`EMFOR_CONFIG` 與 `EMFOR_USER`（`check-config` 以 emfor 執行時的使用者跑，不是 root）。
 
 沒有任何套件會安裝它，請複製到主機上。下面兩個指令列出帶有某個標籤的執行中主機的私有位址，是要你改寫的範例：請換成你的標籤、port（這裡是 5302）和查詢。主機只需要讀取執行個體清單的權限（AWS 是 `ec2:DescribeInstances`；GCP 是 `compute.instances.list`）。
 

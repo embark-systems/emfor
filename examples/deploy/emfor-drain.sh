@@ -29,8 +29,10 @@
 #   { addr = "10.0.0.11:8080", drain = true },
 # and refuses (changing nothing) a line it cannot change.
 #
-# Run as root on the host that runs emfor (check-config run as root accepts
-# only conf.d files owned by root). Environment:
+# Run as root on the host that runs emfor; check-config runs as the daemon's
+# user, so that a plugin the config declares does not run as root.
+# Environment:
+#   EMFOR_USER     the user emfor runs as (default "emfor")
 #   EMFOR_RELOAD   how to reload (default "systemctl reload emfor"; FreeBSD:
 #                  "service emfor reload")
 #   EMFOR_CONFIG   the config file, passed as --config to emfor (default: the
@@ -48,6 +50,26 @@ die() { echo "emfor-drain: $*" >&2; exit 1; }
 reload=${EMFOR_RELOAD:-systemctl reload emfor}
 service=${EMFOR_SERVICE:-}
 emfor_cmd() { if [ -n "${EMFOR_CONFIG:-}" ]; then c=$1; shift; emfor "$c" --config "$EMFOR_CONFIG" "$@"; else emfor "$@"; fi; }
+
+# check-config starts the plugins the config declares, so it runs as the
+# daemon's user (as the service does, and as the FreeBSD rc script does), not
+# as root: a plugin would otherwise run as root, outside the service's sandbox.
+daemon_user=${EMFOR_USER:-emfor}
+check_config() {
+    set -- check-config
+    if [ -n "${EMFOR_CONFIG:-}" ]; then set -- check-config --config "$EMFOR_CONFIG"; fi
+    if [ "$(id -u)" -ne 0 ] || [ "$daemon_user" = root ]; then
+        emfor "$@"
+    elif command -v runuser >/dev/null 2>&1; then
+        runuser -u "$daemon_user" -- emfor "$@"
+    else
+        line=
+        for a in emfor "$@"; do
+            line="$line '$(printf '%s' "$a" | sed "s/'/'\\\\''/g")'"
+        done
+        su -m "$daemon_user" -c "$line"
+    fi
+}
 
 # addr with the characters that mean something in a sed pattern escaped.
 pattern() { printf '%s' "$1" | sed 's/[][\.*^$/]/\\&/g'; }
@@ -101,7 +123,7 @@ edit() { # on|off FILE ADDR
         # temporary files are never loaded.
         cp -p "$file" "$file.old"
         mv "$file.new" "$file"
-        if ! emfor_cmd check-config >/dev/null; then
+        if ! check_config >/dev/null; then
             mv "$file.old" "$file"
             die "check-config refuses the new $file; the old file is back"
         fi

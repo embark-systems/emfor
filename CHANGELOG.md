@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+**The deploy scripts run `emfor check-config` as the daemon's user.**
+`examples/deploy/emfor-peers-sync.sh` and `emfor-drain.sh` ran
+`emfor check-config` as root, and check-config starts the plugins the config
+declares, so a plugin ran as root outside the service's sandbox. They now run it
+as `EMFOR_USER` (default `emfor`) with `runuser -u`, or `su -m` where there is
+no `runuser`; they run it directly when not run as root or when the user is
+`root`. The user must be able to read the config files and the secret file.
+`status --json` and the reload are unchanged. Checked in a Debian container as
+root: a declared plugin ran as uid 999 (the `emfor` user) through `runuser` and
+through the `su -m` path (with `SHELL` set), and as uid 0 with
+`EMFOR_USER=root`; without a plugin `emfor-peers-sync.sh` wrote the file and ran
+the reload, and `emfor-drain.sh on` changed the line; a user that does not exist
+makes check-config fail and the old file stay. Not verified: FreeBSD (`su -m`
+there), `su -m` on Linux with the user's `nologin` shell and no `SHELL` (it fails
+without a message; `runuser` is used first), the wait for the drained state of
+`emfor-drain.sh on` (`jq` was not in the container), and the order of the
+scripts (the new file is moved into place before check-config, as before).
+
 **The main config file is checked like the fragments (compatibility change).**
 `emfor server` (at start and at every reload) and `emfor check-config` now
 refuse a main config file that group or others can write (mode `& 0o022`), or

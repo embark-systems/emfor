@@ -415,8 +415,12 @@ the steps for one backend. Before you start:
 
 - No package installs the script. Copy it to the emfor host (for `on`, `off`
   and `wait-ready`) and to the backend host (for `wait-idle`).
-- Run it as root on the emfor host: `emfor check-config` run as root accepts
-  only conf.d files that root owns, and the script reloads emfor.
+- Run it as root on the emfor host: the script reloads emfor. It runs
+  `emfor check-config` as the user emfor runs as (`emfor`; `EMFOR_USER` names
+  another), with `runuser`, or `su -m` where there is no `runuser`: check-config
+  starts the plugins the config declares, which as root would run outside the
+  service's sandbox. That user must be able to read the config files and the
+  secret file, as the daemon does.
 - It needs `jq`, and `ss` (Linux, iproute2) for `wait-idle`.
 - The reload command is `systemctl reload emfor`. Set `EMFOR_RELOAD` for
   another one (FreeBSD: `service emfor reload`, with the files in
@@ -562,8 +566,8 @@ The script:
   when there was none) if it refuses; only then does it reload. `check-config`
   also refuses a list that does not contain this host's own `listen` address;
 - is meant to be run as root on the host that runs emfor, as `emfor-drain.sh`
-  is (`check-config` run as root accepts only conf.d files that root owns),
-  and uses `EMFOR_RELOAD` and `EMFOR_CONFIG` the same way.
+  is, and uses `EMFOR_RELOAD`, `EMFOR_CONFIG` and `EMFOR_USER` the same way
+  (`check-config` runs as the user emfor runs as, not as root).
 
 No package installs it; copy it to the host. The two commands below list the
 private addresses of the running hosts that carry a label, and are examples to
