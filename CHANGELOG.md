@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+**An older peer result or heartbeat no longer overwrites a newer one (bug fix).**
+The replay check lets a message that the network delivered late through, as
+long as its `seq` is within 64 of the highest. The daemon then kept it as the
+sender's latest result for the backend, or as the member's service tags,
+replacing what a later message had set (and, for a result, making it look
+fresh again). Each kept result and each member's tag list now remember the
+`boot` and `seq` of the message they came from, and a message with the same
+`boot` and a lower `seq` is counted as received but leaves them alone; one
+with another `boot` (the sender restarted) replaces them. The wire format
+and the replay window are unchanged. Checked in a Debian container: fmt,
+clippy `-D warnings` and 1052 tests pass, 17 ignored; seven new tests, six of which fail when
+the comparison is turned off (the seventh checks that stamps are dropped with
+the member). Not verified: real network reordering between
+hosts (the tests feed messages in the reordered sequence); the new tests were
+not run against the old code as such, only with the comparison removed.
+
 **A hung config file no longer blocks a stop request, and a restarted plugin leaves no tasks behind (bug fixes).**
 On `SIGHUP` the daemon read the config on the thread that runs its main
 loop, so a config on a hung file system kept the daemon from handling

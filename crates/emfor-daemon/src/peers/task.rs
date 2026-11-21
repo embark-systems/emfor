@@ -21,7 +21,7 @@ use super::targets::{DIGEST_DIFFERS, Targets};
 use super::watch::SecretWatch;
 use super::wire::{Down, Kind, MAX_DATAGRAM, Message, Outcome, ResultMsg};
 use crate::config::{PeersConfig, read_secret};
-use crate::quorum::Quorum;
+use crate::quorum::{Quorum, Stamp};
 use crate::schedule::unix_ms;
 use crate::writer::WriterMsg;
 
@@ -662,6 +662,10 @@ async fn send_all(socket: &UdpSocket, batches: &[Outgoing]) {
 
 /// Handle an accepted `down` or `result` message.
 fn received(group: &Group, targets: &Targets, quorum: &Quorum, msg: &Message, now: Instant) {
+    let stamp = Stamp {
+        boot: msg.boot,
+        seq: msg.seq,
+    };
     match &msg.kind {
         Kind::Down(d) => {
             group.stats().received.fetch_add(1, Ordering::Relaxed);
@@ -693,10 +697,10 @@ fn received(group: &Group, targets: &Targets, quorum: &Quorum, msg: &Message, no
                 );
             }
             if found.recheck.is_some() {
-                quorum.record(msg.from, r, now);
+                quorum.record_at(msg.from, r, stamp, now);
             }
         }
-        Kind::Heartbeat(tags) => quorum.set_member_tags(msg.from, tags),
+        Kind::Heartbeat(tags) => quorum.set_member_tags_at(msg.from, tags, stamp),
         Kind::Unknown(_) => {}
     }
 }
@@ -886,6 +890,66 @@ mod tests {
     use crate::peers::test_support::*;
     use crate::peers::wire::{MAGIC_V2, parse_payload};
     use std::collections::HashMap;
+
+    /// Spec peer-group "Older heartbeat overtaken on the network" and
+    /// "Heartbeat of a restarted sender": a heartbeat accepted after a later
+    /// one of the same sender and boot leaves the tags alone; another boot
+    /// replaces them.
+    #[test]
+    fn older_heartbeat_leaves_the_tags_alone() {
+        let now = Instant::now();
+        let g = group(now);
+        let targets = Targets::default();
+        let quorum = Quorum::new(addr(ME));
+        let from = addr(B);
+        quorum.set_live([from]);
+        let tag = 0xa513_a047;
+        for (boot, seq, kind, want) in [
+            (1, 11, Kind::Heartbeat(vec![tag]), vec![tag]),
+            (1, 10, Kind::Heartbeat(Vec::new()), vec![tag]),
+            (2, 1, Kind::Heartbeat(Vec::new()), vec![]),
+        ] {
+            let m = msg(B, boot, seq, 1, kind);
+            received(&g, &targets, &quorum, &m, now);
+            assert_eq!(quorum.member_tags(from), want, "boot {boot} seq {seq}");
+        }
+    }
+
+    /// Spec peer-group "Older result overtaken on the network": the older
+    /// result is counted as received but the kept result is the later one.
+    #[test]
+    fn older_result_is_counted_but_not_kept() {
+        let now = Instant::now();
+        let g = group(now);
+        let (targets, _) = targets(DIGEST);
+        let quorum = Quorum::new(addr(ME));
+        let from = addr(B);
+        let kept = || quorum.kept("api.svc.emfor", "10.0.0.11:8080", from);
+        received(
+            &g,
+            &targets,
+            &quorum,
+            &msg(B, 1, 11, 1, result(Outcome::Down("refused".into()))),
+            now,
+        );
+        received(
+            &g,
+            &targets,
+            &quorum,
+            &msg(B, 1, 10, 1, result(Outcome::Up)),
+            now,
+        );
+        assert_eq!(kept(), Some(Outcome::Down("refused".into())));
+        assert_eq!(g.stats().results_received(), 2);
+        received(
+            &g,
+            &targets,
+            &quorum,
+            &msg(B, 2, 1, 1, result(Outcome::Up)),
+            now,
+        );
+        assert_eq!(kept(), Some(Outcome::Up));
+    }
 
     /// Spec peer-group "Kept tags follow the latest heartbeat": only
     /// heartbeats replace a member's tags, and a member that stops being

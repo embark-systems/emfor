@@ -153,9 +153,29 @@ fn region_down(down: u32, fresh: u32, reason: &str) -> CheckResult {
     CheckResult::Down(normalize_reason(&format!("peers {down}/{fresh}: {reason}")))
 }
 
+/// Where a kept result or tag list came from: the sender's `boot` and the
+/// `seq` of the message. The replay check lets a message overtaken by later
+/// ones on the network through; a stamp tells such a message from a newer one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stamp {
+    pub boot: u64,
+    pub seq: u64,
+}
+
+impl Stamp {
+    /// Whether this is older than `kept`: the same `boot` and a lower `seq`.
+    /// Another `boot` is never older: the replay check accepts a message with
+    /// another `boot` only when its `ts` is later, so the sender restarted.
+    fn older_than(self, kept: Stamp) -> bool {
+        self.boot == kept.boot && self.seq < kept.seq
+    }
+}
+
 /// The latest result of one sender for one backend.
 #[derive(Debug, Clone)]
 struct Kept {
+    /// The message it came from.
+    stamp: Stamp,
     outcome: Outcome,
     digest: String,
     interval: Duration,
@@ -180,6 +200,9 @@ struct State {
     /// The service tags of the latest heartbeat of each live member; no
     /// entry when it announced none.
     member_tags: HashMap<SocketAddr, BTreeSet<u32>>,
+    /// The message the tags of each member came from; kept when the member is
+    /// not live, so that a late older heartbeat does not bring the tags back.
+    tag_stamps: HashMap<SocketAddr, Stamp>,
     /// Every service of this daemon, in or out of the peer group, sorted.
     services: Vec<String>,
 }
@@ -347,14 +370,28 @@ impl Quorum {
     /// Keep `tags`, from an accepted heartbeat of `member`, in place of what
     /// it announced before (spec peer-group, "Peer heartbeats and
     /// liveness").
-    pub fn set_member_tags(&self, member: SocketAddr, tags: &[u32]) {
+    pub fn set_member_tags_at(&self, member: SocketAddr, tags: &[u32], stamp: Stamp) {
         let mut st = self.state();
+        if st
+            .tag_stamps
+            .get(&member)
+            .is_some_and(|k| stamp.older_than(*k))
+        {
+            return;
+        }
+        st.tag_stamps.insert(member, stamp);
         if tags.is_empty() {
             st.member_tags.remove(&member);
         } else {
             st.member_tags
                 .insert(member, tags.iter().copied().collect());
         }
+    }
+
+    /// [`Quorum::set_member_tags_at`] with a stamp no other is older than.
+    #[cfg(test)]
+    pub fn set_member_tags(&self, member: SocketAddr, tags: &[u32]) {
+        self.set_member_tags_at(member, tags, Stamp::default());
     }
 
     /// The service tags kept for `member`, sorted.
@@ -369,19 +406,30 @@ impl Quorum {
 
     /// Keep `r` as the latest result of `from` for its backend. The caller
     /// checked that this daemon has the service and backend.
-    pub fn record(&self, from: SocketAddr, r: &ResultMsg, now: Instant) {
+    pub fn record_at(&self, from: SocketAddr, r: &ResultMsg, stamp: Stamp, now: Instant) {
         let kept = Kept {
+            stamp,
             outcome: r.outcome.clone(),
             digest: r.digest.clone(),
             interval: Duration::from_millis(r.interval_ms),
             at: now,
             counted: false,
         };
-        self.state()
+        let mut st = self.state();
+        let votes = st
             .votes
             .entry((r.service.clone(), r.backend.clone()))
-            .or_default()
-            .insert(from, kept);
+            .or_default();
+        if votes.get(&from).is_some_and(|k| stamp.older_than(k.stamp)) {
+            return;
+        }
+        votes.insert(from, kept);
+    }
+
+    /// [`Quorum::record_at`] with a stamp no other is older than.
+    #[cfg(test)]
+    pub fn record(&self, from: SocketAddr, r: &ResultMsg, now: Instant) {
+        self.record_at(from, r, Stamp::default(), now);
     }
 
     /// `from` sent a message for `service` with a digest other than ours.
@@ -558,6 +606,7 @@ impl Quorum {
         st.mismatches.retain(|(_, m), _| members.contains(m));
         st.live.retain(|m| members.contains(m));
         st.member_tags.retain(|m, _| members.contains(m));
+        st.tag_stamps.retain(|m, _| members.contains(m));
     }
 
     /// The kept result of `from` for a backend.
@@ -1305,5 +1354,103 @@ mod tests {
                 r#""members":[{"addr":"127.0.0.1:5303","live":false,"services_off":[]}]"#
             )
         );
+    }
+
+    fn stamp(boot: u64, seq: u64) -> Stamp {
+        Stamp { boot, seq }
+    }
+
+    /// Spec peer-group "Older result overtaken on the network" and "Result
+    /// of a restarted sender", "Older heartbeat overtaken on the network"
+    /// and "Heartbeat of a restarted sender".
+    #[test]
+    fn stamp_older_than_table() {
+        let kept = stamp(1, 11);
+        for (new, older) in [
+            (stamp(1, 10), true),
+            (stamp(1, 11), false),
+            (stamp(1, 12), false),
+            // Another boot is a restart, whatever its seq.
+            (stamp(2, 1), false),
+            (stamp(0, 99), false),
+        ] {
+            assert_eq!(new.older_than(kept), older, "{new:?}");
+        }
+    }
+
+    #[test]
+    fn older_result_does_not_replace_a_newer_one() {
+        let from = addr("10.0.0.8:5302");
+        let q = quorum();
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_millis(500);
+        let key = (SVC.to_string(), "10.0.0.11:8080".to_string());
+        q.record_at(from, &result(down("refused")), stamp(1, 11), t0);
+        // A check time has counted this vote (what `count_votes` does).
+        q.state()
+            .votes
+            .get_mut(&key)
+            .and_then(|v| v.get_mut(&from))
+            .expect("the vote is kept")
+            .counted = true;
+        // seq 10 was overtaken by seq 11: it neither replaces the vote, nor
+        // makes it look fresher, nor makes it count again.
+        q.record_at(from, &result(Outcome::Up), stamp(1, 10), later);
+        assert_eq!(q.kept(SVC, "10.0.0.11:8080", from), Some(down("refused")));
+        {
+            let st = q.state();
+            let k = &st.votes[&key][&from];
+            assert_eq!(k.at, t0);
+            assert!(k.counted, "the vote was counted and still is");
+        }
+        // In order, and from a restarted sender, a new result replaces it.
+        q.record_at(from, &result(Outcome::Up), stamp(1, 12), later);
+        assert_eq!(q.kept(SVC, "10.0.0.11:8080", from), Some(Outcome::Up));
+        q.record_at(from, &result(down("reset")), stamp(2, 1), later);
+        assert_eq!(q.kept(SVC, "10.0.0.11:8080", from), Some(down("reset")));
+    }
+
+    #[test]
+    fn older_heartbeat_does_not_replace_newer_tags() {
+        let m = addr("10.0.0.8:5302");
+        let q = quorum();
+        q.set_live([m]);
+        let tag = service_tag(SVC);
+        q.set_member_tags_at(m, &[tag], stamp(1, 11));
+        q.set_member_tags_at(m, &[], stamp(1, 10));
+        assert_eq!(q.member_tags(m), vec![tag]);
+        // A restarted sender replaces them.
+        q.set_member_tags_at(m, &[], stamp(2, 1));
+        assert!(q.member_tags(m).is_empty());
+    }
+
+    #[test]
+    fn late_older_heartbeat_does_not_bring_forgotten_tags_back() {
+        let m = addr("10.0.0.8:5302");
+        let q = quorum();
+        let tag = service_tag(SVC);
+        q.set_live([m]);
+        q.set_member_tags_at(m, &[tag], stamp(1, 11));
+        q.set_live([]);
+        assert!(q.member_tags(m).is_empty());
+        q.set_live([m]);
+        q.set_member_tags_at(m, &[tag], stamp(1, 9));
+        assert!(q.member_tags(m).is_empty(), "the stamp outlived liveness");
+        q.set_member_tags_at(m, &[tag], stamp(1, 12));
+        assert_eq!(q.member_tags(m), vec![tag]);
+    }
+
+    #[test]
+    fn leaving_members_drop_their_stamps() {
+        let m = addr("10.0.0.8:5302");
+        let q = quorum();
+        q.set_live([m]);
+        q.set_member_tags_at(m, &[service_tag(SVC)], stamp(1, 11));
+        q.retain_members(&[]);
+        assert!(q.state().tag_stamps.is_empty());
+        // Back as a member: the first message is accepted, however low.
+        q.set_live([m]);
+        q.set_member_tags_at(m, &[service_tag(SVC)], stamp(1, 1));
+        assert_eq!(q.member_tags(m), vec![service_tag(SVC)]);
     }
 }
