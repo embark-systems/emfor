@@ -220,6 +220,23 @@ the real packaged scripts on an upgrade, a systemd start, other rpm versions
 than the one of Rocky Linux 9, and the deb (dpkg asks about a changed
 conffile and was not changed).
 
+**The reason of a failed `http` check no longer holds the request URL (bug fix).**
+The HTTP client appends the request URL to its error messages, so a `path` with
+a token in its query string (`path = "/health?token=abc"`, which the validation
+allows) ended up in the reason of a check that failed to connect or to
+complete a TLS handshake, and the reason goes to the store, the log and
+`emfor status`. The URL is now left out of the reasons the client's errors
+produce; the backend address is in the service's configuration anyway. Checked in a Debian
+container: fmt, clippy `-D warnings` and 1014 tests passed (17 ignored,
+three of them benchmarks); three new tests (a refused connection, a failed
+TLS handshake, a failed body read) check that the reason holds neither the
+token nor the path, and the first two fail with the old code (the reason was
+`error sending request for url (http://127.0.0.1:<port>/health?token=s3cret): ...`);
+the body test also passes with the old code, because the client does not add
+the URL to that error. Not checked: the other plugins of `emfor-check`
+and the `http3` check, which the review did not point at and which were not
+read for this; a TLS failure other than a clear-text answer to a handshake.
+
 ## 0.6.0 — 2026-11-17
 
 The store format (`meta/schema_version` 2) and the plugin protocol (1) are

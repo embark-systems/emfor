@@ -372,8 +372,8 @@ impl Checker for HttpChecker {
                         None => CheckResult::Up,
                     }
                 }
-                Err(e) if has_local_io_error(&e) => CheckResult::Error(error_chain(&e)),
-                Err(e) => CheckResult::Down(error_chain(&e)),
+                Err(e) if has_local_io_error(&e) => CheckResult::Error(client_reason(e)),
+                Err(e) => CheckResult::Down(client_reason(e)),
             }
         })
     }
@@ -412,9 +412,9 @@ async fn body_contains(mut resp: reqwest::Response, want: &[u8]) -> CheckResult 
             }
             Ok(None) => break,
             Err(e) if has_local_io_error(&e) => {
-                return CheckResult::Error(format!("body: {}", error_chain(&e)));
+                return CheckResult::Error(format!("body: {}", client_reason(e)));
             }
-            Err(e) => return CheckResult::Down(format!("body: {}", error_chain(&e))),
+            Err(e) => return CheckResult::Down(format!("body: {}", client_reason(e))),
         }
     }
     let excerpt = &got[..got.len().min(EXCERPT)];
@@ -441,6 +441,13 @@ fn has_local_io_error(e: &(dyn std::error::Error + 'static)) -> bool {
         cur = err.source();
     }
     false
+}
+
+/// The reason for an error of the HTTP client. Its message ends with the
+/// request URL, which holds `path` and so may hold a token in the query
+/// string; the reason goes to the store and the log, so the URL is left out.
+fn client_reason(e: reqwest::Error) -> String {
+    error_chain(&e.without_url())
 }
 
 fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
@@ -862,5 +869,67 @@ tls_verify = "yes""#)
         assert_eq!(host_only("api.internal:8443"), "api.internal");
         assert_eq!(host_only("[2001:db8::1]:80"), "2001:db8::1");
         assert_eq!(host_only("[2001:db8::1]"), "2001:db8::1");
+    }
+
+    fn reason_of(r: CheckResult) -> String {
+        match r {
+            CheckResult::Down(s) | CheckResult::Error(s) => s,
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    /// Spec health-checking "Reason without the request URL": a token in
+    /// the query of `path` is not in the reason of a failed check.
+    fn assert_no_url(reason: &str) {
+        for leaked in ["s3cret", "token=", "/health"] {
+            assert!(
+                !reason.contains(leaked),
+                "{leaked:?} in the reason {reason:?}"
+            );
+        }
+    }
+
+    const TOKEN_PATH: &str = r#"path = "/health?token=s3cret""#;
+
+    #[tokio::test]
+    async fn refused_connection_reason_has_no_url() {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        drop(l);
+        let reason = reason_of(checker(TOKEN_PATH).check(req(addr)).await);
+        assert_no_url(&reason);
+        assert!(reason.to_lowercase().contains("connect"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn body_failure_reason_has_no_url() {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let _ = s.read(&mut buf).await;
+                    // 100 bytes announced, 3 sent, then the connection ends.
+                    let _ = s
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nabc")
+                        .await;
+                });
+            }
+        });
+        let opts = format!("{TOKEN_PATH}\nexpect_body = \"zzz\"");
+        let reason = reason_of(checker(&opts).check(req(addr)).await);
+        assert_no_url(&reason);
+        assert!(reason.starts_with("body: "), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn tls_failure_reason_has_no_url() {
+        // A server that answers in clear text to a TLS handshake.
+        let (addr, _rx) = server(200).await;
+        let opts = format!("{TOKEN_PATH}\nscheme = \"https\"");
+        let reason = reason_of(checker(&opts).check(req(addr)).await);
+        assert_no_url(&reason);
+        assert!(!reason.is_empty());
     }
 }
