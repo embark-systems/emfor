@@ -85,7 +85,7 @@ pipe 提早關閉（`emfor status | head -1`）不會改變結束代碼。store 
 | `emfor_plugin_up`、`emfor_plugin_restarts_total` | plugin 健康狀況 |
 | `emfor_dns_rate_limited_total{action}` | 有 `[dns]` 時：超過 `rate_limit` 的 UDP 回答，依改送什麼分類：`truncated` 或 `dropped`（[第 7 章](07-dns.md#速率限制)） |
 | `emfor_peer_up{peer}` | 有 `[peers]` 時：該成員存活時為 1 |
-| `emfor_peer_messages_rejected_total{reason}` | 有 `[peers]` 時：依原因分類的丟棄訊息數：`malformed`、`auth`（密鑰錯誤，或無法解密的訊息）、`sender`（不是成員，或偽造的位址）、`site`、`stale`（時鐘相差超過 5 秒）、`replay`、`plaintext`（`accept_plaintext = false` 時收到的未加密訊息） |
+| `emfor_peer_messages_rejected_total{reason}` | 有 `[peers]` 時：依原因分類的丟棄訊息數：`malformed`、`auth`（密鑰錯誤，或無法解密的訊息）、`sender`（不是成員，或偽造的位址）、`site`、`stale`（時鐘相差超過 5 秒）、`replay`、`plaintext`（`accept_plaintext` 為 `false` 時收到的未加密訊息，`encrypt = true` 時預設就是） |
 | `emfor_peer_notifications_total{direction}` | 有 `[peers]` 時：故障通知 `sent`（每個成員算一次）與 `received` |
 | `emfor_peer_results_total{direction}` | 有 `[peers]` 時：負責主機的檢查結果 `sent`（每個成員算一次）與 `received` |
 | `emfor_peer_disagreements` | 有 `[peers]` 時：群組投票判為 down、而本機檢查通過的 backend 數 |
@@ -97,7 +97,7 @@ pipe 提早關閉（`emfor status | head -1`）不會改變結束代碼。store 
 
 ### 聯防群組
 
-聯防群組的成員之間需要能以 UDP 連到彼此的 [`[peers]`](03-configuration.md#peers) 的 `listen` port（範例中為 5302），時鐘相差不能超過 5 秒（NTP）。某個成員的 `emfor_peer_up` 一直是 0 時，看兩邊的 `emfor_peer_messages_rejected_total`：`auth` 表示密鑰不同，`stale` 表示時鐘偏移，`sender` 表示 `members` 或 `listen` 不符，`site` 表示兩台主機的 `site` 不同。0.3.0 成員那邊的 `malformed` 表示它讀不了已升級成員的加密訊息：在它升級前，已升級的成員先設 `encrypt = false`（見 [`[peers]`](03-configuration.md#peers)）。警告 `peer <address> sends plaintext messages (EMP1); set encrypt = true there` 表示該成員仍送未加密的訊息；這些訊息照常接受，除非設了 `accept_plaintext = false`：那時它們算成 `plaintext`，該成員在這裡不算存活。
+聯防群組的成員之間需要能以 UDP 連到彼此的 [`[peers]`](03-configuration.md#peers) 的 `listen` port（範例中為 5302），時鐘相差不能超過 5 秒（NTP）。某個成員的 `emfor_peer_up` 一直是 0 時，看兩邊的 `emfor_peer_messages_rejected_total`：`auth` 表示密鑰不同，`stale` 表示時鐘偏移，`sender` 表示 `members` 或 `listen` 不符，`site` 表示兩台主機的 `site` 不同。0.3.0 成員那邊的 `malformed` 表示它讀不了已升級成員的加密訊息：在它升級前，已升級的成員先設 `encrypt = false`（見 [`[peers]`](03-configuration.md#peers)）。警告 `peer <address> sends plaintext messages (EMP1); set encrypt = true there` 表示該成員仍送未加密的訊息。這些訊息只在 `accept_plaintext = true` 時接受；`encrypt = true` 的 daemon 預設會丟棄它們，算成 `plaintext`，該成員在這裡不算存活。這時日誌裡不會有上面那行警告，要找的是 `dropped peer message from <address> (plaintext)`（每個來源每分鐘最多一行）。在這台主機設 `accept_plaintext = true`，直到那個成員改送加密訊息。
 
 原因會說明 `down` 從哪裡來：`peers 2/3: <原因>` 表示三台負責主機中有兩台看到 backend down（原因是它們的）；`local: <原因>` 表示只有這台主機看到 down，投票沒有判 down；沒有前綴的原因表示沒有投票（存活成員少於三台，或沒有夠新的結果）。`emfor status` 在 daemon 那一行下面顯示群組狀態：
 

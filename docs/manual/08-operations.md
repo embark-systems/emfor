@@ -122,7 +122,7 @@ no TLS; keep it on loopback or firewall it.
 | `emfor_plugin_up`, `emfor_plugin_restarts_total` | Plugin health |
 | `emfor_dns_rate_limited_total{action}` | With `[dns]`: UDP answers over `rate_limit`, by what was sent instead: `truncated` or `dropped` ([chapter 7](07-dns.md#rate-limit)) |
 | `emfor_peer_up{peer}` | With `[peers]`: 1 while that member is live |
-| `emfor_peer_messages_rejected_total{reason}` | With `[peers]`: dropped messages by reason: `malformed`, `auth` (wrong secret, or a message that does not decrypt), `sender` (not a member, or a spoofed address), `site`, `stale` (clocks more than 5 seconds apart), `replay`, `plaintext` (an unencrypted message while `accept_plaintext = false`) |
+| `emfor_peer_messages_rejected_total{reason}` | With `[peers]`: dropped messages by reason: `malformed`, `auth` (wrong secret, or a message that does not decrypt), `sender` (not a member, or a spoofed address), `site`, `stale` (clocks more than 5 seconds apart), `replay`, `plaintext` (an unencrypted message while `accept_plaintext` is `false`, which is the default with `encrypt = true`) |
 | `emfor_peer_notifications_total{direction}` | With `[peers]`: failure reports `sent` (one per member) and `received` |
 | `emfor_peer_results_total{direction}` | With `[peers]`: check results of assigned checkers `sent` (one per member) and `received` |
 | `emfor_peer_disagreements` | With `[peers]`: backends the group votes down while this host's own check passes |
@@ -149,9 +149,13 @@ encrypted messages of upgraded members: set `encrypt = false` on those
 until it is upgraded (see
 [`[peers]`](03-configuration.md#peers)). A warning `peer <address> sends
 plaintext messages (EMP1); set encrypt = true there` means that member
-still sends readable messages; they are accepted unless
-`accept_plaintext = false`, in which case they count as `plaintext` and
-that member is not live here.
+still sends readable messages. They are accepted only with
+`accept_plaintext = true`; by default a daemon with `encrypt = true`
+drops them, they count as `plaintext`, and that member is not live here.
+The log then has no such warning for that member; look for
+`dropped peer message from <address> (plaintext)` instead (once a minute for
+each source). Set `accept_plaintext = true` on this host until that member
+sends encrypted messages.
 
 Reasons tell where a `down` came from: `peers 2/3: <reason>` means two of
 the three assigned checkers saw the backend down (the reason is theirs),

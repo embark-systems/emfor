@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use assert_cmd::cargo::cargo_bin;
 use emfor_daemon::peers::{
-    Kind, Message, Secret, encode, encode_encrypted, encode_encrypted_v3, open_with,
+    Kind, Message, Secret, encode_encrypted, encode_encrypted_v3, open_with,
 };
 use nix::sys::signal::Signal;
 
@@ -299,7 +299,8 @@ fn reload_rejects_peers_listen_change() {
     // Still receiving on the old address: a signed heartbeat from B makes B
     // live there.
     let sb = sockets(|| UdpSocket::bind(b)).expect("B's address is free");
-    let heartbeat = encode(
+    // Encrypted: a daemon without `accept_plaintext` drops `EMP1`.
+    let heartbeat = encode_encrypted_v3(
         &Message {
             from: b,
             site: "dc1".into(),
@@ -310,9 +311,9 @@ fn reload_rejects_peers_listen_change() {
                 .map(|d| d.as_millis() as u64)
                 .expect("the clock is after 1970"),
             kind: Kind::Heartbeat(Vec::new()),
-            emp3: false,
+            emp3: true,
         },
-        SECRET.trim_end().as_bytes(),
+        &Secret::new(SECRET.trim_end().as_bytes().to_vec()),
     );
     sb.send_to(&heartbeat, a).expect("B can send to A");
     wait_within("B live at A", Duration::from_secs(3), || {
@@ -745,9 +746,11 @@ fn services_another_member_leaves_out() {
         emfor_daemon::quorum::service_tag("web.svc.emfor"),
     ];
     let mut seq = 0;
+    // Encrypted: a daemon without `accept_plaintext` drops `EMP1`.
+    let secret = Secret::new(SECRET.trim_end().as_bytes().to_vec());
     let mut heartbeat = || {
         seq += 1;
-        let data = encode(
+        let data = encode_encrypted_v3(
             &Message {
                 from: other,
                 site: "dc1".into(),
@@ -758,9 +761,9 @@ fn services_another_member_leaves_out() {
                     .map(|d| d.as_millis() as u64)
                     .expect("the clock is after 1970"),
                 kind: Kind::Heartbeat(tags.clone()),
-                emp3: false,
+                emp3: true,
             },
-            SECRET.trim_end().as_bytes(),
+            &secret,
         );
         other_socket
             .send_to(&data, a)
@@ -1067,14 +1070,16 @@ fn format_follows_the_member() {
     );
 }
 
-/// Spec peer-group "Mixed formats during an upgrade": A encrypts, B does
-/// not; both stay live and A warns that B sends plaintext.
+/// Spec peer-group "Mixed formats during an upgrade": A encrypts and has
+/// `accept_plaintext = true` (without it A drops B's plaintext), B does
+/// not encrypt; both stay live and A warns that B sends plaintext.
 #[test]
 fn mixed_formats_during_an_upgrade() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
     let backend = held.local_addr().expect("the backend has an address");
     let (a, b) = (free_udp(), free_udp());
-    let da = spawn(|dir, m| config(dir, m, a, &[a, b], backend, ""));
+    let da =
+        spawn(|dir, m| config_peers(dir, m, a, &[a, b], backend, "", "accept_plaintext = true\n"));
     let db = spawn(|dir, m| config_peers(dir, m, b, &[a, b], backend, "", "encrypt = false\n"));
     for d in [&da, &db] {
         d.wait_log(HEALTHY);
@@ -1118,7 +1123,55 @@ fn plaintext_refused_until_reload() {
         }) && db.has_line(&format!("emfor_peer_up{{peer=\"{a}\"}} 1"))
     });
     assert!(da.has_line(&format!("emfor_peer_up{{peer=\"{b}\"}} 0")));
-    da.write_whole_config(&config(da.dir.path(), da.metrics, a, &[a, b], backend, ""));
+    da.write_whole_config(&config_peers(
+        da.dir.path(),
+        da.metrics,
+        a,
+        &[a, b],
+        backend,
+        "",
+        "accept_plaintext = true\n",
+    ));
+    da.signal(Signal::SIGHUP);
+    da.wait_log("config reloaded");
+    wait_within(
+        "B live at A after the reload",
+        Duration::from_secs(5),
+        || da.has_line(&format!("emfor_peer_up{{peer=\"{b}\"}} 1")),
+    );
+}
+
+/// Spec peer-group "Plaintext refused by default": A sets neither `encrypt`
+/// nor `accept_plaintext`, so it drops the `EMP1` messages of B (which has
+/// `encrypt = false`) as `plaintext`; B is not live at A, while B accepts A's
+/// messages; a reload with `accept_plaintext = true` makes B live at A.
+#[test]
+fn plaintext_refused_by_default() {
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
+    let backend = held.local_addr().expect("the backend has an address");
+    let (a, b) = (free_udp(), free_udp());
+    let da = spawn(|dir, m| config(dir, m, a, &[a, b], backend, ""));
+    let db = spawn(|dir, m| config_peers(dir, m, b, &[a, b], backend, "", "encrypt = false\n"));
+    for d in [&da, &db] {
+        d.wait_log(HEALTHY);
+    }
+    wait_within("B's messages refused at A", Duration::from_secs(5), || {
+        da.scrape().lines().any(|l| {
+            l.strip_prefix("emfor_peer_messages_rejected_total{reason=\"plaintext\"} ")
+                .and_then(|n| n.parse::<u64>().ok())
+                .is_some_and(|n| n >= 2)
+        }) && db.has_line(&format!("emfor_peer_up{{peer=\"{a}\"}} 1"))
+    });
+    assert!(da.has_line(&format!("emfor_peer_up{{peer=\"{b}\"}} 0")));
+    da.write_whole_config(&config_peers(
+        da.dir.path(),
+        da.metrics,
+        a,
+        &[a, b],
+        backend,
+        "",
+        "accept_plaintext = true\n",
+    ));
     da.signal(Signal::SIGHUP);
     da.wait_log("config reloaded");
     wait_within(

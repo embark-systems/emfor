@@ -1,0 +1,16 @@
+## 1. 預設值與測試
+
+- [x] 1.1 實作 Peer group configuration 要求中「accept_plaintext 的預設值跟著 encrypt 走」：`crates/emfor-daemon/src/config.rs` 讀入 `[peers]` 時，沒寫 `accept_plaintext` 就取 `encrypt` 的有效值的反面（`encrypt` 為 `true` 或沒寫 → `false`；`encrypt = false` → `true`），明確的值優先；「驗證與接收端處理維持不變」：`encrypt = false` 與 `accept_plaintext = false` 同時出現的驗證錯誤與訊息不動，`crates/emfor-daemon/src/peers/group.rs` 不改。同一個 task 更新單元測試：斷言訊息為「accept_plaintext defaults to true」的那個測試改成涵蓋 spec 範例表「accept_plaintext default」的七列（含最後一列的錯誤）。verification：`tools/docker-test.sh 'cargo test -p emfor-daemon --all-features --lib config'` 通過，且新斷言在改程式前（預設值仍為 `true`）會失敗。
+- [x] 1.2 [after: 1.1] 整合測試 `mixed_formats_during_an_upgrade`（`crates/emfor-daemon/tests/peers.rs`）的成員 A 明確加上 `accept_plaintext = true`，對應 Peer message authentication and replay protection 要求中修改後的情境「Mixed formats during an upgrade」：兩個成員仍互相存活、A 仍記 `sends plaintext messages (EMP1)`。verification：`tools/docker-test.sh 'cargo test -p emfor-daemon --all-features --test peers mixed_formats'` 通過；測試前沒加 `accept_plaintext = true` 時它會失敗，作為預設值已改變的證據。
+- [x] 1.3 [after: 1.2] 在 `crates/emfor-daemon/tests/peers.rs` 新增測試，對應情境「Plaintext refused by default」：A 的設定沒有 `encrypt` 與 `accept_plaintext`，B 設 `encrypt = false`；A 的 `emfor_peer_messages_rejected_total{reason="plaintext"}` 增加、B 在 A 不存活、A 的訊息 B 接受；A 以 `accept_plaintext = true` reload 後 B 在 A 存活（可參照既有 `plaintext_refused_until_reload` 的 reload 做法）。verification：`tools/docker-test.sh 'cargo test -p emfor-daemon --all-features --test peers plaintext'` 通過。
+
+## 2. 文件
+
+- [x] 2.1 英文文件寫出新預設值與升級順序：`docs/manual/03-configuration.md` 的 `encrypt` 列（「All three are accepted either way …」那一句要加上「只在 accept_plaintext 為 true 時」）、`accept_plaintext` 列（預設值依 `encrypt` 而定）與「Encryption was added in 0.4.0 …」那一段的升級步驟；`docs/manual/08-operations.md` 中「accepted unless `accept_plaintext = false`」那一句；`docs/deploy/daemon.md` 的 peers 段落。步驟與 design.md 的 Migration Plan 一致，並說明 `accept_plaintext` 這個鍵是 0.5.0 加入的。verification：內容檢視，並以 `grep -rn "accept_plaintext" docs/manual docs/deploy` 確認沒有任何一句仍說「預設 true」而不提 `encrypt`。
+- [x] 2.2 繁體中文手冊同步：`docs/manual.zh_TW/03-configuration.md` 的 `accept_plaintext` 與 `encrypt` 列及「加密是 0.4.0 新增的」那一段，`docs/manual.zh_TW/08-operations.md` 中提到明文警告與 `accept_plaintext` 的句子（先 grep 確認有這句才改）。verification：內容檢視，兩個語言的預設值、升級步驟與 2.1 一致。
+- [x] 2.3 `examples/emfor.toml` 第 59–76 行附近的 `[peers]` 註解寫出新預設值（`accept_plaintext` 沒寫時跟著 `encrypt`），並把被註解的範例行 `# accept_plaintext = true` 改成不暗示預設是 `true` 的寫法。verification：內容檢視，且 `tools/docker-test.sh 'cargo test --workspace --all-features'` 中讀範例檔的測試仍通過。
+- [x] 2.4 `CHANGELOG.md` 的 Unreleased 新增一則相容性條目（標題標明 compatibility change）：預設設定的成員現在丟棄 `EMP1`、哪些群組受影響（有 `encrypt = false` 成員或 0.3.0 成員的群組）、升級順序（與 design.md 的 Migration Plan 一致，含 `accept_plaintext` 是 0.5.0 加入的）、怎麼回復（寫回 `accept_plaintext = true` 並 reload），並照既有條目的格式寫 Checked 與沒檢查的部分。verification：內容檢視，行寬與其他 Unreleased 條目一致。
+
+## 3. 驗證
+
+- [x] 3.1 [after: 1.1, 1.2, 1.3, 2.1, 2.2, 2.3, 2.4] 整個 workspace 通過：`tools/docker-test.sh`（fmt、clippy `-D warnings`、`cargo test --workspace --all-features`）；若有其他測試因預設值改變而失敗，找出原因並在這個 task 處理，記下是哪個測試。再執行 `spectra validate emfor-accept-plaintext-default` 與 `spectra analyze emfor-accept-plaintext-default`。verification：上述指令的輸出沒有失敗，分析沒有 Critical 或 Warning。

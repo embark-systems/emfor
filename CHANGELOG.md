@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+**Unencrypted peer messages are refused by default (compatibility change).**
+`[peers] accept_plaintext` no longer defaults to `true`. Without a value it is
+`false` while `encrypt` is `true` (the default since 0.4.0) and `true` while
+`encrypt = false`. A daemon that encrypts now drops the plaintext (`EMP1`)
+messages of a member that has `encrypt = false` or runs 0.3.0, counts them as
+`plaintext` in `emfor_peer_messages_rejected_total`, and does not see that
+member as live; it used to accept them and log a warning. A group in which
+every member sends encrypted messages is not affected, and no config that was
+valid becomes invalid: `encrypt = false` still accepts plaintext by default,
+and `accept_plaintext = false` with `encrypt = false` is still an error.
+To upgrade a group that still has members sending plaintext, give the hosts
+that encrypt an explicit `accept_plaintext = true`: in the same config change
+as the upgrade on a host that runs 0.3.0 or 0.4.0 (they do not know the key,
+which was added in 0.5.0), or before the upgrade on one that runs 0.5.0 or
+0.6.0. Once every member has `encrypt = true` and the `plaintext` counter stops
+increasing, remove the line and reload. To keep the old behaviour, set
+`accept_plaintext = true` and reload. Checked with the unit tests of the
+default and the peer integration tests in a Debian container; four of the
+existing peer tests (they sent `EMP1` to a daemon with the default, or relied
+on it to take plaintext back after a reload) changed with it. Not run on macOS
+or FreeBSD by hand, and not tried on a real group of 0.6 and 0.7 members.
+
 **A peer secret that another account owns is refused (compatibility change).**
 `secret_file` and `previous_secret_file` must now be owned by root or by the
 user running emfor, as `include_dir` fragments already had to be: whoever owns

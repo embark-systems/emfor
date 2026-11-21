@@ -8,12 +8,29 @@ A peer group is the set of emfor daemons in one `site` that list each other in `
 
 ### Requirement: Peer group configuration
 
-The config SHALL accept an optional `[peers]` table with the keys `listen`, `members` and `secret_file`, all required, and the optional keys `previous_secret_file`, `encrypt`, a boolean that defaults to `true`, and `accept_plaintext`, a boolean that defaults to `true`; any other key SHALL be an error. `accept_plaintext = false` together with `encrypt = false` SHALL be an error at `peers.accept_plaintext`, since such a daemon would send the messages it refuses. `listen` SHALL be one `IPv4:port` or `[IPv6]:port` string with port 1–65535 whose address is not the unspecified address (`0.0.0.0` or `::`). `members` SHALL be an array of 2 to 64 such strings with no repeats, all of the address family (IPv4 or IPv6) of `listen`, and SHALL contain `listen`. `secret_file` SHALL be an absolute path to a file that the daemon can read, whose content after removing one trailing line feed is at least 32 bytes, and whose permissions do not allow other users to read it; `previous_secret_file`, when set, SHALL meet the same conditions. When `[peers]` is present the top-level `site` SHALL be set. Every violation SHALL be reported together with the other config errors, prefixed with its TOML path. Without a `[peers]` table the daemon SHALL open no peer socket and send no peer message.
+The config SHALL accept an optional `[peers]` table with the keys `listen`, `members` and `secret_file`, all required, and the optional keys `previous_secret_file`, `encrypt`, a boolean that defaults to `true`, and `accept_plaintext`, a boolean; any other key SHALL be an error. When `accept_plaintext` is not set it SHALL default to `false` if `encrypt` is `true`, which includes the case that `encrypt` is not set, and to `true` if `encrypt` is `false`; a value that is set SHALL win over this default. `accept_plaintext = false` together with `encrypt = false` SHALL be an error at `peers.accept_plaintext`, since such a daemon would send the messages it refuses. `listen` SHALL be one `IPv4:port` or `[IPv6]:port` string with port 1–65535 whose address is not the unspecified address (`0.0.0.0` or `::`). `members` SHALL be an array of 2 to 64 such strings with no repeats, all of the address family (IPv4 or IPv6) of `listen`, and SHALL contain `listen`. `secret_file` SHALL be an absolute path to a file that the daemon can read, whose content after removing one trailing line feed is at least 32 bytes, and whose permissions do not allow other users to read it; `previous_secret_file`, when set, SHALL meet the same conditions. When `[peers]` is present the top-level `site` SHALL be set. Every violation SHALL be reported together with the other config errors, prefixed with its TOML path. Without a `[peers]` table the daemon SHALL open no peer socket and send no peer message.
 
 #### Scenario: Valid peer group
 
 - **WHEN** the config has `site = "dc1"` and `[peers]` with `listen = "127.0.0.1:5302"`, `members = ["127.0.0.1:5302", "127.0.0.1:5303"]` and a `secret_file` of 64 bytes with mode 0600
 - **THEN** `emfor check-config` exits 0
+
+#### Scenario: Default of accept_plaintext follows encrypt
+
+- **WHEN** the config has a valid `[peers]` table and sets `encrypt` and `accept_plaintext` as in the table below
+- **THEN** the daemon accepts or refuses `EMP1` datagrams as the table says, and `emfor check-config` exits 0 unless the table says error
+
+##### Example: accept_plaintext default
+
+| `encrypt` | `accept_plaintext` | `EMP1` datagrams |
+| --- | --- | --- |
+| not set | not set | refused |
+| `true` | not set | refused |
+| `false` | not set | accepted |
+| not set | `true` | accepted |
+| `true` | `false` | refused |
+| `false` | `true` | accepted |
+| `false` | `false` | error at `peers.accept_plaintext` |
 
 #### Scenario: No peers table
 
@@ -45,35 +62,19 @@ The config SHALL accept an optional `[peers]` table with the keys `listen`, `mem
 
 
 <!-- @trace
-source: emfor-peer-encryption
-updated: 2026-11-14
+source: emfor-accept-plaintext-default
+updated: 2026-11-21
 code:
-  - crates/emfor-daemon/Cargo.toml
-  - fuzz/seeds/peers/heartbeat-emp1
-  - fuzz/seeds/peers/result-payload
-  - RELEASING.md
-  - fuzz/seeds/peers/down-emp1
-  - fuzz/seeds/peers/heartbeat-payload
-  - crates/emfor-daemon/src/peers/
-  - docs/manual/03-configuration.md
-  - examples/emfor.toml
-  - docs/manual.zh_TW/03-configuration.md
-  - fuzz/seeds/peers/result-emp1
-  - docs/deploy/daemon.md
-  - fuzz/seeds/peers/heartbeat-emp2
-  - fuzz/README.md
-  - crates/emfor-daemon/src/config.rs
-  - docs/manual.zh_TW/08-operations.md
-  - fuzz/seeds/peers/result-emp2
   - CHANGELOG.md
-  - examples/freebsd/Makefile.crates
-  - fuzz/seeds/peers/down-payload
-  - fuzz/seeds/peers.py
+  - crates/emfor-daemon/src/config.rs
+  - docs/deploy/daemon.md
+  - docs/manual.zh_TW/03-configuration.md
+  - docs/manual.zh_TW/08-operations.md
+  - docs/manual/03-configuration.md
   - docs/manual/08-operations.md
-  - fuzz/seeds/peers/down-emp2
+  - examples/emfor.toml
 tests:
   - crates/emfor-daemon/tests/peers.rs
-  - crates/emfor-daemon/tests/emp2_kat.py
 -->
 
 ---
@@ -98,7 +99,7 @@ Every peer message SHALL be one UDP datagram of at most 1200 bytes in one of thr
 
 #### Scenario: Member rolled back with encryption off
 
-- **WHEN** A sends B `EMP3`, and B is restarted as a version that does not know `EMP3` with `encrypt = false`
+- **WHEN** A, which has `accept_plaintext = true`, sends B `EMP3`, and B is restarted as a version that does not know `EMP3` with `encrypt = false`
 - **THEN** after A accepts B's first `EMP1` message it sends B `EMP2`, logs one `info` line, and A becomes live at B again
 
 #### Scenario: One message for members with different formats
@@ -108,8 +109,13 @@ Every peer message SHALL be one UDP datagram of at most 1200 bytes in one of thr
 
 #### Scenario: Mixed formats during an upgrade
 
-- **WHEN** member A has `encrypt = true` and member B has `encrypt = false`
+- **WHEN** member A has `encrypt = true` and `accept_plaintext = true`, and member B has `encrypt = false`
 - **THEN** each accepts the other's heartbeats, both stay live, and A logs a `warn` line naming B as sending plaintext messages
+
+#### Scenario: Plaintext refused by default
+
+- **WHEN** member A sets neither `encrypt` nor `accept_plaintext`, and member B has `encrypt = false`
+- **THEN** A drops every message from B, `emfor_peer_messages_rejected_total{reason="plaintext"}` increases at A, and B is not live at A, while A's messages are accepted by B; after A reloads with `accept_plaintext = true`, B becomes live at A
 
 #### Scenario: Plaintext refused
 
@@ -131,7 +137,8 @@ Every peer message SHALL be one UDP datagram of at most 1200 bytes in one of thr
 | Situation | Result |
 | --- | --- |
 | valid heartbeat from member 10.0.0.6:5302 | accepted |
-| valid `EMP1` heartbeat from member 10.0.0.6:5302 at a receiver with `encrypt = true` | accepted, `warn` logged for 10.0.0.6:5302 |
+| valid `EMP1` heartbeat from member 10.0.0.6:5302 at a receiver with `encrypt = true` and `accept_plaintext = true` | accepted, `warn` logged for 10.0.0.6:5302 |
+| valid `EMP1` heartbeat from member 10.0.0.6:5302 at a receiver that sets neither `encrypt` nor `accept_plaintext` | rejected: plaintext |
 | `EMP2` datagram of 33 bytes | rejected: malformed |
 | `EMP2` datagram of 1201 bytes | rejected: malformed |
 | `EMP2` heartbeat with one byte of the nonce changed | rejected: auth |
@@ -168,29 +175,18 @@ Every peer message SHALL be one UDP datagram of at most 1200 bytes in one of thr
 
 
 <!-- @trace
-source: emfor-peer-xchacha
-updated: 2026-11-15
+source: emfor-accept-plaintext-default
+updated: 2026-11-21
 code:
-  - fuzz/seeds/peers/result-payload-emp3
-  - docs/manual/03-configuration.md
-  - crates/emfor-daemon/src/peers/mod.rs
-  - crates/emfor-daemon/src/peers/task.rs
-  - fuzz/seeds/peers.py
-  - crates/emfor-daemon/src/peers/crypto.rs
-  - crates/emfor-daemon/src/peers/group.rs
-  - crates/emfor-daemon/src/metrics.rs
-  - fuzz/seeds/peers/heartbeat-payload-emp3
-  - fuzz/seeds/peers/result-emp3
-  - crates/emfor-daemon/src/peers/wire.rs
-  - fuzz/README.md
-  - fuzz/seeds/peers/down-payload-emp3
   - CHANGELOG.md
-  - fuzz/seeds/peers/down-emp3
-  - fuzz/seeds/peers/heartbeat-emp3
+  - crates/emfor-daemon/src/config.rs
+  - docs/deploy/daemon.md
   - docs/manual.zh_TW/03-configuration.md
+  - docs/manual.zh_TW/08-operations.md
+  - docs/manual/03-configuration.md
+  - docs/manual/08-operations.md
+  - examples/emfor.toml
 tests:
-  - crates/emfor-daemon/src/peers/test_support.rs
-  - crates/emfor-daemon/tests/emp2_kat.py
   - crates/emfor-daemon/tests/peers.rs
 -->
 

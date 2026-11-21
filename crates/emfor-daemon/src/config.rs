@@ -1354,8 +1354,11 @@ impl Validator {
                 true
             }
         };
+        // Without a value, plaintext is accepted only while this daemon sends
+        // it too: `encrypt = true` (the default) refuses it, so that a member
+        // that sends `EMP1` is not heard. A value that is set wins.
         let accept_plaintext = match t.get("accept_plaintext") {
-            None => true,
+            None => !encrypt,
             Some(toml::Value::Boolean(b)) => *b,
             Some(_) => {
                 self.err(
@@ -2260,6 +2263,42 @@ backends = ["10.0.0.1:80"]
     const LISTEN_MEMBERS: &str =
         "listen = \"127.0.0.1:5302\"\nmembers = [\"127.0.0.1:5302\", \"127.0.0.1:5303\"]\n";
 
+    /// The example "accept_plaintext default" of the peer-group spec: with
+    /// nothing set, plaintext is refused while `encrypt` is true (also when it
+    /// is not set) and accepted while it is false; a value that is set wins,
+    /// and `encrypt = false` with `accept_plaintext = false` is an error.
+    #[test]
+    fn peers_accept_plaintext_default_follows_encrypt() {
+        let (_d, key) = secret_file(&[b'k'; 64], 0o600);
+        let site = "site = \"dc1\"\n\n";
+        let rows: [(&str, bool); 6] = [
+            ("", false),
+            ("encrypt = true\n", false),
+            ("encrypt = false\n", true),
+            ("accept_plaintext = true\n", true),
+            ("encrypt = true\naccept_plaintext = false\n", false),
+            ("encrypt = false\naccept_plaintext = true\n", true),
+        ];
+        for (extra, accepts) in rows {
+            let c = parse_ok(&peers_conf(site, &format!("{LISTEN_MEMBERS}{extra}"), &key));
+            assert_eq!(
+                c.peers.as_ref().map(|p| p.accept_plaintext),
+                Some(accepts),
+                "{extra:?}"
+            );
+        }
+        let e = parse_err(&peers_conf(
+            site,
+            &format!("{LISTEN_MEMBERS}encrypt = false\naccept_plaintext = false\n"),
+            &key,
+        ));
+        assert!(
+            e.iter().any(|e| e.path == "peers.accept_plaintext"
+                && e.message.contains("needs encrypt = true")),
+            "{e:?}"
+        );
+    }
+
     /// Spec peer-group "Key order does not matter" and "what changes the digest".
     #[test]
     fn check_definition_digest() {
@@ -2529,7 +2568,7 @@ backends = ["10.0.0.1:80"]
         assert!(c.peers.as_ref().is_some_and(|p| !p.encrypt));
         assert!(
             c.peers.as_ref().is_some_and(|p| p.accept_plaintext),
-            "accept_plaintext defaults to true"
+            "accept_plaintext defaults to true when encrypt is false"
         );
         let c = parse_ok(&peers_conf(
             site,

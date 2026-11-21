@@ -124,8 +124,8 @@ secret_file = "/etc/emfor/peers.key"
 | `members` | required | Every member's `listen`, this daemon included: 2 to 64 addresses, no repeats, all IPv4 or all IPv6 like `listen`. The same list can go on every host of the site. |
 | `secret_file` | required | Absolute path to the shared secret that authenticates and encrypts every message: at least 32 bytes after one trailing line feed is removed, not readable by other users and not writable by group or others (`chmod 600` or `640`), and owned by root or by the user running emfor (any group). |
 | `previous_secret_file` | none | Optional. Absolute path to the secret `secret_file` held before its last change, with the same conditions. Read only at start, so that a daemon restarted during a secret change keeps signing with and accepting the previous secret as if it had not restarted (see below). |
-| `encrypt` | `true` | `true` sends every message encrypted, with keys derived from the secret: `EMP3` (XChaCha20-Poly1305, 24-byte random nonce) to members that run this release, `EMP2` (ChaCha20-Poly1305, 12-byte random nonce) to the others, picked per member as described below. `false` sends them only signed (`EMP1`: HMAC-SHA256), so backend names, addresses and reasons can be read on the network. All three are accepted either way; with `true` the daemon logs a warning, once a minute per member, for each member that still sends `EMP1`. |
-| `accept_plaintext` | `true` | `false` drops every `EMP1` message (counted as `plaintext` in `emfor_peer_messages_rejected_total`), so nobody who learns the secret can make this daemon read a signed but unencrypted message. Needs `encrypt = true`. Set it once every member sends `EMP2` or `EMP3`. |
+| `encrypt` | `true` | `true` sends every message encrypted, with keys derived from the secret: `EMP3` (XChaCha20-Poly1305, 24-byte random nonce) to members that run this release, `EMP2` (ChaCha20-Poly1305, 12-byte random nonce) to the others, picked per member as described below. `false` sends them only signed (`EMP1`: HMAC-SHA256), so backend names, addresses and reasons can be read on the network. `EMP2` and `EMP3` are accepted either way; `EMP1` only while `accept_plaintext` is `true`, and while it is accepted and `encrypt` is `true` the daemon logs a warning, once a minute per member, for each member that still sends `EMP1`. |
+| `accept_plaintext` | `false` when `encrypt` is `true`, `true` when `encrypt` is `false` | `false` drops every `EMP1` message (counted as `plaintext` in `emfor_peer_messages_rejected_total`), so nobody who learns the secret can make this daemon read a signed but unencrypted message. With the default, a daemon that encrypts therefore does not hear a member that has `encrypt = false` or runs 0.3.0: that member is not live here. Set `true` on a host while some member of the group still sends `EMP1` (see below); `false` needs `encrypt = true`. Before 0.7.0 the default was `true` whatever `encrypt` was. |
 
 Members only share reports for a service when its check is defined the
 same way on both: the same `check`, `check_options` and `timeout`. Other
@@ -179,9 +179,15 @@ Encryption was added in 0.4.0. Members running 0.3.0 send and accept
 only `EMP1` and drop encrypted messages (counted as `malformed`), so to
 upgrade a group from 0.3.0, set `encrypt = false` on each host as it is
 upgraded; once every member runs this release, remove the line (or set
-`encrypt = true`) and reload each daemon. Once no member logs the
-plaintext warning, you can set `accept_plaintext = false` everywhere and
-reload. The encryption has no forward
+`encrypt = true`) and reload each daemon. From 0.7.0 a daemon with
+`encrypt = true` drops the plaintext messages of a member that has not
+reloaded yet, so while any member still sends plaintext, give the hosts
+that already encrypt an explicit `accept_plaintext = true`: in the same
+config change that upgrades a host from 0.3.0 or 0.4.0 (they do not know
+the key, which is from 0.5.0), or before the upgrade on a host that runs
+0.5.0 or 0.6.0. Once every member has `encrypt = true` and
+`emfor_peer_messages_rejected_total{reason="plaintext"}` stops
+increasing, remove `accept_plaintext = true` and reload. The encryption has no forward
 secrecy: whoever later gets the secret can read messages recorded before.
 Rotate the secret regularly, as above, and keep the file readable only by
 the daemon.

@@ -92,8 +92,8 @@ secret_file = "/etc/emfor/peers.key"
 | `members` | 必填 | 每個成員的 `listen`，包含這個 daemon 自己：2 到 64 個位址，不可重複，和 `listen` 一樣全是 IPv4 或全是 IPv6。同一個機房的每台主機可以用同一份清單。 |
 | `secret_file` | 必填 | 共用密鑰的絕對路徑，用來驗證並加密每則訊息：去掉一個結尾換行後至少 32 bytes，其他使用者不能讀取、group 與其他人不能寫入（`chmod 600` 或 `640`），擁有者是 root 或執行 emfor 的使用者（group 不限）。 |
 | `previous_secret_file` | 無 | 選用。`secret_file` 上次改變前那把密鑰的絕對路徑，條件與 `secret_file` 相同。只在啟動時讀取，讓更換密鑰期間重新啟動的 daemon 仍像沒有重新啟動一樣，用舊密鑰簽署並接受它（見下文）。 |
-| `encrypt` | `true` | `true` 時每則訊息都加密送出，金鑰由密鑰導出：送給執行這個版本的成員用 `EMP3`（XChaCha20-Poly1305，24 bytes 隨機 nonce），送給其他成員用 `EMP2`（ChaCha20-Poly1305，12 bytes 隨機 nonce），依成員各自選擇，見下文。`false` 時只簽署（`EMP1`：HMAC-SHA256），網路上看得到 backend 名稱、位址與原因。三種格式都一律接受；`true` 時，對仍送 `EMP1` 的每個成員，daemon 每分鐘記一行警告。 |
-| `accept_plaintext` | `true` | `false` 時丟棄所有 `EMP1` 訊息（在 `emfor_peer_messages_rejected_total` 算成 `plaintext`），所以就算有人拿到密鑰，也無法讓這個 daemon 接受只簽署、未加密的訊息。必須搭配 `encrypt = true`。等每個成員都送 `EMP2` 或 `EMP3` 之後再設。 |
+| `encrypt` | `true` | `true` 時每則訊息都加密送出，金鑰由密鑰導出：送給執行這個版本的成員用 `EMP3`（XChaCha20-Poly1305，24 bytes 隨機 nonce），送給其他成員用 `EMP2`（ChaCha20-Poly1305，12 bytes 隨機 nonce），依成員各自選擇，見下文。`false` 時只簽署（`EMP1`：HMAC-SHA256），網路上看得到 backend 名稱、位址與原因。`EMP2` 與 `EMP3` 一律接受；`EMP1` 只在 `accept_plaintext` 為 `true` 時接受，而且接受時若 `encrypt` 為 `true`，對仍送 `EMP1` 的每個成員，daemon 每分鐘記一行警告。 |
+| `accept_plaintext` | `encrypt` 為 `true` 時 `false`，`encrypt = false` 時 `true` | `false` 時丟棄所有 `EMP1` 訊息（在 `emfor_peer_messages_rejected_total` 算成 `plaintext`），所以就算有人拿到密鑰，也無法讓這個 daemon 接受只簽署、未加密的訊息。因此用預設值時，會加密的 daemon 聽不到設了 `encrypt = false` 或執行 0.3.0 的成員：那個成員在這裡不算存活。群組裡還有成員送 `EMP1` 時，在這台主機設 `true`（見下文）；`false` 必須搭配 `encrypt = true`。0.7.0 以前，不論 `encrypt` 為何，預設都是 `true`。 |
 
 只有當某個服務在兩邊的檢查定義相同時，成員之間才會分享該服務的回報：相同的 `check`、`check_options` 與 `timeout`。其他設定（`interval`、`rise`、`fall`、backend 清單）可以不同。
 
@@ -112,7 +112,7 @@ cat new.key > /etc/emfor/peers.key  # 每台主機寫入同一把新密鑰；權
 
 `encrypt = true` 時依成員選擇格式。這個版本送出的每則 `EMP2` 訊息，加密的 payload 裡都帶 `"emp3": true`；某個成員最近一則被接受的加密訊息是 `EMP3` 或這樣的 `EMP2` 時，送它 `EMP3`，否則送 `EMP2`：包括還沒接受過它的訊息時（啟動後、或 reload 加入它之後），以及它送來不帶這個欄位的 `EMP2`（0.4.0）或 `EMP1` 時。每次改變記一行 `info`（「sending EMP3 to peer ... from now on」）。加入 `EMP3` 是因為 12 bytes 隨機 nonce 在同一個密鑰下大約只能安全送 2^32 則訊息，大型群組幾天內就可能送到；24 bytes 的 nonce 沒有這個限制。0.4.0 的群組升級不需要改設定：一台一台升級即可，這個版本的成員彼此在第一則訊息後改用 `EMP3`，和 0.4.0 的成員之間用 `EMP2`。降回 0.4.0 也不需要改設定，`encrypt` 開或關都一樣：其他成員接受它的第一則訊息後就改回送 `EMP2`。在那之前（它啟動後約 1 秒），它會丟掉其他成員送來的 `EMP3`（算在 `malformed`）。
 
-加密是 0.4.0 新增的。0.3.0 的成員只送、只收 `EMP1`，會丟棄加密的訊息（算在 `malformed`），所以從 0.3.0 升級群組時，每台主機升級時先設 `encrypt = false`；所有成員都升級後，刪掉這一行（或設 `encrypt = true`），再讓每個 daemon reload。沒有任何成員再記明文警告之後，就可以在每台主機設 `accept_plaintext = false` 並 reload。加密沒有前向保密：日後取得密鑰的人可以讀出先前錄下的訊息。請照上面的方式定期更換密鑰，並讓密鑰檔只有 daemon 能讀。
+加密是 0.4.0 新增的。0.3.0 的成員只送、只收 `EMP1`，會丟棄加密的訊息（算在 `malformed`），所以從 0.3.0 升級群組時，每台主機升級時先設 `encrypt = false`；所有成員都升級後，刪掉這一行（或設 `encrypt = true`），再讓每個 daemon reload。從 0.7.0 起，`encrypt = true` 的 daemon 會丟棄還沒 reload 的成員送來的明文訊息，所以只要群組裡還有成員送明文，已經加密的主機就要明確設 `accept_plaintext = true`：把 0.3.0 或 0.4.0 的主機升級時，放在同一次設定變更裡（這兩個版本不認得這個鍵，它是 0.5.0 加入的）；0.5.0 或 0.6.0 的主機則可以在升級前先設。所有成員都已是 `encrypt = true`、`emfor_peer_messages_rejected_total{reason="plaintext"}` 也不再增加之後，刪掉 `accept_plaintext = true` 並 reload。加密沒有前向保密：日後取得密鑰的人可以讀出先前錄下的訊息。請照上面的方式定期更換密鑰，並讓密鑰檔只有 daemon 能讀。
 
 ## [defaults]
 
