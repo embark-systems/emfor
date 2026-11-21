@@ -57,8 +57,8 @@ cargo install --locked --path crates/emfor-check --root /usr/local
 repository 可以建出 deb 與 rpm（[packages/](../../packages/README.md)；`packages/build.sh`）。兩者都會把 `emfor` 與 `emfor-check` 裝到 `/usr/bin`、裝上 systemd unit、一份只讀 `/etc/emfor/conf.d` 的設定檔、把附註解的範例設定放在 `/usr/share/doc/emfor/`，並建立 `emfor` 使用者。把服務寫在 `/etc/emfor/conf.d/` 的檔案裡（[第 3 章](03-configuration.md#把設定拆到目錄)），然後：
 
 ```sh
-dpkg -i emfor_0.6.0-1_amd64.deb      # Debian、Ubuntu：同時啟用並啟動
-rpm -i emfor-0.6.0-1.x86_64.rpm      # RHEL 與相近的發行版：之後 systemctl enable --now emfor
+dpkg -i emfor_0.7.0-1_amd64.deb      # Debian、Ubuntu：同時啟用並啟動
+rpm -i emfor-0.7.0-1.x86_64.rpm      # RHEL 與相近的發行版：之後 systemctl enable --now emfor
 emfor check-config
 systemctl reload emfor
 ```
@@ -131,7 +131,7 @@ pw useradd emfor -d /nonexistent -s /usr/sbin/nologin -c "emfor daemon"
 | --- | --- |
 | Rust | 依賴同一發行版的 `emfor-client` crate（`clients/rust`）。 |
 | C | `cargo install cargo-c`，然後在 `clients/rust` 執行 `cargo cinstall --release --features capi --prefix /usr/local`。這會安裝 `libemfor`、`emfor.h` 與 `emfor.pc`。 |
-| Go | 安裝 `libemfor`，然後 `go get github.com/embark-systems/emfor/clients/go@v0.6.0`（需要 cgo 與 `pkg-config emfor`）。 |
+| Go | 安裝 `libemfor`，然後 `go get github.com/embark-systems/emfor/clients/go@v0.7.0`（需要 cgo 與 `pkg-config emfor`）。 |
 | Python | 安裝 `libemfor`，然後 `pip install clients/python`。函式庫不在標準目錄時，設定 `EMFOR_LIBRARY`。 |
 | Perl | 安裝 `libemfor`，然後在 `clients/perl` 執行 `perl Makefile.PL && make -f Makefile.xs && make -f Makefile.xs install`。 |
 | PHP | 安裝 `libemfor`，然後用 `phpize` 建置 extension（見 [clients/php](../../clients/php/README.md)），並啟用 `extension=emfor`。 |

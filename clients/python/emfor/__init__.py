@@ -18,7 +18,7 @@ import ctypes.util
 import os
 
 # The emfor release; libemfor must come from the same one.
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 
 def _library_names(version, found=None):

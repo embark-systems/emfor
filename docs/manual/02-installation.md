@@ -72,8 +72,8 @@ the commented example config under `/usr/share/doc/emfor/`, and creates the
 3](03-configuration.md#splitting-the-config-over-a-directory)), then:
 
 ```sh
-dpkg -i emfor_0.6.0-1_amd64.deb      # Debian, Ubuntu: also enables and starts it
-rpm -i emfor-0.6.0-1.x86_64.rpm      # RHEL and relatives: then systemctl enable --now emfor
+dpkg -i emfor_0.7.0-1_amd64.deb      # Debian, Ubuntu: also enables and starts it
+rpm -i emfor-0.7.0-1.x86_64.rpm      # RHEL and relatives: then systemctl enable --now emfor
 emfor check-config
 systemctl reload emfor
 ```
@@ -179,7 +179,7 @@ and upgrade both together.** A mismatch makes lookups fail with
 | --- | --- |
 | Rust | Depend on the `emfor-client` crate from the same release (`clients/rust`). |
 | C | `cargo install cargo-c`, then in `clients/rust`: `cargo cinstall --release --features capi --prefix /usr/local`. This installs `libemfor`, `emfor.h` and `emfor.pc`. |
-| Go | Install `libemfor`, then `go get github.com/embark-systems/emfor/clients/go@v0.6.0` (needs cgo and `pkg-config emfor`). |
+| Go | Install `libemfor`, then `go get github.com/embark-systems/emfor/clients/go@v0.7.0` (needs cgo and `pkg-config emfor`). |
 | Python | Install `libemfor`, then `pip install clients/python`. Set `EMFOR_LIBRARY` if the library is outside the standard directories. |
 | Perl | Install `libemfor`, then in `clients/perl`: `perl Makefile.PL && make -f Makefile.xs && make -f Makefile.xs install`. |
 | PHP | Install `libemfor`, then build the extension with `phpize` (see [clients/php](../../clients/php/README.md)) and enable `extension=emfor`. |

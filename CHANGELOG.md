@@ -1,6 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-11-22
+
+The store format (`meta/schema_version` 2) and the plugin protocol (1) are
+unchanged: clients and plugins of 0.6.0 keep working with this daemon. The
+shared library's name carries the minor version, so `libemfor` is now
+`libemfor.so.0.7`: rebuild or reinstall what links against it
+([docs/compatibility.md](docs/compatibility.md)).
+
+**Read before you upgrade.** Several changes tighten defaults and can stop an
+install that relied on the old behaviour; each has an entry below with the
+fix:
+
+- `exec` checks and plugins get a small environment: a check program that
+  reads `HOME`, a proxy variable or the like needs `env_pass`.
+- The store files are `0640` and `0660` by default: an application user that
+  is not in the daemon's group gets `UNAVAILABLE` until it is added to it.
+- A daemon that encrypts peer messages drops plaintext ones by default.
+- A peer secret file must be owned by root or by the user running emfor.
+- The main config file must not be writable by group or others, and must be
+  owned by root or the user running emfor, as the fragments already had to
+  be.
+- `previous_secret_file` is used only for the secret the daemon replaced.
+
 
 **`exec` checks and plugins no longer get the daemon's whole environment (hardening, breaking).**
 A program that an `exec` check or a plugin starts used to inherit every
@@ -494,6 +516,26 @@ directory was not reported when the first events were only of the file. Not
 verified: the kqueue watch on FreeBSD; no real hung
 NFS mount; the 200 milliseconds, the 5 seconds and the 30 seconds are chosen,
 not measured; the new tests were not run against the old code.
+
+### Known limits
+
+- The pf recipe (`tests/pf/run.sh`, with a real pf) and the Nagios examples
+  (`tests/nagios/inside.sh`, and `check_tcp` and `check_http` of
+  monitoring-plugins as `exec` checks) were run on FreeBSD 15.1-RELEASE
+  (arm64, in a VM) after the changes of this release. Not tested: Nagios
+  itself (only its plugins), 13.x, 14.x, poudriere, and amd64 beyond what the
+  CI job covers.
+- The container check that an `http` check works without system CA
+  certificates was run once, on Debian 13, and is not part of the test gate.
+- Everything in 0.6.0's known limits that is not listed here has not
+  changed: the HAProxy 503 after a `server-template` slot with port 0 on
+  FreeBSD, the deb and rpm tested in containers without systemd and not
+  signed, the packages and the port not in any repository, no forward secrecy
+  for peer messages, the `ldap` plugin against Active Directory only without
+  a certificate, lookup throughput levelling off at about two million a second
+  across threads on Linux ([docs/performance.md](docs/performance.md)), the
+  store that a host crash can damage with `[store] sync = false`, and at most
+  80 services announced by a host to the peer group.
 
 ## 0.6.0 — 2026-11-17
 
