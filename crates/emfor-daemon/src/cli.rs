@@ -834,8 +834,27 @@ async fn load(
     current: Option<&Config>,
     plugins: &PluginSet,
 ) -> (Prepared, Result<Config, Vec<ConfigError>>, ReadFiles) {
-    let mut warnings = Vec::new();
-    let layers = match config::read_layers_with(path, &mut warnings) {
+    // The read is blocking file I/O (a hung file system never returns), so it
+    // runs on a blocking thread: a stop request can then end the reload.
+    let (read_result, warnings) = {
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let mut warnings = Vec::new();
+            let result = config::read_layers_with(&path, &mut warnings);
+            (result, warnings)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            (
+                Err(vec![ConfigError::new(
+                    "",
+                    format!("config read failed: {e}"),
+                )]),
+                Vec::new(),
+            )
+        })
+    };
+    let layers = match read_result {
         Ok(l) => l,
         Err(errors) => {
             let read = ReadFiles {

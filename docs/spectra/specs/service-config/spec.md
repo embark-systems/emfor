@@ -263,7 +263,7 @@ tests:
 ---
 ### Requirement: Reload on SIGHUP applies only a fully valid config
 
-On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes validation, the daemon SHALL apply it. If any validation error exists, the daemon SHALL log every error at `error` level and continue running the previous config unchanged. A change to any key in the `[store]` table SHALL be a validation error on reload. A change to `[dns] listen`, including adding or removing the `[dns]` table, SHALL be a validation error on reload with the message "dns listen settings require restart". A change to `[metrics] listen`, including adding or removing the `[metrics]` table, SHALL be a validation error on reload with the message "metrics listen settings require restart". A change to `[peers] listen`, including adding or removing the `[peers]` table, SHALL be a validation error on reload with the message "peers listen settings require restart". Changes to `[dns] zone`, `[dns] ttl`, `dns_ttl`, `balance`, `[peers] members`, `[peers] secret_file` and `peers` SHALL take effect on reload. A change to `peers` alone SHALL keep the state of the service's backends.
+On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes validation, the daemon SHALL apply it. If any validation error exists, the daemon SHALL log every error at `error` level and continue running the previous config unchanged. A change to any key in the `[store]` table SHALL be a validation error on reload. A change to `[dns] listen`, including adding or removing the `[dns]` table, SHALL be a validation error on reload with the message "dns listen settings require restart". A change to `[metrics] listen`, including adding or removing the `[metrics]` table, SHALL be a validation error on reload with the message "metrics listen settings require restart". A change to `[peers] listen`, including adding or removing the `[peers]` table, SHALL be a validation error on reload with the message "peers listen settings require restart". Changes to `[dns] zone`, `[dns] ttl`, `dns_ttl`, `balance`, `[peers] members`, `[peers] secret_file` and `peers` SHALL take effect on reload. A change to `peers` alone SHALL keep the state of the service's backends. Reading the config file and its fragments SHALL NOT keep the daemon from handling `SIGTERM` or `SIGINT`: when a stop request arrives while a reload is reading or validating, the daemon SHALL abandon the reload, log one line at `info` level saying so, and shut down, even if a read has not returned (a file on a hung file system). Only one reload SHALL run at a time; a `SIGHUP` that arrives while one runs SHALL cause one more reload after it, however many arrive.
 
 #### Scenario: Valid reload adds a service
 
@@ -305,26 +305,28 @@ On `SIGHUP` the daemon SHALL re-read the config file. If the new config passes v
 - **WHEN** a service with a `healthy` backend is changed from `peers = true` to `peers = false` and the daemon receives `SIGHUP`
 - **THEN** the backend stays `healthy` and the daemon no longer sends `down` or `result` messages for that service
 
+#### Scenario: Stop request during a reload that cannot read the config
+
+- **WHEN** the config path is replaced by a named pipe that no process has open for writing, the daemon receives `SIGHUP`, and then `SIGTERM`
+- **THEN** the daemon logs that a stop was requested while reloading and the reload is abandoned, and the process exits within 5 seconds of `SIGTERM`
+
+#### Scenario: SIGHUP during a reload
+
+- **WHEN** a reload is running and the daemon receives `SIGHUP` three times
+- **THEN** the running reload ends and exactly one more reload runs after it
+
 
 <!-- @trace
-source: emfor-peers-service-off
-updated: 2026-11-13
+source: emfor-reload-and-plugin-lifetime
+updated: 2026-11-21
 code:
-  - crates/emfor-daemon/src/writer.rs
-  - docs/manual/03-configuration.md
-  - crates/emfor-daemon/src/quorum.rs
-  - crates/emfor-daemon/src/peers/
-  - docs/manual/08-operations.md
-  - crates/emfor-daemon/src/status.rs
-  - crates/emfor-daemon/src/supervisor.rs
-  - crates/emfor-daemon/src/cli.rs
-  - crates/emfor-daemon/src/config.rs
-  - examples/emfor.toml
   - CHANGELOG.md
-  - docs/manual/01-concepts.md
-  - crates/emfor-daemon/src/schedule.rs
+  - crates/emfor-daemon/src/cli.rs
+  - crates/emfor-daemon/src/plugin/host.rs
 tests:
-  - crates/emfor-daemon/tests/peers.rs
+  - crates/emfor-daemon/tests/daemon.rs
+  - crates/emfor-daemon/tests/plugin_host.rs
+  - crates/emfor-daemon/tests/support/test_plugin.rs
 -->
 
 ---

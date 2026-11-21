@@ -1830,3 +1830,84 @@ fn history_kept_across_a_restart() {
     assert!(v["history"]["api.svc.emfor"]["backends"][&addr].is_array());
     assert_eq!(v["flapping"], serde_json::json!([]));
 }
+
+/// Replace the config of `d` by a named pipe that nobody has open for
+/// writing, so that every read of the config blocks in `open` (what a file
+/// on a hung file system does). Returns the pipe's path.
+fn config_that_hangs(d: &Daemon) -> PathBuf {
+    let path = d.config();
+    std::fs::remove_file(&path).unwrap();
+    nix::unistd::mkfifo(&path, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+    path
+}
+
+/// Spec service-config "Stop request during a reload that cannot read the
+/// config": the read of the config does not return, and `SIGTERM` still ends
+/// the daemon.
+#[test]
+fn stop_request_ends_a_reload_that_cannot_read_the_config() {
+    let (_l, addr) = listener();
+    let mut d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
+    config_that_hangs(&d);
+    d.signal(Signal::SIGHUP);
+    // The reload is now blocked in the read; give it time to get there.
+    std::thread::sleep(Duration::from_millis(500));
+    d.signal(Signal::SIGTERM);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while d.running() {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon is still running 5s after SIGTERM; log:\n{}",
+            d.log()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (code, log) = d.wait();
+    assert_eq!(code, 0, "{log}");
+    assert!(
+        log.contains("stop requested while reloading; the reload is abandoned"),
+        "{log}"
+    );
+}
+
+/// Spec service-config "SIGHUP during a reload": three signals while a
+/// reload is blocked cause exactly one more reload after it.
+#[test]
+fn sighups_during_a_reload_cause_one_more_reload() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let (_l, addr) = listener();
+    let body = tcp_service("api.svc.emfor", &addr);
+    let mut d = Daemon::start(&body);
+    let whole = std::fs::read_to_string(d.config()).unwrap();
+    let fifo = config_that_hangs(&d);
+    d.signal(Signal::SIGHUP);
+    std::thread::sleep(Duration::from_millis(500));
+    d.signal(Signal::SIGHUP);
+    d.signal(Signal::SIGHUP);
+    std::thread::sleep(Duration::from_millis(200));
+    // Let the blocked reload read the config; then the one more reload
+    // starts and blocks on the pipe again.
+    let feed = |text: &str| {
+        let mut w = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+        w.write_all(text.as_bytes()).unwrap();
+    };
+    feed(&whole);
+    d.wait_log("config reloaded");
+    feed(&whole);
+    wait_for(|| d.log().matches("config reloaded").count() == 2);
+    // A third reload would be waiting to read the pipe: a non-blocking open
+    // for writing then succeeds. With no reader it fails with ENXIO.
+    std::thread::sleep(Duration::from_millis(500));
+    let third = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(nix::libc::O_NONBLOCK)
+        .open(&fifo);
+    assert_eq!(
+        third.err().and_then(|e| e.raw_os_error()),
+        Some(nix::libc::ENXIO),
+        "a third reload is reading the config; log:\n{}",
+        d.log()
+    );
+    assert_eq!(d.log().matches("config reloaded").count(), 2, "{}", d.log());
+    assert!(d.running());
+}

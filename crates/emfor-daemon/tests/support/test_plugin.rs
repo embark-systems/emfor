@@ -19,6 +19,9 @@
 //!   `<path>` exists, so a test can keep the plugin down across restarts.
 //! - `EMFOR_TEST_PLUGIN_VALIDATE_HANG=1`: never answer `validate`.
 //! - `EMFOR_TEST_PLUGIN_IGNORE_EOF=1`: keep running after stdin closes.
+//! - `EMFOR_TEST_PLUGIN_ORPHAN=<file>`: at start, run `sleep 30` in a process
+//!   group of its own, which leaves the plugin's process group and keeps the plugin's stdout and
+//!   stderr open, and append its pid to `<file>`, so a test can kill it.
 //! - `EMFOR_TEST_PLUGIN_GARBAGE=1`: write a non-JSON line and an unknown
 //!   `type` before every answer.
 //!
@@ -59,6 +62,24 @@ fn main() {
     {
         eprintln!("test plugin blocked at start");
         std::process::exit(3);
+    }
+    if let Some(file) = std::env::var_os("EMFOR_TEST_PLUGIN_ORPHAN") {
+        use std::os::unix::process::CommandExt;
+        // A process group of its own: the daemon kills the plugin's group,
+        // not this one, as it would not kill a process that called `setsid`.
+        #[allow(clippy::zombie_processes)]
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .expect("sleep starts");
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file)
+            .expect("the pid file opens");
+        writeln!(f, "{}", child.id()).expect("the pid is written");
     }
     eprintln!("test plugin started");
     let out = Arc::new(Mutex::new(std::io::stdout()));

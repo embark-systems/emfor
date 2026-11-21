@@ -568,3 +568,77 @@ async fn crash_kills_what_the_plugin_started() {
     wait_gone(child).await;
     host.stop().await;
 }
+
+/// Kills the background processes the test plugin left outside its group.
+struct Orphans(std::path::PathBuf);
+
+impl Drop for Orphans {
+    fn drop(&mut self) {
+        for pid in std::fs::read_to_string(&self.0)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.parse::<i32>().ok())
+        {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+    }
+}
+
+/// Spec checker-plugins "Pipe held by a process outside the group": a
+/// process that left the plugin's group keeps its stdout and stderr open;
+/// the tasks of each old plugin process still end, so the number of live
+/// tasks does not grow with each restart.
+#[tokio::test]
+async fn tasks_of_a_restarted_plugin_end_though_a_pipe_stays_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let pids = dir.path().join("orphans");
+    let _orphans = Orphans(pids.clone());
+    let env = format!("EMFOR_TEST_PLUGIN_ORPHAN={}", pids.display());
+    let host = PluginHost::start("fake", &command(&[&env])).await.unwrap();
+
+    // Crash the plugin; the tasks of the dead process must be gone while it
+    // waits to restart (backoff 1s, 2s, 4s), then wait for the restart.
+    let running = || {
+        tokio::runtime::Handle::current()
+            .metrics()
+            .num_alive_tasks()
+    };
+    let restart = |first_pid: u32| {
+        let host = &host;
+        async move {
+            let before = running();
+            let _ = host.call(check("crash")).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            assert!(host.pid().is_none(), "restarted within 500ms");
+            let waiting = running();
+            let deadline = Instant::now() + Duration::from_secs(8);
+            loop {
+                if host.pid().is_some_and(|p| p != first_pid) {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "plugin not restarted");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            (before, waiting, running())
+        }
+    };
+    let one = restart(host.pid().unwrap()).await;
+    let two = restart(host.pid().unwrap()).await;
+    let three = restart(host.pid().unwrap()).await;
+    for (before, waiting, _) in [one, two, three] {
+        assert!(
+            waiting < before,
+            "tasks of the dead process still live while it waits to restart: {waiting} >= {before}"
+        );
+    }
+    assert_eq!(
+        (one.2, two.2),
+        (two.2, three.2),
+        "live tasks grow with each restart"
+    );
+    host.stop().await;
+}

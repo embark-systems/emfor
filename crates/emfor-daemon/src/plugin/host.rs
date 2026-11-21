@@ -160,6 +160,53 @@ struct Process {
     conn: Conn,
     /// Finishes when the plugin closes stdout.
     router: JoinHandle<()>,
+    /// Finishes when the plugin closes stderr.
+    stderr: JoinHandle<()>,
+    /// Ends the stderr, stdin and stdout tasks of this process when it is
+    /// dropped, whether or not a process that left the group still holds a
+    /// pipe open.
+    tasks: TaskGuard,
+}
+
+/// Aborts the tasks it holds when dropped.
+struct TaskGuard(Vec<tokio::task::AbortHandle>);
+
+impl TaskGuard {
+    fn abort_all(&self) {
+        for t in &self.0 {
+            t.abort();
+        }
+    }
+}
+
+impl Drop for TaskGuard {
+    fn drop(&mut self) {
+        self.abort_all();
+    }
+}
+
+/// After the process was reaped and its group killed: give the stdout and
+/// stderr tasks [`EXIT_DRAIN`] to read what is left in the pipes (the last
+/// lines a plugin wrote before it exited), then leave them to the
+/// [`TaskGuard`].
+async fn drain_tasks(router: &mut JoinHandle<()>, stderr: &mut JoinHandle<()>, tasks: &TaskGuard) {
+    // A router that already ended was awaited by the supervisor's select.
+    let router_done = router.is_finished();
+    let _ = tokio::time::timeout(EXIT_DRAIN, async {
+        tokio::join!(
+            async {
+                if !router_done {
+                    let _ = router.await;
+                }
+            },
+            async {
+                let _ = stderr.await;
+            }
+        );
+    })
+    .await;
+    // Not left to the drop: the process is kept through the restart delay.
+    tasks.abort_all();
 }
 
 impl PluginHost {
@@ -472,10 +519,11 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
     };
 
     let log_name = name.to_string();
-    tokio::spawn(async move { log_stderr(&log_name, BufReader::new(stderr)).await });
+    let mut stderr_task =
+        tokio::spawn(async move { log_stderr(&log_name, BufReader::new(stderr)).await });
 
     let (tx, mut rx) = mpsc::channel::<String>(REQUEST_QUEUE);
-    tokio::spawn(async move {
+    let writer_task = tokio::spawn(async move {
         while let Some(line) = rx.recv().await {
             if stdin.write_all(line.as_bytes()).await.is_err() || stdin.flush().await.is_err() {
                 break;
@@ -484,56 +532,73 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
         // Dropping stdin here is the plugin's end of file.
     });
 
+    // Any early return below drops the guard and ends both tasks.
+    let mut tasks = TaskGuard(vec![stderr_task.abort_handle(), writer_task.abort_handle()]);
     let hello = serde_json::to_string(&Request::Hello { protocol: PROTOCOL })
         .expect("a Request serializes: it holds only strings, numbers and string-keyed maps")
         + "\n";
     // The queue is empty: the hello is the first line.
     let _ = tx.try_send(hello);
     let mut stdout = BufReader::new(stdout);
-    let first = match tokio::time::timeout(
-        HANDSHAKE_TIMEOUT,
-        read_line_limited(&mut stdout, LINE_LIMIT),
-    )
-    .await
-    {
-        Err(_) => {
-            return Err(format!(
-                "plugin {name} did not answer the handshake within {}s",
-                HANDSHAKE_TIMEOUT.as_secs()
-            ));
-        }
-        Ok(Ok(LineRead::Line(line))) => line,
-        Ok(Ok(LineRead::TooLong(_))) => {
-            return Err(format!(
-                "plugin {name} answered the handshake with a line longer than {LINE_LIMIT} bytes"
-            ));
-        }
-        Ok(_) => {
-            let status = match tokio::time::timeout(Duration::from_secs(1), child.wait()).await {
-                Ok(Ok(s)) => format!(" ({s})"),
-                _ => String::new(),
-            };
-            return Err(format!("plugin {name} exited before the handshake{status}"));
-        }
-    };
-    let (plugin_name, version) = match serde_json::from_str::<Response>(&first) {
-        Ok(Response::Hello {
-            protocol,
-            name: n,
-            version: v,
-        }) => {
-            if protocol != PROTOCOL {
+    // On a failed handshake the plugin's last words on stderr still matter
+    // (often the reason it could not start): kill the group, give the
+    // stderr task [`EXIT_DRAIN`], and only then let the guard end it.
+    let handshake: Result<(String, String), String> = async {
+        let first = match tokio::time::timeout(
+            HANDSHAKE_TIMEOUT,
+            read_line_limited(&mut stdout, LINE_LIMIT),
+        )
+        .await
+        {
+            Err(_) => {
                 return Err(format!(
-                    "plugin {name} speaks protocol {protocol}, emfor speaks protocol {PROTOCOL}"
+                    "plugin {name} did not answer the handshake within {}s",
+                    HANDSHAKE_TIMEOUT.as_secs()
                 ));
             }
-            (n, v)
-        }
-        _ => {
-            return Err(format!(
-                "plugin {name} answered the handshake with {:?}",
-                cut(&first, 200)
-            ));
+            Ok(Ok(LineRead::Line(line))) => line,
+            Ok(Ok(LineRead::TooLong(_))) => {
+                return Err(format!(
+                    "plugin {name} answered the handshake with a line longer than {LINE_LIMIT} bytes"
+                ));
+            }
+            Ok(_) => {
+                let status = match tokio::time::timeout(Duration::from_secs(1), child.wait()).await {
+                    Ok(Ok(s)) => format!(" ({s})"),
+                    _ => String::new(),
+                };
+                return Err(format!("plugin {name} exited before the handshake{status}"));
+            }
+        };
+        let (plugin_name, version) = match serde_json::from_str::<Response>(&first) {
+            Ok(Response::Hello {
+                protocol,
+                name: n,
+                version: v,
+            }) => {
+                if protocol != PROTOCOL {
+                    return Err(format!(
+                        "plugin {name} speaks protocol {protocol}, emfor speaks protocol {PROTOCOL}"
+                    ));
+                }
+                (n, v)
+            }
+            _ => {
+                return Err(format!(
+                    "plugin {name} answered the handshake with {:?}",
+                    cut(&first, 200)
+                ));
+            }
+        };
+        Ok((plugin_name, version))
+    }
+    .await;
+    let (plugin_name, version) = match handshake {
+        Ok(v) => v,
+        Err(e) => {
+            kill_group(pid);
+            let _ = tokio::time::timeout(EXIT_DRAIN, &mut stderr_task).await;
+            return Err(e);
         }
     };
     tracing::info!(plugin = %name, "{}", started_line(name, pid, &plugin_name, &version));
@@ -561,11 +626,14 @@ async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
         limit.summarize(&router_name, "invalid stdout");
         lock(&router_pending).close();
     });
+    tasks.0.push(router.abort_handle());
     group.disarm();
     Ok(Process {
         child,
         conn: Conn { tx, pending, pid },
         router,
+        stderr: stderr_task,
+        tasks,
     })
 }
 
@@ -717,6 +785,7 @@ async fn supervise(shared: Arc<Shared>, mut process: Process, mut stop: watch::R
             Event::Stop => {
                 drop(process.conn); // closes stdin once the writer drains
                 finish(&mut process.child, pid).await;
+                drain_tasks(&mut process.router, &mut process.stderr, &process.tasks).await;
                 return;
             }
             Event::Stalled => {
@@ -727,12 +796,14 @@ async fn supervise(shared: Arc<Shared>, mut process: Process, mut stop: watch::R
                 kill_group(pid);
                 let _ = process.child.start_kill();
                 let status = process.child.wait().await;
+                drain_tasks(&mut process.router, &mut process.stderr, &process.tasks).await;
                 log_exit(&name, status);
             }
             Event::StdoutClosed => {
                 kill_group(pid);
                 let _ = process.child.start_kill();
                 let status = process.child.wait().await;
+                drain_tasks(&mut process.router, &mut process.stderr, &process.tasks).await;
                 log_exit(&name, status);
             }
             Event::Exited(status) => {
@@ -741,7 +812,7 @@ async fn supervise(shared: Arc<Shared>, mut process: Process, mut stop: watch::R
                 kill_group(pid);
                 // Answers written right before exiting may still be in the
                 // pipe; let the router deliver them before failing the rest.
-                let _ = tokio::time::timeout(EXIT_DRAIN, &mut process.router).await;
+                drain_tasks(&mut process.router, &mut process.stderr, &process.tasks).await;
                 log_exit(&name, status);
             }
         }
@@ -769,6 +840,7 @@ async fn supervise(shared: Arc<Shared>, mut process: Process, mut stop: watch::R
             let pid = process.conn.pid;
             drop(process.conn);
             finish(&mut process.child, pid).await;
+            drain_tasks(&mut process.router, &mut process.stderr, &process.tasks).await;
             return;
         }
         shared.set_conn(Some(process.conn.clone()));

@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+**A hung config file no longer blocks a stop request, and a restarted plugin leaves no tasks behind (bug fixes).**
+On `SIGHUP` the daemon read the config on the thread that runs its main
+loop, so a config on a hung file system kept the daemon from handling
+`SIGTERM` and from running its supervisor until the read returned; the read
+now runs on a blocking thread and a stop request ends the reload (the stuck
+thread is abandoned at exit, as before). When a plugin exited, stalled or was
+stopped, the tasks that read its stdout and stderr and wrote to its stdin
+lived on if a process outside the plugin's process group kept a pipe open;
+they now end 100 ms after the plugin was reaped, after reading what was
+left in the pipes, so the last stderr lines are still logged, also when the
+plugin fails its handshake. Checked in a
+Debian container: fmt, clippy `-D warnings` and 1045 tests pass, 17 ignored;
+four new tests. Run against the old code, the stop-request test and the
+restarted-plugin test fail (the latter also with the explicit abort taken
+out); the other two were not run against it (one checks the single extra
+reload, one that the last stderr lines survive, also for a failed handshake).
+Not verified: a real hung NFS mount (a named pipe stands in for it);
+FreeBSD and macOS; the task count uses tokio's live-task metric, not a count
+of file descriptors.
+
 **Plugin log text is escaped, the redis checker hides the AUTH password, the writer lock file is 0600 (bug fixes).**
 A plugin's stderr lines and the name and version in its handshake reached the
 log as sent, so a control character or a bidi override could forge a log line;
