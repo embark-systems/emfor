@@ -38,7 +38,12 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      # A pull request restores the cache of main but does not save its own:
+      # the cache of a pull request is read by that pull request only, and the
+      # ones of 6, 7 and 8 held about 2.9 GB of the 10 GB the repository gets.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --locked --workspace --all-features
@@ -65,6 +70,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: fuzz
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --manifest-path fuzz/Cargo.toml --bins --locked
         env:
           RUSTFLAGS: --cfg fuzzing
@@ -139,6 +145,8 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install toolchains
         run: |
           sudo apt-get update
