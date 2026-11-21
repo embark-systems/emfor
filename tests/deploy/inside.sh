@@ -15,6 +15,9 @@ set -u
 FILE=/etc/emfor/conf.d/20-api.toml
 DRAIN=/usr/local/bin/emfor-drain.sh
 export EMFOR_RELOAD='kill -HUP $(cat /tmp/emfor.pid)'
+# The container has no emfor user and runs the daemon as root, so check-config
+# runs as root here too (the scripts default to the daemon user "emfor").
+export EMFOR_USER=root
 
 fail() {
     echo "FAIL: $*" >&2
