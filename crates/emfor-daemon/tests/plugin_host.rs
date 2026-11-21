@@ -15,6 +15,75 @@ fn command(env: &[&str]) -> Vec<String> {
     c
 }
 
+/// Command that appends the plugin's environment to `dump`, then runs the
+/// test plugin.
+fn command_dumping_env(dump: &std::path::Path) -> Vec<String> {
+    vec![
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        format!("/usr/bin/env >> '{}'; exec '{PLUGIN}'", dump.display()),
+    ]
+}
+
+/// Spec checker-plugins "Plugin environment": the plugin gets the default
+/// variables and the ones in `env_pass`, and gets them again after it was
+/// restarted.
+#[tokio::test]
+async fn plugin_environment_is_the_default_one_plus_env_pass() {
+    // cargo sets this in the environment of the test process.
+    let manifest = format!(
+        "CARGO_MANIFEST_DIR={}",
+        std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets it")
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let dumps = |dump: &std::path::Path| -> Vec<String> {
+        std::fs::read_to_string(dump)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+
+    let plain = dir.path().join("plain");
+    let host = PluginHost::start("fake", &command_dumping_env(&plain))
+        .await
+        .unwrap();
+    host.stop().await;
+    let lines = dumps(&plain);
+    assert!(
+        !lines.contains(&manifest),
+        "not passed by default: {lines:?}"
+    );
+    if let Some(path) = std::env::var_os("PATH") {
+        assert!(lines.contains(&format!("PATH={}", path.to_string_lossy())));
+    }
+
+    let named = dir.path().join("named");
+    let pass = vec![
+        "CARGO_MANIFEST_DIR".to_string(),
+        "NOT_SET_ANYWHERE".to_string(),
+    ];
+    let host = PluginHost::start_with("fake", &command_dumping_env(&named), &pass)
+        .await
+        .unwrap();
+    assert_eq!(host.env_pass(), pass.as_slice());
+    let first = host.pid().unwrap();
+    let _ = host.call(check("crash")).await;
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !host.pid().is_some_and(|p| p != first) {
+        assert!(Instant::now() < deadline, "plugin not restarted");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    host.stop().await;
+    let lines = dumps(&named);
+    assert_eq!(
+        lines.iter().filter(|l| **l == manifest).count(),
+        2,
+        "passed to both processes: {lines:?}"
+    );
+    assert!(!lines.iter().any(|l| l.starts_with("NOT_SET_ANYWHERE")));
+}
+
 fn check(mode: &str) -> impl FnOnce(u64) -> Request {
     let mode = mode.to_string();
     move |id| Request::Check {

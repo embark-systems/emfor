@@ -198,6 +198,7 @@ command = ["/usr/local/libexec/emfor-check", "redis"]
 | Key | 意義 |
 | --- | --- |
 | `command` | 必填。程式與它的參數；第一個元素是可執行檔的絕對路徑。任何元素都不能含 NUL。不經過 shell 執行。 |
+| `env_pass` | 選填。除了一律會傳的 `PATH`、`LANG`、`TZ` 與 `LC_*`，plugin 還要拿到的 daemon 環境變數名稱；見[emfor 啟動的程式拿到的環境](04-health-checks.md#emfor-啟動的程式拿到的環境)。 |
 
 名稱為 1–63 個 `a-z`、`0-9`、`_` 與 `-` 字元，且不可為 `tcp`、`http` 或 `exec`。服務以 `check = "<name>"` 使用 plugin。每個宣告的 plugin 都會被啟動，不論有沒有服務使用。見[第 4 章](04-health-checks.md#plugin-與-emfor-check)。
 
@@ -293,7 +294,7 @@ interval = "5s" # /etc/emfor/conf.d/99-local.toml
 | `balance`、`weight`、`site`（最上層與 backend）、`backup`、`drain`、`dns_ttl`、`slow_start` | 套用；backend 保留狀態，正在慢啟動的 backend 保留它的恢復時間。 |
 | `[dns] zone`、`[dns] ttl`、`[dns] rate_limit` | 套用。 |
 | `[log] level` | 套用（除非設定了 `RUST_LOG`）。 |
-| plugin 的 `command` | 該 plugin 重新啟動，使用它的服務從 `unknown` 重新開始。未變更的 plugin 繼續執行。 |
+| plugin 的 `command` 或 `env_pass` | 該 plugin 重新啟動，使用它的服務從 `unknown` 重新開始。未變更的 plugin 繼續執行。 |
 | `[store]` 中的任何設定 | 拒絕；需要重新啟動。 |
 | `[dns] listen`、新增或移除 `[dns]` | 拒絕（`dns listen settings require restart`）。 |
 | `[metrics] listen`、新增或移除 `[metrics]` | 拒絕（`metrics listen settings require restart`）。 |

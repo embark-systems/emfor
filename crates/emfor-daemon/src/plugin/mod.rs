@@ -70,11 +70,17 @@ impl PluginFactory {
     }
 }
 
-/// `checker_id` of a plugin: `plugin:<name>:<command as JSON>`.
-pub fn plugin_checker_id(name: &str, command: &[String]) -> String {
+/// `checker_id` of a plugin: `plugin:<name>:<command as JSON>`, and `:<env_pass as JSON>` when it has `env_pass`.
+pub fn plugin_checker_id(name: &str, command: &[String], env_pass: &[String]) -> String {
     let command =
         serde_json::to_string(command).expect("a list of strings always serializes to JSON");
-    format!("plugin:{name}:{command}")
+    if env_pass.is_empty() {
+        return format!("plugin:{name}:{command}");
+    }
+    // A plugin whose `env_pass` changed is another checker: it is restarted.
+    let env_pass =
+        serde_json::to_string(env_pass).expect("a list of strings always serializes to JSON");
+    format!("plugin:{name}:{command}:{env_pass}")
 }
 
 /// Error result for a request that got no answer.
@@ -92,7 +98,7 @@ impl CheckerFactory for PluginFactory {
     }
 
     fn checker_id(&self) -> String {
-        plugin_checker_id(self.host.name(), self.host.command())
+        plugin_checker_id(self.host.name(), self.host.command(), self.host.env_pass())
     }
 
     /// Blocks for up to [`VALIDATE_TIMEOUT`]; call from a blocking thread.
@@ -197,6 +203,21 @@ mod tests {
             result: result.into(),
             reason: reason.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn checker_id_has_env_pass_only_when_there_is_one() {
+        let command = ["/a".to_string()];
+        // The same text as before `env_pass` existed.
+        assert_eq!(
+            plugin_checker_id("redis", &command, &[]),
+            r#"plugin:redis:["/a"]"#
+        );
+        let pass = ["HOME".to_string()];
+        assert_eq!(
+            plugin_checker_id("redis", &command, &pass),
+            r#"plugin:redis:["/a"]:["HOME"]"#
+        );
     }
 
     #[test]

@@ -340,7 +340,7 @@ fn occupied_peer_port_exits_1() {
 /// One member of a group of three with an `exec` service whose result the
 /// test controls per daemon: the command is the same everywhere (so is the
 /// digest), and it fails while the file named by the daemon's own
-/// `EMFOR_TEST_FLAG` exists.
+/// `PEERS_TEST_FLAG` exists.
 fn exec_config(
     dir: &Path,
     metrics: SocketAddr,
@@ -349,7 +349,7 @@ fn exec_config(
 ) -> String {
     let members: Vec<String> = members.iter().map(|m| format!("\"{m}\"")).collect();
     format!(
-        "site = \"dc1\"\n\n[store]\npath = \"{}\"\nmap_size = \"4MiB\"\n\n[metrics]\nlisten = [\"{metrics}\"]\n\n[peers]\nlisten = \"{listen}\"\nmembers = [{}]\nsecret_file = \"{}\"\n\n[services.\"api.svc.emfor\"]\ncheck = \"exec\"\nbackends = [\"127.0.0.1:9\"]\ninterval = \"1s\"\ntimeout = \"900ms\"\nrise = 1\nfall = 3\njitter = \"0%\"\n[services.\"api.svc.emfor\".check_options]\ncommand = [\"/bin/sh\", \"-c\", 'if [ -n \"$EMFOR_TEST_COUNT\" ]; then echo x >> \"$EMFOR_TEST_COUNT\"; fi; if [ -e \"$EMFOR_TEST_FLAG\" ]; then echo refused; exit 1; fi']\n",
+        "site = \"dc1\"\n\n[store]\npath = \"{}\"\nmap_size = \"4MiB\"\n\n[metrics]\nlisten = [\"{metrics}\"]\n\n[peers]\nlisten = \"{listen}\"\nmembers = [{}]\nsecret_file = \"{}\"\n\n[services.\"api.svc.emfor\"]\ncheck = \"exec\"\nbackends = [\"127.0.0.1:9\"]\ninterval = \"1s\"\ntimeout = \"900ms\"\nrise = 1\nfall = 3\njitter = \"0%\"\n[services.\"api.svc.emfor\".check_options]\ncommand = [\"/bin/sh\", \"-c\", 'if [ -n \"$PEERS_TEST_COUNT\" ]; then echo x >> \"$PEERS_TEST_COUNT\"; fi; if [ -e \"$PEERS_TEST_FLAG\" ]; then echo refused; exit 1; fi']\nenv_pass = [\"PEERS_TEST_COUNT\", \"PEERS_TEST_FLAG\"]\n",
         dir.join("state.mdb").display(),
         members.join(", "),
         secret(dir).display(),
@@ -392,7 +392,7 @@ fn majority_of_three() {
             let f = flag(i);
             spawn_env(
                 |dir, m| exec_config(dir, m, members[i], &members),
-                &[("EMFOR_TEST_FLAG", &f)],
+                &[("PEERS_TEST_FLAG", &f)],
             )
         })
         .collect();
@@ -504,7 +504,7 @@ fn split_checks() {
             let (f, c) = (flag(i), count(i));
             spawn_env(
                 |dir, m| exec_config(dir, m, members[i], &members),
-                &[("EMFOR_TEST_FLAG", &f), ("EMFOR_TEST_COUNT", &c)],
+                &[("PEERS_TEST_FLAG", &f), ("PEERS_TEST_COUNT", &c)],
             )
         })
         .collect();
@@ -629,7 +629,7 @@ fn service_left_out_on_one_member() {
                         c
                     }
                 },
-                &[("EMFOR_TEST_FLAG", &f)],
+                &[("PEERS_TEST_FLAG", &f)],
             )
         })
         .collect();

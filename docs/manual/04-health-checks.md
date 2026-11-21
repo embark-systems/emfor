@@ -111,11 +111,49 @@ check_options = { command = ["/usr/local/libexec/check_pg_replication", "--max-l
 | any other code, killed by a signal, or failed to start | `error` |
 | still running at `timeout` | `down` (`timeout`); the program and all its children are killed |
 
-`command` is the only option: a non-empty list of strings without NUL whose first element is an
-absolute path to an executable. To run an existing Nagios plugin, which wants
+`command` is required: a non-empty list of strings without NUL whose first
+element is an absolute path to an executable. `env_pass` is optional (see
+[The environment of programs emfor starts](#the-environment-of-programs-emfor-starts)).
+To run an existing Nagios plugin, which wants
 `-H` and `-p` on its command line, see
 [Watching emfor from Nagios](08-operations.md#watching-emfor-from-nagios-icinga-or-zabbix). Starting a process per check is costly; for
 frequent checks of many backends, use a plugin.
+
+### The environment of programs emfor starts
+
+An `exec` program and a plugin do not get the daemon's environment. They get
+`PATH`, `LANG`, `TZ` and every `LC_*` variable, with the values the daemon
+has, and `exec` also gets `EMFOR_IP`, `EMFOR_PORT` and `EMFOR_SERVICE`.
+Nothing else is passed, so a secret in the daemon's environment (for
+example one a unit file sets) does not reach a check program. A program that
+needs another variable, such as `HOME` or `https_proxy`, gets it when its
+name is in `env_pass`: a list of names, never of values. A name the daemon
+does not have is skipped without an error.
+
+```toml
+[services."report.svc.emfor"]
+check = "exec"
+backends = ["10.0.3.1:5432"]
+check_options = { command = ["/usr/local/libexec/check_pg_replication"], env_pass = ["HOME", "PGSSLROOTCERT"] }
+
+[plugins."pgsql"]
+command = ["/usr/local/libexec/emfor-check", "pgsql"]
+env_pass = ["https_proxy"]
+```
+
+A name is letters, digits and `_`, not starting with a digit, and appears
+once; for `exec` it is not `EMFOR_IP`, `EMFOR_PORT` or `EMFOR_SERVICE`, which emfor sets. To give a program a value
+that is not in the daemon's environment, set it in the unit file
+(`Environment=`) and list its name. The names are part of a service's check
+definition, which peers compare (`env_pass` of a plugin or of an `exec`
+check that differs between hosts counts as another definition, like a
+different `command`). `emfor-check` reads `SSL_CERT_FILE` and `SSL_CERT_DIR`
+to find the system CAs when a check has `tls = true` and no `ca_file`: if your
+daemon is started with one of them, add it to `env_pass` of the plugin, or set
+`ca_file`. Before 0.7.0 these programs inherited the
+whole environment: if one of yours reads `HOME`, a proxy variable or
+`LD_LIBRARY_PATH`, add its name to `env_pass` before you upgrade, and run
+`emfor check-config`.
 
 ## Plugins and emfor-check
 
@@ -204,6 +242,10 @@ Lines a plugin writes to stderr are logged at `info`, at most 100 at once
 and 10 a second after that; the log says how many were dropped. Each
 plugin runs in a process group of its own: when it exits or is stopped,
 the processes it started are killed too.
+
+A plugin gets the same small environment as an `exec` program, and
+`[plugins."<name>"] env_pass` adds variables to it, also after a restart; see
+[the environment of programs emfor starts](#the-environment-of-programs-emfor-starts).
 
 To write your own plugin, see
 [docs/plugins/protocol-v1.md](../plugins/protocol-v1.md); the `emfor-plugin`

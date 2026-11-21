@@ -296,6 +296,47 @@ fn command_change_restarts_plugin_and_resets_backends() {
     assert_eq!(pgrep(&mark), vec![pids[1]]);
 }
 
+/// Spec checker-plugins "Changed env_pass restarts the plugin".
+#[test]
+fn env_pass_change_restarts_plugin_and_resets_backends() {
+    let mark = marker("envpass");
+    let slow_rise = "interval = \"200ms\"\ntimeout = \"100ms\"\nrise = 2\nfall = 2\n";
+    let decl = plugin_decl("fake", &[], &mark);
+    let d = Daemon::start(&format!(
+        "{decl}{}",
+        plugin_service(SVC, "fake", "up", slow_rise)
+    ));
+    let r = Reader::open(&d.store());
+    wait_within("backend healthy", WAIT, || {
+        r.backend(SVC)
+            .is_some_and(|b| b.state == HealthState::Healthy)
+    });
+    let old = d.started_pids("fake")[0];
+    // Only `env_pass` changes; rise 20 keeps the reset visible.
+    let passing = decl.replace("\n\n", "\nenv_pass = [\"HOME\"]\n\n");
+    let slower_rise = slow_rise.replace("rise = 2", "rise = 20");
+    d.reload(
+        &format!(
+            "{passing}{}",
+            plugin_service(SVC, "fake", "up", &slower_rise)
+        ),
+        "config reloaded",
+    );
+    assert_eq!(r.backend(SVC).unwrap().state, HealthState::Unknown);
+    let pids = d.started_pids("fake");
+    assert_eq!(pids.len(), 2, "{}", d.log());
+    wait_within("old plugin stopped", WAIT, || !alive(old));
+    assert_eq!(pgrep(&mark), vec![pids[1]]);
+    // The same `env_pass` again, with another interval: the plugin stays.
+    let slower = slower_rise.replace("200ms", "300ms");
+    d.reload(
+        &format!("{passing}{}", plugin_service(SVC, "fake", "up", &slower)),
+        "config reloaded",
+    );
+    assert_eq!(d.started_pids("fake"), pids);
+    assert!(alive(pids[1]));
+}
+
 #[test]
 fn crash_and_recovery() {
     let mark = marker("crash");

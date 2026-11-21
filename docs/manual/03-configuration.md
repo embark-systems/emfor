@@ -306,6 +306,7 @@ command = ["/usr/local/libexec/emfor-check", "redis"]
 | Key | Meaning |
 | --- | --- |
 | `command` | Required. The program and its arguments; the first element is an absolute path to an executable. No element may contain NUL. Run without a shell. |
+| `env_pass` | Optional. Names of variables of the daemon's environment that the plugin also gets, besides `PATH`, `LANG`, `TZ` and `LC_*`, which it always gets; see [the environment of programs emfor starts](04-health-checks.md#the-environment-of-programs-emfor-starts). |
 
 The name is 1–63 characters of `a-z`, `0-9`, `_` and `-`, and not `tcp`,
 `http` or `exec`. A service uses the plugin with `check = "<name>"`. Every
@@ -484,7 +485,7 @@ error and keeps running the old config.
 | `balance`, `weight`, `site` (top level and backends), `backup`, `drain`, `dns_ttl`, `slow_start` | Applied; backends keep their state, and a backend in slow start keeps its recovery time. |
 | `[dns] zone`, `[dns] ttl`, `[dns] rate_limit` | Applied. |
 | `[log] level` | Applied (unless `RUST_LOG` is set). |
-| A plugin's `command` | The plugin is restarted, and the services that use it start over from `unknown`. Unchanged plugins keep running. |
+| A plugin's `command` or `env_pass` | The plugin is restarted, and the services that use it start over from `unknown`. Unchanged plugins keep running. |
 | Anything in `[store]` | Rejected; needs a restart. |
 | `[dns] listen`, adding or removing `[dns]` | Rejected (`dns listen settings require restart`). |
 | `[metrics] listen`, adding or removing `[metrics]` | Rejected (`metrics listen settings require restart`). |

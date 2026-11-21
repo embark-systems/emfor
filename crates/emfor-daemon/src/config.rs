@@ -965,6 +965,8 @@ fn validate<T>(
 pub struct PluginSpec {
     pub name: String,
     pub command: Vec<String>,
+    /// Variables of the daemon's environment the plugin also gets.
+    pub env_pass: Vec<String>,
 }
 
 /// Names a plugin must not take.
@@ -1308,11 +1310,19 @@ impl Validator {
                 continue;
             };
             let before = self.errors.len();
-            self.unknown_keys(t, &path, &["command"]);
+            self.unknown_keys(t, &path, &["command", "env_pass"]);
+            let env_pass = match crate::child::parse_env_pass(t.get("env_pass")) {
+                Ok(names) => names,
+                Err(m) => {
+                    self.err(key_path(&path, "env_pass"), m);
+                    Vec::new()
+                }
+            };
             match parse_command(t.get("command")) {
                 Ok(command) if ok && self.errors.len() == before => specs.push(PluginSpec {
                     name: name.clone(),
                     command,
+                    env_pass,
                 }),
                 Ok(_) => {}
                 Err(m) => self.err(key_path(&path, "command"), m),
@@ -3352,6 +3362,15 @@ slow_start = "0s"
     }
 
     #[test]
+    fn plugin_env_pass_is_read() {
+        let (specs, errors) = parse_plugins(
+            "[plugins.\"redis\"]\ncommand = [\"/bin/sh\"]\nenv_pass = [\"http_proxy\"]\n",
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(specs[0].env_pass, vec!["http_proxy".to_string()]);
+    }
+
+    #[test]
     fn plugin_declaration_validation() {
         // Rows of the "plugin declaration validation" example; /bin/sh
         // stands in for an existing executable.
@@ -3381,6 +3400,18 @@ slow_start = "0s"
                 "[plugins.\"redis\"]\ncommand = [\"/bin/sh\"]\nargs = [\"-v\"]\n",
                 Some(("plugins.redis.args", "unknown key")),
             ),
+            (
+                "[plugins.\"redis\"]\ncommand = [\"/bin/sh\"]\nenv_pass = [\"A B\"]\n",
+                Some(("plugins.redis.env_pass", "invalid variable name \"A B\"")),
+            ),
+            (
+                "[plugins.\"redis\"]\ncommand = [\"/bin/sh\"]\nenv_pass = [\"HOME\", \"HOME\"]\n",
+                Some(("plugins.redis.env_pass", "duplicate variable name \"HOME\"")),
+            ),
+            (
+                "[plugins.\"redis\"]\ncommand = [\"/bin/sh\"]\nenv_pass = \"HOME\"\n",
+                Some(("plugins.redis.env_pass", "must be an array of strings")),
+            ),
             // An argument with NUL cannot be passed to the plugin.
             (
                 "[plugins.\"redis\"]\ncommand = [\"/bin/sh\", \"-c\\u0000x\"]\n",
@@ -3397,6 +3428,7 @@ slow_start = "0s"
                         vec![PluginSpec {
                             name: "redis".into(),
                             command: vec!["/bin/sh".into()],
+                            env_pass: vec![],
                         }]
                     );
                     parse_ok(text);
@@ -3993,6 +4025,42 @@ interval = "2s"
         let l = read_layers(&main).expect("layers");
         let listen = dns_listen_in(&l.table).expect("valid").expect("dns table");
         assert_eq!(listen, vec!["127.0.0.1:5353".parse().expect("addr")]);
+    }
+
+    /// Spec peer-group "Plugin env_pass changes the digest".
+    #[test]
+    fn env_pass_is_part_of_the_check_digest() {
+        let t = Duration::from_secs(1);
+        let options = |pass: Option<&str>| {
+            let mut o = toml::Table::new();
+            o.insert("command".into(), toml::Value::Array(vec!["/bin/sh".into()]));
+            if let Some(name) = pass {
+                o.insert("env_pass".into(), toml::Value::Array(vec![name.into()]));
+            }
+            o
+        };
+        // `exec`: `env_pass` is a check option.
+        assert_ne!(
+            check_digest("exec", &options(None), t),
+            check_digest("exec", &options(Some("HOME")), t)
+        );
+        assert_eq!(
+            check_digest("exec", &options(Some("HOME")), t),
+            check_digest("exec", &options(Some("HOME")), t)
+        );
+        // A plugin: `env_pass` is part of the checker identity.
+        let command = ["/usr/local/libexec/emfor-check".to_string()];
+        let id = |pass: &[String]| crate::plugin::plugin_checker_id("redis", &command, pass);
+        let none = toml::Table::new();
+        let proxy = ["http_proxy".to_string()];
+        assert_ne!(
+            check_digest(&id(&[]), &none, t),
+            check_digest(&id(&proxy), &none, t)
+        );
+        assert_eq!(
+            check_digest(&id(&proxy), &none, t),
+            check_digest(&id(&proxy), &none, t)
+        );
     }
 
     #[test]

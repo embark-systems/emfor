@@ -35,7 +35,7 @@ impl Prepared {
     pub fn registry(&self, handle: Handle, applied: Option<&Config>) -> Registry {
         let mut r = Registry::builtin();
         for host in self.hosts.values() {
-            let id = plugin_checker_id(host.name(), host.command());
+            let id = plugin_checker_id(host.name(), host.command(), host.env_pass());
             let known = applied
                 .map(|c| {
                     c.services
@@ -66,7 +66,10 @@ impl PluginSet {
         let mut to_start = Vec::new();
         for spec in specs {
             match self.hosts.get(&spec.name) {
-                Some(h) if h.command() == spec.command.as_slice() => {
+                Some(h)
+                    if h.command() == spec.command.as_slice()
+                        && h.env_pass() == spec.env_pass.as_slice() =>
+                {
                     prepared.hosts.insert(spec.name.clone(), h.clone());
                 }
                 _ => to_start.push(spec),
@@ -75,7 +78,7 @@ impl PluginSet {
         let results = futures::future::join_all(
             to_start
                 .iter()
-                .map(|s| PluginHost::start(&s.name, &s.command)),
+                .map(|s| PluginHost::start_with(&s.name, &s.command, &s.env_pass)),
         )
         .await;
         for (spec, result) in to_start.into_iter().zip(results) {

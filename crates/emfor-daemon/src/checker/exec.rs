@@ -14,6 +14,8 @@ use nix::unistd::Pid;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
+use crate::child::parse_env_pass;
+
 use super::{CheckRequest, CheckResult, Checker, CheckerFactory, OptionError, reject_unknown_keys};
 
 /// Bytes of stdout kept for the reason.
@@ -65,9 +67,24 @@ impl CheckerFactory for ExecFactory {
 
     fn validate(&self, options: &toml::Table) -> Result<Arc<dyn Checker>, Vec<OptionError>> {
         let mut errors = Vec::new();
-        reject_unknown_keys(options, &["command"], &mut errors);
+        reject_unknown_keys(options, &["command", "env_pass"], &mut errors);
+        let env_pass = match parse_env_pass(options.get("env_pass")) {
+            // The three variables below are set by emfor, after the others.
+            Ok(names) => match names
+                .iter()
+                .find(|n| matches!(n.as_str(), "EMFOR_IP" | "EMFOR_PORT" | "EMFOR_SERVICE"))
+            {
+                Some(n) => Err(format!("{n} is set by emfor")),
+                None => Ok(names),
+            },
+            Err(m) => Err(m),
+        };
+        let env_pass = env_pass.unwrap_or_else(|m| {
+            errors.push(OptionError::new("env_pass", m));
+            Vec::new()
+        });
         match parse_command(options.get("command")) {
-            Ok(argv) if errors.is_empty() => Ok(Arc::new(ExecChecker { argv })),
+            Ok(argv) if errors.is_empty() => Ok(Arc::new(ExecChecker { argv, env_pass })),
             Ok(_) => Err(errors),
             Err(m) => {
                 errors.push(OptionError::new("command", m));
@@ -80,6 +97,8 @@ impl CheckerFactory for ExecFactory {
 #[derive(Debug)]
 pub struct ExecChecker {
     argv: Vec<String>,
+    /// Variables of the daemon's environment the command also gets.
+    env_pass: Vec<String>,
 }
 
 /// Kills the command's whole process group when dropped, so a check that
@@ -108,6 +127,7 @@ impl Checker for ExecChecker {
         Box::pin(async move {
             let program = &self.argv[0];
             let mut cmd = Command::new(program);
+            crate::child::set_environment(&mut cmd, &self.env_pass);
             cmd.args(&self.argv[1..])
                 .current_dir("/")
                 .env("EMFOR_IP", req.target.ip().to_string())
@@ -350,6 +370,77 @@ mod tests {
         )
         .await;
         assert_eq!(r, CheckResult::Down("10.0.1.5 5432 db.svc.emfor".into()));
+    }
+
+    #[tokio::test]
+    async fn only_the_default_variables_reach_the_command() {
+        // cargo sets this in the environment of the test process.
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets it");
+        let dir = TempDir::new().unwrap();
+        let body = r#"echo "[$CARGO_MANIFEST_DIR][$EMFOR_IP][${PATH:+path}][${NOT_SET_ANYWHERE-unset}]"; exit 1"#;
+        let p = script(&dir, "check", body);
+        let r = run_check(checker_for(&p).as_ref(), req(Duration::from_secs(5))).await;
+        let path = if std::env::var_os("PATH").is_some() {
+            "path"
+        } else {
+            ""
+        };
+        assert_eq!(r, CheckResult::Down(format!("[][10.0.1.5][{path}][unset]")));
+
+        let mut o = options(&["/bin/sh", p.to_str().unwrap()]);
+        o.insert(
+            "env_pass".into(),
+            toml::Value::Array(vec!["CARGO_MANIFEST_DIR".into(), "NOT_SET_ANYWHERE".into()]),
+        );
+        let c = ExecFactory.validate(&o).unwrap();
+        let r = run_check(c.as_ref(), req(Duration::from_secs(5))).await;
+        assert_eq!(
+            r,
+            CheckResult::Down(format!("[{manifest}][10.0.1.5][{path}][unset]"))
+        );
+    }
+
+    #[test]
+    fn invalid_env_pass_is_an_error_at_env_pass() {
+        let dir = TempDir::new().unwrap();
+        let p = script(&dir, "check", "exit 0");
+        for (value, message) in [
+            (toml::Value::from("HOME"), "must be an array of strings"),
+            (
+                toml::Value::Array(vec!["HOME=/root".into()]),
+                "invalid variable name \"HOME=/root\"",
+            ),
+            (
+                toml::Value::Array(vec!["HOME".into(), "HOME".into()]),
+                "duplicate variable name \"HOME\"",
+            ),
+            (
+                toml::Value::Array(vec!["EMFOR_IP".into()]),
+                "EMFOR_IP is set by emfor",
+            ),
+            (
+                toml::Value::Array(vec!["HOME".into(), "EMFOR_SERVICE".into()]),
+                "EMFOR_SERVICE is set by emfor",
+            ),
+        ] {
+            let mut o = options(&["/bin/sh", p.to_str().unwrap()]);
+            o.insert("env_pass".into(), value);
+            let Err(errs) = ExecFactory.validate(&o) else {
+                panic!("env_pass {message} is accepted");
+            };
+            assert_eq!(errs.len(), 1, "{errs:?}");
+            assert_eq!(errs[0].key, "env_pass");
+            assert_eq!(errs[0].message, message);
+        }
+        let mut o = options(&["/bin/sh", p.to_str().unwrap()]);
+        o.insert("env_pass".into(), toml::Value::Array(vec![]));
+        assert!(ExecFactory.validate(&o).is_ok());
+        // Only the three names emfor sets are refused, not the whole prefix.
+        o.insert(
+            "env_pass".into(),
+            toml::Value::Array(vec!["EMFOR_PREFIX".into()]),
+        );
+        assert!(ExecFactory.validate(&o).is_ok());
     }
 
     #[tokio::test]

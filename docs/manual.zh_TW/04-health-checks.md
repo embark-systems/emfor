@@ -88,7 +88,24 @@ check_options = { command = ["/usr/local/libexec/check_pg_replication", "--max-l
 | 其他結束代碼、被 signal 終止、無法啟動 | `error` |
 | 到 `timeout` 仍在執行 | `down`（`timeout`）；程式與它所有子行程都會被終止 |
 
-`command` 是唯一的選項：不含 NUL 的字串組成的非空清單，第一個元素是可執行檔的絕對路徑。每次檢查都啟動一個行程的成本不低；需要頻繁檢查很多 backend 時，請用 plugin。要執行現成的、命令列需要 `-H` 與 `-p` 的 Nagios 外掛，見[從 Nagios 監看 emfor](08-operations.md#從-nagiosicinga-或-zabbix-監看-emfor)。
+`command` 必填：不含 NUL 的字串組成的非空清單，第一個元素是可執行檔的絕對路徑。`env_pass` 選填，見[emfor 啟動的程式拿到的環境](#emfor-啟動的程式拿到的環境)。每次檢查都啟動一個行程的成本不低；需要頻繁檢查很多 backend 時，請用 plugin。要執行現成的、命令列需要 `-H` 與 `-p` 的 Nagios 外掛，見[從 Nagios 監看 emfor](08-operations.md#從-nagiosicinga-或-zabbix-監看-emfor)。
+
+### emfor 啟動的程式拿到的環境
+
+`exec` 的程式與 plugin 拿不到 daemon 的環境，只拿到 `PATH`、`LANG`、`TZ` 與所有 `LC_*` 變數（值與 daemon 的相同），`exec` 另外拿到 `EMFOR_IP`、`EMFOR_PORT` 與 `EMFOR_SERVICE`。其他變數都不傳，所以 daemon 環境裡的祕密（例如 unit 檔設的）不會到檢查程式手上。需要別的變數（例如 `HOME` 或 `https_proxy`）的程式，把名稱列在 `env_pass`：只列名稱，不寫值。daemon 沒有的名稱會略過，不是錯誤。
+
+```toml
+[services."report.svc.emfor"]
+check = "exec"
+backends = ["10.0.3.1:5432"]
+check_options = { command = ["/usr/local/libexec/check_pg_replication"], env_pass = ["HOME", "PGSSLROOTCERT"] }
+
+[plugins."pgsql"]
+command = ["/usr/local/libexec/emfor-check", "pgsql"]
+env_pass = ["https_proxy"]
+```
+
+名稱由字母、數字與 `_` 組成，不能以數字開頭，同一個名稱只能出現一次；`exec` 的名稱不能是 emfor 自己設定的 `EMFOR_IP`、`EMFOR_PORT`、`EMFOR_SERVICE`。要給程式一個 daemon 環境裡沒有的值，在 unit 檔用 `Environment=` 設定，再把名稱列進去。名稱屬於服務的檢查定義，peer 之間會比對（同一個服務的 plugin 或 `exec` 的 `env_pass` 在各主機不同，就是另一個檢查定義，和 `command` 不同一樣）。`emfor-check` 在檢查設了 `tls = true` 又沒有 `ca_file` 時，用 `SSL_CERT_FILE` 與 `SSL_CERT_DIR` 找系統 CA：daemon 若以其中一個啟動，把它加進該 plugin 的 `env_pass`，或設 `ca_file`。0.7.0 之前這些程式會繼承整份環境：如果你的程式讀 `HOME`、proxy 變數或 `LD_LIBRARY_PATH`，升級前先把名稱加進 `env_pass`，並執行 `emfor check-config`。
 
 ## plugin 與 emfor-check
 
@@ -128,6 +145,8 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 `emfor check-config` 與每次 reload 都會啟動 plugin，讓它們驗證每個服務的 `check_options`，所以錯誤會在設定套用前就被發現。驗證時會建出檢查時要建的東西：`ca_file` 必須有可以當作 CA 使用的憑證，`tls_key_file` 必須是 `tls_cert_file` 的私鑰，而協定以 NUL 結尾或以 NUL 分隔送出的值（`mysql` 與 `pgsql` 的 `user`、`pgsql` 的 `database` 與密碼、`amqp` 的 `user` 與密碼）不能含 NUL。協定規定了大小上限的訊息會實際組一次：`amqp` 的登入必須放得進 4096 bytes 的第一個 frame，`diameter` 的 Capabilities-Exchange-Request 不能超過 16777215 bytes。
 
 plugin 結束時，等待中的檢查變成 `error`（`plugin exited`），daemon 在 1 秒、2 秒、4 秒……最多 30 秒後重新啟動它；在那之前它的檢查都是 `error`（`plugin <name> unavailable`）。當掉的 plugin 不會讓 backend 變成 down：`error` 不算檢查失敗。但一個 backend 只收到 error 的時間超過 `fall × interval` 時會回到 `unknown`（見[第 1 章](01-concepts.md)），所以一直當掉的 plugin 會讓它的 backend 變成 `unknown`，而不是維持 `healthy`。以 `emfor-plugin` crate 寫的 plugin 中，panic 的檢查會回答 `error`，reason 為 `check panicked: <message>`，plugin 繼續執行。plugin 寫到 stderr 的每一行都以 `info` 記錄，一次最多 100 行，之後每秒最多 10 行；log 會寫出丟掉了幾行。每個 plugin 在自己的 process group 中執行：plugin 結束或被停止時，它啟動的行程也會一起被終止。
+
+plugin 拿到的環境與 `exec` 的程式相同，`[plugins."<name>"]` 的 `env_pass` 可以再加變數，plugin 重新啟動後也一樣；見[emfor 啟動的程式拿到的環境](#emfor-啟動的程式拿到的環境)。
 
 要自己寫 plugin，見 [docs/plugins/protocol-v1.md](../plugins/protocol-v1.md)；`emfor-plugin` crate 為 Rust 實作了這個協定。
 

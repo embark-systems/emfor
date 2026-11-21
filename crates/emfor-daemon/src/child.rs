@@ -1,7 +1,71 @@
 //! Processes the daemon starts (`exec` checks and plugins) get only stdin,
 //! stdout and stderr from it, none of its other descriptors.
 
+use std::ffi::{OsStr, OsString};
+
 use tokio::process::Command;
+
+/// Variables of the daemon's environment that every `exec` check and plugin
+/// gets, besides the ones its `env_pass` names: these names, and every name
+/// that starts with `LC_`.
+const PASSED: &[&str] = &["PATH", "LANG", "TZ"];
+
+fn passed_by_default(name: &OsStr) -> bool {
+    let name = name.as_encoded_bytes();
+    name.starts_with(b"LC_") || PASSED.iter().any(|p| p.as_bytes() == name)
+}
+
+/// Give `cmd` the environment of an `exec` check or a plugin: nothing but the
+/// variables of the daemon's environment that [`passed_by_default`] allows
+/// and the ones named in `pass`.
+pub(crate) fn set_environment(cmd: &mut Command, pass: &[String]) {
+    set_environment_from(cmd, std::env::vars_os(), pass);
+}
+
+/// [`set_environment`] with the daemon's environment given, so that a test
+/// does not have to change its own.
+pub(crate) fn set_environment_from(
+    cmd: &mut Command,
+    vars: impl IntoIterator<Item = (OsString, OsString)>,
+    pass: &[String],
+) {
+    cmd.env_clear();
+    for (name, value) in vars {
+        if passed_by_default(&name) || pass.iter().any(|p| OsStr::new(p) == name) {
+            cmd.env(name, value);
+        }
+    }
+}
+
+/// Validate an `env_pass` value: absent is empty; otherwise an array of
+/// variable names, `[A-Za-z_][A-Za-z0-9_]*`, none twice.
+pub(crate) fn parse_env_pass(value: Option<&toml::Value>) -> Result<Vec<String>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = value.as_array() else {
+        return Err("must be an array of strings".into());
+    };
+    let mut names: Vec<String> = Vec::with_capacity(items.len());
+    for item in items {
+        let Some(name) = item.as_str() else {
+            return Err("must be an array of strings".into());
+        };
+        let mut chars = name.chars();
+        let valid = chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !valid {
+            return Err(format!("invalid variable name {name:?}"));
+        }
+        if names.iter().any(|n| n == name) {
+            return Err(format!("duplicate variable name {name:?}"));
+        }
+        names.push(name.to_string());
+    }
+    Ok(names)
+}
 
 /// Make `cmd` start its process with no descriptor of the daemon but 0, 1
 /// and 2.
@@ -169,6 +233,118 @@ mod tests {
         assert!(
             matches!(read, Ok(0)),
             "the started process kept the other end open: {read:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod env_tests {
+    use std::os::unix::ffi::OsStringExt;
+
+    use super::*;
+
+    fn daemon_env() -> Vec<(OsString, OsString)> {
+        let mut v: Vec<(OsString, OsString)> = [
+            ("SECRET_TOKEN", "abc"),
+            ("HOME", "/root"),
+            ("PATH", "/usr/bin:/bin"),
+            ("LANG", "C.UTF-8"),
+            ("LC_ALL", "C"),
+            ("TZ", "UTC"),
+            ("LCX", "not a locale"),
+            ("http_proxy", "http://proxy:3128"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        v.push(("RAW".into(), OsString::from_vec(vec![b'a', 0xff, b'b'])));
+        v
+    }
+
+    /// The variables a process started with `pass` sees, as `NAME=value`
+    /// lines (`env -0`, so a value may hold anything but NUL).
+    async fn seen(pass: &[&str]) -> Vec<Vec<u8>> {
+        let pass: Vec<String> = pass.iter().map(|s| s.to_string()).collect();
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.arg("-0");
+        set_environment_from(&mut cmd, daemon_env(), &pass);
+        let out = cmd.output().await.expect("env runs");
+        assert!(out.status.success());
+        let mut lines: Vec<Vec<u8>> = out
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|l| !l.is_empty())
+            .map(<[u8]>::to_vec)
+            .collect();
+        lines.sort();
+        lines
+    }
+
+    fn has(lines: &[Vec<u8>], line: &str) -> bool {
+        lines.iter().any(|l| l == line.as_bytes())
+    }
+
+    #[tokio::test]
+    async fn only_the_default_variables_are_passed() {
+        let lines = seen(&[]).await;
+        for want in ["PATH=/usr/bin:/bin", "LANG=C.UTF-8", "LC_ALL=C", "TZ=UTC"] {
+            assert!(has(&lines, want), "{want} is missing from {lines:?}");
+        }
+        assert_eq!(lines.len(), 4, "only the four defaults: {lines:?}");
+    }
+
+    #[tokio::test]
+    async fn named_variables_are_passed_and_missing_ones_are_not() {
+        let lines = seen(&["HOME", "http_proxy", "NOT_SET_ANYWHERE"]).await;
+        assert!(has(&lines, "HOME=/root"));
+        assert!(has(&lines, "http_proxy=http://proxy:3128"));
+        assert!(!lines.iter().any(|l| l.starts_with(b"NOT_SET_ANYWHERE")));
+        assert!(!lines.iter().any(|l| l.starts_with(b"SECRET_TOKEN")));
+        assert_eq!(lines.len(), 6, "four defaults and two named: {lines:?}");
+    }
+
+    #[tokio::test]
+    async fn a_value_that_is_not_utf8_is_passed_as_it_is() {
+        let lines = seen(&["RAW"]).await;
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == &[b'R', b'A', b'W', b'=', b'a', 0xff, b'b'])
+        );
+    }
+
+    fn parse(text: &str) -> Result<Vec<String>, String> {
+        let t: toml::Table = format!("env_pass = {text}").parse().unwrap();
+        parse_env_pass(t.get("env_pass"))
+    }
+
+    #[test]
+    fn env_pass_is_validated() {
+        assert_eq!(parse_env_pass(None), Ok(vec![]));
+        assert_eq!(parse("[]"), Ok(vec![]));
+        assert_eq!(parse(r#"["HOME"]"#), Ok(vec!["HOME".to_string()]));
+        assert_eq!(
+            parse(r#"["http_proxy", "HTTPS_PROXY", "_x1"]"#),
+            Ok(vec![
+                "http_proxy".into(),
+                "HTTPS_PROXY".into(),
+                "_x1".into()
+            ])
+        );
+        assert_eq!(
+            parse(r#""HOME""#),
+            Err("must be an array of strings".into())
+        );
+        assert_eq!(parse("[1]"), Err("must be an array of strings".into()));
+        for bad in ["HOME=/root", "1ABC", "A B", "", "\u{e9}"] {
+            assert_eq!(
+                parse(&format!("[{bad:?}]")),
+                Err(format!("invalid variable name {bad:?}"))
+            );
+        }
+        assert_eq!(
+            parse(r#"["HOME", "HOME"]"#),
+            Err(r#"duplicate variable name "HOME""#.into())
         );
     }
 }

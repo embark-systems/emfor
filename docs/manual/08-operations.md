@@ -718,7 +718,11 @@ packaged one next to it as `emfor.toml.rpmnew` (the rpm of 0.6.0 marked it
 `%config`, which replaced a changed file by the packaged one when the
 packaged one differed, and saved yours as `emfor.toml.rpmsave`; the packaged
 file of 0.6.0 and of 0.7.0 are the same, and the flag of the new package is the
-one an upgrade follows). The other changes of 0.7.0 that need an action are
+one an upgrade follows). 0.7.0 starts `exec` checks and plugins with a small environment instead of
+the daemon's whole one: a program that reads `HOME`, a proxy variable or
+another variable needs its name in `env_pass` ([the environment of programs
+emfor starts](04-health-checks.md#the-environment-of-programs-emfor-starts)).
+The other changes of 0.7.0 that need an action are
 in [CHANGELOG.md](../../CHANGELOG.md).
 
 If the group uses `previous_secret_file`, do not start 0.7.0 for the first time

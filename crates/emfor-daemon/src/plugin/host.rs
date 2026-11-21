@@ -126,6 +126,8 @@ struct Conn {
 struct Shared {
     name: String,
     command: Vec<String>,
+    /// Variables of the daemon's environment the plugin also gets.
+    env_pass: Vec<String>,
     conn: Mutex<Option<Conn>>,
     next_id: AtomicU64,
     status: Arc<PluginStatus>,
@@ -213,10 +215,22 @@ impl PluginHost {
     /// Start the plugin and complete the handshake. The error names the
     /// plugin and says what went wrong.
     pub async fn start(name: &str, command: &[String]) -> Result<PluginHost, String> {
-        let process = launch(name, command).await?;
+        Self::start_with(name, command, &[]).await
+    }
+
+    /// [`PluginHost::start`] with the names of the variables of the daemon's
+    /// environment that the plugin gets besides the default ones (`env_pass`),
+    /// also each time it is restarted.
+    pub async fn start_with(
+        name: &str,
+        command: &[String],
+        env_pass: &[String],
+    ) -> Result<PluginHost, String> {
+        let process = launch(name, command, env_pass).await?;
         let shared = Arc::new(Shared {
             name: name.to_string(),
             command: command.to_vec(),
+            env_pass: env_pass.to_vec(),
             conn: Mutex::new(Some(process.conn.clone())),
             next_id: AtomicU64::new(1),
             status: Arc::new(PluginStatus {
@@ -239,6 +253,10 @@ impl PluginHost {
 
     pub fn command(&self) -> &[String] {
         &self.shared.command
+    }
+
+    pub fn env_pass(&self) -> &[String] {
+        &self.shared.env_pass
     }
 
     /// Up and restart count, for `/metrics`.
@@ -490,11 +508,12 @@ fn cut(s: &str, chars: usize) -> String {
 }
 
 /// Spawn the process, wire its pipes, and complete the handshake.
-async fn launch(name: &str, command: &[String]) -> Result<Process, String> {
+async fn launch(name: &str, command: &[String], env_pass: &[String]) -> Result<Process, String> {
     let program = command
         .first()
         .ok_or_else(|| format!("plugin {name}: empty command"))?;
     let mut cmd = Command::new(program);
+    crate::child::set_environment(&mut cmd, env_pass);
     cmd.args(&command[1..])
         .current_dir("/")
         .stdin(Stdio::piped())
@@ -824,7 +843,7 @@ async fn supervise(shared: Arc<Shared>, mut process: Process, mut stop: watch::R
                 _ = tokio::time::sleep(delay) => {}
                 _ = stop.changed() => return,
             }
-            match launch(&name, &shared.command).await {
+            match launch(&name, &shared.command, &shared.env_pass).await {
                 Ok(p) => {
                     shared.status.restarts.fetch_add(1, Ordering::Relaxed);
                     break p;

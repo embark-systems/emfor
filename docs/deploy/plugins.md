@@ -57,6 +57,8 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 
 The plugin name in `[plugins."<name>"]` is your choice; the argument after the path decides the protocol. `emfor check-config` starts the plugins and has them validate every service's `check_options`, so mistakes are found before a reload.
 
+A plugin does not get the daemon's environment: it gets `PATH`, `LANG`, `TZ` and `LC_*`, and the names in `[plugins."<name>"] env_pass`. If you start the daemon with `SSL_CERT_FILE` or `SSL_CERT_DIR` (the system CAs of a TLS check without `ca_file`) or with a proxy variable, list it in `env_pass`; see [the environment of programs emfor starts](../manual/04-health-checks.md#the-environment-of-programs-emfor-starts).
+
 ### Options
 
 These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns`, `radius`, `sip`, `diameter`, `smtp`, `amqp`, `mongodb` and `grpc` plugins have their own, see [DNS](#dns), [RADIUS](#radius), [SIP](#sip), [Diameter](#diameter), [SMTP](#smtp), [AMQP](#amqp), [MongoDB](#mongodb) and [gRPC](#grpc).

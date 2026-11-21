@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+**`exec` checks and plugins no longer get the daemon's whole environment (hardening, breaking).**
+A program that an `exec` check or a plugin starts used to inherit every
+variable of the daemon's environment, so a secret set there (by a unit file,
+for example) reached every check program. It now gets only `PATH`, `LANG`,
+`TZ` and the `LC_*` variables, with the daemon's values, and `exec` also
+gets `EMFOR_IP`, `EMFOR_PORT` and `EMFOR_SERVICE`. New: `env_pass`, a list of
+variable names (never values), in `check_options` of an `exec` check and in
+`[plugins."<name>"]`, adds variables the daemon has; a name the daemon does
+not have is skipped. **Action on upgrade:** a check program or plugin that
+reads `HOME`, a proxy variable, `LD_LIBRARY_PATH` or any other variable now
+needs its name in `env_pass` (`emfor-check` also reads `SSL_CERT_FILE` and
+`SSL_CERT_DIR`, to find the system CAs of a TLS check without `ca_file`); without it the program runs without that
+variable, and `emfor check-config` does not warn about it. Changing a plugin's
+`env_pass` restarts the plugin on reload, like changing its `command`, and
+the names are part of the check definition that peers compare, so hosts of a
+group must list the same names for a service.
+Checked in a Debian container: fmt, clippy `-D warnings` and the full gate;
+new tests for the environment of `exec` and of a plugin (also after a
+restart), for the validation of `env_pass`, and for the restart on reload;
+the tests of the environment fail when the clearing is taken out, and the
+reload test fails when the comparison of `env_pass` is taken out; `tests/nagios/run.sh` passes. Not verified: on
+macOS or FreeBSD, the `PATH` that systemd gives the daemon, and installs
+whose check programs need variables that are not known here.
+
 **Example scripts check what they hand on, and a flaky test is fixed (hardening).**
 `examples/pf/emfor-pf-table.sh` now gives `pfctl` only addresses: an SRV
 target that is not an IPv4 or IPv6 address in emfor's dashed form is skipped

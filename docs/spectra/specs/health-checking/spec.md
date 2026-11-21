@@ -473,7 +473,7 @@ tests:
 ---
 ### Requirement: Exec checker
 
-The `exec` checker SHALL run the command given in `check_options.command` once per check, without a shell, with the backend passed in the environment variables `EMFOR_IP`, `EMFOR_PORT`, and `EMFOR_SERVICE`. The result SHALL follow the exit status: 0 is `up`; 1 or 2 is `down` with the first line of standard output as the reason (or `exit code N` when there is none); any other exit code is `error`; death by a signal is `error`; failure to start the command is `error`. When the check exceeds `timeout`, the command's whole process group SHALL be killed and the result SHALL be `down` with reason `timeout`. `check_options.command` SHALL be required, SHALL be a non-empty array of strings whose first element is an absolute path to an existing executable file, SHALL NOT contain a NUL character in any element (`must not contain NUL`), and SHALL be the only accepted key.
+The `exec` checker SHALL run the command given in `check_options.command` once per check, without a shell, with the backend passed in the environment variables `EMFOR_IP`, `EMFOR_PORT`, and `EMFOR_SERVICE`. The command's environment SHALL contain only: those three variables; the variables `PATH`, `LANG`, `TZ` and every variable whose name starts with `LC_`, with the values they have in the daemon's environment (a variable the daemon does not have is not set); and the variables named in `check_options.env_pass`, with the values they have in the daemon's environment (a name the daemon does not have is not set and is not an error). No other variable of the daemon's environment SHALL reach the command. `check_options.env_pass` SHALL be optional; when present it SHALL be an array of strings (`must be an array of strings`), each a variable name of `[A-Za-z_][A-Za-z0-9_]*` (`invalid variable name "<name>"`), without a name twice (`duplicate variable name "<name>"`) and without the name `EMFOR_IP`, `EMFOR_PORT` or `EMFOR_SERVICE` (`<name> is set by emfor`; any other name, also one that starts with `EMFOR_`, is allowed). The result SHALL follow the exit status: 0 is `up`; 1 or 2 is `down` with the first line of standard output as the reason (or `exit code N` when there is none); any other exit code is `error`; death by a signal is `error`; failure to start the command is `error`. When the check exceeds `timeout`, the command's whole process group SHALL be killed and the result SHALL be `down` with reason `timeout`. `check_options.command` SHALL be required, SHALL be a non-empty array of strings whose first element is an absolute path to an existing executable file, SHALL NOT contain a NUL character in any element (`must not contain NUL`), and `command` and `env_pass` SHALL be the only accepted keys.
 
 #### Scenario: Script reports critical
 
@@ -505,6 +505,63 @@ The `exec` checker SHALL run the command given in `check_options.command` once p
 
 - **WHEN** a service sets `check = "exec"` with `check_options.command = ["check_pg"]`
 - **THEN** validation fails at `check_options.command` because the first element is not an absolute path to an existing executable
+
+#### Scenario: Variable of the daemon is not passed
+
+- **GIVEN** the daemon's environment has `SECRET_TOKEN=abc` and `HOME=/root`
+- **WHEN** an `exec` check without `env_pass` runs a command that prints its environment
+- **THEN** the output has neither `SECRET_TOKEN` nor `HOME`
+
+#### Scenario: Locale, time zone and PATH are passed
+
+- **GIVEN** the daemon's environment has `PATH=/usr/bin:/bin`, `LANG=C.UTF-8`, `LC_ALL=C` and `TZ=UTC`
+- **WHEN** an `exec` check runs a command that prints its environment
+- **THEN** the output has `PATH=/usr/bin:/bin`, `LANG=C.UTF-8`, `LC_ALL=C` and `TZ=UTC`
+
+#### Scenario: Variable named in env_pass is passed
+
+- **GIVEN** the daemon's environment has `HOME=/root`, and a service sets `check_options.env_pass = ["HOME", "NOT_SET_ANYWHERE"]`
+- **WHEN** the `exec` check runs a command that prints its environment
+- **THEN** the output has `HOME=/root` and no `NOT_SET_ANYWHERE`, and the config is valid
+
+##### Example: env_pass validation
+
+| `check_options.env_pass` | Result |
+| --- | --- |
+| `["HOME"]` | ok |
+| `[]` | ok |
+| `["http_proxy", "HTTPS_PROXY"]` | ok |
+| `"HOME"` | error at `check_options.env_pass`: must be an array of strings |
+| `["HOME=/root"]` | error at `check_options.env_pass`: invalid variable name "HOME=/root" |
+| `["1ABC"]` | error at `check_options.env_pass`: invalid variable name "1ABC" |
+| `["HOME", "HOME"]` | error at `check_options.env_pass`: duplicate variable name "HOME" |
+| `["EMFOR_IP"]` | error at `check_options.env_pass`: EMFOR_IP is set by emfor |
+| `["EMFOR_SERVICE"]` | error at `check_options.env_pass`: EMFOR_SERVICE is set by emfor |
+| `["EMFOR_PREFIX"]` | ok |
+
+
+<!-- @trace
+source: emfor-child-environment
+updated: 2026-11-21
+code:
+  - CHANGELOG.md
+  - crates/emfor-daemon/src/checker/exec.rs
+  - crates/emfor-daemon/src/child.rs
+  - crates/emfor-daemon/src/config.rs
+  - crates/emfor-daemon/src/plugin/host.rs
+  - crates/emfor-daemon/src/plugin/mod.rs
+  - crates/emfor-daemon/src/plugin/set.rs
+  - docs/manual.zh_TW/03-configuration.md
+  - docs/manual.zh_TW/04-health-checks.md
+  - docs/manual.zh_TW/08-operations.md
+  - docs/manual/03-configuration.md
+  - docs/manual/04-health-checks.md
+  - docs/manual/08-operations.md
+tests:
+  - crates/emfor-daemon/tests/peers.rs
+  - crates/emfor-daemon/tests/plugin_host.rs
+  - crates/emfor-daemon/tests/plugins.rs
+-->
 
 ---
 ### Requirement: Reasons are bounded and printable

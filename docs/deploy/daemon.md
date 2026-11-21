@@ -55,6 +55,8 @@ systemctl daemon-reload
 systemctl enable --now emfor
 ```
 
+`exec` checks and plugins get only `PATH`, `LANG`, `TZ` and `LC_*` of the daemon's environment. A value they need that the daemon does not have is set in the unit with `Environment=` or `EnvironmentFile=`, and the name goes in their `env_pass`: [the environment of programs emfor starts](../manual/04-health-checks.md#the-environment-of-programs-emfor-starts).
+
 Build without `EMFOR_PREFIX` (or with `/usr`) so that `emfor status` and `emfor check-config` find `/etc/emfor/emfor.toml` without `--config`; the unit passes `--config` itself.
 
 The config can be split over a directory: `include_dir = "conf.d"` in the main file makes the daemon read every `*.toml` file there, in filename order, after the main file (a later file overrides an earlier one, tables merge key by key, lists are replaced). Create `/etc/emfor/conf.d` when installing, mode 0755 or stricter: the daemon refuses the config if the directory or a file in it is writable by group or others, or if the directory is missing. The main file is refused the same way from 0.7.0 (a mode that group or others can write, or an owner other than root or the daemon's user). `[store]` and `include_dir` stay in the main file. Rules, errors and `check-config` output: [chapter 3 of the manual](../manual/03-configuration.md#splitting-the-config-over-a-directory).
