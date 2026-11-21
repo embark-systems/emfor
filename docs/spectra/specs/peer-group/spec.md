@@ -8,7 +8,7 @@ A peer group is the set of emfor daemons in one `site` that list each other in `
 
 ### Requirement: Peer group configuration
 
-The config SHALL accept an optional `[peers]` table with the keys `listen`, `members` and `secret_file`, all required, and the optional keys `previous_secret_file`, `encrypt`, a boolean that defaults to `true`, and `accept_plaintext`, a boolean; any other key SHALL be an error. When `accept_plaintext` is not set it SHALL default to `false` if `encrypt` is `true`, which includes the case that `encrypt` is not set, and to `true` if `encrypt` is `false`; a value that is set SHALL win over this default. `accept_plaintext = false` together with `encrypt = false` SHALL be an error at `peers.accept_plaintext`, since such a daemon would send the messages it refuses. `listen` SHALL be one `IPv4:port` or `[IPv6]:port` string with port 1–65535 whose address is not the unspecified address (`0.0.0.0` or `::`). `members` SHALL be an array of 2 to 64 such strings with no repeats, all of the address family (IPv4 or IPv6) of `listen`, and SHALL contain `listen`. `secret_file` SHALL be an absolute path to a file that the daemon can read, whose content after removing one trailing line feed is at least 32 bytes, and whose permissions do not allow other users to read it; `previous_secret_file`, when set, SHALL meet the same conditions. When `[peers]` is present the top-level `site` SHALL be set. Every violation SHALL be reported together with the other config errors, prefixed with its TOML path. Without a `[peers]` table the daemon SHALL open no peer socket and send no peer message.
+The config SHALL accept an optional `[peers]` table with the keys `listen`, `members` and `secret_file`, all required, and the optional keys `previous_secret_file`, `encrypt`, a boolean that defaults to `true`, and `accept_plaintext`, a boolean; any other key SHALL be an error. When `accept_plaintext` is not set it SHALL default to `false` if `encrypt` is `true`, which includes the case that `encrypt` is not set, and to `true` if `encrypt` is `false`; a value that is set SHALL win over this default. `accept_plaintext = false` together with `encrypt = false` SHALL be an error at `peers.accept_plaintext`, since such a daemon would send the messages it refuses. `listen` SHALL be one `IPv4:port` or `[IPv6]:port` string with port 1–65535 whose address is not the unspecified address (`0.0.0.0` or `::`). `members` SHALL be an array of 2 to 64 such strings with no repeats, all of the address family (IPv4 or IPv6) of `listen`, and SHALL contain `listen`. `secret_file` SHALL be an absolute path to a file that the daemon can read, whose size, a trailing line feed included, is at most 65536 bytes and whose content after removing one trailing line feed is at least 32 bytes, and whose permissions do not allow other users to read it; `previous_secret_file`, when set, SHALL meet the same conditions. When `[peers]` is present the top-level `site` SHALL be set. Every violation SHALL be reported together with the other config errors, prefixed with its TOML path. Without a `[peers]` table the daemon SHALL open no peer socket and send no peer message.
 
 #### Scenario: Valid peer group
 
@@ -60,21 +60,24 @@ The config SHALL accept an optional `[peers]` table with the keys `listen`, `mem
 | `encrypt = false` and `accept_plaintext = false` | error at `peers.accept_plaintext`: accept_plaintext = false needs encrypt = true |
 | `[peers] port = 5302` | error: unknown key |
 
+#### Scenario: Secret file larger than the limit
+
+- **WHEN** `secret_file` is a file of more than 65536 bytes, a trailing line feed included
+- **THEN** the config is rejected with an error at `peers.secret_file` saying that the file is too large; a file of exactly 65536 bytes is accepted
+
 
 <!-- @trace
-source: emfor-accept-plaintext-default
+source: emfor-secret-read-hardening
 updated: 2026-11-21
 code:
-  - CHANGELOG.md
-  - crates/emfor-daemon/src/config.rs
-  - docs/deploy/daemon.md
+  - docs/release-signing.md
+  - docs/casa-assessment.md
   - docs/manual.zh_TW/03-configuration.md
-  - docs/manual.zh_TW/08-operations.md
   - docs/manual/03-configuration.md
-  - docs/manual/08-operations.md
-  - examples/emfor.toml
-tests:
-  - crates/emfor-daemon/tests/peers.rs
+  - CHANGELOG.md
+  - crates/emfor-daemon/src/peers/task.rs
+  - crates/emfor-daemon/src/config.rs
+  - crates/emfor-daemon/src/peers/watch.rs
 -->
 
 ---
@@ -193,7 +196,7 @@ tests:
 ---
 ### Requirement: Peer secret reload
 
-The daemon SHALL notice a change of `secret_file` and apply it before sending the next round of heartbeats. Where the platform allows (inotify on Linux, kqueue on FreeBSD and macOS), the daemon SHALL watch the directory that holds `secret_file`, and with kqueue also the file itself, and SHALL read the file after each event, so that both a file written in place and a file replaced by renaming another over it are noticed; it SHALL also read the file every 30 seconds, so that a missed event delays a change by no more than that. When the watch cannot be set up, or the platform has none, or a watch stops working, the daemon SHALL read the file before each round of heartbeats instead, and SHALL log one line at `info` level saying that it does and why. When `secret_file` changes in a reload, the daemon SHALL watch the new path.  When its content changed and is valid, the new content SHALL become the current secret. For 60 seconds after the change the daemon SHALL still sign its messages with the secret it replaced, and SHALL still accept messages signed with the replaced secret for 120 seconds after the change, so that when every member's file changes within 60 seconds of the others no message between any two members is dropped. When the file changes again while the daemon still signs with an earlier secret, the daemon SHALL keep signing with that earlier secret, for 60 seconds after the latest change, and SHALL accept it for 120 seconds after the latest change; every other replaced secret SHALL be accepted for 120 seconds after it was replaced. The daemon SHALL keep a record of the secret it uses, in the file named after the store path with `-peers` appended (mode 0600), holding a SHA-256 fingerprint of the current secret, and once the daemon has replaced a secret, the fingerprint of the secret it replaced and the time of that change. The daemon SHALL write the record at start and each time the current secret changes, and SHALL NOT store a secret itself. When the daemon starts and the fingerprint of the current secret differs from the one in the record, the secret in the record SHALL count as the one that was replaced, at the modification time of `secret_file`. When the daemon starts with `previous_secret_file` set to a secret other than the current one, and that secret is the one the record says was replaced, and that change was less than 120 seconds before, the daemon SHALL treat it as the change: it signs with the previous secret until 60 seconds and accepts it until 120 seconds after that time, as if it had been running. Otherwise `previous_secret_file` SHALL have no effect, so that a secret that was retired earlier, or that the daemon never used, is not used again because a file holds it or `secret_file` was touched; when a `previous_secret_file` is set and has no effect because the record is missing, cannot be read or does not name that secret, the daemon SHALL log one line at `info` level saying so. `previous_secret_file` is read only when the daemon starts. A daemon that finds no record, such as at its first start after an upgrade, SHALL ignore `previous_secret_file`. When the record cannot be written, the daemon SHALL log at `warn` level at most once per minute and SHALL keep running. Without it, a daemon restarted during a change knows only the new secret, and members whose file has not changed yet drop its messages as `auth`, and it theirs, until their files change. When the file cannot be read or its content is not valid, the daemon SHALL keep the last valid secret and log at `warn` level at most once per minute. A read SHALL NOT delay the heartbeats, the liveness checks or the handling of received messages: when a read of `secret_file` has not finished within 200 milliseconds the daemon SHALL carry on with the last valid secret, at most one read of `secret_file` SHALL be in progress at any time, and a new read SHALL start only after the previous one has finished. The result of a read that finishes late SHALL be applied as any other. A read that has been in progress for more than 5 seconds SHALL be reported by a line at `warn` level, at most once per minute.
+The daemon SHALL notice a change of `secret_file` and apply it before sending the next round of heartbeats. Where the platform allows (inotify on Linux, kqueue on FreeBSD and macOS), the daemon SHALL watch the directory that holds `secret_file`, and with kqueue also the file itself, and SHALL read the file after each event, so that both a file written in place and a file replaced by renaming another over it are noticed; it SHALL also read the file every 30 seconds, so that a missed event delays a change by no more than that. When the watch cannot be set up, or the platform has none, or a watch stops working, the daemon SHALL read the file before each round of heartbeats instead, and SHALL log one line at `info` level saying that it does and why. When `secret_file` changes in a reload, the daemon SHALL watch the new path.  When its content changed and is valid, the new content SHALL become the current secret. For 60 seconds after the change the daemon SHALL still sign its messages with the secret it replaced, and SHALL still accept messages signed with the replaced secret for 120 seconds after the change, so that when every member's file changes within 60 seconds of the others no message between any two members is dropped. When the file changes again while the daemon still signs with an earlier secret, the daemon SHALL keep signing with that earlier secret, for 60 seconds after the latest change, and SHALL accept it for 120 seconds after the latest change; every other replaced secret SHALL be accepted for 120 seconds after it was replaced. The daemon SHALL keep a record of the secret it uses, in the file named after the store path with `-peers` appended (mode 0600), holding a SHA-256 fingerprint of the current secret, and once the daemon has replaced a secret, the fingerprint of the secret it replaced and the time of that change. The daemon SHALL write the record at start and each time the current secret changes, and SHALL NOT store a secret itself. When the daemon starts and the fingerprint of the current secret differs from the one in the record, the secret in the record SHALL count as the one that was replaced, at the modification time of `secret_file`. When the daemon starts with `previous_secret_file` set to a secret other than the current one, and that secret is the one the record says was replaced, and that change was less than 120 seconds before, the daemon SHALL treat it as the change: it signs with the previous secret until 60 seconds and accepts it until 120 seconds after that time, as if it had been running. Otherwise `previous_secret_file` SHALL have no effect, so that a secret that was retired earlier, or that the daemon never used, is not used again because a file holds it or `secret_file` was touched; when a `previous_secret_file` is set and has no effect because the record is missing, cannot be read or does not name that secret, the daemon SHALL log one line at `info` level saying so. `previous_secret_file` is read only when the daemon starts. A daemon that finds no record, such as at its first start after an upgrade, SHALL ignore `previous_secret_file`. When the record cannot be written, the daemon SHALL log at `warn` level at most once per minute and SHALL keep running. Without it, a daemon restarted during a change knows only the new secret, and members whose file has not changed yet drop its messages as `auth`, and it theirs, until their files change. When the file cannot be read or its content is not valid, the daemon SHALL keep the last valid secret and log at `warn` level at most once per minute. A read SHALL NOT delay the heartbeats, the liveness checks or the handling of received messages: when a read of `secret_file` has not finished within 200 milliseconds the daemon SHALL carry on with the last valid secret, at most one read of `secret_file` SHALL be in progress at any time, and a new read SHALL start only after the previous one has finished. The result of a read that finishes late SHALL be applied as any other, except that when `secret_file` was changed by a reload while the read was in progress, the result SHALL be dropped, since it is the content of the old path; the new path SHALL be read as soon as that read is over. A read that has been in progress for more than 5 seconds SHALL be reported by a line at `warn` level, at most once per minute.
 
 #### Scenario: Secret rotated on one host first
 
@@ -260,20 +263,24 @@ The daemon SHALL notice a change of `secret_file` and apply it before sending th
 - **WHEN** the watch of A's `secret_file` cannot be set up
 - **THEN** A reads the file before each round of heartbeats, logs one `info` line saying why, and applies a changed secret by the next round of heartbeats as it did before watching was added
 
+#### Scenario: Late result of the old path
+
+- **WHEN** a read of the old `secret_file` is still in progress when a reload changes `secret_file`, and it then returns a valid secret that differs from the current one
+- **THEN** that secret is not applied, and the content of the new `secret_file` is read once the old read is over
+
 
 <!-- @trace
-source: emfor-previous-secret-record
+source: emfor-secret-read-hardening
 updated: 2026-11-21
 code:
-  - CHANGELOG.md
-  - crates/emfor-daemon/src/cli.rs
-  - crates/emfor-daemon/src/peers/crypto.rs
-  - crates/emfor-daemon/src/peers/record.rs
-  - crates/emfor-daemon/src/peers/task.rs
+  - docs/release-signing.md
+  - docs/casa-assessment.md
   - docs/manual.zh_TW/03-configuration.md
-  - docs/manual.zh_TW/08-operations.md
   - docs/manual/03-configuration.md
-  - docs/manual/08-operations.md
+  - CHANGELOG.md
+  - crates/emfor-daemon/src/peers/task.rs
+  - crates/emfor-daemon/src/config.rs
+  - crates/emfor-daemon/src/peers/watch.rs
 -->
 
 ---

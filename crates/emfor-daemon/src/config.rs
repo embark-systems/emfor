@@ -219,6 +219,10 @@ pub const MAX_MEMBERS: usize = 64;
 /// Shortest peer secret, in bytes.
 pub const MIN_SECRET_LEN: usize = 32;
 
+/// The most a secret file may hold, one trailing line feed included. A
+/// secret needs 32 bytes; nothing needs more than this.
+pub const MAX_SECRET_LEN: usize = 65536;
+
 /// Read a peer secret: the file's bytes without one trailing line feed.
 /// Errors are the messages config validation reports for `secret_file`.
 pub fn read_secret(path: &Path) -> Result<Vec<u8>, String> {
@@ -262,9 +266,19 @@ pub fn read_secret(path: &Path) -> Result<Vec<u8>, String> {
             path.display()
         ));
     }
+    // At most one byte more than allowed: a file that is much larger (the
+    // path was pointed at a log, say) is not read into memory.
     let mut bytes = Vec::new();
-    f.read_to_end(&mut bytes)
+    f.by_ref()
+        .take(MAX_SECRET_LEN as u64 + 1)
+        .read_to_end(&mut bytes)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    if bytes.len() > MAX_SECRET_LEN {
+        return Err(format!(
+            "{} is too large (more than {MAX_SECRET_LEN} bytes)",
+            path.display()
+        ));
+    }
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
     }
@@ -2146,6 +2160,20 @@ backends = ["10.0.0.1:80"]
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
             .expect("the temporary secret file's mode can be set");
         (dir, path)
+    }
+
+    /// Spec peer-group "Secret file larger than the limit": 65536 bytes with
+    /// the line feed are accepted, one more is an error.
+    #[test]
+    fn secret_file_has_a_size_limit() {
+        let mut ok = vec![b'k'; MAX_SECRET_LEN - 1];
+        ok.push(b'\n');
+        let (_d, path) = secret_file(&ok, 0o600);
+        assert_eq!(read_secret(&path).unwrap().len(), MAX_SECRET_LEN - 1);
+        let (_d2, big) = secret_file(&vec![b'k'; MAX_SECRET_LEN + 1], 0o600);
+        let err = read_secret(&big).unwrap_err();
+        assert!(err.contains("is too large"), "{err}");
+        assert!(err.contains("65536"), "{err}");
     }
 
     /// `read_secret` checks the file it opened: a link to a good file works,

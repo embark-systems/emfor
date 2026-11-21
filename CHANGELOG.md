@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+**Three small fixes in the reading of `peers.secret_file` (bug fixes).**
+A read of the old path that returned after a reload had changed `secret_file`
+was applied as the current secret; it is now dropped, and the new path is
+read. The kqueue watch (FreeBSD, macOS) opened the directory and the file
+without `O_NONBLOCK`, so a path replaced by a FIFO could stop the watch thread
+in `open`; it now opens them as `read_secret` does. `read_secret` read the whole
+file into memory; it now reads at most 65537 bytes, and a `secret_file` or
+`previous_secret_file` larger than 65536 bytes (the line feed included) is a
+config error at that key (a compatibility change in name only: a secret
+needs 32 bytes). Checked in a Debian container: fmt, clippy `-D warnings` and
+1036 tests pass, 17 ignored; new tests for the dropped result of the old
+path and for the size limit; on macOS `cargo check` and `cargo clippy -D
+warnings` pass for the kqueue code. Not verified: the new tests were not run
+against the old code; the kqueue open with a FIFO was not tried, on macOS or
+FreeBSD, and the kqueue watch did not run on FreeBSD.
+
 **`previous_secret_file` is used only for the secret the daemon replaced (compatibility change).**
 A daemon that starts with `previous_secret_file` used it whenever it held a
 secret other than the current one and `secret_file` had been modified less

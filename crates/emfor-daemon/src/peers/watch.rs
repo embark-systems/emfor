@@ -214,6 +214,17 @@ mod kqueue_backend {
         file: Option<File>,
     }
 
+    /// Open for watching. O_NONBLOCK: a path that was replaced by a FIFO
+    /// must not make the open wait for a writer; it has no effect on a
+    /// regular file or a directory.
+    fn open_nonblocking(path: &Path) -> std::io::Result<File> {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+    }
+
     fn vnode(fd: &File, flags: FilterFlag) -> KEvent {
         KEvent::new(
             fd.as_raw_fd() as usize,
@@ -236,8 +247,8 @@ mod kqueue_backend {
         pub fn new(path: &Path) -> Result<Self, String> {
             let kq = Kqueue::new().map_err(|e| format!("kqueue: {e}"))?;
             let dir_path = super::directory_of(path);
-            let dir =
-                File::open(dir_path).map_err(|e| format!("open {}: {e}", dir_path.display()))?;
+            let dir = open_nonblocking(dir_path)
+                .map_err(|e| format!("open {}: {e}", dir_path.display()))?;
             let mut me = Self {
                 kq,
                 file_path: path.to_path_buf(),
@@ -260,7 +271,7 @@ mod kqueue_backend {
                     | FilterFlag::NOTE_LINK
                     | FilterFlag::NOTE_REVOKE,
             )];
-            self.file = File::open(&self.file_path).ok();
+            self.file = open_nonblocking(&self.file_path).ok();
             if let Some(f) = &self.file {
                 changes.push(vnode(
                     f,

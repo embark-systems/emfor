@@ -342,8 +342,9 @@ const SECRET_READ_SLOW: Duration = Duration::from_secs(5);
 /// Reads a secret file; [`read_secret`] outside the tests.
 type ReadSecret = fn(&Path) -> Result<Vec<u8>, String>;
 
-/// A read of the secret file on a blocking thread, and when it started.
-type ReadInFlight = (JoinHandle<Result<Vec<u8>, String>>, Instant);
+/// A read of the secret file on a blocking thread, when it started, and
+/// the path it reads.
+type ReadInFlight = (JoinHandle<Result<Vec<u8>, String>>, Instant, PathBuf);
 
 /// The re-reading of the secret file, which never holds up the peer loop.
 ///
@@ -354,7 +355,7 @@ type ReadInFlight = (JoinHandle<Result<Vec<u8>, String>>, Instant);
 /// a read it starts for [`SECRET_READ_WAIT`] at most.
 struct SecretReader {
     read: ReadSecret,
-    /// The read in flight and when it started.
+    /// The read in flight, when it started and which path it reads.
     pending: Option<ReadInFlight>,
 }
 
@@ -374,9 +375,10 @@ impl SecretReader {
 
     /// Apply the result of the read in flight if it has finished, then
     /// start a new read of `path` unless one is still in flight. A late
-    /// result is applied as any other; `path` is the current one each time
-    /// a read starts, so a path changed by a reload is read as soon as the
-    /// old read is over. Returns whether a read was started: false when the
+    /// result is applied as any other, unless it is the content of another
+    /// path than `path` (a reload changed `secret_file` meanwhile), when it
+    /// is dropped; `path` is the current one each time a read starts, so a
+    /// path changed by a reload is read as soon as the old read is over. Returns whether a read was started: false when the
     /// one in flight is still running.
     async fn refresh(
         &mut self,
@@ -385,7 +387,7 @@ impl SecretReader {
         warned: &mut Option<Instant>,
         now: Instant,
     ) -> bool {
-        if let Some((handle, started)) = self.pending.take() {
+        if let Some((handle, started, read_path)) = self.pending.take() {
             if !handle.is_finished() {
                 let ran = now.duration_since(started);
                 if ran > SECRET_READ_SLOW
@@ -397,17 +399,23 @@ impl SecretReader {
                         ran.as_secs()
                     );
                 }
-                self.pending = Some((handle, started));
+                self.pending = Some((handle, started, read_path));
                 return false;
             }
-            apply_secret(group, joined(handle.await), warned, now);
+            let done = joined(handle.await);
+            // The content of the path that was read before a reload changed
+            // it is not the secret of the new path.
+            if read_path == path {
+                apply_secret(group, done, warned, now);
+            }
         }
         let read = self.read;
         let path = path.to_path_buf();
-        let mut handle = tokio::task::spawn_blocking(move || read(&path));
+        let to_read = path.clone();
+        let mut handle = tokio::task::spawn_blocking(move || read(&to_read));
         match tokio::time::timeout(SECRET_READ_WAIT, &mut handle).await {
             Ok(done) => apply_secret(group, joined(done), warned, now),
-            Err(_) => self.pending = Some((handle, now)),
+            Err(_) => self.pending = Some((handle, now, path)),
         }
         true
     }
@@ -1372,7 +1380,7 @@ mod tests {
         while !reader
             .pending
             .as_ref()
-            .is_some_and(|(h, _)| h.is_finished())
+            .is_some_and(|(h, _, _)| h.is_finished())
         {
             assert!(std::time::Instant::now() < end, "the read did not finish");
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1573,6 +1581,47 @@ mod tests {
             .refresh(&mut g, &two, &mut warned, start + Duration::from_secs(2))
             .await;
         assert_eq!(seen(2), vec![one, two], "the new path after the old read");
+    }
+
+    static OLD_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static OLD_RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// The first read hangs and then returns the secret of the old path;
+    /// every other read returns the secret of the new one.
+    fn old_path_then_new(_: &Path) -> Result<Vec<u8>, String> {
+        if OLD_CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
+            block_until(&OLD_RELEASE);
+            Ok(vec![b'o'; 40])
+        } else {
+            Ok(vec![b'n'; 40])
+        }
+    }
+
+    /// Spec peer-group "Late result of the old path": a read of the old
+    /// path that returns after a reload changed `secret_file` is dropped,
+    /// and the new path is read.
+    #[tokio::test]
+    async fn late_result_of_the_old_path_is_dropped() {
+        let start = Instant::now();
+        let (_d1, one) = secret_file(&[1u8; 40], 0o600);
+        let (_d2, two) = secret_file(&[2u8; 40], 0o600);
+        let mut g = group(start);
+        let before = g.keys.current().to_vec();
+        let mut warned = None;
+        let mut reader = SecretReader::new(old_path_then_new);
+        reader.refresh(&mut g, &one, &mut warned, start).await;
+        reader
+            .refresh(&mut g, &two, &mut warned, start + Duration::from_secs(1))
+            .await;
+        OLD_RELEASE.store(true, Ordering::SeqCst);
+        read_finished(&reader).await;
+        reader
+            .refresh(&mut g, &two, &mut warned, start + Duration::from_secs(2))
+            .await;
+        assert_ne!(g.keys.current(), &[b'o'; 40], "the old path's secret");
+        assert_eq!(g.keys.current(), &[b'n'; 40], "the new path's secret");
+        assert_ne!(before, g.keys.current());
+        assert_eq!(OLD_CALLS.load(Ordering::SeqCst), 2);
     }
 
     static LOOP_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
