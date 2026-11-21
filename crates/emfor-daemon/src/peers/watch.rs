@@ -385,6 +385,21 @@ mod tests {
             .is_ok()
     }
 
+    /// Wait (real time) for the watch to report a failure. A notification
+    /// says only that something happened: the first event after a directory
+    /// is removed is the deletion of the file in it, and the failure is
+    /// recorded when the watch reads the events that follow.
+    async fn failed(w: &SecretWatch) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while tokio::time::Instant::now() < deadline {
+            if w.failure().is_some() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        w.failure().is_some()
+    }
+
     /// Nothing is notified for a while (a settled directory).
     async fn quiet(w: &SecretWatch) -> bool {
         tokio::time::timeout(Duration::from_millis(400), w.notifier().notified())
@@ -467,7 +482,6 @@ mod tests {
         fs::write(&path, [1u8; 40]).expect("the secret file can be written");
         let w = SecretWatch::start(&path).expect("the directory can be watched");
         fs::remove_dir_all(&sub).expect("the directory can be removed");
-        assert!(notified(&w).await);
-        assert!(w.failure().is_some(), "the watch reports its failure");
+        assert!(failed(&w).await, "the watch reports its failure");
     }
 }

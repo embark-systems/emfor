@@ -66,10 +66,16 @@ jobs:
           restore-keys: fuzz-corpus-${{ matrix.target }}-
       - name: Fuzz
         working-directory: fuzz
+        # The input goes through the environment, not into the script text.
+        env:
+          FUZZ_SECONDS: ${{ github.event.inputs.seconds || 300 }}
         run: |
+          case "$FUZZ_SECONDS" in
+            '' | *[!0-9]* | 0*) echo "seconds must be a number above 0, without a leading 0" >&2; exit 1 ;;
+          esac
           mkdir -p corpus/${{ matrix.target }}
           cargo +nightly fuzz run -O ${{ matrix.target }} ${{ matrix.args }} \
-            -max_total_time="${{ github.event.inputs.seconds || 300 }}"
+            -max_total_time="$FUZZ_SECONDS"
       # Also after a crash, which fails the step above: the night that finds
       # a crash is the one whose corpus is worth keeping. Not when the run
       # was cancelled.

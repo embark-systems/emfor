@@ -22,6 +22,7 @@ case "$(cat "/tmp/state-$port" 2>/dev/null || echo ok)" in
     ok) echo "OK - fine on $port"; exit 0 ;;
     warn) echo "WARNING - slow on $port"; exit 1 ;;
     crit) echo "CRITICAL - broken on $port"; exit 2 ;;
+    pipe) echo "CRITICAL - a|b on $port"; exit 2 ;;
     unknown) echo "UNKNOWN - cannot tell on $port"; exit 3 ;;
     hang) sleep 30; exit 0 ;;
 esac
@@ -128,6 +129,13 @@ run -s web.svc.emfor
 [ "$rc" = 2 ] || fail "all down gave $rc: $out"
 case "$out" in "EMFOR CRITICAL - web.svc.emfor: 0 of 3 healthy ("*) ;; *) fail "all down: '$out'" ;; esac
 echo "ok: every backend down: CRITICAL, exit 2 ($(echo "$out" | cut -c1-90)...)"
+
+# a "|" in a backend's reason must not start the perfdata early
+echo pipe > /tmp/state-7002; settle
+run -s web.svc.emfor
+[ "$(printf '%s' "$out" | tr -cd '|' | wc -c)" = 1 ] || fail "a pipe in the reason: '$out'"
+case "$out" in *"CRITICAL - a/b on 7002"*" | 'web.svc.emfor_healthy'="*) ;; *) fail "a pipe in the reason: '$out'" ;; esac
+echo "ok: a '|' in a reason is shown as '/', the only '|' is the one before the perfdata ($out)"
 
 for p in 7001 7002 7003; do echo ok > "/tmp/state-$p"; done
 config yes; reload; settle

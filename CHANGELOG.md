@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+**Example scripts check what they hand on, and a flaky test is fixed (hardening).**
+`examples/pf/emfor-pf-table.sh` now gives `pfctl` only addresses: an SRV
+target that is not an IPv4 or IPv6 address in emfor's dashed form is skipped
+with a line on stderr, `EMPTY` and the table name are checked at the start,
+and the first line of a `pfctl` error is part of the script's own error.
+`examples/nagios/check_emfor.sh` writes a `|` in a service name, backend id or
+reason as `/` and a line feed as a space, so the text cannot end early and
+start the perfdata; a quote in a perfdata label is doubled. The `fuzz.yml`
+workflow takes its `seconds` input through an environment variable and
+rejects anything that is not a number above 0 (0 would mean no time limit). The test
+`removed_directory_is_a_failure` waits for the watch to report its failure
+(up to 3 s) instead of sleeping a fixed time. Checked in a Debian container:
+`tests/pf/validate.sh` (new; fails on the old script, which passed junk to
+`pfctl`), `tests/nagios/run.sh` with a new case, fmt, clippy `-D warnings`
+and the full gate. Not verified: a real FreeBSD with pf, a real Nagios, the
+`fuzz.yml` change on GitHub Actions, and the race in the watch test, which was
+not reproduced under CPU stress with either the old or the new test;
+`tests/pf/validate.sh` is run by hand, not by the gate.
+
 **An older peer result or heartbeat no longer overwrites a newer one (bug fix).**
 The replay check lets a message that the network delivered late through, as
 long as its `seq` is within 64 of the highest. The daemon then kept it as the

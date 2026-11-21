@@ -25,9 +25,33 @@
 # reachable) the table is left as it is: a monitor that is away says nothing
 # about the backends. Needs drill(1) from the base system, awk and pfctl, and
 # the rights to change the table (root).
-set -u
+set -uf   # no pathname expansion: the addresses below are split, not globbed
 
 die() { echo "emfor-pf-table: $*" >&2; exit 1; }
+
+# Shell functions of awk, to tell an address from anything else: an IPv4
+# address (four numbers up to 255) or an IPv6 one (eight groups of 1 to 4 hex
+# digits, which is how emfor writes them). Nothing else goes to pfctl.
+AWK_ADDR='
+function v4(h,   n, i, o) {
+    n = split(h, o, ".")
+    if (n != 4) return 0
+    for (i = 1; i <= 4; i++)
+        if (o[i] !~ /^[0-9]+$/ || length(o[i]) > 3 || o[i] + 0 > 255) return 0
+    return 1
+}
+function v6(h,   n, i, g) {
+    n = split(h, g, ":")
+    if (n != 8) return 0
+    for (i = 1; i <= 8; i++)
+        if (g[i] !~ /^[0-9A-Fa-f]+$/ || length(g[i]) > 4) return 0
+    return 1
+}
+'
+
+is_addr() { # <text>
+    awk -v a="$1" "$AWK_ADDR"'BEGIN { exit !(v4(a) || v6(a)) }'
+}
 
 # the addresses of the lowest-priority SRV records, one a line, sorted; the
 # word SERVFAIL, NXDOMAIN or NONE for an answer without addresses; and the
@@ -40,12 +64,17 @@ offered() { # <service> <server> <port>
         NOERROR) ;;
         *) echo "$rcode"; return ;;
     esac
-    addrs=$(printf '%s\n' "$out" | awk '
+    addrs=$(printf '%s\n' "$out" | awk "$AWK_ADDR"'
         $3 == "IN" && $4 == "SRV" {
             n = split($8, l, ".")           # first label of the target name
             host = l[1]; prio = $5
-            if (host ~ /^[0-9]+-[0-9]+-[0-9]+-[0-9]+$/) gsub(/-/, ".", host)
-            else gsub(/-/, ":", host)       # an IPv6 address, 8 groups of 4 digits
+            shown = substr($8, 1, 60); gsub(/[^A-Za-z0-9._:-]/, "?", shown)
+            if (host ~ /^[0-9]+-[0-9]+-[0-9]+-[0-9]+$/) { gsub(/-/, ".", host); ok = v4(host) }
+            else { gsub(/-/, ":", host); ok = v6(host) }   # an IPv6 address
+            if (!ok) {
+                print "emfor-pf-table: ignoring SRV target " shown ": not an address" > "/dev/stderr"
+                next
+            }
             if (best == "" || prio + 0 < best + 0) { best = prio; list = "" }
             if (prio + 0 == best + 0) list = list host "\n"
         }
@@ -63,11 +92,12 @@ once() { # <service> <table> <server> <port>
     have=$(pfctl -t "$2" -T show 2>/dev/null | sed 's/^[[:space:]]*//' | sort -u)
     [ "$want" = "$have" ] && return 0
     if [ -z "$want" ]; then
-        pfctl -t "$2" -T flush >/dev/null 2>&1 || die "pfctl could not flush $2"
+        err=$(pfctl -t "$2" -T flush 2>&1) || die "pfctl could not flush $2: $(printf '%s\n' "$err" | head -1)"
         echo "emfor-pf-table: $2 emptied ($got)" >&2
     else
+        # $want holds only addresses that passed is_addr (no globbing: set -f)
         # shellcheck disable=SC2086
-        pfctl -t "$2" -T replace $want >/dev/null 2>&1 || die "pfctl could not replace $2"
+        err=$(pfctl -t "$2" -T replace $want 2>&1) || die "pfctl could not replace $2: $(printf '%s\n' "$err" | head -1)"
         echo "emfor-pf-table: $2 = $(echo $want)" >&2
     fi
 }
@@ -78,6 +108,10 @@ table=${3:-}
 server=${4:-127.0.0.1}
 port=${5:-5300}
 [ -n "$service" ] && [ -n "$table" ] || { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+case "$table" in
+    -* | *[!A-Za-z0-9_-]*) die "$table is not a pf table name" ;;
+esac
+[ -z "${EMPTY:-}" ] || is_addr "$EMPTY" || die "EMPTY is not an IPv4 or IPv6 address"
 command -v drill >/dev/null 2>&1 || die "drill is not installed (it is part of the FreeBSD base system)"
 case "$mode" in
     once) once "$service" "$table" "$server" "$port" ;;

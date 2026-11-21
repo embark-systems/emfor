@@ -36,7 +36,7 @@ while getopts 's:w:c:C:e:' opt; do
     esac
 done
 
-unknown() { echo "EMFOR UNKNOWN - $*"; exit 3; }
+unknown() { printf 'EMFOR UNKNOWN - %s\n' "$*" | tr '|' '/'; exit 3; }
 
 command -v jq >/dev/null 2>&1 || unknown "jq is not installed"
 command -v "$emfor" >/dev/null 2>&1 || [ -x "$emfor" ] || unknown "$emfor is not installed"
@@ -51,34 +51,38 @@ printf '%s' "$out" | jq -e . >/dev/null 2>&1 || unknown "emfor status gave no JS
 
 result=$(printf '%s' "$out" | jq -r --arg w "$warn" --arg c "$crit" --arg q "'" '
   def bad: .state != "healthy";
+  # Nagios reads "|" as the start of the perfdata and a line feed as the end of
+  # the text, so neither may come from a service name, a backend id or a reason.
+  def text: tostring | gsub("[|]"; "/") | gsub("[\n\r]"; " ");
+  def perflabel: tostring | gsub("[|]"; "/") | gsub($q; $q + $q) | gsub("[\n\r]"; " ");
   . as $s
   | ($c | tonumber) as $crit
   | [ .services[]
       | . as $svc
       | ([.backends[] | select(.drain != true)]) as $live
-      | ([.backends[] | select(.drain == true) | .id]) as $drained
+      | ([.backends[] | select(.drain == true) | .id | text]) as $drained
       | ([$live[] | select(.state == "healthy")] | length) as $healthy
       | ($live | length) as $n
       | (if $w == "" then $n else ($w | tonumber) end) as $warn
-      | { name: .name, healthy: $healthy, n: $n, warn: $warn, crit: $crit,
+      | { name: .name, shown: (.name | text), label: (.name | perflabel), healthy: $healthy, n: $n, warn: $warn, crit: $crit,
           drained: $drained,
-          failing: [$live[] | select(bad) | "\(.id) \(.reason // .state)"],
+          failing: [$live[] | select(bad) | "\(.id | text) \(.reason // .state | text)"],
           level: (if $healthy < $crit then 2 elif $healthy < $warn then 1 else 0 end) } ] as $svcs
   | (if $s.daemon != "running" then 2 else ([$svcs[].level] | max // 0) end) as $level
   | ["OK", "WARNING", "CRITICAL"][$level] as $word
   | ( if $s.daemon != "running"
         then "the daemon is \($s.daemon)"
         else ($svcs | map(select(.level > 0)
-                 | "\(.name): \(.healthy) of \(.n) healthy"
+                 | "\(.shown): \(.healthy) of \(.n) healthy"
                    + (if (.failing | length) > 0 then " (" + (.failing | join(", ")) + ")" else "" end)
                    + (if (.drained | length) > 0 then ", drained: " + (.drained | join(" ")) else "" end))
               | join("; ")) end ) as $why
   | ( if $why != "" then $why
       else "\($svcs | length) service(s), every backend that is not drained is healthy"
-           + (([$svcs[] | select(.drained | length > 0) | "\(.name) drained: \(.drained | join(" "))"]) | if length > 0 then " (" + join("; ") + ")" else "" end)
+           + (([$svcs[] | select(.drained | length > 0) | "\(.shown) drained: \(.drained | join(" "))"]) | if length > 0 then " (" + join("; ") + ")" else "" end)
       end ) as $text
   | "\($level)",
-    "EMFOR \($word) - \($text) | " + ($svcs | map("\($q)\(.name)_healthy\($q)=\(.healthy);\(.warn);\(.crit);0;\(.n)") | join(" "))
+    "EMFOR \($word) - \($text) | " + ($svcs | map("\($q)\(.label)_healthy\($q)=\(.healthy);\(.warn);\(.crit);0;\(.n)") | join(" "))
 ' 2>/dev/null) || unknown "jq could not read the status of emfor"
 
 level=$(printf '%s\n' "$result" | sed -n 1p)
