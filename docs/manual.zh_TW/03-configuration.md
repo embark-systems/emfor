@@ -234,7 +234,7 @@ interval = "5s"
 
 **只能放在主設定檔的鍵。** `[store]` 與 `include_dir` 本身。`emfor status` 與 `emfor lookup` 只讀主設定檔，所以片段不能搬動 store，也不能再引入別的目錄。只用 `status` 與 `lookup` 的人只要能讀主設定檔，不需要讀那個目錄。其他東西，包含 `site`、`[dns]`、`[peers]`、`[plugins]`，放在哪個檔案都可以。
 
-**權限。** 目錄與裡面被讀的每個檔案都不能讓 group 或其他人寫入（`0755` 與 `0644` 可以，`0775` 與 `0664` 不行），否則整份設定被拒絕，錯誤會指出路徑與權限。擁有者必須是 root 或執行 emfor 的使用者（符號連結看它指向的檔案的擁有者），否則同樣被拒絕，因為其他人擁有的檔案，那個人可以隨時改。請以 daemon 執行的使用者身分跑 `emfor check-config`（systemd unit 與 FreeBSD 的 `configtest` 就是這樣）；手動以 root 執行時，只接受 root 擁有的檔案。片段可以宣告 plugin 的 `command` 或 `exec` 檢查，能寫那裡的人就能以 daemon 的使用者身分執行程式。主設定檔不做這個檢查，請自己保護好（`0644`，擁有者 root）。
+**權限。** 目錄與裡面被讀的每個檔案都不能讓 group 或其他人寫入（`0755` 與 `0644` 可以，`0775` 與 `0664` 不行），否則整份設定被拒絕，錯誤會指出路徑與權限。擁有者必須是 root 或執行 emfor 的使用者（符號連結看它指向的檔案的擁有者），否則同樣被拒絕，因為其他人擁有的檔案，那個人可以隨時改。請以 daemon 執行的使用者身分跑 `emfor check-config`（systemd unit 與 FreeBSD 的 `configtest` 就是這樣）；手動以 root 執行時，只接受 root 擁有的檔案。片段可以宣告 plugin 的 `command` 或 `exec` 檢查，能寫那裡的人就能以 daemon 的使用者身分執行程式。主設定檔也同樣被檢查：`emfor server`（啟動與每次 reload）和 `emfor check-config` 讀它的時候，因為它同樣能宣告 plugin 的 `command`。錯誤訊息還會給出修正指令：權限不對是 `chmod g-w,o-w /etc/emfor/emfor.toml`，擁有者不對是 `chown root /etc/emfor/emfor.toml`。`emfor status` 與 `emfor lookup` 只讀主設定檔的 `[store]`，不檢查。主設定檔所在的目錄（`/etc/emfor`）不檢查：請像 deb 與 rpm 套件那樣，只讓 root 能寫。0.7.0 之前主設定檔不被檢查；見[升級](08-operations.md#升級)。
 
 **目錄必須存在。** 套件會建立它。`include_dir` 指向不存在的目錄是錯誤：啟動時 daemon 記錄錯誤並以 2 結束；reload 時這次 reload 被拒絕，舊設定繼續執行。
 

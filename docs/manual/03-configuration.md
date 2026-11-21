@@ -359,8 +359,15 @@ write there can run programs as the daemon's user. Run
 `emfor check-config` as the user the daemon runs as (the systemd unit and
 the FreeBSD `configtest` do); run by hand as root, it accepts only files
 owned by root.
-The main file is not checked this way, so protect it yourself (`0644`,
-owned by root).
+The main file is checked the same way when `emfor server` (at start and at
+every reload) and `emfor check-config` read it, because it can declare a
+plugin `command` too. The error also gives the command that fixes it:
+`chmod g-w,o-w /etc/emfor/emfor.toml` for a mode, `chown root
+/etc/emfor/emfor.toml` for an owner. `emfor status` and `emfor lookup` read
+only `[store]` of the main file and do not check it. The directory of the
+main file (`/etc/emfor`) is not checked: keep it writable by root only, as
+the deb and rpm packages make it. Before 0.7.0 the main file was not
+checked; see [Upgrading](08-operations.md#upgrading).
 
 **The directory must exist.** A package creates it. A config whose
 `include_dir` does not exist is an error: the daemon logs it and exits 2 at

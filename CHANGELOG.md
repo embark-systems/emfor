@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+**The main config file is checked like the fragments (compatibility change).**
+`emfor server` (at start and at every reload) and `emfor check-config` now
+refuse a main config file that group or others can write (mode `& 0o022`), or
+that a user other than root and the user running emfor owns, with the same
+error as for a file of `include_dir`, now followed by the command that fixes
+it (`chmod g-w,o-w <path>` or `chown root <path>`; the fragments get the
+same addition). The main file can declare a plugin `command`, which runs with
+the daemon's rights, as a fragment can; only the fragments were checked. The
+file is checked after it is opened and read from that open file; a link is
+judged by the file it points to. `emfor status` and `emfor lookup` read only
+`[store]` and do not check it, and the directory of the main file is not
+checked. At start a refusal exits with status 2 before the store is opened; at
+a reload the old config keeps running. The deb and rpm packages install the
+file root-owned with mode `0644` (read from the 0.6.0 packages) and the FreeBSD
+port copies a sample with `INSTALL_DATA`, so they are not affected; an
+installation with a `0664` file, or one owned by another account, does not
+start after the upgrade until `chmod g-w,o-w /etc/emfor/emfor.toml` (or `chown
+root`) is run, which `emfor check-config` with the new binary reports first.
+Checked with unit and integration tests in a Debian container (the mode table,
+the owner, a link, the refusal at start and by `check-config`, the rejected
+reload that then recovers, `status` and `lookup` with a `0664` file) and the
+whole gate there: fmt, clippy `-D warnings` and 995 tests passed, 14 ignored,
+also with `umask 002` (the tests write the main file with mode 0644 and no
+longer depend on the umask); the four new refusal unit tests fail on the old
+code. Not run on macOS or
+FreeBSD by hand, and not tried on a real deb or rpm upgrade.
+
 **The store files are only for the daemon's group by default (compatibility change).**
 `[store] file_mode` and `lock_file_mode` now default to `"0640"` and `"0660"`
 instead of `"0644"` and `"0666"`, so that only the daemon's user and its group

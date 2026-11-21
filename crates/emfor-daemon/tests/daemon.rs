@@ -16,7 +16,7 @@ use nix::unistd::Pid;
 mod common;
 use common::{
     Daemon, Locked, Reader, emfor, free_port, http_backend, listener, sockets, store_header,
-    wait_for,
+    wait_for, write_main_file,
 };
 
 fn tcp_service(name: &str, addr: &str) -> String {
@@ -76,7 +76,7 @@ fn sighup_with_new_service_adds_its_record() {
         tcp_service("api.svc.emfor", &addr),
         tcp_service("web.svc.emfor", &addr)
     );
-    std::fs::write(d.config(), cfg).unwrap();
+    write_main_file(&d.config(), &cfg);
     d.signal(Signal::SIGHUP);
     wait_for(|| r.service("web.svc.emfor").is_some());
     wait_for(|| r.service("web.svc.emfor").unwrap().backends[0].state == HealthState::Healthy);
@@ -95,7 +95,7 @@ fn invalid_reload_keeps_previous_config() {
     let bad = format!("{}{}", store_header(d.dir.path()), tcp_service("api.svc.emfor", &addr))
         .replace("timeout = \"100ms\"", "timeout = \"5s\"")
         .replace("interval = \"200ms\"", "interval = \"2s\"\n[services.\"x.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:1\"]");
-    std::fs::write(d.config(), bad).unwrap();
+    write_main_file(&d.config(), &bad);
     d.signal(Signal::SIGHUP);
     std::thread::sleep(Duration::from_millis(500));
     assert!(d.running());
@@ -119,7 +119,7 @@ fn store_change_on_reload_requires_restart() {
         d.dir.path().join("other.mdb").display(),
         tcp_service("api.svc.emfor", &addr)
     );
-    std::fs::write(d.config(), cfg).unwrap();
+    write_main_file(&d.config(), &cfg);
     d.signal(Signal::SIGHUP);
     std::thread::sleep(Duration::from_millis(300));
     let (code, err) = d.stop();
@@ -251,11 +251,10 @@ fn second_daemon_on_same_store_exits_one() {
 fn check_config_valid_and_invalid() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
-    std::fs::write(
+    write_main_file(
         &cfg,
         "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\", \"10.0.0.2:80\"]\n\n[services.\"db.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.1.1:5432\", \"10.0.1.2:5432\", \"[2001:db8::1]:5432\"]\n",
-    )
-    .unwrap();
+    );
     let out = Command::new(cargo_bin("emfor"))
         .args(["check-config", "--config"])
         .arg(&cfg)
@@ -267,7 +266,10 @@ fn check_config_valid_and_invalid() {
         "config ok: 2 services, 5 backends"
     );
 
-    std::fs::write(&cfg, "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\nintervall = \"1s\"\n").unwrap();
+    write_main_file(
+        &cfg,
+        "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\nintervall = \"1s\"\n",
+    );
     let out = Command::new(cargo_bin("emfor"))
         .args(["check-config", "--config"])
         .arg(&cfg)
@@ -282,11 +284,10 @@ fn check_config_rejects_a_service_of_only_backups() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
     let write = |backends: &str| {
-        std::fs::write(
+        write_main_file(
             &cfg,
-            format!("[services.\"db.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [{backends}]\n"),
-        )
-        .unwrap();
+            &format!("[services.\"db.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [{backends}]\n"),
+        );
         Command::new(cargo_bin("emfor"))
             .args(["check-config", "--config"])
             .arg(&cfg)
@@ -329,15 +330,14 @@ fn check_config_compares_the_secret_owner_with_the_user_that_runs_it() {
     std::fs::write(&key, [b'k'; 40]).unwrap();
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o640)).unwrap();
     let cfg = dir.path().join("emfor.toml");
-    std::fs::write(
+    write_main_file(
         &cfg,
-        format!(
+        &format!(
             "site = \"dc1\"\n\n[store]\npath = \"{}\"\nmap_size = \"4MiB\"\n\n[peers]\nlisten = \"127.0.0.1:7001\"\nmembers = [\"127.0.0.1:7001\", \"127.0.0.1:7002\"]\nsecret_file = \"{}\"\n\n[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
             dir.path().join("state.mdb").display(),
             key.display(),
         ),
-    )
-    .unwrap();
+    );
     std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o644)).unwrap();
     let check = || {
         Command::new(cargo_bin("emfor"))
@@ -390,7 +390,7 @@ fn check_config_warns_about_a_store_mode_that_others_can_write() {
     let cfg = dir.path().join("emfor.toml");
     let svc = "[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n";
     let check = |text: &str| {
-        std::fs::write(&cfg, text).unwrap();
+        write_main_file(&cfg, text);
         Command::new(cargo_bin("emfor"))
             .args(["check-config", "--config"])
             .arg(&cfg)
@@ -481,6 +481,113 @@ fn daemon_warns_at_start_about_a_store_mode_that_others_can_write() {
     assert!(d.running());
 }
 
+/// Give the main config file of `d` the mode `mode`.
+fn chmod_config(d: &Daemon, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(d.config(), std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// Spec service-config "Config directory permissions", "Start with a main
+/// file that others can write" and "Main file that others can write": the
+/// daemon and `check-config` refuse it with status 2 and the fix, and the
+/// store is not opened.
+#[test]
+fn main_file_that_others_can_write_is_refused_at_start_and_by_check_config() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    let (_l, addr) = listener();
+    write_main_file(
+        &cfg,
+        &format!(
+            "{}{}",
+            store_header(dir.path()),
+            tcp_service("api.svc.emfor", &addr)
+        ),
+    );
+    std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o664)).unwrap();
+    let path = cfg.to_str().unwrap();
+    for cmd in ["check-config", "server"] {
+        let (code, _, err) = emfor(&[cmd, "--config", path]);
+        assert_eq!(code, 2, "{cmd}: {err}");
+        assert!(
+            err.contains(path)
+                && err.contains("mode 0664")
+                && err.contains(&format!("chmod g-w,o-w {path}")),
+            "{cmd}: {err}"
+        );
+    }
+    assert!(
+        !dir.path().join("state.mdb").exists(),
+        "the store was opened"
+    );
+
+    // With the mode fixed both accept it.
+    std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let (code, _, err) = emfor(&["check-config", "--config", path]);
+    assert_eq!(code, 0, "{err}");
+}
+
+/// Spec "Reload with a main file that others can write": the reload is
+/// rejected, the daemon keeps its config, and a good file is read again.
+#[test]
+fn reload_with_a_main_file_that_others_can_write_keeps_the_old_config() {
+    let (_l, addr) = listener();
+    let mut d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
+    let r = Reader::open(&d.store());
+    wait_for(|| {
+        r.service("api.svc.emfor")
+            .is_some_and(|s| s.backends[0].state == HealthState::Healthy)
+    });
+    let with_web = format!(
+        "{}{}{}",
+        store_header(d.dir.path()),
+        tcp_service("api.svc.emfor", &addr),
+        tcp_service("web.svc.emfor", &addr)
+    );
+    d.write_whole_config(&with_web);
+    chmod_config(&d, 0o664);
+    d.signal(Signal::SIGHUP);
+    d.wait_log("reload rejected");
+    assert!(d.running());
+    let log = d.log();
+    assert!(
+        log.contains("mode 0664") && log.contains("chmod g-w,o-w"),
+        "{log}"
+    );
+    assert!(r.service("web.svc.emfor").is_none());
+    assert_eq!(
+        r.service("api.svc.emfor").unwrap().backends[0].state,
+        HealthState::Healthy
+    );
+
+    // The mode fixed, the next reload applies the file.
+    chmod_config(&d, 0o644);
+    d.signal(Signal::SIGHUP);
+    wait_for(|| r.service("web.svc.emfor").is_some());
+}
+
+/// Spec "status and lookup do not check the main file": they read only
+/// `[store]` and run no plugin.
+#[test]
+fn status_and_lookup_read_a_main_file_that_others_can_write() {
+    let (_l, addr) = listener();
+    let d = Daemon::start(&tcp_service("api.svc.emfor", &addr));
+    let r = Reader::open(&d.store());
+    wait_for(|| {
+        r.service("api.svc.emfor")
+            .is_some_and(|s| s.backends[0].state == HealthState::Healthy)
+    });
+    chmod_config(&d, 0o664);
+    let cfg = d.config();
+    let (code, out, err) = status(&cfg, &[]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("api.svc.emfor"), "{out}");
+    let (code, out, err) = emfor(&["lookup", "api.svc.emfor", "--config", cfg.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains(&addr), "{out}");
+}
+
 /// A `conf.d` next to `dir`'s config, mode 0755 as a package makes it.
 fn conf_d(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -527,7 +634,7 @@ fn check_config_lists_the_files_it_read() {
         "10-a.toml",
         "[services.\"a.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
     );
-    std::fs::write(&cfg, "include_dir = \"conf.d\"\n").unwrap();
+    write_main_file(&cfg, "include_dir = \"conf.d\"\n");
     let out = Command::new(cargo_bin("emfor"))
         .args(["check-config", "--config"])
         .arg(&cfg)
@@ -551,11 +658,10 @@ fn check_config_lists_the_files_it_read() {
     );
 
     // Without include_dir the output is the single line it always was.
-    std::fs::write(
+    write_main_file(
         &cfg,
         "[services.\"a.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
-    )
-    .unwrap();
+    );
     let out = Command::new(cargo_bin("emfor"))
         .args(["check-config", "--config"])
         .arg(&cfg)
@@ -580,7 +686,10 @@ fn check_config_show_prints_the_merged_config() {
         "99-local.toml",
         "[services.\"a.svc.emfor\"]\ninterval = \"5s\"\n",
     );
-    std::fs::write(&cfg, "include_dir = \"conf.d\"\n\n[services.\"a.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\ninterval = \"2s\"\n").unwrap();
+    write_main_file(
+        &cfg,
+        "include_dir = \"conf.d\"\n\n[services.\"a.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\ninterval = \"2s\"\n",
+    );
     let out = Command::new(cargo_bin("emfor"))
         .args(["check-config", "--show", "--config"])
         .arg(&cfg)
@@ -605,7 +714,7 @@ fn check_config_show_prints_the_merged_config() {
     // same TOML without the comments.
     let other = tempfile::tempdir().unwrap();
     let saved = other.path().join("merged.toml");
-    std::fs::write(&saved, &stdout).unwrap();
+    write_main_file(&saved, &stdout);
     let again = Command::new(cargo_bin("emfor"))
         .args(["check-config", "--config"])
         .arg(&saved)
@@ -637,7 +746,7 @@ fn check_config_show_prints_the_merged_config() {
     );
 
     // An invalid config prints nothing on standard output.
-    std::fs::write(&cfg, "intervall = 1\n").unwrap();
+    write_main_file(&cfg, "intervall = 1\n");
     let bad = Command::new(cargo_bin("emfor"))
         .args(["check-config", "--show", "--config"])
         .arg(&cfg)
@@ -655,11 +764,10 @@ fn check_config_show_prints_the_merged_config() {
 fn check_config_reports_a_full_disk() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
-    std::fs::write(
+    write_main_file(
         &cfg,
         "[services.\"a.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
-    )
-    .unwrap();
+    );
     let full = std::fs::OpenOptions::new()
         .write(true)
         .open("/dev/full")
@@ -689,11 +797,10 @@ fn check_config_reports_a_full_disk() {
 fn check_config_ignores_a_closed_pipe() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
-    std::fs::write(
+    write_main_file(
         &cfg,
         "[services.\"a.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
-    )
-    .unwrap();
+    );
     let (reader, writer) = std::io::pipe().unwrap();
     drop(reader);
     let out = Command::new(cargo_bin("emfor"))
@@ -724,7 +831,7 @@ fn check_config_warns_about_a_non_utf8_file_name() {
     let cfg = dir.path().join("emfor.toml");
     let d = conf_d(dir.path());
     std::fs::write(d.join(std::ffi::OsStr::from_bytes(b"b\xff.toml")), "").unwrap();
-    std::fs::write(&cfg, "include_dir = \"conf.d\"\n").unwrap();
+    write_main_file(&cfg, "include_dir = \"conf.d\"\n");
     let out = Command::new(cargo_bin("emfor"))
         .args(["check-config", "--config"])
         .arg(&cfg)
@@ -769,11 +876,10 @@ fn listen_change_in_a_fragment_requires_restart() {
 fn missing_include_dir_at_startup_exits_two_without_store() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
-    std::fs::write(
+    write_main_file(
         &cfg,
-        format!("include_dir = \"conf.d\"\n\n{}", store_header(dir.path())),
-    )
-    .unwrap();
+        &format!("include_dir = \"conf.d\"\n\n{}", store_header(dir.path())),
+    );
     let out = Command::new(cargo_bin("emfor"))
         .arg("server")
         .arg("--config")
@@ -842,14 +948,13 @@ fn invalid_config_at_startup_exits_two_without_store() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
     let store = dir.path().join("state.mdb");
-    std::fs::write(
+    write_main_file(
         &cfg,
-        format!(
+        &format!(
             "{}[services.a]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\nrise = 0\n",
             store_header(dir.path())
         ),
-    )
-    .unwrap();
+    );
     let out = Command::new(cargo_bin("emfor"))
         .arg("server")
         .arg("--config")
@@ -862,9 +967,23 @@ fn invalid_config_at_startup_exits_two_without_store() {
     assert!(!store.exists());
 }
 
+/// A copy of `examples/emfor.toml` with mode 0644: the daemon refuses a main
+/// file that group or others can write, and the mode of a checkout follows
+/// the umask of whoever made it.
+fn example_config() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/emfor.toml"),
+    )
+    .unwrap();
+    let path = dir.path().join("emfor.toml");
+    write_main_file(&path, &text);
+    (dir, path)
+}
+
 #[test]
 fn example_config_is_valid() {
-    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/emfor.toml");
+    let (_dir, example) = example_config();
     let text = std::fs::read_to_string(&example).unwrap();
     for line in [
         "[dns]",
@@ -994,7 +1113,7 @@ fn reload_reports_store_change_together_with_other_errors() {
         d.dir.path().join("other.mdb").display(),
         tcp_service("api.svc.emfor", &addr).replace("rise = 2", "rise = 0")
     );
-    std::fs::write(d.config(), cfg).unwrap();
+    write_main_file(&d.config(), &cfg);
     d.signal(Signal::SIGHUP);
     std::thread::sleep(Duration::from_millis(300));
     let (code, err) = d.stop();
@@ -1087,7 +1206,7 @@ fn reload_reports_backends_on_different_ports() {
         )
     );
     std::thread::sleep(Duration::from_millis(300));
-    std::fs::write(d.config(), cfg).unwrap();
+    write_main_file(&d.config(), &cfg);
     d.signal(Signal::SIGHUP);
     std::thread::sleep(Duration::from_millis(500));
     let (code, err) = d.stop();
@@ -1119,7 +1238,7 @@ fn reload_applies_log_level() {
         store_header(d.dir.path()),
         tcp_service("api.svc.emfor", &addr)
     );
-    std::fs::write(d.config(), cfg).unwrap();
+    write_main_file(&d.config(), &cfg);
     d.signal(Signal::SIGHUP);
     std::thread::sleep(Duration::from_millis(300));
     let (code, err) = d.stop();
@@ -1172,11 +1291,10 @@ fn balance_written_from_config_and_changed_on_reload() {
         rec.contains(r#""on_all_down":"open","balance":"failover","all_down""#),
         "{rec}"
     );
-    std::fs::write(
-        d.config(),
-        format!("{}{svc}balance = \"sticky\"\n", store_header(d.dir.path())),
-    )
-    .unwrap();
+    write_main_file(
+        &d.config(),
+        &format!("{}{svc}balance = \"sticky\"\n", store_header(d.dir.path())),
+    );
     d.signal(Signal::SIGHUP);
     wait_for(|| r.service("api.svc.emfor").unwrap().balance == Balance::Sticky);
 }
@@ -1259,14 +1377,13 @@ fn no_subcommand_prints_usage_and_touches_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
     let store = dir.path().join("state.mdb");
-    std::fs::write(
+    write_main_file(
         &cfg,
-        format!(
+        &format!(
             "{}[services.a]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n",
             store_header(dir.path())
         ),
-    )
-    .unwrap();
+    );
     let cfg = cfg.to_str().unwrap();
     let hint = "--check-config was replaced by \"emfor check-config\"";
     let rows: [(&[&str], &[&str]); 5] = [
@@ -1315,7 +1432,8 @@ fn no_subcommand_beside_a_running_daemon() {
 
 #[test]
 fn config_option_before_or_after_the_subcommand() {
-    let example = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/emfor.toml");
+    let (_dir, example) = example_config();
+    let example = example.to_str().unwrap();
     let before = emfor(&["--config", example, "check-config"]);
     let after = emfor(&["check-config", "--config", example]);
     assert_eq!(before.0, 0, "{}", before.2);
@@ -1393,11 +1511,10 @@ fn status_beside_a_running_daemon() {
 
     // A broken service table does not stop status: only [store] is read.
     let text = std::fs::read_to_string(d.config()).unwrap();
-    std::fs::write(
-        d.config(),
-        text.replace("check = \"tcp\"", "check = \"tcp\"\nintervall = \"1s\""),
-    )
-    .unwrap();
+    write_main_file(
+        &d.config(),
+        &text.replace("check = \"tcp\"", "check = \"tcp\"\nintervall = \"1s\""),
+    );
     let (code, out, err) = status(&d.config(), &[]);
     assert_eq!(code, 0, "{out}{err}");
     assert!(out.contains("api.svc.emfor"));
@@ -1465,7 +1582,7 @@ fn status_without_a_store() {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("none.mdb");
     let cfg = dir.path().join("emfor.toml");
-    std::fs::write(&cfg, format!("[store]\npath = \"{}\"\n", store.display())).unwrap();
+    write_main_file(&cfg, &format!("[store]\npath = \"{}\"\n", store.display()));
     let (code, _, err) = status(&cfg, &[]);
     assert_eq!(code, 2);
     assert_eq!(
@@ -1499,7 +1616,7 @@ fn status_refuses_another_format_version() {
         wtxn.commit().unwrap();
     }
     let cfg = dir.path().join("emfor.toml");
-    std::fs::write(&cfg, format!("[store]\npath = \"{}\"\n", store.display())).unwrap();
+    write_main_file(&cfg, &format!("[store]\npath = \"{}\"\n", store.display()));
     let (code, _, err) = status(&cfg, &[]);
     assert_eq!(code, 2);
     assert_eq!(
@@ -1512,7 +1629,7 @@ fn status_refuses_another_format_version() {
 fn status_watch_needs_a_terminal() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
-    std::fs::write(&cfg, "").unwrap();
+    write_main_file(&cfg, "");
     let (code, _, err) = status(&cfg, &["--watch"]);
     assert_eq!((code, err.trim()), (2, "--watch needs a terminal"));
 }
@@ -1604,7 +1721,7 @@ fn watch_on_a_pty(cfg: &Path, stop: &WatchStop) -> (Option<i32>, Vec<u8>, libc::
 fn status_watch_restores_the_terminal() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
-    std::fs::write(&cfg, store_header(dir.path())).unwrap();
+    write_main_file(&cfg, &store_header(dir.path()));
     for stop in [
         WatchStop::Signal(Signal::SIGTERM),
         WatchStop::Signal(Signal::SIGHUP),
@@ -1635,7 +1752,7 @@ fn status_watch_restores_the_terminal() {
 fn status_history_refuses_watch_and_json() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
-    std::fs::write(&cfg, "").unwrap();
+    write_main_file(&cfg, "");
     for other in ["--watch", "--json"] {
         let (code, _, err) = status(&cfg, &["--history", other]);
         assert_eq!(code, 2, "{err}");

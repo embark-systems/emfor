@@ -633,7 +633,12 @@ pub fn read_layers_with(
     path: &Path,
     warnings: &mut Vec<String>,
 ) -> Result<Layers, Vec<ConfigError>> {
-    let main = read_table(path)?;
+    // The main file can declare a plugin `command` as a fragment can, so it
+    // is checked as a fragment is. `load_store` (status, lookup) runs no
+    // plugin and keeps reading it without the check.
+    let main = read_trusted(path)
+        .map_err(|e| vec![ConfigError::new("", e)])
+        .and_then(|text| parse_table(&text, &path.display().to_string()))?;
     let mut layers = Layers {
         files: vec![path.to_path_buf()],
         ..Layers::default()
@@ -719,7 +724,8 @@ fn list_fragments(
             return Vec::new();
         }
     };
-    if let Some(why) = untrusted(
+    if let Some(why) = untrusted_at(
+        dir,
         meta.permissions().mode(),
         std::os::unix::fs::MetadataExt::uid(&meta),
         nix::unistd::geteuid().as_raw(),
@@ -812,8 +818,21 @@ fn untrusted(mode: u32, uid: u32, euid: u32) -> Option<String> {
     None
 }
 
-/// Open a fragment and check the file that was opened (not the name, which
-/// could be pointed at another file in between), then read it.
+/// [`untrusted`] for `path`, with the command that fixes what it found: the
+/// mode is the first reason, as in `untrusted`, so `chmod` comes first too.
+fn untrusted_at(path: &Path, mode: u32, uid: u32, euid: u32) -> Option<String> {
+    let why = untrusted(mode, uid, euid)?;
+    let fix = if mode & 0o022 != 0 {
+        "chmod g-w,o-w"
+    } else {
+        "chown root"
+    };
+    Some(format!("{why}; to fix it: {fix} {}", path.display()))
+}
+
+/// Open a config file (the main file or a fragment) and check the file that
+/// was opened (not the name, which could be pointed at another file in
+/// between), then read it.
 fn read_trusted(file: &Path) -> Result<String, String> {
     use std::io::Read;
     use std::os::unix::fs::MetadataExt;
@@ -822,7 +841,12 @@ fn read_trusted(file: &Path) -> Result<String, String> {
     let meta = f
         .metadata()
         .map_err(|e| format!("cannot read {shown}: {e}"))?;
-    if let Some(why) = untrusted(meta.mode(), meta.uid(), nix::unistd::geteuid().as_raw()) {
+    if let Some(why) = untrusted_at(
+        file,
+        meta.mode(),
+        meta.uid(),
+        nix::unistd::geteuid().as_raw(),
+    ) {
         return Err(format!("{shown}: {why}"));
     }
     let mut text = String::new();
@@ -3454,6 +3478,8 @@ interval = "2s"
         }
         let main_path = dir.path().join("emfor.toml");
         std::fs::write(&main_path, main).expect("main");
+        // Not the mode the umask gives: the main file is checked as well.
+        std::fs::set_permissions(&main_path, std::fs::Permissions::from_mode(0o644)).expect("mode");
         (dir, main_path)
     }
 
@@ -3730,11 +3756,97 @@ interval = "2s"
         assert!(e.contains("conf.d") && e.contains("0777"), "{e}");
     }
 
+    /// Spec "Config directory permissions", "Main file modes": the main file
+    /// is refused when group or others can write it, whatever else it holds.
     #[test]
-    fn main_file_mode_is_not_checked() {
+    fn main_file_modes() {
         let (_d, main) = setup("site = \"dc1\"\n", &[]);
+        for (mode, ok) in [
+            (0o600, true),
+            (0o640, true),
+            (0o644, true),
+            (0o604, true),
+            (0o620, false),
+            (0o602, false),
+            (0o664, false),
+            (0o666, false),
+        ] {
+            std::fs::set_permissions(&main, std::fs::Permissions::from_mode(mode)).expect("mode");
+            let r = read_layers(&main);
+            if ok {
+                assert!(r.is_ok(), "mode {mode:04o} must load");
+            } else {
+                let e = errs(r);
+                assert!(
+                    e.contains(&main.display().to_string())
+                        && e.contains(&format!("mode {mode:04o}"))
+                        && e.contains(&format!("chmod g-w,o-w {}", main.display())),
+                    "mode {mode:04o}: {e}"
+                );
+            }
+        }
+    }
+
+    /// A refused main file is not parsed: a syntax error in it does not
+    /// show before the mode does.
+    #[test]
+    fn main_file_mode_is_checked_before_the_content() {
+        let (_d, main) = setup("this is not toml\n", &[]);
         std::fs::set_permissions(&main, std::fs::Permissions::from_mode(0o664)).expect("mode");
-        assert!(read_layers(&main).is_ok());
+        let e = errs(read_layers(&main));
+        assert!(e.contains("0664") && !e.contains("invalid TOML"), "{e}");
+    }
+
+    /// A link is judged by the file it points to.
+    #[test]
+    fn main_file_link_to_a_file_others_can_write_is_refused() {
+        let (d, main) = setup("site = \"dc1\"\n", &[]);
+        std::fs::set_permissions(&main, std::fs::Permissions::from_mode(0o664)).expect("mode");
+        let link = d.path().join("link.toml");
+        std::os::unix::fs::symlink(&main, &link).expect("link");
+        let e = errs(read_layers(&link));
+        assert!(
+            e.contains(&link.display().to_string()) && e.contains("0664"),
+            "{e}"
+        );
+    }
+
+    /// The main file owned by someone else is refused, whatever its mode,
+    /// with the command that fixes it. Only root can give a file away, so
+    /// this runs in the Debian container.
+    #[test]
+    fn main_file_foreign_owner_is_refused() {
+        if nix::unistd::geteuid().as_raw() != 0 {
+            return;
+        }
+        let (_d, main) = setup("site = \"dc1\"\n", &[]);
+        std::os::unix::fs::chown(&main, Some(12345), None).expect("chown");
+        let e = errs(read_layers(&main));
+        assert!(
+            e.contains(&main.display().to_string())
+                && e.contains("owned by uid 12345")
+                && e.contains(&format!("chown root {}", main.display())),
+            "{e}"
+        );
+    }
+
+    /// `status` and `lookup` read only `[store]` and do not check the main
+    /// file (spec "Config directory permissions").
+    #[test]
+    fn load_store_does_not_check_the_main_file() {
+        let (_d, main) = setup("[store]\npath = \"/tmp/x.mdb\"\n", &[]);
+        std::fs::set_permissions(&main, std::fs::Permissions::from_mode(0o664)).expect("mode");
+        assert!(load_store(&main).is_ok());
+    }
+
+    #[test]
+    fn missing_main_file_cannot_be_read() {
+        let (d, _main) = setup("", &[]);
+        let e = errs(read_layers(&d.path().join("absent.toml")));
+        assert!(
+            e.contains("cannot read") && e.contains("absent.toml"),
+            "{e}"
+        );
     }
 
     #[test]

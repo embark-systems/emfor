@@ -703,7 +703,13 @@ order:
 Release notes that change what to do: 0.4.0 writes store format version 2
 and encrypts peer messages by default (a group is upgraded host by host with
 `encrypt = false`, [Peer groups](#peer-groups)); 0.5.0 validates the config
-more strictly.
+more strictly; 0.7.0 refuses a main config file that group or others can
+write or that another user owns, as it already refused such a fragment (fix
+it before the restart with `chmod g-w,o-w /etc/emfor/emfor.toml` or `chown
+root /etc/emfor/emfor.toml`; `emfor check-config` of step 2 reports it, and
+the deb and rpm packages install the file root-owned with mode `0644`, so
+they are not affected). The other changes of 0.7.0 that need an action are
+in [CHANGELOG.md](../../CHANGELOG.md).
 
 After the restart, applications that were already running the new library
 follow the restarted daemon's store without another restart.

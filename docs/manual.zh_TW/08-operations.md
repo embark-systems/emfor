@@ -352,7 +352,7 @@ check_options = { command = ["/usr/local/libexec/emfor-exec.sh",
 2. 重新啟動之前，先用新的 binary 執行 `emfor check-config`。0.5.0 會拒絕 0.4.0 接受的選項（高於 `24h` 的 `interval`、低於 `10ms` 的 `timeout` 等，見 [CHANGELOG.md](../../CHANGELOG.md)）。設定無效時，`systemctl restart emfor` 會讓 daemon 停著（啟動前的檢查失敗，unit 最後是 `failed`，要 `systemctl reset-failed emfor` 才能再啟動）：見 daemon 指南的 [Restarts](../deploy/daemon.md#running-under-systemd)。
 3. 安裝 daemon 並重新啟動。
 
-會改變做法的版本說明：0.4.0 寫入 store 格式版本 2，並預設加密 peer 訊息（聯防群組一台一台升級，升級時先設 `encrypt = false`，見[聯防群組](#聯防群組)）；0.5.0 更嚴格地驗證設定。
+會改變做法的版本說明：0.4.0 寫入 store 格式版本 2，並預設加密 peer 訊息（聯防群組一台一台升級，升級時先設 `encrypt = false`，見[聯防群組](#聯防群組)）；0.5.0 更嚴格地驗證設定；0.7.0 會拒絕 group 或其他人可寫、或由別的使用者擁有的主設定檔，就像它本來就拒絕這樣的片段檔（重新啟動前用 `chmod g-w,o-w /etc/emfor/emfor.toml` 或 `chown root /etc/emfor/emfor.toml` 修正；上面第 2 步的 `emfor check-config` 會回報它；deb 與 rpm 套件安裝的檔案是 root 擁有、權限 `0644`，不受影響）。0.7.0 其他需要處理的變更見 [CHANGELOG.md](../../CHANGELOG.md)。
 
 重新啟動之後，已經在用新函式庫的應用程式會跟上重新啟動後 daemon 的 store，不必再重新啟動。
 

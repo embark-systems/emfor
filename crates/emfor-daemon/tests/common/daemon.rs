@@ -15,6 +15,15 @@ use nix::unistd::Pid;
 
 use super::{Locked, sockets};
 
+/// Write a main config file with mode 0644, not the mode the umask gives:
+/// the daemon refuses a main file that group or others can write.
+pub fn write_main_file(path: &Path, text: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, text).expect("the config can be written");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
+        .expect("the config mode can be set");
+}
+
 /// How long [`wait_for`] and [`Daemon::wait_log`] wait.
 pub const WAIT: Duration = Duration::from_secs(15);
 
@@ -101,7 +110,7 @@ impl Daemon {
         env: &[(&str, &Path)],
     ) -> Daemon {
         let cfg = dir.path().join("emfor.toml");
-        std::fs::write(&cfg, config(dir.path())).expect("the config can be written");
+        write_main_file(&cfg, &config(dir.path()));
         let mut child = Command::new(cargo_bin("emfor"))
             .arg("server")
             .arg("--config")
@@ -147,7 +156,7 @@ impl Daemon {
 
     /// Replace the config with `config` as it is.
     pub fn write_whole_config(&self, config: &str) {
-        std::fs::write(self.config(), config).expect("the config can be written");
+        write_main_file(&self.config(), config);
     }
 
     pub fn signal(&self, s: Signal) {

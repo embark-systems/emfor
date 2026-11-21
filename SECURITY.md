@@ -44,7 +44,10 @@ is a vulnerability.
 - **The config file and the plugin programs** are trusted: they run with
   the daemon's rights, and `exec` checks run the commands the config names.
   Protect `emfor.toml` and the programs it names like any other root- or
-  service-owned configuration.
+  service-owned configuration. From 0.7.0 `emfor server` and `emfor
+  check-config` refuse the main file, the files of `include_dir` and that
+  directory when group or others can write them, or when a user other than
+  root and the daemon's user owns them.
 - **Backends are not trusted.** Whatever a backend or a plugin sends is
   bounded and escaped before it reaches the store, the logs, `emfor status`
   and the metrics (reasons are cut at 512 characters, control characters

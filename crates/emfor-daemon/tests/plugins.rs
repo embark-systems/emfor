@@ -7,7 +7,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use common::{Daemon, Locked, Reader, WAIT, emfor, wait_within};
+use common::{Daemon, Locked, Reader, WAIT, emfor, wait_within, write_main_file};
 use emfor_format::HealthState;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
@@ -99,7 +99,7 @@ impl PluginDaemon for Daemon {
 fn check_config(body: &str) -> (i32, String, String) {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("emfor.toml");
-    std::fs::write(&cfg, body).unwrap();
+    write_main_file(&cfg, body);
     emfor(&["check-config", "--config", cfg.to_str().unwrap()])
 }
 
