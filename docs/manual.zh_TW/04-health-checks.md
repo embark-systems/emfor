@@ -55,7 +55,7 @@ check_options = { tls = true, server_name = "imap.internal", expect = "* OK" }
 | `path` | 以 `/` 開頭的字串 | `"/"` | 請求路徑。`#`、`\` 與控制字元會被拒絕，因為請求 URL 會在那裡截斷或改寫路徑；空白等特殊字元會以百分比編碼送出。 |
 | `host_header` | 字串 | 無 | 要送出的 `Host` header：主機名稱或 IP 位址，可加 `:port`，IPv6 要加中括號（`api.internal`、`api.internal:8443`、`[2001:db8::1]`）。連線仍然連到 backend；用 `https` 時，主機名稱也是 TLS 的 server name。 |
 | `expect_status` | 非空清單 | `["200-399"]` | 視為 `up` 的狀態碼：單一狀態碼（`200` 或 `"200"`）或含頭尾的範圍（`"200-299"`），都必須在 100–599 之間。 |
-| `tls_verify` | 布林 | `true` | 用於 `https`：`false` 接受任何憑證。 |
+| `tls_verify` | 布林 | `true` | 用於 `https`：`false` 接受任何憑證。驗證開著的 `https` 需要主機的系統 CA 憑證（Debian 與 RHEL 上是 `ca-certificates` 套件），沒有的話檢查會是 `error` 並說明原因；`scheme = "http"` 不需要。 |
 | `expect_body` | 字串 | 無 | 回應內容必須含有這段位元組（區分大小寫，最多讀 65536 位元組）。最長 16384 位元組。 |
 
 ```toml

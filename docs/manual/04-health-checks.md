@@ -70,7 +70,7 @@ followed.
 | `path` | string starting with `/` | `"/"` | Request path. `#`, `\` and control characters are refused, because the request URL would cut or change the path there; a space or other special character is sent percent-encoded. |
 | `host_header` | string | none | `Host` header to send: a host name or IP address with an optional `:port`, IPv6 in brackets (`api.internal`, `api.internal:8443`, `[2001:db8::1]`). The connection still goes to the backend; with `https` a host name is also the TLS server name. |
 | `expect_status` | non-empty list | `["200-399"]` | Status codes that count as `up`: codes (`200` or `"200"`) or inclusive ranges (`"200-299"`), all within 100–599. |
-| `tls_verify` | boolean | `true` | For `https`: `false` accepts any certificate. |
+| `tls_verify` | boolean | `true` | For `https`: `false` accepts any certificate. `https` with verification on needs the host's system CA certificates (on Debian and RHEL the `ca-certificates` package); without them the check is an `error` that says so. `scheme = "http"` needs none. |
 | `expect_body` | string | none | Bytes that must appear, case-sensitively, in the body (read up to 65536 bytes). At most 16384 bytes. |
 
 ```toml

@@ -76,6 +76,23 @@ only); two new tests, both of which fail with the rechecks set to 0, and a time 
 existing truncated-store tests are unchanged and pass. Not verified: macOS,
 FreeBSD, a writer that is descheduled for long between commit and padding.
 
+**`http` checks work on a host without system CA certificates (bug fix).**
+On a host without CA certificates (a minimal install without
+`ca-certificates`) every `http` check was an `error` with `cannot build http
+client: builder error`, even with `scheme = "http"`, because building the
+client read the system roots for a verifier that a plain request never uses.
+With `scheme = "http"` the client is now built without certificate
+verification (no TLS handshake happens on that scheme), so the check works.
+`https` with verification on still needs the CA certificates, and its reason
+now says so (`https checks need the system CA certificates unless tls_verify = false`). The deb and rpm packages
+already depend on `ca-certificates`. Checked: the failure reproduced (one run) in a
+Debian 13 container with its CA certificates removed (plain `http` and
+verified `https` gave `builder error`), and after the change `http` is `up`
+for 200 and `down` for 503 there, while with the old argument put back both
+fail again; two unit tests (the reason text, and when verification is skipped); fmt, clippy `-D warnings` and the full
+gate pass (1066 passed, 0 failed, 17 ignored). Not verified: macOS and
+FreeBSD, other distributions.
+
 **A hung config file no longer blocks a stop request, and a restarted plugin leaves no tasks behind (bug fixes).**
 On `SIGHUP` the daemon read the config on the thread that runs its main
 loop, so a config on a hung file system kept the daemon from handling

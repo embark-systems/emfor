@@ -209,7 +209,7 @@ tests:
 ---
 ### Requirement: HTTP checker
 
-The `http` checker SHALL send one `GET` request per check to the backend IP and port using `scheme` (`http` or `https`, default `http`) and `path` (default `/`), with the `Host` header set to `host_header` when configured. `path` SHALL start with `/` (otherwise `must start with '/'`) and SHALL NOT contain `#`, `\` or a control character, which the request URL would cut off, drop or turn into `/` (`must not contain '#', '\' or control characters`); other characters, such as a space, SHALL be sent percent-encoded. `host_header` SHALL be an IPv4 address, an IPv6 address in brackets, or a host name that a URL holds unchanged as its host (ignoring ASCII case), each with an optional `:port` of 1 to 5 digits up to 65535; anything else SHALL fail validation with `must be a host with an optional port, such as "api.internal" or "api.internal:8443"`. With a host name, the request URL SHALL use that name and the connection SHALL still go to the backend IP and port, so that with `https` the name is the TLS server name. It SHALL NOT follow redirects. The result SHALL be `up` when the response status matches any entry of `expect_status` (default `["200-399"]`; each entry is a status code or an inclusive `lo-hi` range) and `down` otherwise, with the status code in the reason. For `https`, certificate verification SHALL be on unless `tls_verify = false`. When `expect_body` is set (a string of 1 to 16384 bytes), a response whose status matches SHALL also be read, up to 65536 bytes and stopping as soon as `expect_body` is found as a case-sensitive byte substring; the result SHALL be `up` only when it is found, and otherwise `down` with reason `expect_body: got "<first 64 bytes of the body, escaped>"`. A failure while reading the body SHALL be `down` with a reason starting `body: `. Without `expect_body`, the checker SHALL NOT read the body. A reason built from an error of the HTTP client SHALL NOT contain the request URL: the client appends it to its messages, and `path` may carry a token in its query string.
+The `http` checker SHALL send one `GET` request per check to the backend IP and port using `scheme` (`http` or `https`, default `http`) and `path` (default `/`), with the `Host` header set to `host_header` when configured. `path` SHALL start with `/` (otherwise `must start with '/'`) and SHALL NOT contain `#`, `\` or a control character, which the request URL would cut off, drop or turn into `/` (`must not contain '#', '\' or control characters`); other characters, such as a space, SHALL be sent percent-encoded. `host_header` SHALL be an IPv4 address, an IPv6 address in brackets, or a host name that a URL holds unchanged as its host (ignoring ASCII case), each with an optional `:port` of 1 to 5 digits up to 65535; anything else SHALL fail validation with `must be a host with an optional port, such as "api.internal" or "api.internal:8443"`. With a host name, the request URL SHALL use that name and the connection SHALL still go to the backend IP and port, so that with `https` the name is the TLS server name. It SHALL NOT follow redirects. The result SHALL be `up` when the response status matches any entry of `expect_status` (default `["200-399"]`; each entry is a status code or an inclusive `lo-hi` range) and `down` otherwise, with the status code in the reason. For `https`, certificate verification SHALL be on unless `tls_verify = false`. When `expect_body` is set (a string of 1 to 16384 bytes), a response whose status matches SHALL also be read, up to 65536 bytes and stopping as soon as `expect_body` is found as a case-sensitive byte substring; the result SHALL be `up` only when it is found, and otherwise `down` with reason `expect_body: got "<first 64 bytes of the body, escaped>"`. A failure while reading the body SHALL be `down` with a reason starting `body: `. Without `expect_body`, the checker SHALL NOT read the body. A reason built from an error of the HTTP client SHALL NOT contain the request URL: the client appends it to its messages, and `path` can carry a token in its query string. With `scheme = "http"` the checker SHALL NOT need the system's CA certificates: it SHALL work on a host that has none, because a plain `http` request starts no TLS handshake. With `https`, verification on and no system CA certificates on the host, the result SHALL be `error` with a reason that starts `cannot build http client:` and names the system CA certificates and `tls_verify = false`.
 
 #### Scenario: Status inside expected range
 
@@ -285,13 +285,25 @@ The `http` checker SHALL send one `GET` request per check to the backend IP and 
 - **THEN** the result is `down` and its reason contains neither `s3cret`, nor `token=`, nor the path
 
 
+#### Scenario: Plain http without CA certificates
+
+- **WHEN** an `http` check with `scheme = "http"` runs on a host that has no system CA certificates, against a server that answers 200
+- **THEN** the result is `up`, and it is `down` with 503 in the reason when the server answers 503
+
+#### Scenario: https without CA certificates
+
+- **WHEN** an `http` check with `scheme = "https"` and the default `tls_verify` runs on a host that has no system CA certificates
+- **THEN** the result is `error` and its reason names the system CA certificates and `tls_verify = false`
+
+
 <!-- @trace
-source: emfor-http-reason-without-url
+source: emfor-http-check-without-ca
 updated: 2026-11-21
 code:
   - CHANGELOG.md
   - crates/emfor-daemon/src/checker/http.rs
-  - crates/emfor-daemon/src/peers/task/bench.rs
+  - docs/manual.zh_TW/04-health-checks.md
+  - docs/manual/04-health-checks.md
 -->
 
 ---

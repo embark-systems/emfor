@@ -238,6 +238,12 @@ impl HttpChecker {
         {
             return Ok(c.clone());
         }
+        // A plain `http` request starts no TLS handshake, so it is built
+        // without certificate verification: building the verifier reads the
+        // system's CA certificates, which a minimal install may not have.
+        // That is safe only because redirects are off (`Policy::none()`
+        // below): a followed redirect to `https` would accept any certificate.
+        //
         // Built without the lock, and off the async workers: building reads
         // and parses the system's CA certificates (rustls-platform-verifier
         // on Linux and FreeBSD), and with a domain `host_header` that
@@ -246,7 +252,10 @@ impl HttpChecker {
             .redirect(Policy::none())
             .no_proxy()
             .pool_max_idle_per_host(0)
-            .tls_danger_accept_invalid_certs(!self.opts.tls_verify);
+            .tls_danger_accept_invalid_certs(skip_cert_verification(
+                self.opts.https,
+                self.opts.tls_verify,
+            ));
         if let Some(name) = name {
             b = b.resolve(name, target);
         }
@@ -281,6 +290,25 @@ impl HttpChecker {
             .iter()
             .any(|r| (r.0..=r.1).contains(&status))
     }
+}
+
+/// Whether the client is built without certificate verification: for
+/// `tls_verify = false`, and for the plain `http` scheme, which has no
+/// certificate to verify (see [`HttpChecker::client_for`]).
+fn skip_cert_verification(https: bool, tls_verify: bool) -> bool {
+    !tls_verify || !https
+}
+
+/// The reason for a client that cannot be built. For `https` with
+/// certificate verification on, the usual cause is a host without system CA
+/// certificates, which the error text of the client does not say.
+fn build_failure(error: &str, verified_https: bool) -> String {
+    let hint = if verified_https {
+        "; https checks need the system CA certificates unless tls_verify = false"
+    } else {
+        ""
+    };
+    format!("cannot build http client: {error}{hint}")
 }
 
 /// Whether `h` is a valid `host_header`: an IPv4 address, an IPv6 address
@@ -355,7 +383,10 @@ impl Checker for HttpChecker {
         Box::pin(async move {
             let client = match self.client_for(target).await {
                 Ok(c) => c,
-                Err(e) => return CheckResult::Error(format!("cannot build http client: {e}")),
+                Err(e) => {
+                    let verified_https = self.opts.https && self.opts.tls_verify;
+                    return CheckResult::Error(build_failure(&e, verified_https));
+                }
             };
             let mut req = client.get(self.url(target));
             if let Some(h) = &self.opts.host_header {
@@ -469,6 +500,34 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
+
+    #[test]
+    fn verification_is_skipped_for_plain_http_and_tls_verify_false_only() {
+        // (https, tls_verify) -> skipped
+        assert!(super::skip_cert_verification(false, true), "http");
+        assert!(super::skip_cert_verification(false, false), "http");
+        assert!(
+            !super::skip_cert_verification(true, true),
+            "https, verified"
+        );
+        assert!(
+            super::skip_cert_verification(true, false),
+            "https, tls_verify = false"
+        );
+    }
+
+    #[test]
+    fn build_failure_names_the_missing_ca_certificates_for_verified_https_only() {
+        let hinted = super::build_failure("builder error", true);
+        assert!(hinted.starts_with("cannot build http client: builder error"));
+        assert!(hinted.contains("system CA certificates"), "{hinted}");
+        assert!(hinted.contains("tls_verify = false"), "{hinted}");
+        // http, or https without verification, have no such cause
+        assert_eq!(
+            super::build_failure("builder error", false),
+            "cannot build http client: builder error"
+        );
+    }
 
     fn req(addr: SocketAddr) -> CheckRequest {
         CheckRequest::new("a", addr, std::time::Duration::from_secs(1))
