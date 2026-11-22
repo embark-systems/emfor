@@ -35,7 +35,7 @@ For `failover` and for `sticky` with a key the printed address is the one the cl
 ---
 ### Requirement: Explain shows the tier and the reason of every backend
 
-`emfor lookup <service> --explain` SHALL print, in addition to the answer, which store it read and whether the store is stale (heartbeat age and `EMFOR_MAX_STALENESS`), the `balance` and `on_all_down` of the service, the tier the candidates came from, every backend with whether it is a candidate and, when it is not, the reason, and how `balance` chooses among the candidates.
+`emfor lookup <service> --explain` SHALL print, in addition to the answer, which store it read and whether the store is stale (heartbeat age and `EMFOR_MAX_STALENESS`; a heartbeat later than the current time is shown as `heartbeat <age> in the future`, and a store that is stale for that reason is said to have a heartbeat more than `EMFOR_MAX_STALENESS` ahead of the clock), the `balance` and `on_all_down` of the service, the tier the candidates came from, every backend with whether it is a candidate and, when it is not, the reason, and how `balance` chooses among the candidates.
 
 The tiers, in order, SHALL be those of `rules::healthy_or_all`: healthy primary backends whose last check passed (no `reason`); healthy backup backends whose last check passed; healthy primary backends including those whose last check failed; healthy backup backends including those; and, when `on_all_down` is `open`, `unknown` backends whose last check passed, every `unknown` backend, and every backend. The tier of the candidates is the first one that is not empty. In a stale store no backend counts as healthy or `unknown`, so an `open` service uses every backend and a `closed` service has no candidates.
 
@@ -68,6 +68,34 @@ For `failover` and for `sticky` with a key, the explanation SHALL name the backe
 | no healthy backend, one `unknown` without `reason` | `open` | `unknown` backends whose last check passed |
 | no healthy backend, none `unknown` | `open` | every backend |
 | no healthy backend | `closed` | none |
+
+#### Scenario: Heartbeat in the future
+
+- **WHEN** the clock of the host was set back, so that the heartbeat is 60 seconds later than the current time, `EMFOR_MAX_STALENESS` is 3 seconds and an operator runs `emfor lookup api.svc.emfor --explain`
+- **THEN** the output shows `heartbeat 1m00s in the future` and `stale: the heartbeat is more than 3.0s ahead of the clock`, and it does not say the heartbeat is older than anything
+
+##### Example: heartbeat later than the current time
+
+| Heartbeat is | Store line contains |
+| --- | --- |
+| 1 s in the future | `heartbeat 1.0s in the future` and `fresh` |
+| 3 s in the future | `heartbeat 3.0s in the future` and `fresh` |
+| 60 s in the future | `heartbeat 1m00s in the future` and `stale: the heartbeat is more than 3.0s ahead of the clock` |
+
+
+<!-- @trace
+source: emfor-explain-future-heartbeat-age
+updated: 2026-11-23
+code:
+  - CHANGELOG.md
+  - clients/rust/src/client.rs
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/lookup.rs
+  - docs/manual.zh_TW/12-operating.md
+  - docs/manual/12-operating.md
+tests:
+  - crates/emfor-daemon/tests/lookup.rs
+-->
 
 ---
 ### Requirement: Explain does not change any state
@@ -102,7 +130,7 @@ For `failover` and for `sticky` with a key, the explanation SHALL name the backe
 ---
 ### Requirement: JSON output is stable and only grows
 
-`emfor lookup <service> --json` SHALL print one JSON object on standard output with the fields `service`, `via` (`"client"` or `"dns"`), `family` (`null`, `"A"` or `"AAAA"`), `store` (an object with `path`, `heartbeat_age_ms` and `stale`), `balance`, `on_all_down` and `result`, an object with `status` (`"ok"` or `"error"`) and either `address` or `error` (an object with `code`, one of the four client error codes, and `message`). With `--explain` it SHALL add `explain`, an object with `tier`, `candidates` and `excluded` (arrays of objects with `id`, and for `excluded` also `reason`), and `selection` (an object with `rule`, `deterministic` and `chosen`, where `chosen` is `null` when `deterministic` is false). Later releases SHALL add fields only. The text output without `--json` is not a stable interface.
+`emfor lookup <service> --json` SHALL print one JSON object on standard output with the fields `service`, `via` (`"client"` or `"dns"`), `family` (`null`, `"A"` or `"AAAA"`), `store` (an object with `path`, `heartbeat_age_ms`, an integer number of milliseconds that is negative when the heartbeat is later than the current time, and `stale`), `balance`, `on_all_down` and `result`, an object with `status` (`"ok"` or `"error"`) and either `address` or `error` (an object with `code`, one of the four client error codes, and `message`). With `--explain` it SHALL add `explain`, an object with `tier`, `candidates` and `excluded` (arrays of objects with `id`, and for `excluded` also `reason`), and `selection` (an object with `rule`, `deterministic` and `chosen`, where `chosen` is `null` when `deterministic` is false). Later releases SHALL add fields only. The text output without `--json` is not a stable interface.
 
 #### Scenario: JSON for a fixed choice
 
@@ -113,6 +141,26 @@ For `failover` and for `sticky` with a key, the explanation SHALL name the backe
 
 - **WHEN** an operator runs `emfor lookup api.svc.emfor --explain --json` for a `round-robin` service
 - **THEN** `explain.selection.deterministic` is false and `explain.selection.chosen` is `null`
+
+#### Scenario: Heartbeat in the future in JSON output
+
+- **WHEN** the heartbeat is 60 seconds later than the current time, `EMFOR_MAX_STALENESS` is 3 seconds and an operator runs `emfor lookup api.svc.emfor --explain --json`
+- **THEN** `store.heartbeat_age_ms` is a negative number close to -60000 and `store.stale` is true
+
+
+<!-- @trace
+source: emfor-explain-future-heartbeat-age
+updated: 2026-11-23
+code:
+  - CHANGELOG.md
+  - clients/rust/src/client.rs
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/lookup.rs
+  - docs/manual.zh_TW/12-operating.md
+  - docs/manual/12-operating.md
+tests:
+  - crates/emfor-daemon/tests/lookup.rs
+-->
 
 ---
 ### Requirement: Lookup command exit status

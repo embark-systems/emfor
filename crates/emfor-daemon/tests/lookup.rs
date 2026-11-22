@@ -36,10 +36,15 @@ fn service(extra: Value, backends: &[Backend]) -> Value {
 }
 
 fn fixture(heartbeat: &str, schema: &str, svc: Value) -> Fixture {
+    fixture_at(heartbeat, schema, svc, emfor_fixture::now_ms())
+}
+
+/// Like [`fixture`], with the clock the heartbeat form is computed from.
+fn fixture_at(heartbeat: &str, schema: &str, svc: Value, now_ms: u64) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("state.mdb");
     let doc = json!({"schema_version": schema, "heartbeat": heartbeat, "services": [svc]});
-    emfor_fixture::write_store(&doc, 3000, emfor_fixture::now_ms(), &store).unwrap();
+    emfor_fixture::write_store(&doc, 3000, now_ms, &store).unwrap();
     let config = dir.path().join("emfor.toml");
     std::fs::write(
         &config,
@@ -513,6 +518,41 @@ fn dns_with_no_backend_of_the_family() {
     assert_eq!(j["via"], "dns");
     assert_eq!(j["family"], "AAAA");
     assert_eq!(j["result"]["status"], "error");
+}
+
+/// Spec lookup-command, scenarios "Heartbeat in the future" and "Heartbeat in
+/// the future in JSON output": the age is negative, and the store is stale only
+/// when the heartbeat is more than `EMFOR_MAX_STALENESS` ahead.
+// spectra-scenario: lookup-command / Heartbeat in the future
+// spectra-scenario: lookup-command / Heartbeat in the future / heartbeat later than the current time
+// spectra-scenario: lookup-command / Heartbeat in the future in JSON output
+#[test]
+fn a_heartbeat_in_the_future_has_a_negative_age() {
+    let backends = [("10.0.0.11:8080", "healthy", None, false)];
+    for (ahead_ms, stale) in [(2_000, false), (60_000, true)] {
+        let now = emfor_fixture::now_ms() + ahead_ms;
+        let f = fixture_at("fresh", "2", service(json!({}), &backends), now);
+        let text = stdout(&run(&f.config, &["api.svc.emfor", "--explain"]));
+        assert!(text.contains("in the future"), "{ahead_ms}: {text}");
+        assert!(!text.contains("ago"), "{ahead_ms}: {text}");
+        assert_eq!(
+            text.contains("stale: the heartbeat is more than 3.0s ahead of the clock"),
+            stale,
+            "{ahead_ms}: {text}"
+        );
+        assert!(!text.contains("older than"), "{ahead_ms}: {text}");
+
+        let v = json_of(&run(&f.config, &["api.svc.emfor", "--explain", "--json"]));
+        let age = v["store"]["heartbeat_age_ms"].as_i64().unwrap();
+        assert!(age < 0 && age > -(ahead_ms as i64) - 500, "{age}");
+        assert_eq!(v["store"]["stale"], stale);
+    }
+    // The DNS explanation keeps its own rule: a future heartbeat is fresh.
+    let now = emfor_fixture::now_ms() + 60_000;
+    let f = fixture_at("fresh", "2", service(json!({}), &backends), now);
+    let v = json_of(&run(&f.config, &["api.svc.emfor", "--dns", "A", "--json"]));
+    assert_eq!(v["store"]["stale"], false);
+    assert!(v["store"]["heartbeat_age_ms"].as_i64().unwrap() < 0);
 }
 
 /// The DNS server counts a store as fresh whatever its heartbeat; `failover`

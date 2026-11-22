@@ -248,8 +248,9 @@ pub struct Explanation {
     pub service: String,
     /// The store that was read.
     pub store_path: String,
-    /// Milliseconds since the last heartbeat (0 for a heartbeat in the future).
-    pub heartbeat_age_ms: u64,
+    /// Milliseconds since the last heartbeat; negative for a heartbeat in the
+    /// future (the clock was set back).
+    pub heartbeat_age_ms: i64,
     pub stale: bool,
     /// `EMFOR_MAX_STALENESS` in milliseconds.
     pub max_staleness_ms: u64,

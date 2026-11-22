@@ -106,7 +106,9 @@ $ emfor lookup web.svc.emfor --explain
 other backend is out, the slow start steps and the balance rule, without
 advancing any round-robin counter. `--key` passes an affinity key, and
 `--json` prints `service`, `balance`, `on_all_down`, `family`, `via`,
-`store` and `result`.
+`store` and `result`. When the clock of the host was set back, the heartbeat
+can be later than now: the store line then says `heartbeat 1m00s in the
+future`, and `store.heartbeat_age_ms` in the JSON is negative.
 
 `--dns A` or `--dns AAAA` does not query the DNS server. It reads the same
 store and explains what the daemon's DNS server would answer to that query,

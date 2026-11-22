@@ -319,7 +319,8 @@ impl Client {
             false,
         );
         e.store_path = self.path.display().to_string();
-        e.heartbeat_age_ms = prepared.now.saturating_sub(prepared.heartbeat);
+        e.heartbeat_age_ms = i64::try_from(prepared.now).unwrap_or(i64::MAX)
+            - i64::try_from(prepared.heartbeat).unwrap_or(i64::MAX);
         e.max_staleness_ms = prepared.max_staleness_ms;
         e
     }
@@ -1169,6 +1170,42 @@ mod tests {
         let mut s = svc("api.svc.emfor", extra);
         s["backends"] = serde_json::Value::Array(bes);
         serde_json::json!({"schema_version": "2", "heartbeat": heartbeat, "services": [s]})
+    }
+
+    /// A store whose heartbeat is `ahead_ms` later than the clock.
+    fn store_with_heartbeat_ahead(dir: &Path, ahead_ms: u64) -> PathBuf {
+        let path = dir.join("state.mdb");
+        let store = explain_store(
+            "fresh",
+            serde_json::json!({"on_all_down": "open"}),
+            &[("10.0.0.11:8080", "healthy", None, false)],
+        );
+        emfor_fixture::write_store(&store, 3000, emfor_fixture::now_ms() + ahead_ms, &path)
+            .unwrap();
+        path
+    }
+
+    /// Spec lookup-command, scenario "Heartbeat in the future": the age is
+    /// negative and the store is stale only beyond `max_staleness`.
+    // spectra-scenario: lookup-command / Heartbeat in the future
+    // spectra-scenario: lookup-command / Heartbeat in the future in JSON output
+    #[test]
+    fn explain_shows_a_heartbeat_in_the_future_as_a_negative_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Client::new(store_with_heartbeat_ahead(dir.path(), 60_000), Ok(3000));
+        let e = c.explain("api.svc.emfor", None).unwrap();
+        assert!(e.stale);
+        assert!(
+            (-60_100..-59_000).contains(&e.heartbeat_age_ms),
+            "{}",
+            e.heartbeat_age_ms
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let c = Client::new(store_with_heartbeat_ahead(dir.path(), 2_000), Ok(3000));
+        let e = c.explain("api.svc.emfor", None).unwrap();
+        assert!(!e.stale);
+        assert!(e.heartbeat_age_ms < 0, "{}", e.heartbeat_age_ms);
     }
 
     /// Spec lookup-command, scenario "Primary and backup backends".

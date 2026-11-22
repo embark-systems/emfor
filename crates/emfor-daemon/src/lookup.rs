@@ -149,9 +149,11 @@ fn dns_mode(
     let now = unix_ms();
     let mut e = dns_explanation(record, family, snap.site.as_deref(), now);
     e.store_path = store_path.display().to_string();
-    e.heartbeat_age_ms = now.saturating_sub(snap.heartbeat_ms);
+    e.heartbeat_age_ms = signed_ms(now) - signed_ms(snap.heartbeat_ms);
     e.max_staleness_ms = DNS_HEARTBEAT_LIMIT_MS;
-    e.stale = snap.heartbeat_ms == 0 || e.heartbeat_age_ms > DNS_HEARTBEAT_LIMIT_MS;
+    // The DNS server does not look at the heartbeat: only a stopped daemon or
+    // an old heartbeat counts, a heartbeat in the future does not.
+    e.stale = snap.heartbeat_ms == 0 || e.heartbeat_age_ms > signed_ms(DNS_HEARTBEAT_LIMIT_MS);
     let answer: Result<Option<String>, Error> = match (&e.error, &e.selection.chosen) {
         (Some(err), _) => Err(err.clone()),
         (None, chosen) => Ok(chosen.clone()),
@@ -236,13 +238,22 @@ pub fn print_result(
     })
 }
 
-/// The heartbeat of a daemon that stopped is 0, which is a very old time.
-fn heartbeat_text(age_ms: u64) -> String {
-    const TEN_YEARS_MS: u64 = 10 * 365 * 24 * 3600 * 1000;
+/// A time in milliseconds as `i64`, clamped, so that differences of two times
+/// cannot overflow.
+fn signed_ms(ms: u64) -> i64 {
+    i64::try_from(ms).unwrap_or(i64::MAX)
+}
+
+/// The heartbeat of a daemon that stopped is 0, which is a very old time. A
+/// negative age is a heartbeat later than now (the clock was set back).
+fn heartbeat_text(age_ms: i64) -> String {
+    const TEN_YEARS_MS: i64 = 10 * 365 * 24 * 3600 * 1000;
     if age_ms > TEN_YEARS_MS {
         "no heartbeat (the daemon has stopped)".to_string()
+    } else if age_ms < 0 {
+        format!("heartbeat {} in the future", age(age_ms.unsigned_abs()))
     } else {
-        format!("heartbeat {} ago", age(age_ms))
+        format!("heartbeat {} ago", age(age_ms.unsigned_abs()))
     }
 }
 
@@ -268,7 +279,12 @@ fn text_result(
         _ => "as a client library answers".to_string(),
     };
     out.push(format!("answering: {how}"));
-    let state = if e.stale {
+    let state = if e.stale && e.heartbeat_age_ms < 0 {
+        format!(
+            "stale: the heartbeat is more than {} ahead of the clock",
+            age(e.max_staleness_ms)
+        )
+    } else if e.stale {
         format!(
             "stale: the heartbeat is older than {}",
             age(e.max_staleness_ms)
@@ -377,4 +393,21 @@ fn json_result(
         });
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::heartbeat_text;
+
+    // spectra-scenario: lookup-command / Heartbeat in the future / heartbeat later than the current time
+    #[test]
+    fn heartbeat_text_says_which_way_the_heartbeat_is() {
+        assert_eq!(heartbeat_text(400), "heartbeat 0.4s ago");
+        assert_eq!(heartbeat_text(-1_000), "heartbeat 1.0s in the future");
+        assert_eq!(heartbeat_text(-60_000), "heartbeat 1m00s in the future");
+        assert_eq!(
+            heartbeat_text(1_794_455_158_107),
+            "no heartbeat (the daemon has stopped)"
+        );
+    }
 }

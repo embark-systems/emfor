@@ -14,6 +14,12 @@
   clients see a stale store for up to about a second, until its next
   heartbeat. `emfor status` says `heartbeat <age> in the future`, and
   `heartbeat_age_ms` in `--json` is negative in that case.
+- **`emfor lookup --explain` agrees.** For a heartbeat later than now it says
+  `heartbeat <age> in the future` and, when that is stale, `the heartbeat is
+  more than <max> ahead of the clock`, instead of an age of 0 that is
+  "older than" the limit; `store.heartbeat_age_ms` in `--json` is negative.
+  In the Rust crate `Explanation.heartbeat_age_ms` is now an `i64` (it was a
+  `u64`).
 
 ## 0.7.1 — 2026-11-22
 

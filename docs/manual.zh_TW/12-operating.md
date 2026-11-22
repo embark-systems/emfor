@@ -81,7 +81,7 @@ $ emfor lookup web.svc.emfor
 $ emfor lookup web.svc.emfor --explain
 ```
 
-`--explain` 會印出 store 新不新鮮、用到哪個層級、每個候選、其他 backend 各自被排除的原因、慢啟動的步數，以及 balance 規則，而且不會推進任何 round-robin 計數器。`--key` 用來傳 affinity key；`--json` 會印出 `service`、`balance`、`on_all_down`、`family`、`via`、`store` 和 `result`。
+`--explain` 會印出 store 新不新鮮、用到哪個層級、每個候選、其他 backend 各自被排除的原因、慢啟動的步數，以及 balance 規則，而且不會推進任何 round-robin 計數器。`--key` 用來傳 affinity key；`--json` 會印出 `service`、`balance`、`on_all_down`、`family`、`via`、`store` 和 `result`。主機時鐘被往回調之後，heartbeat 可能比現在還晚：這時 store 那一行會寫 `heartbeat 1m00s in the future`，JSON 裡的 `store.heartbeat_age_ms` 是負數。
 
 `--dns A` 或 `--dns AAAA` 不會真的去查 DNS server。它讀的是同一個 store，告訴你 daemon 的 DNS server 對這個查詢會怎麼回答，而且一定會附上說明。daemon 做出判斷後，最多大約一秒才會更新 store，所以在這一秒內，實際的 DNS 回答可能不一樣；DNS server 的輪替計數器在 daemon 的記憶體裡，這裡看不到。
 
