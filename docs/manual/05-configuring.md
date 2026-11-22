@@ -330,3 +330,72 @@ Some patterns that work well:
 - `[peers] members` alone in its own file, written from a cloud API
   ([chapter 11](11-peer-groups.md#members-from-a-cloud-api)).
 - Always run `emfor check-config` before the reload, as the daemon's user.
+
+## Using a configuration management tool
+
+Ansible, Puppet and Salt can own the files of `conf.d` as they own any other
+config. Five things need care, because the usual defaults of such tools do not
+fit emfor.
+
+1. **Reload, do not restart.** Most changes need only a reload (see the
+   table above); a restart has a short window in which lookups cannot tell
+   good backends from bad ones
+   ([chapter 12](12-operating.md#what-applications-see-during-a-restart)).
+   `systemctl reload emfor` also runs `emfor check-config` first and does not
+   signal the daemon when the config is invalid. A change to `[store]` or to
+   the `listen` of `[dns]`, `[metrics]` or `[peers]` is the exception: the
+   daemon rejects it at a reload and keeps the old config, but the config is
+   valid and the reload command only sends the signal, so the tool sees no
+   failure: `systemctl reload emfor` exits 0 and Ansible reports `changed`.
+   Restart for those keys, and read the log (`reload rejected`). Ansible:
+   `state: reloaded` of `ansible.builtin.service`. Salt: `reload: True` of
+   `service.running`, with `watch`. Puppet: the `restart` attribute of
+   `service` takes the command to run instead of a stop and a start.
+2. **Run `emfor check-config` as the daemon's user.** Since 0.7.0 it starts
+   the plugins the config declares, so run by root it runs them as root. The
+   owner check of the files also depends on who runs it
+   ([above](#who-may-own-and-write-the-config-files)).
+3. **The tools' own validation does not fit one file.** Ansible's `validate`
+   (`ansible.builtin.template`), Puppet's `validate_cmd` (`file`) and Salt's
+   `check_cmd` (`file.managed`) give your command one temporary file, before
+   the file replaces the old one. `emfor check-config` reads a main file and
+   its `include_dir`, and cannot check a single fragment. Two ways that work:
+   - Check a whole staged copy of the config. `include_dir` is relative to
+     the main file's directory, so a copy of the main file with a `conf.d`
+     next to it, holding the old files and the new one, is a complete config:
+
+     ```sh
+     # emfor --config /path/to/stage/emfor.toml check-config
+     ```
+
+     The staged files must meet the same owner and mode rules.
+     [examples/deploy/emfor-check-staged.sh](../../examples/deploy/emfor-check-staged.sh)
+     builds such a copy and runs the check on it as the daemon's user, and
+     can be the command that the tool's validation option calls (the header
+     of the script has a line for each of the three tools). If you write your
+     own command, set a `umask` in it (the script uses `umask 022`): the
+     tool's umask can leave the staged `conf.d` writable by group or others
+     (Ansible's left it `0777`), and `check-config` refuses that. A valid
+     fragment gives `config ok`, and one that sets `timeout` above `interval`
+     gives exit status 2 and names the file.
+   - Write the file, check, and put the old file back when the check fails,
+     as `emfor-drain.sh` does
+     ([chapter 12](12-operating.md#a-rolling-deploy-with-drain)).
+4. **Owners and modes.** The main file, the `conf.d` directory and its files
+   must be owned by root or the daemon's user and not writable by group or
+   others (`0644` files, `0755` directory). A peer secret must also not be
+   readable by others, and `root:emfor` with `0640` is the usual way
+   ([chapter 11](11-peer-groups.md#the-secret)). Set owner and mode on the
+   resource, so that the file is never in place with a wrong one.
+5. **Where the package comes from.** The deb and rpm of emfor are not in any
+   repository ([chapter 4](04-installing.md#packages-deb-and-rpm)). Build
+   them, or put them in a repository of your own, and let the tool install
+   from there.
+
+The tool settings above were run on Debian 12 (arm64, a container with
+systemd) with the 0.7.0 deb, using Ansible core 2.14.18, Puppet 7.23.0 and
+Salt 3008.5. Each tool installed a valid fragment and reloaded emfor, refused
+a fragment with an error through that script (the old file stayed, and there
+was no reload), and changed nothing when it applied the valid fragment again.
+Not tested: other versions and systems, Chef, and a tool that runs from a
+server (a Puppet server, a Salt master).
