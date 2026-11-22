@@ -24,6 +24,10 @@
 //!   stderr open, and append its pid to `<file>`, so a test can kill it.
 //! - `EMFOR_TEST_PLUGIN_GARBAGE=1`: write a non-JSON line and an unknown
 //!   `type` before every answer.
+//! - `EMFOR_TEST_PLUGIN_LONG_GARBAGE=1`: like `GARBAGE`, but the non-JSON line
+//!   is 300 `z` characters long.
+//! - `EMFOR_TEST_PLUGIN_BAD_HELLO=1`: answer `hello` with a line of 300 `h`
+//!   characters that is not JSON.
 //!
 //! It writes `test plugin started` to stderr at start.
 
@@ -83,7 +87,7 @@ fn main() {
     }
     eprintln!("test plugin started");
     let out = Arc::new(Mutex::new(std::io::stdout()));
-    let garbage = flag("EMFOR_TEST_PLUGIN_GARBAGE");
+    let garbage = flag("EMFOR_TEST_PLUGIN_GARBAGE") || flag("EMFOR_TEST_PLUGIN_LONG_GARBAGE");
     let first_check = Arc::new(AtomicBool::new(true));
     let mut workers = Vec::new();
     for line in std::io::stdin().lock().lines() {
@@ -98,6 +102,12 @@ fn main() {
         match req {
             Request::Hello { .. } => {
                 if flag("EMFOR_TEST_PLUGIN_NO_HELLO") {
+                    continue;
+                }
+                if flag("EMFOR_TEST_PLUGIN_BAD_HELLO") {
+                    let mut out = out.lock().unwrap();
+                    let _ = writeln!(out, "{}", "h".repeat(300));
+                    let _ = out.flush();
                     continue;
                 }
                 let protocol = std::env::var("EMFOR_TEST_PLUGIN_PROTOCOL")
@@ -203,7 +213,11 @@ fn main() {
 fn send(out: &Mutex<std::io::Stdout>, garbage: bool, r: &Response) {
     let mut out = out.lock().unwrap();
     if garbage {
-        let _ = writeln!(out, "this is not json");
+        if flag("EMFOR_TEST_PLUGIN_LONG_GARBAGE") {
+            let _ = writeln!(out, "{}", "z".repeat(300));
+        } else {
+            let _ = writeln!(out, "this is not json");
+        }
         let _ = writeln!(out, r#"{{"type":"surprise","id":1}}"#);
     }
     let _ = writeln!(out, "{}", serde_json::to_string(r).unwrap());

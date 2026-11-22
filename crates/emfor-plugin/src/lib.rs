@@ -580,6 +580,7 @@ mod tests {
             json!({"type":"check","id":5,"result":"error","reason":"broken"})
         );
         assert_eq!(by_id(6)["result"], "error");
+        assert_eq!(by_id(6)["reason"], r#"invalid target ip "nope""#);
     }
 
     #[tokio::test]

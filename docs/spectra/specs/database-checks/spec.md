@@ -103,7 +103,7 @@ tests:
 ---
 ### Requirement: Check options validation
 
-The `redis`, `mysql`, `pgsql` and `ldap` plugins SHALL each validate `check_options` with the keys below and SHALL report every other key as `unknown key`. `user` SHALL be required for `mysql` and `pgsql`; `database` SHALL be required for `pgsql` and SHALL be an unknown key for `redis`, `mysql` and `ldap`. `role` SHALL accept `master` or `replica` for `redis` and `primary` or `replica` for `mysql` and `pgsql`, and SHALL be an unknown key for `ldap`. `max_lag` SHALL be an integer from 1 to 86400 (seconds), SHALL be an error (`requires role = "replica"`) unless `role = "replica"`, and SHALL be an unknown key for `ldap`. `starttls` SHALL be a boolean accepted by `ldap` only and SHALL be an unknown key for the other plugins. `password_file` and `ca_file` SHALL be absolute paths of readable files; `password_file` SHALL be non-empty after removing one trailing `\n` or `\r\n`; `ca_file` SHALL contain at least one PEM certificate (`no certificate found`) and at least one that can be used as a trust anchor (`no usable certificate`), as a check reads it. For `mysql` and `pgsql`, `user` and `database` SHALL NOT contain NUL (`must not contain NUL`): both are sent as NUL-terminated strings. For `pgsql`, when options are validated, a `password_file` whose password contains NUL SHALL be an error on `password_file` (`password must not contain NUL`): PostgreSQL cannot store such a password and the driver refuses to send it. For `redis`, `mysql` and `pgsql`, `tls_verify`, `server_name` and `ca_file` SHALL be errors (`requires tls = true`) unless `tls = true`. For `ldap`, they SHALL be errors (`requires tls = true or starttls = true`) unless `tls = true` or `starttls = true`, and `tls = true` together with `starttls = true` SHALL be an error on `starttls` (`conflicts with tls`). For `redis`, `user` without `password_file` SHALL be an error on `user` (`requires password_file`). For `ldap`, `user` without `password_file` SHALL be an error on `user` (`requires password_file`), and `password_file` without `user` SHALL be an error on `password_file` (`requires user`).
+The `redis`, `mysql`, `pgsql` and `ldap` plugins SHALL each validate `check_options` with the keys below and SHALL report every other key as `unknown key`. `user` SHALL be required for `mysql` and `pgsql`; `database` SHALL be required for `pgsql` and SHALL be an unknown key for `redis`, `mysql` and `ldap`. `role` SHALL accept `master` or `replica` for `redis` and `primary` or `replica` for `mysql` and `pgsql`, and SHALL be an unknown key for `ldap`. `max_lag` SHALL be an integer from 1 to 86400 (seconds), SHALL be an error (`requires role = "replica"`) unless `role = "replica"`, and SHALL be an unknown key for `ldap`. `starttls` SHALL be a boolean accepted by `ldap` only and SHALL be an unknown key for the other plugins. `password_file` and `ca_file` SHALL be absolute paths of readable files; `password_file` SHALL be non-empty (`file is empty`) and valid UTF-8 (`not valid UTF-8`) after removing one trailing `\n` or `\r\n`; `ca_file` SHALL contain at least one PEM certificate (`no certificate found`) and at least one that can be used as a trust anchor (`no usable certificate`), as a check reads it. For `mysql` and `pgsql`, `user` and `database` SHALL NOT contain NUL (`must not contain NUL`): both are sent as NUL-terminated strings. For `pgsql`, when options are validated, a `password_file` whose password contains NUL SHALL be an error on `password_file` (`password must not contain NUL`): PostgreSQL cannot store such a password and the driver refuses to send it. For `redis`, `mysql` and `pgsql`, `tls_verify`, `server_name` and `ca_file` SHALL be errors (`requires tls = true`) unless `tls = true`. For `ldap`, they SHALL be errors (`requires tls = true or starttls = true`) unless `tls = true` or `starttls = true`, and `tls = true` together with `starttls = true` SHALL be an error on `starttls` (`conflicts with tls`). For `redis`, `user` without `password_file` SHALL be an error on `user` (`requires password_file`). For `ldap`, `user` without `password_file` SHALL be an error on `user` (`requires password_file`), and `password_file` without `user` SHALL be an error on `password_file` (`requires user`).
 
 #### Scenario: Valid options
 
@@ -137,6 +137,7 @@ The `redis`, `mysql`, `pgsql` and `ldap` plugins SHALL each validate `check_opti
 | redis | `{ password_file = "redis.pass" }` | `password_file`: not an absolute path |
 | redis | `{ password_file = "/etc/emfor/missing" }` | `password_file`: file not found |
 | redis | `{ password_file = "/etc/emfor/empty" }` (file holds only `\n`) | `password_file`: file is empty |
+| redis | `{ password_file = "/etc/emfor/latin1.pass" }` (file holds `caf\xe9\n`) | `password_file`: not valid UTF-8 |
 | redis | `{ server_name = "redis.internal" }` | `server_name`: requires tls = true |
 | redis | `{ tls = "yes" }` | `tls`: must be a boolean |
 | redis | `{ tls = true, ca_file = "/etc/emfor/not-pem.txt" }` | `ca_file`: no certificate found |
@@ -163,6 +164,21 @@ The `redis`, `mysql`, `pgsql` and `ldap` plugins SHALL each validate `check_opti
 
 - **WHEN** `emfor check-config` runs on a config whose `mysql` service has `check_options = {}`
 - **THEN** it fails with `services."<name>".check_options.user: missing required key`
+
+
+<!-- @trace
+source: emfor-spec-code-alignment
+updated: 2026-11-22
+code:
+  - docs/release-signing.md
+  - crates/emfor-check/src/options.rs
+  - crates/emfor-plugin/src/lib.rs
+  - docs/casa-assessment.md
+tests:
+  - crates/emfor-daemon/tests/plugin_host.rs
+  - crates/emfor-daemon/tests/support/test_plugin.rs
+  - crates/emfor-daemon/tests/plugins.rs
+-->
 
 ---
 ### Requirement: Redis check
@@ -374,7 +390,7 @@ tests:
 ---
 ### Requirement: Passwords from password_file only
 
-A plugin SHALL accept a password only through `password_file`; a `password` key SHALL be reported as `unknown key`. The plugin SHALL read the file on every check, removing one trailing `\n` or `\r\n`, so that a changed password takes effect without a reload. When the file cannot be read during a check, the result SHALL be `error` with a reason starting `password_file: ` that names the I/O error kind. For `pgsql`, a password read during a check that contains NUL SHALL make the result `error` with reason `password_file: password must not contain NUL`, before the plugin connects. No check reason and no line the plugin writes to stderr SHALL contain the password.
+A plugin SHALL accept a password only through `password_file`; a `password` key SHALL be reported as `unknown key`. The plugin SHALL read the file on every check, removing one trailing `\n` or `\r\n`, so that a changed password takes effect without a reload. When the file cannot be read during a check, the result SHALL be `error` with a reason starting `password_file: ` that names the I/O error kind. When the file holds no password after that trimming, or a password that is not valid UTF-8, during a check, the result SHALL be `error` with reason `password_file: file is empty` or `password_file: not valid UTF-8`, before the plugin connects. For `pgsql`, a password read during a check that contains NUL SHALL make the result `error` with reason `password_file: password must not contain NUL`, before the plugin connects. No check reason and no line the plugin writes to stderr SHALL contain the password.
 
 #### Scenario: Password rotated
 
@@ -390,6 +406,31 @@ A plugin SHALL accept a password only through `password_file`; a `password` key 
 
 - **WHEN** the `password_file` of a `pgsql` service is rewritten after the config was applied so that its password contains a NUL byte
 - **THEN** checks of that service are `error` with reason `password_file: password must not contain NUL`, no connection is opened, and the backends' health state does not count them as failures
+
+#### Scenario: Password file emptied after validation
+
+- **WHEN** the `password_file` of a service is rewritten after the config was applied so that it holds only `\n`
+- **THEN** checks of that service are `error` with reason `password_file: file is empty`, no connection is opened, and the backends' health state does not count them as failures
+
+#### Scenario: Password file not UTF-8 after validation
+
+- **WHEN** the `password_file` of a service is rewritten after the config was applied so that it holds bytes that are not valid UTF-8
+- **THEN** checks of that service are `error` with reason `password_file: not valid UTF-8`, no connection is opened, and the backends' health state does not count them as failures
+
+
+<!-- @trace
+source: emfor-spec-code-alignment
+updated: 2026-11-22
+code:
+  - docs/release-signing.md
+  - crates/emfor-check/src/options.rs
+  - crates/emfor-plugin/src/lib.rs
+  - docs/casa-assessment.md
+tests:
+  - crates/emfor-daemon/tests/plugin_host.rs
+  - crates/emfor-daemon/tests/support/test_plugin.rs
+  - crates/emfor-daemon/tests/plugins.rs
+-->
 
 ---
 ### Requirement: TLS connections

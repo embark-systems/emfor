@@ -419,6 +419,31 @@ fn invalid_plugin_output_is_logged() {
     );
 }
 
+/// Spec checker-plugins "Plugin output line limit": an invalid stdout line is
+/// logged with its first 200 characters and no more.
+#[test]
+fn long_invalid_plugin_output_is_cut() {
+    let mark = marker("long-garbage");
+    let d = Daemon::start(&format!(
+        "{}{}",
+        plugin_decl("fake", &["EMFOR_TEST_PLUGIN_LONG_GARBAGE=1"], &mark),
+        plugin_service(SVC, "fake", "up", FAST)
+    ));
+    let r = Reader::open(&d.store());
+    wait_within("backend healthy", WAIT, || {
+        r.backend(SVC)
+            .is_some_and(|b| b.state == HealthState::Healthy)
+    });
+    let (_, log) = d.stop();
+    assert!(
+        log.lines().any(|l| l.contains("WARN")
+            && l.contains("plugin fake: ignoring invalid line")
+            && l.contains(&"z".repeat(200))),
+        "{log}"
+    );
+    assert!(!log.contains(&"z".repeat(201)), "cut at 200 characters");
+}
+
 #[test]
 fn check_config_validation_timeout() {
     let mark = marker("vhang");

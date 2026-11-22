@@ -800,6 +800,18 @@ mod tests {
         assert_eq!(read_password(Path::new(&bare)).unwrap(), "pass");
     }
 
+    /// Spec database-checks "Passwords from password_file only": at check time
+    /// a password that is not valid UTF-8 is an error that hides the content.
+    #[test]
+    fn read_password_refuses_non_utf8() {
+        let f = Files::new();
+        let latin1 = f.write("latin1", b"caf\xe9\n");
+        assert_eq!(
+            read_password(Path::new(&latin1)).unwrap_err(),
+            "password_file: not valid UTF-8"
+        );
+    }
+
     #[test]
     fn read_password_errors_hide_the_content() {
         let f = Files::new();

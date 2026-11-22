@@ -208,6 +208,21 @@ async fn garbage_lines_are_ignored() {
     host.stop().await;
 }
 
+/// Spec checker-plugins "Plugin output line limit": a first line that is not a
+/// valid hello is quoted with its first 200 characters and no more.
+#[tokio::test]
+async fn long_handshake_answer_is_cut() {
+    let err = PluginHost::start("fake", &command(&["EMFOR_TEST_PLUGIN_BAD_HELLO=1"]))
+        .await
+        .unwrap_err();
+    assert!(err.contains("answered the handshake with"), "{err}");
+    assert!(err.contains(&"h".repeat(200)), "{err}");
+    assert!(
+        !err.contains(&"h".repeat(201)),
+        "cut at 200 characters: {err}"
+    );
+}
+
 #[tokio::test]
 async fn crash_fails_pending_then_restarts() {
     let host = std::sync::Arc::new(PluginHost::start("fake", &command(&[])).await.unwrap());
