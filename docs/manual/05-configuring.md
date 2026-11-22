@@ -333,7 +333,7 @@ Some patterns that work well:
 
 ## Using a configuration management tool
 
-Ansible, Puppet and Salt can own the files of `conf.d` as they own any other
+Ansible, Puppet, Salt and Chef can own the files of `conf.d` as they own any other
 config. Five things need care, because the usual defaults of such tools do not
 fit emfor.
 
@@ -350,14 +350,15 @@ fit emfor.
    Restart for those keys, and read the log (`reload rejected`). Ansible:
    `state: reloaded` of `ansible.builtin.service`. Salt: `reload: True` of
    `service.running`, with `watch`. Puppet: the `restart` attribute of
-   `service` takes the command to run instead of a stop and a start.
+   `service` takes the command to run instead of a stop and a start. Chef:
+   `supports reload: true` on `service` and `notifies :reload` from the file.
 2. **Run `emfor check-config` as the daemon's user.** Since 0.7.0 it starts
    the plugins the config declares, so run by root it runs them as root. The
    owner check of the files also depends on who runs it
    ([above](#who-may-own-and-write-the-config-files)).
 3. **The tools' own validation does not fit one file.** Ansible's `validate`
-   (`ansible.builtin.template`), Puppet's `validate_cmd` (`file`) and Salt's
-   `check_cmd` (`file.managed`) give your command one temporary file, before
+   (`ansible.builtin.template`), Puppet's `validate_cmd` (`file`), Salt's
+   `check_cmd` (`file.managed`) and Chef's `verify` (`file`) give your command one temporary file, before
    the file replaces the old one. `emfor check-config` reads a main file and
    its `include_dir`, and cannot check a single fragment. Two ways that work:
    - Check a whole staged copy of the config. `include_dir` is relative to
@@ -393,9 +394,10 @@ fit emfor.
    from there.
 
 The tool settings above were run on Debian 12 (arm64, a container with
-systemd) with the 0.7.0 deb, using Ansible core 2.14.18, Puppet 7.23.0 and
-Salt 3008.5. Each tool installed a valid fragment and reloaded emfor, refused
+systemd) with the 0.7.0 deb, using Ansible core 2.14.18, Puppet 7.23.0,
+Salt 3008.5 and Cinc Client 19.4.46 (the free build of Chef Infra Client; its
+`verify` takes the temporary file as `%{path}`). Each tool installed a valid fragment and reloaded emfor, refused
 a fragment with an error through that script (the old file stayed, and there
 was no reload), and changed nothing when it applied the valid fragment again.
-Not tested: other versions and systems, Chef, and a tool that runs from a
-server (a Puppet server, a Salt master).
+Not tested: other versions and systems, the Chef Infra Client from Progress
+itself, and a tool that runs from a server (a Puppet server, a Salt master).

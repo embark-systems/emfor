@@ -264,20 +264,20 @@ reload 能改哪些東西：
 
 ## 用設定管理工具管 emfor
 
-Ansible、Puppet、Salt 可以像管其他設定一樣管 `conf.d` 裡的檔案。但有五件事要小心，因為這類工具的一般預設值不適合 emfor。
+Ansible、Puppet、Salt、Chef 可以像管其他設定一樣管 `conf.d` 裡的檔案。但有五件事要小心，因為這類工具的一般預設值不適合 emfor。
 
-1. **用 reload，不要 restart。** 大部分的變更只需要 reload（見上面的表）。restart 會有一小段時間，lookup 分不出好壞 backend（[第 12 章](12-operating.md#重新啟動時應用程式會看到什麼)）。`systemctl reload emfor` 還會先跑 `emfor check-config`，設定無效就不送 signal 給 daemon。有一個例外：改 `[store]`，或改 `[dns]`、`[metrics]`、`[peers]` 的 `listen`。daemon 在 reload 時會拒絕這些變更，並保留舊設定；但設定本身有效，reload 指令也只是送出 signal，所以工具看不到失敗：`systemctl reload emfor` 結束代碼是 0，Ansible 回報 `changed`。這些項目要 restart，並且去看 log（`reload rejected`）。Ansible：`ansible.builtin.service` 的 `state: reloaded`。Salt：`service.running` 的 `reload: True`，要搭配 `watch`。Puppet：`service` 的 `restart` 屬性，可以指定要跑的指令，不用先停再啟動。
+1. **用 reload，不要 restart。** 大部分的變更只需要 reload（見上面的表）。restart 會有一小段時間，lookup 分不出好壞 backend（[第 12 章](12-operating.md#重新啟動時應用程式會看到什麼)）。`systemctl reload emfor` 還會先跑 `emfor check-config`，設定無效就不送 signal 給 daemon。有一個例外：改 `[store]`，或改 `[dns]`、`[metrics]`、`[peers]` 的 `listen`。daemon 在 reload 時會拒絕這些變更，並保留舊設定；但設定本身有效，reload 指令也只是送出 signal，所以工具看不到失敗：`systemctl reload emfor` 結束代碼是 0，Ansible 回報 `changed`。這些項目要 restart，並且去看 log（`reload rejected`）。Ansible：`ansible.builtin.service` 的 `state: reloaded`。Salt：`service.running` 的 `reload: True`，要搭配 `watch`。Puppet：`service` 的 `restart` 屬性，可以指定要跑的指令，不用先停再啟動。Chef：`service` 設 `supports reload: true`，由檔案的 `notifies :reload` 觸發。
 2. **用 daemon 的使用者身分跑 `emfor check-config`。** 0.7.0 起它會啟動設定裡宣告的 plugin，用 root 跑，plugin 就以 root 執行。檔案擁有者的檢查也看是誰在跑（[上面](#誰可以擁有寫入設定檔)）。
-3. **工具自己的驗證選項，一次只給一個檔案，不適用。** Ansible 的 `validate`（`ansible.builtin.template`）、Puppet 的 `validate_cmd`（`file`）和 Salt 的 `check_cmd`（`file.managed`）會在檔案換掉舊檔之前，把一個暫存檔交給你的指令。`emfor check-config` 讀的是主設定檔和它的 `include_dir`，沒辦法只檢查一個片段。兩個可行的做法：
+3. **工具自己的驗證選項，一次只給一個檔案，不適用。** Ansible 的 `validate`（`ansible.builtin.template`）、Puppet 的 `validate_cmd`（`file`）、Salt 的 `check_cmd`（`file.managed`）和 Chef 的 `verify`（`file`）會在檔案換掉舊檔之前，把一個暫存檔交給你的指令。`emfor check-config` 讀的是主設定檔和它的 `include_dir`，沒辦法只檢查一個片段。兩個可行的做法：
    - 檢查整份暫存的設定。`include_dir` 是相對於主設定檔所在的目錄，所以把主設定檔複製過去，旁邊放一個 `conf.d`，裡面是舊檔加新檔，就是一份完整的設定：
 
      ```sh
      # emfor --config /path/to/stage/emfor.toml check-config
      ```
 
-     暫存的檔案也要符合同樣的擁有者與權限規則。[examples/deploy/emfor-check-staged.sh](../../examples/deploy/emfor-check-staged.sh) 會建這樣一份複本，並以 daemon 的使用者身分檢查它，可以直接當作工具驗證選項呼叫的指令（script 開頭的註解，三個工具各有一行）。如果你自己寫指令，要在裡面設 `umask`（script 用的是 `umask 022`）：工具的 umask 可能讓暫存的 `conf.d` 讓 group 或其他人可寫（Ansible 的結果是 `0777`），`check-config` 會拒絕。片段有效時得到 `config ok`；片段把 `timeout` 設得比 `interval` 大時，結束代碼是 2，並指出是哪個檔案。
+     暫存的檔案也要符合同樣的擁有者與權限規則。[examples/deploy/emfor-check-staged.sh](../../examples/deploy/emfor-check-staged.sh) 會建這樣一份複本，並以 daemon 的使用者身分檢查它，可以直接當作工具驗證選項呼叫的指令（script 開頭的註解，四個工具各有一行）。如果你自己寫指令，要在裡面設 `umask`（script 用的是 `umask 022`）：工具的 umask 可能讓暫存的 `conf.d` 讓 group 或其他人可寫（Ansible 的結果是 `0777`），`check-config` 會拒絕。片段有效時得到 `config ok`；片段把 `timeout` 設得比 `interval` 大時，結束代碼是 2，並指出是哪個檔案。
    - 先寫檔，再檢查，檢查失敗就把舊檔放回去，`emfor-drain.sh` 就是這樣做的（[第 12 章](12-operating.md#用-drain-做滾動部署)）。
 4. **擁有者與權限。** 主設定檔、`conf.d` 目錄和裡面的檔案，擁有者要是 root 或 daemon 的使用者，group 與其他人都不能寫（檔案 `0644`、目錄 `0755`）。peer 密鑰另外不能讓其他人讀，通常設成 `root:emfor`、`0640`（[第 11 章](11-peer-groups.md#密鑰)）。在資源上直接指定擁有者和權限，檔案才不會先以錯的權限放在那裡。
 5. **套件從哪裡來。** emfor 的 deb 和 rpm 不在任何套件庫裡（[第 4 章](04-installing.md#套件deb-與-rpm)）。自己建，或放進你自己的套件庫，再讓工具從那裡安裝。
 
-上面這些工具設定在 Debian 12（arm64，有 systemd 的容器）上，用 0.7.0 的 deb 跑過，版本是 Ansible core 2.14.18、Puppet 7.23.0、Salt 3008.5。每個工具都做了三件事：裝上有效的片段並 reload emfor；用 `emfor-check-staged.sh` 擋下有錯的片段（舊檔還在，也沒有 reload）；再套用一次有效的片段時，什麼都沒改。沒測過的：其他版本和系統、Chef，以及從伺服器執行的工具（Puppet server、Salt master）。
+上面這些工具設定在 Debian 12（arm64，有 systemd 的容器）上，用 0.7.0 的 deb 跑過，版本是 Ansible core 2.14.18、Puppet 7.23.0、Salt 3008.5 和 Cinc Client 19.4.46（Chef Infra Client 的免費版本；它的 `verify` 用 `%{path}` 代表暫存檔）。每個工具都做了三件事：裝上有效的片段並 reload emfor；用 `emfor-check-staged.sh` 擋下有錯的片段（舊檔還在，也沒有 reload）；再套用一次有效的片段時，什麼都沒改。沒測過的：其他版本和系統、Progress 官方的 Chef Infra Client，以及從伺服器執行的工具（Puppet server、Salt master）。

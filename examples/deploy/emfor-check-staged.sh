@@ -18,6 +18,7 @@
 #   Ansible   validate: /usr/local/sbin/emfor-check-staged.sh 10-web.toml %s
 #   Puppet    validate_cmd => '/usr/local/sbin/emfor-check-staged.sh 10-web.toml %'
 #   Salt      check_cmd: /usr/local/sbin/emfor-check-staged.sh 10-web.toml
+#   Chef      verify '/usr/local/sbin/emfor-check-staged.sh 10-web.toml %{path}'
 #
 # Run as root on the host that runs emfor; check-config runs as the daemon's
 # user, so that a plugin the config declares does not run as root. The staged

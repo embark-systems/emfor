@@ -2,7 +2,8 @@
 """Turn emfor's docs/manual (or docs/manual.zh_TW) into the Hugo pages of
 embark.systems (content.en/emfor or content/emfor), the way the pages were
 made by hand: TOML front matter instead of the heading, no previous/next line,
-chapter links as Hugo paths, repository links as GitHub URLs at a tag, and the
+chapter links as Hugo paths, repository links as GitHub URLs at a tag (at main
+for a file that the tag does not have), and the
 ASCII architecture sketch of the concepts chapter as an image (when the
 chapter still has that sketch: the manual of 0.7.0 keeps its own diagrams).
 Pages of an earlier sync that the manual no longer has are removed first.
@@ -15,6 +16,7 @@ The images (tools/site/gen-diagrams.py) go to the site's static/images.
 """
 import os
 import re
+import subprocess
 import sys
 
 src, dst, tag, lang = sys.argv[1:5]
@@ -22,9 +24,28 @@ repo = "https://github.com/embark-systems/emfor"
 guide_title = {"en": "0. Guide to the Manual", "zh": "0. 手冊導讀"}[lang]
 
 
+root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+
+
+def in_tag(path):
+    """True when the tag has the file, or when it cannot be asked (no such tag
+    in this checkout), so that the link stays pinned to the tag."""
+    try:
+        subprocess.run(["git", "rev-parse", "-q", "--verify", f"{tag}^{{}}"],
+                       cwd=root, check=True, capture_output=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return True
+    r = subprocess.run(["git", "cat-file", "-e", f"{tag}:{path.rstrip('/')}"],
+                       cwd=root, capture_output=True)
+    return r.returncode == 0
+
+
 def github(path):
+    """A link to the file at the tag; to main for a file the tag does not have
+    yet (a manual of main can name a file that is newer than the release)."""
     kind = "tree" if path.endswith("/") else "blob"
-    return f"{repo}/{kind}/{tag}/{path}"
+    ref = tag if in_tag(path) else "main"
+    return f"{repo}/{kind}/{ref}/{path}"
 
 
 def rewrite_links(text):
