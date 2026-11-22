@@ -58,6 +58,21 @@ jobs:
       - name: systemd-resolved recipe
         run: tests/resolver/resolved.sh
 
+  # Tests that need root: the owner checks of the config files and the peer
+  # secret give a file to another user, which only root can do, so on the
+  # runner above (a normal user) they return at once and check nothing. A job
+  # in a container runs as root.
+  linux-root:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: rust:1-bookworm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo test --locked -p emfor-daemon --all-features
+
   # The fuzz targets are built by no other job, and crates/emfor-daemon/src/
   # dns_fuzz.rs compiles only with `--cfg fuzzing`: a change to a type it
   # builds (BackendRecord) broke all six targets in 0.6.0 and nothing noticed
