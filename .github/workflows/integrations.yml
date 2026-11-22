@@ -5,7 +5,8 @@ name: Integrations
 # it with HAProxy"), and a rolling deploy over nginx with drain
 # (docs/manual/12-operating.md, "A rolling deploy with drain"), Prometheus and
 # Caddy finding their targets from them ("Prometheus" and "Using
-# it with Caddy"). What these tests
+# it with Caddy"), and the staged check for configuration management tools
+# ("Using a configuration management tool" in chapter 5). What these tests
 # can catch is a new nginx or HAProxy that behaves differently (the images are
 # the floating tags stable, mainline and lts), and a change in emfor's answers.
 # So they run once a week and when those parts of emfor or the tests change,
@@ -23,6 +24,7 @@ on:
       - "tests/nginx/**"
       - "tests/haproxy/**"
       - "tests/deploy/**"
+      - "tests/check-staged/**"
       - "tests/prometheus/**"
       - "tests/caddy/**"
       - "tests/nagios/**"
@@ -75,6 +77,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: tests/deploy/run.sh ${{ matrix.image }}
+
+  check-staged:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: tests/check-staged/run.sh
 
   prometheus:
     runs-on: ubuntu-latest

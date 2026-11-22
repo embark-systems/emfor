@@ -50,8 +50,9 @@ docker run --rm -v "$PWD":/src -w /src emfor-clients-test \
 
 Say in the pull request which of these you ran and where (for example
 "macOS: all four; Linux image: tests and clients"). Changes to the DNS
-resolver recipes, the plugins or the rc.d script have their own scripts
-under `tests/resolver/` and `tests/plugins/`; run the ones your change
+resolver recipes, the plugins, the rc.d script or the deploy scripts have
+their own scripts under `tests/resolver/`, `tests/plugins/`,
+`tests/deploy/` and `tests/check-staged/`; run the ones your change
 touches, or say that you could not.
 
 ## What we look for in a change
@@ -89,6 +90,11 @@ requirement and its scenarios together with the code. The maintainers
 plan changes with the Spectra tool (`spectra new change`); you do not need
 it, and editing the spec file by hand is fine. The specs are written in
 English.
+
+A test that checks a scenario can say so with a comment above it,
+`// spectra-scenario: <capability> / <scenario name>` (`#` in a shell
+script). `spectra coverage <change>` reads these comments to show which
+scenarios of a change have a test. Older tests do not have them yet.
 
 ## Commits and pull requests
 
