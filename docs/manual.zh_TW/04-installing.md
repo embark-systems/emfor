@@ -39,8 +39,8 @@ $ PLATFORM=linux/amd64 packages/build.sh    # 建其他架構（要模擬時很�
 安裝 script 會建立使用者與群組 `emfor`，並把 `/etc/emfor` 與 `/etc/emfor/conf.d` 設成 root 擁有、權限 0755。store 目錄 `/var/lib/emfor` 則由 unit 建立（`StateDirectory=emfor`）。
 
 ```sh
-# dpkg -i emfor_0.7.0-1_amd64.deb      # Debian、Ubuntu：裝好就啟用並啟動
-# rpm -i emfor-0.7.0-1.x86_64.rpm      # RHEL 與相近的發行版：不會自動啟用
+# dpkg -i emfor_0.7.1-1_amd64.deb      # Debian、Ubuntu：裝好就啟用並啟動
+# rpm -i emfor-0.7.1-1.x86_64.rpm      # RHEL 與相近的發行版：不會自動啟用
 # vi /etc/emfor/conf.d/10-web.toml     # 你的服務
 # emfor check-config
 # systemctl enable --now emfor         # rpm；deb 則用：systemctl reload emfor
@@ -173,7 +173,7 @@ $ cd clients/rust
 | --- | --- |
 | Rust | 依賴同一個發行版的 `emfor-client` crate（`clients/rust`）。不需要 `libemfor`。 |
 | C | 照上面的方式裝 `libemfor`；用 `cc app.c $(pkg-config --cflags --libs emfor)` 建置。 |
-| Go | 先裝 `libemfor`，再 `go get github.com/embark-systems/emfor/clients/go@v0.7.0`。需要 cgo 與 `pkg-config emfor`。 |
+| Go | 先裝 `libemfor`，再 `go get github.com/embark-systems/emfor/clients/go@v0.7.1`。需要 cgo 與 `pkg-config emfor`。 |
 | Python | 先裝 `libemfor`，再 `pip install clients/python`（Python 3.9 或更新；它用 `ctypes`）。函式庫不在標準目錄時，把 `EMFOR_LIBRARY` 設成函式庫的路徑。 |
 | Perl | 先裝 `libemfor`，再到 `clients/perl` 執行：`perl Makefile.PL && make -f Makefile.xs && make -f Makefile.xs install`。 |
 | PHP | 先裝 `libemfor`，再從 `clients/php` 的複本用 `phpize` 建出 extension（見[第 9 章](09-clients.md#php)），並啟用 `extension=emfor`。需要 PHP 8.1 或更新。 |

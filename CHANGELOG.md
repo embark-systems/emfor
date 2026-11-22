@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 — 2026-11-22
 
 The daemon, the store format and the plugin protocol are unchanged: this is
 about the packages, the documents and the examples.
@@ -23,6 +23,10 @@ about the packages, the documents and the examples.
   Client 19.4 (the free build of Chef Infra Client).
 - [docs/compatibility.md](docs/compatibility.md) lists `emfor lookup` among
   the stable interfaces: the address line without `--explain`, and `--json`.
+
+### Known limits
+
+Unchanged from 0.7.0.
 
 ## 0.7.0 — 2026-11-22
 

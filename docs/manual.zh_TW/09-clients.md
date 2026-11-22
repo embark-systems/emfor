@@ -150,14 +150,14 @@ func main() {
 ```
 
 ```sh
-$ go get github.com/embark-systems/emfor/clients/go@v0.7.0
+$ go get github.com/embark-systems/emfor/clients/go@v0.7.1
 $ go run .
 ```
 
 - `emfor.Lookup(name, affinityKey string) (string, error)`。
 - 失敗時回傳 `*emfor.Error`，裡面有 `Code`（`emfor.Unavailable`、`emfor.Incompatible`、`emfor.NotFound`、`emfor.AllDown`）和 `Message`。如果名稱或 key 含有 NUL 位元組，或不是有效的 UTF-8，回傳的是一般的 error。
 - 這個 package 用到 cgo 和 `pkg-config emfor`：需要 C 編譯器，不能用 `CGO_ENABLED=0` 建置。
-- 模組的 tag 是 `clients/go/v0.7.0`。測試這個範例時，`go.mod` 用一行 `replace` 指向本機的 checkout。
+- 模組的 tag 是 `clients/go/v0.7.1`。測試這個範例時，`go.mod` 用一行 `replace` 指向本機的 checkout。
 
 ## Python
 
