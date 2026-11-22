@@ -54,7 +54,12 @@ $ python3 -m http.server 8080 --bind 127.0.0.2 --directory /tmp/web2 &
 A **service** is a name and a list of **backends**. This one is called
 `web.svc.emfor`, and emfor checks it with an HTTP `GET /`.
 
-**If you built from source**, write this to `/etc/emfor/emfor.toml`:
+**If you built from source**, create the directories first (the daemon does
+not create them), then write this to `/etc/emfor/emfor.toml`:
+
+```sh
+# install -d -m 0755 /etc/emfor /var/lib/emfor
+```
 
 ```toml
 # /etc/emfor/emfor.toml
@@ -70,12 +75,11 @@ path = "/"
 ```
 
 ```sh
-# install -d -m 0755 /etc/emfor /var/lib/emfor
 # chmod 0644 /etc/emfor/emfor.toml
 ```
 
 The config file must not be writable by group or others, and the store
-directory `/var/lib/emfor` must exist: the daemon does not create it.
+directory `/var/lib/emfor` must exist (the command above made it).
 
 **If you installed a package**, leave `/etc/emfor/emfor.toml` as it is (it
 reads every `.toml` file in `/etc/emfor/conf.d/`) and write the same text to
