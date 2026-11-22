@@ -522,6 +522,9 @@ pub struct Layers {
     pub origins: HashMap<String, String>,
     /// Every file read: the main file first, then the fragments in order.
     pub files: Vec<PathBuf>,
+    /// The SHA-256 of each file of `files` as read (lowercase hex, as
+    /// `sha256sum` prints it), in the same order.
+    pub hashes: Vec<String>,
     /// Problems that do not fail the load, such as a skipped file name.
     pub warnings: Vec<String>,
     /// Whether the main file sets `include_dir`.
@@ -689,7 +692,7 @@ fn parse_table(text: &str, name: &str) -> Result<toml::Table, Vec<ConfigError>> 
 /// main file is the lowest layer, a later file overrides an earlier one.
 pub fn read_layers(path: &Path) -> Result<Layers, Vec<ConfigError>> {
     let mut warnings = Vec::new();
-    read_layers_with(path, &mut warnings).map(|mut l| {
+    read_layers_with(path, &mut warnings, &mut Vec::new()).map(|mut l| {
         l.warnings = warnings;
         l
     })
@@ -697,20 +700,25 @@ pub fn read_layers(path: &Path) -> Result<Layers, Vec<ConfigError>> {
 
 /// [`read_layers`] that also hands back the warnings when the load fails: a
 /// skipped file can be the reason it failed.
+/// `read` gets each file read, with its SHA-256, in read order, also when the
+/// load fails afterwards: a file that does not parse was still read.
 pub fn read_layers_with(
     path: &Path,
     warnings: &mut Vec<String>,
+    read: &mut Vec<(PathBuf, String)>,
 ) -> Result<Layers, Vec<ConfigError>> {
     // The main file can declare a plugin `command` as a fragment can, so it
     // is checked as a fragment is. `load_store` (status, lookup) runs no
     // plugin and keeps reading it without the check.
-    let main = read_trusted(path)
-        .map_err(|e| vec![ConfigError::new("", e)])
-        .and_then(|text| parse_table(&text, &path.display().to_string()))?;
+    let main_text = read_trusted(path).map_err(|e| vec![ConfigError::new("", e)])?;
+    let main_hash = sha256_hex(&main_text);
+    read.push((path.to_path_buf(), main_hash.clone()));
     let mut layers = Layers {
         files: vec![path.to_path_buf()],
+        hashes: vec![main_hash],
         ..Layers::default()
     };
+    let main = parse_table(&main_text, &path.display().to_string())?;
     let Some(dir_value) = main.get("include_dir") else {
         layers.table = main;
         return Ok(layers);
@@ -738,7 +746,10 @@ pub fn read_layers_with(
                 continue;
             }
         };
+        let hash = sha256_hex(&text);
+        read.push((file.clone(), hash.clone()));
         layers.files.push(file);
+        layers.hashes.push(hash);
         match parse_table(&text, &shown) {
             Ok(t) => {
                 for key in MAIN_ONLY_KEYS {
@@ -761,6 +772,19 @@ pub fn read_layers_with(
         merge_table(&mut layers.table, t, "", &shown, &mut layers.origins);
     }
     Ok(layers)
+}
+
+/// The SHA-256 of `text`'s bytes as lowercase hex, which is what `sha256sum`
+/// prints for the file it was read from.
+fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .fold(String::with_capacity(64), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
 }
 
 /// The selected files of the include directory, in byte-wise name order:
@@ -3860,7 +3884,7 @@ interval = "2s"
         let bad = std::ffi::OsStr::from_bytes(b"b\xff.toml");
         std::fs::write(d.path().join("conf.d").join(bad), "").expect("bad name");
         let mut warnings = Vec::new();
-        assert!(read_layers_with(&main, &mut warnings).is_err());
+        assert!(read_layers_with(&main, &mut warnings, &mut Vec::new()).is_err());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
 
@@ -4256,6 +4280,29 @@ interval = "2s"
         let l = read_layers(&main).expect("layers");
         let listen = dns_listen_in(&l.table).expect("valid").expect("dns table");
         assert_eq!(listen, vec!["127.0.0.1:5353".parse().expect("addr")]);
+    }
+
+    /// Spec service-config "Daemon logs the hash of every file read": the
+    /// hashes of the layers are those of the files, with or without
+    /// `include_dir`.
+    // spectra-scenario: service-config / Daemon logs the hash of every file read
+    #[test]
+    fn layers_carry_the_sha256_of_each_file() {
+        let (_d, main) = setup(MAIN, &[("10-a.toml", "# one\n"), ("20-b.toml", "# two\n")]);
+        let l = read_layers(&main).expect("layers");
+        assert_eq!(l.files.len(), 3);
+        let known = |text: &str| sha256_hex(text);
+        assert_eq!(l.hashes, [known(MAIN), known("# one\n"), known("# two\n")]);
+        // "abc" is the NIST example.
+        assert_eq!(
+            sha256_hex("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let (_d, plain) = setup(
+            "[services.a]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:1\"]\n",
+            &[],
+        );
+        assert_eq!(read_layers(&plain).expect("layers").hashes.len(), 1);
     }
 
     /// Spec peer-group "Plugin env_pass changes the digest".

@@ -1,6 +1,7 @@
 //! emfor daemon library: config, checkers, health state, scheduling, and the
 //! LMDB state store. The `emfor` binary is a thin wrapper around [`cli`].
 
+pub mod audit;
 pub mod checker;
 mod child;
 pub mod cli;

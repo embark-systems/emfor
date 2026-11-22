@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A reload logs what it changed.** After an accepted reload the log has one
+  line per difference (services and backends added, removed or changed,
+  `drain`, a changed check definition by digest only, peer group settings),
+  at most 50 per reload, before `config reloaded`. The daemon also logs the
+  SHA-256 of every config file it reads, at start and at each reload, with or
+  without `include_dir`. Field names (`change`, `service`, `backend`, ...) are
+  stable; the wording is not. Check options and secrets are never logged. The
+  log cannot say who changed the files: use auditd for that.
+
 - **`[metrics] allow` limits who can read `/metrics`.** A list of networks
   (`"10.0.0.0/8"`, `"fd00::/8"`); a connection from any other source gets
   `403 Forbidden` and no metrics. Loopback is not exempt once `allow` is set.

@@ -142,6 +142,33 @@ INFO emfor_daemon::schedule: backend 127.0.0.2:8080 of web.svc.emfor changed fro
 | `info` | 啟動、reload 和停止，每次狀態變化和它的 reason，plugin 的啟動和 standard error 輸出，成員變成存活或不存活，成員的通知和意見不一致。 |
 | `debug` | 每一次檢查、被忽略的成員訊息。 |
 
+### reload 改了什麼
+
+daemon 在啟動和每次 reload 時，會把讀到的每個設定檔連同它的 SHA-256 記下來，值和 `sha256sum` 印的一樣，沒設 `include_dir` 也一樣。驗證失敗的 reload 也會記雜湊，所以你看得出被拒絕的是哪一版檔案：
+
+```text
+INFO emfor_daemon::cli: config file read: /etc/emfor/emfor.toml file=/etc/emfor/emfor.toml sha256=9f2c...e1
+```
+
+reload 被接受之後，每個差異各有一行 `info`，排在 `config reloaded` 之前。每行都有 `change` 欄位和下表的欄位。欄位名和 `change` 的值是穩定的，整行的文字不是。
+
+| `change` | 其他欄位 |
+| --- | --- |
+| `service_added`、`service_removed` | `service`、`backends` |
+| `backend_added`、`backend_removed` | `service`、`backend` |
+| `backend_changed` | `service`、`backend`、`field`（`weight`、`site`、`backup`、`drain`）、`from`、`to` |
+| `service_changed` | `service`、`field`（`check`、`interval`、`timeout`、`rise`、`fall`、`jitter`、`on_all_down`、`balance`、`peers`、`slow_start`、`dns_ttl`）、`from`、`to` |
+| `check_definition_changed` | `service`、`digest_from`、`digest_to`、`resets_state` |
+| `peer_member_added`、`peer_member_removed` | `peer` |
+| `peers_changed` | `field`（`encrypt`、`accept_plaintext`、`secret_file`、`previous_secret_file`）、`from`、`to`、`applies` |
+| `more` | `omitted` |
+
+- 檢查定義改變時只會看到新舊定義的摘要（digest），不會看到選項本身。`resets_state=true` 表示這個服務的 backend 會從 `unknown` 重來；只改 `timeout` 時是 `false`。
+- `applies=next_start` 標的是 `previous_secret_file`，它只在啟動時讀。
+- 一次 reload 最多記 50 行，其餘合成一行 `change=more`，數量在 `omitted`。什麼都沒改的 reload 不會有這些行。
+- 任何一行都不含檢查選項、密鑰檔的內容，或它的雜湊。
+- log 記的是改了什麼、什麼時候，不是誰改的：`SIGHUP` 不帶寄件者。要記下誰改了檔案，請用 auditd 監看設定目錄（`auditctl -w /etc/emfor -p wa -k emfor-config`），或把檔案放在設定管理工具底下，並把 daemon 的 log 送到集中的 log 系統。
+
 ## daemon 的結束代碼
 
 | 代碼 | 意義 | 重新啟動有用嗎？ |

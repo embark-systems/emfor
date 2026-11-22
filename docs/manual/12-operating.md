@@ -186,6 +186,48 @@ INFO emfor_daemon::schedule: backend 127.0.0.2:8080 of web.svc.emfor changed fro
 | `info` | Start, reload and stop, every state change with its reason, plugin start and standard error, peers becoming live or not, peer notices and disagreements. |
 | `debug` | Every check, ignored peer messages. |
 
+### What a reload changed
+
+Every file the daemon reads is logged at start and at each reload with its
+SHA-256, the same value `sha256sum` prints, even without `include_dir`. A
+reload that fails validation logs the hashes too, so you can tell which version
+of the files was refused:
+
+```text
+INFO emfor_daemon::cli: config file read: /etc/emfor/emfor.toml file=/etc/emfor/emfor.toml sha256=9f2c...e1
+```
+
+After an accepted reload, one `info` line per difference comes before `config
+reloaded`. Each has a `change` field and the fields below. The field names and
+the values of `change` are stable; the wording of the line is not.
+
+| `change` | Other fields |
+| --- | --- |
+| `service_added`, `service_removed` | `service`, `backends` |
+| `backend_added`, `backend_removed` | `service`, `backend` |
+| `backend_changed` | `service`, `backend`, `field` (`weight`, `site`, `backup`, `drain`), `from`, `to` |
+| `service_changed` | `service`, `field` (`check`, `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, `balance`, `peers`, `slow_start`, `dns_ttl`), `from`, `to` |
+| `check_definition_changed` | `service`, `digest_from`, `digest_to`, `resets_state` |
+| `peer_member_added`, `peer_member_removed` | `peer` |
+| `peers_changed` | `field` (`encrypt`, `accept_plaintext`, `secret_file`, `previous_secret_file`), `from`, `to`, `applies` |
+| `more` | `omitted` |
+
+- A check definition change shows only the digests of the old and new
+  definition, never the options. `resets_state=true` means the service's
+  backends start over from `unknown`; a change of `timeout` alone gives
+  `false`.
+- `applies=next_start` marks `previous_secret_file`, which is read only at
+  start.
+- At most 50 lines are logged for one reload; the rest become one line with
+  `change=more` and the number in `omitted`. A reload that changes nothing
+  logs no such line.
+- No line holds a check option, the content of a secret file or a hash of it.
+- The log says what changed and when, not who: a `SIGHUP` carries no sender.
+  To record who edited the files, watch the config directory with auditd
+  (`auditctl -w /etc/emfor -p wa -k emfor-config`) or keep the files under
+  your configuration management tool, and send the daemon's log to a central
+  log system.
+
 ## Exit codes of the daemon
 
 | Status | Meaning | Restarting helps? |

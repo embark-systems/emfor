@@ -32,6 +32,11 @@ files `root:root 0644` (or `0640` with group `emfor`, if they name
 things you prefer to keep from other users). Passwords never go into the
 config: they go into `password_file`s.
 
+To know when the config changed, and to what, read the audit lines of the
+log ([chapter 12](12-operating.md#what-a-reload-changed)): each file read has a
+SHA-256 and each reload lists its differences. They do not say who made the
+change; for that, watch the config directory with auditd.
+
 ## Secrets
 
 | File | Rules | Warnings |

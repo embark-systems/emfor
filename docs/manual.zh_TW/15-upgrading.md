@@ -8,7 +8,7 @@
 - 1.0 以前，minor 版（0.6 → 0.7）可能會改到穩定介面；CHANGELOG 會把這類變更列在 **Read before you upgrade** 底下，或標成 *breaking* / *compatibility change*，並寫明要怎麼處理。patch 版絕不需要你這邊做任何修改。
 - store 每次啟動都會重建，所以永遠不需要搬移 store；只有狀態歷史會帶過去。
 - 設定檔遇到不認得的 key 會拒絕載入。要降版的話，先拿掉舊版不認得的 key。
-- 穩定的部分：設定檔、指令與結束代碼、`status --json`、store 格式、client API、plugin 協定、DNS 回答、metric 名稱。不穩定的部分：`emfor status` 的文字、log 行、錯誤訊息的措辭。寫 script 時請比對代碼和結束代碼。詳見 [docs/compatibility.md](../compatibility.md)。
+- 穩定的部分：設定檔、指令與結束代碼、`status --json`、store 格式、client API、plugin 協定、DNS 回答、metric 名稱。不穩定的部分：`emfor status` 的文字、log 行、錯誤訊息的措辭。寫 script 時請比對代碼和結束代碼。唯一的例外是 reload 的稽核行（[第 12 章](12-operating.md#reload-改了什麼)）：它的欄位名和 `change` 的值是穩定的，周圍的文字不是。詳見 [docs/compatibility.md](../compatibility.md)。
 
 ## 每台主機上的順序
 

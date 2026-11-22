@@ -13,6 +13,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, reload};
 
+use crate::audit;
 use crate::config::{
     self, Config, ConfigError, DEFAULT_CONFIG_PATH, DnsConfig, StoreConfig, in_zone,
 };
@@ -139,10 +140,13 @@ async fn start(config_path: PathBuf, check_only: bool, show: bool) -> ExitCode {
                     c.services.len(),
                     c.backend_count()
                 );
+                // Only with `include_dir`: otherwise the output is the single
+                // `config ok:` line.
                 let files: Vec<String> = read
                     .files
                     .iter()
-                    .map(|f| format!("read {}", f.display()))
+                    .filter(|_| read.included)
+                    .map(|(f, _)| format!("read {}", f.display()))
                     .collect();
                 match read.layers.as_deref().filter(|_| show) {
                     // The merged TOML alone on standard output, so that it
@@ -285,7 +289,10 @@ pub(crate) fn write_stdout(text: &str, fail: u8) -> Result<(), ExitCode> {
 /// skipped.
 #[derive(Default)]
 struct ReadFiles {
-    files: Vec<PathBuf>,
+    /// Each file read with its SHA-256, the main file first.
+    files: Vec<(PathBuf, String)>,
+    /// Whether the main file sets `include_dir`.
+    included: bool,
     warnings: Vec<String>,
     /// The merged config, for `check-config --show`.
     layers: Option<std::sync::Arc<config::Layers>>,
@@ -300,8 +307,8 @@ fn log_read_warnings(read: &ReadFiles) {
 }
 
 fn log_files_read(read: &ReadFiles) {
-    for f in &read.files {
-        tracing::info!("config file read: {}", f.display());
+    for (file, sha256) in &read.files {
+        tracing::info!(file = %file.display(), sha256 = %sha256, "config file read: {}", file.display());
     }
 }
 
@@ -569,6 +576,7 @@ async fn run(
                         // After the supervisor switched checkers, so replaced
                         // plugins are no longer used when they stop.
                         plugins.commit(prepared).await;
+                        audit::log_changes(audit::changes(&current, &new));
                         live.set_plugins(plugins.statuses());
                         if let (Some(tx), Some(d)) = (&dns_tx, &new.dns) {
                             tx.send_replace(dns_settings(d));
@@ -585,6 +593,7 @@ async fn run(
                     }
                     Err(errors) => {
                         prepared.rollback().await;
+                        log_files_read(&read);
                         log_config_errors(&config_path, &errors);
                         tracing::error!("reload rejected; keeping the previous config");
                     }
@@ -864,12 +873,13 @@ async fn load(
 ) -> (Prepared, Result<Config, Vec<ConfigError>>, ReadFiles) {
     // The read is blocking file I/O (a hung file system never returns), so it
     // runs on a blocking thread: a stop request can then end the reload.
-    let (read_result, warnings) = {
+    let (read_result, warnings, files_read) = {
         let path = path.to_path_buf();
         tokio::task::spawn_blocking(move || {
             let mut warnings = Vec::new();
-            let result = config::read_layers_with(&path, &mut warnings);
-            (result, warnings)
+            let mut read = Vec::new();
+            let result = config::read_layers_with(&path, &mut warnings, &mut read);
+            (result, warnings, read)
         })
         .await
         .unwrap_or_else(|e| {
@@ -879,14 +889,18 @@ async fn load(
                     format!("config read failed: {e}"),
                 )]),
                 Vec::new(),
+                Vec::new(),
             )
         })
     };
     let layers = match read_result {
         Ok(l) => l,
         Err(errors) => {
+            // The files read before the failure, a file that does not parse
+            // among them, still get their hashes logged.
             let read = ReadFiles {
-                files: Vec::new(),
+                files: files_read,
+                included: false,
                 warnings,
                 layers: None,
             };
@@ -894,11 +908,13 @@ async fn load(
         }
     };
     let read = ReadFiles {
-        files: if layers.included {
-            layers.files.clone()
-        } else {
-            Vec::new()
-        },
+        files: layers
+            .files
+            .iter()
+            .cloned()
+            .zip(layers.hashes.iter().cloned())
+            .collect(),
+        included: layers.included,
         warnings,
         layers: None,
     };

@@ -20,7 +20,9 @@
 - Stable: the config, commands and exit statuses, `status --json`, the store
   format, the client API, the plugin protocol, DNS answers, metric names.
   Not stable: `emfor status` text, log lines, error message wording. Match on
-  codes and exit statuses in scripts. See
+  codes and exit statuses in scripts. The one exception is the audit lines of a
+  reload ([chapter 12](12-operating.md#what-a-reload-changed)): their field
+  names and `change` values are stable, the wording around them is not. See
   [docs/compatibility.md](../compatibility.md).
 
 ## The order on each host
