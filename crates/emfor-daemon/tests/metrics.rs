@@ -204,6 +204,34 @@ fn reload_rejects_listen_change() {
     assert_eq!(code, 0, "{log}");
 }
 
+/// A non-loopback `listen` without `allow` is warned about at start and
+/// again after a reload; with `allow` there is no warning.
+// spectra-scenario: metrics-endpoint / Warning for a non-loopback address without allow
+#[test]
+fn non_loopback_listen_without_allow_warns_at_start_and_after_reload() {
+    let port = free_tcp().port();
+    let table = |allow: &str| format!("[metrics]\nlisten = [\"0.0.0.0:{port}\"]\n{allow}\n");
+    let count = |log: &str| log.matches("metrics listens on 0.0.0.0").count();
+
+    let d = Daemon::spawn(&table(""));
+    d.wait_log("emfor started");
+    assert_eq!(count(&d.log()), 1, "{}", d.log());
+    d.write_config(&format!("{}\n", table("")));
+    d.signal(Signal::SIGHUP);
+    d.wait_log("config reloaded");
+    assert_eq!(count(&d.log()), 2, "{}", d.log());
+    let (code, log) = d.stop();
+    assert_eq!(code, 0, "{log}");
+
+    let port = free_tcp().port();
+    let table = |allow: &str| format!("[metrics]\nlisten = [\"0.0.0.0:{port}\"]\n{allow}\n");
+    let d = Daemon::spawn(&table("allow = [\"127.0.0.0/8\"]"));
+    d.wait_log("emfor started");
+    let (code, log) = d.stop();
+    assert_eq!(code, 0, "{log}");
+    assert_eq!(count(&log), 0, "{log}");
+}
+
 /// A changed `[metrics] allow` rejects the reload; the old rule keeps
 /// applying, and a changed `listen` still gets its own message.
 // spectra-scenario: metrics-endpoint / Allow change requires restart
