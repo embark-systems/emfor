@@ -165,7 +165,10 @@ is close to the backend's normal response time, or the backend is overloaded.
 
 - `emfor_store_commit_failures_total` rises, `MDB_MAP_FULL` in the log: the
   store is full. Raise `[store] map_size` and restart.
-- The host's clock jumped: clients compare the heartbeat with their own clock.
+- The host's clock jumped, in either direction: clients compare the heartbeat
+  with their own clock. A heartbeat more than `EMFOR_MAX_STALENESS` ahead
+  counts as stale too; `emfor status` then says `heartbeat <age> in the
+  future`. It clears by itself within about a second of the next heartbeat.
 - The daemon is overloaded or stopped (`SIGSTOP`, a debugger).
 
 ## The lock file is owned by another user

@@ -19,10 +19,12 @@ pub fn normalize(name: &str) -> String {
     }
 }
 
-/// The store is stale when the heartbeat is 0 or older than `max_ms`. A
-/// heartbeat in the future is fresh.
+/// The store is stale when the heartbeat is 0, or differs from `now_ms` by
+/// more than `max_ms` in either direction. A heartbeat far in the future
+/// means the clock was set back, so a daemon that stopped writing would
+/// otherwise look alive until the clock caught up.
 pub fn is_stale(heartbeat: u64, now_ms: u64, max_ms: u64) -> bool {
-    heartbeat == 0 || now_ms.saturating_sub(heartbeat) > max_ms
+    heartbeat == 0 || now_ms.abs_diff(heartbeat) > max_ms
 }
 
 /// Backends to pick from, in config order.
@@ -515,7 +517,9 @@ mod tests {
         let now = 1_700_000_010_000;
         assert!(!is_stale(1_700_000_007_000, now, 3000), "3000 ms old");
         assert!(is_stale(1_700_000_006_999, now, 3000), "3001 ms old");
-        assert!(!is_stale(1_700_000_015_000, now, 3000), "future");
+        assert!(!is_stale(1_700_000_013_000, now, 3000), "3000 ms ahead");
+        assert!(is_stale(1_700_000_013_001, now, 3000), "3001 ms ahead");
+        assert!(is_stale(1_700_000_015_000, now, 3000), "5000 ms ahead");
         assert!(is_stale(0, now, 3000), "zero");
     }
 

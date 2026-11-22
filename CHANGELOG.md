@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **A heartbeat far in the future counts as stale.** When the clock of the
+  host is set back by more than `EMFOR_MAX_STALENESS` (3 s by default) and
+  the daemon then stops writing, clients and `emfor status` no longer take
+  the store for fresh until the clock catches up. With a live daemon the
+  clients see a stale store for up to about a second, until its next
+  heartbeat. `emfor status` says `heartbeat <age> in the future`, and
+  `heartbeat_age_ms` in `--json` is negative in that case.
+
 ## 0.7.1 — 2026-11-22
 
 The daemon, the store format and the plugin protocol are unchanged: this is

@@ -146,7 +146,7 @@ ALL_DOWN: service db.svc.emfor: no backend is healthy, and on_all_down is closed
 ## daemon 在執行，store 卻看起來過期
 
 - `emfor_store_commit_failures_total` 一直增加，log 裡出現 `MDB_MAP_FULL`：代表 store 滿了。調高 `[store] map_size` 再重新啟動。
-- 主機的時鐘跳動了：client 是拿自己的時鐘去和 heartbeat 比的。
+- 主機的時鐘跳動了，往前或往後都一樣：client 是拿自己的時鐘去和 heartbeat 比的。heartbeat 比時鐘還晚超過 `EMFOR_MAX_STALENESS`，也算過期；這時 `emfor status` 會寫 `heartbeat <age> in the future`。daemon 寫下一次 heartbeat 之後，大約一秒內就會自己恢復。
 - daemon 負載過重，或被暫停了（`SIGSTOP`、除錯器）。
 
 ## lock 檔屬於其他使用者

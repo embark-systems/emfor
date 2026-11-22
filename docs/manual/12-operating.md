@@ -57,7 +57,9 @@ smoothed check latency (`-` when there is none) and, after that, markers:
 | the reason | Why the latest check failed. |
 
 The `daemon:` line says `running`, `stale, heartbeat 4.5s ago` or
-`stopped`. With `[peers]` a `peers:` line follows
+`stopped`. After the clock of the host was set back, the heartbeat can be
+ahead of now: the line then says `heartbeat 5.0s in the future`, and it is
+`stale` when that is more than 3 seconds. With `[peers]` a `peers:` line follows
 ([chapter 11](11-peer-groups.md#how-the-votes-work)).
 
 | Option | |
@@ -78,7 +80,8 @@ web.svc.emfor
     2026-11-21 17:31:25 unknown -> healthy
 ```
 
-The JSON object has `store`, `daemon`, `heartbeat_ms`, `heartbeat_age_ms`,
+The JSON object has `store`, `daemon`, `heartbeat_ms`, `heartbeat_age_ms`
+(null when stopped, negative when the heartbeat is ahead of now),
 `started_at_ms`, `site`, `dns_listen`, `metrics_listen`, `services` (each with
 `name`, `balance`, `on_all_down`, `slow_start_ms`, `all_down` and `backends`
 with `id`, `ip`, `port`, `state`, `reason`, `checked_at`, `latency_us`,

@@ -80,9 +80,12 @@ backend 還是 `unknown` 的時候，emfor 每 200 ms 檢查一次（如果 `int
 daemon 會把每個服務寫成 store 裡的一筆記錄，並且至少每秒寫一次 **heartbeat**（目前時間）。client 會拿 heartbeat 和自己的時鐘比較：
 
 - heartbeat 距今最多 3 秒（`EMFOR_MAX_STALENESS`）：store 是**新鮮**（fresh）的，健康狀態算數；
-- 更舊，或是 0（daemon 已經正常停止）：store 是**過期**（stale）的，client 會把每個 backend 都當成不健康，接下來由 `on_all_down` 決定。
+- 更舊，或是 0（daemon 已經正常停止）：store 是**過期**（stale）的，client 會把每個 backend 都當成不健康，接下來由 `on_all_down` 決定；
+- 比 client 的時鐘還要晚超過 `EMFOR_MAX_STALENESS`（時鐘被往回調了）：同樣是**過期**。
 
 所以，daemon 卡住或不見了，應用程式也絕不會相信它留下的健康資料；而 `open` 的服務還是會給應用程式一個位址。
+
+如果 daemon 在跑的時候，主機的時鐘被往回調超過 `EMFOR_MAX_STALENESS`，client 會看到過期的 store，直到 daemon 寫下一次 heartbeat 為止，最多大約一秒。調得比這小，就沒有影響。
 
 daemon 啟動時會把每個服務重寫一遍，所有 backend 都設成 `unknown`。它從不沿用上一次執行的健康狀態；重新啟動後只有**狀態歷史**（每個 backend 最近 20 次變化）會留下來。細節見[第 12 章](12-operating.md#磁碟上的-store)。
 

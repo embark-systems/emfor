@@ -103,14 +103,17 @@ impl Daemon {
     }
 }
 
-/// The daemon state and heartbeat age (`None` when stopped). A heartbeat in
-/// the future (clock stepped back) has age 0.
-pub fn daemon_state(heartbeat_ms: u64, now_ms: u64) -> (Daemon, Option<u64>) {
+/// The daemon state and heartbeat age in milliseconds (`None` when stopped).
+/// A heartbeat in the future (clock stepped back) has a negative age. It is
+/// stale when it is more than [`STALE_AFTER_MS`] away from now in either
+/// direction, so a daemon that stopped writing does not look alive.
+pub fn daemon_state(heartbeat_ms: u64, now_ms: u64) -> (Daemon, Option<i64>) {
     if heartbeat_ms == 0 {
         return (Daemon::Stopped, None);
     }
-    let age = now_ms.saturating_sub(heartbeat_ms);
-    if age > STALE_AFTER_MS {
+    let age =
+        i64::try_from(now_ms).unwrap_or(i64::MAX) - i64::try_from(heartbeat_ms).unwrap_or(i64::MAX);
+    if age.unsigned_abs() > STALE_AFTER_MS {
         (Daemon::Stale, Some(age))
     } else {
         (Daemon::Running, Some(age))
@@ -560,8 +563,10 @@ fn header(snap: &Snapshot, store: &Path, now_ms: u64, style: Style) -> Vec<Strin
     let mut lines = vec![format!("store: {}", store.display())];
     let (daemon, hb_age) = daemon_state(snap.heartbeat_ms, now_ms);
     let mut line = format!("daemon: {}", daemon.as_str());
-    if let Some(a) = hb_age {
-        append!(line, ", heartbeat {} ago", age(a));
+    match hb_age {
+        Some(a) if a < 0 => append!(line, ", heartbeat {} in the future", age(a.unsigned_abs())),
+        Some(a) => append!(line, ", heartbeat {} ago", age(a.unsigned_abs())),
+        None => {}
     }
     if daemon == Daemon::Running {
         if let Some(started) = snap.started_at_ms {
@@ -1423,8 +1428,13 @@ mod tests {
         assert_eq!(daemon_state(NOW - 400, NOW), (Daemon::Running, Some(400)));
         assert_eq!(daemon_state(NOW - 3000, NOW), (Daemon::Running, Some(3000)));
         assert_eq!(daemon_state(NOW - 5000, NOW), (Daemon::Stale, Some(5000)));
-        // Clock stepped back: heartbeat in the future.
-        assert_eq!(daemon_state(NOW + 900, NOW), (Daemon::Running, Some(0)));
+        // Clock stepped back: heartbeat in the future, negative age.
+        assert_eq!(daemon_state(NOW + 900, NOW), (Daemon::Running, Some(-900)));
+        assert_eq!(
+            daemon_state(NOW + 3000, NOW),
+            (Daemon::Running, Some(-3000))
+        );
+        assert_eq!(daemon_state(NOW + 5000, NOW), (Daemon::Stale, Some(-5000)));
     }
 
     // spectra-scenario: status-command / One healthy and one failing backend
@@ -2052,6 +2062,43 @@ mod tests {
         );
     }
 
+    fn snap_ahead(ahead_ms: u64) -> Snapshot {
+        let mut s = snap(Some(0), vec![api()]);
+        s.heartbeat_ms = NOW + ahead_ms;
+        s
+    }
+
+    // spectra-scenario: status-command / Heartbeat in the future
+    // spectra-scenario: status-command / Heartbeat in the future / heartbeat later than the current time
+    #[test]
+    fn heartbeat_in_the_future_text() {
+        for (ahead, want) in [
+            (
+                900,
+                "daemon: running, heartbeat 0.9s in the future, up 1h00m, site tpe1",
+            ),
+            (
+                3000,
+                "daemon: running, heartbeat 3.0s in the future, up 1h00m, site tpe1",
+            ),
+            (5000, "daemon: stale, heartbeat 5.0s in the future"),
+        ] {
+            let lines = render(&snap_ahead(ahead));
+            assert_eq!(lines[1], want, "{ahead} ms ahead");
+        }
+    }
+
+    // spectra-scenario: status-command / Heartbeat in the future in JSON output
+    #[test]
+    fn heartbeat_in_the_future_json() {
+        let s = snap_ahead(5000);
+        let v = json(&s, Path::new("/s.mdb"), NOW);
+        assert_eq!(v["daemon"], "stale");
+        assert_eq!(v["heartbeat_age_ms"], -5000);
+        assert_eq!(v["heartbeat_ms"], NOW + 5000);
+        assert_eq!(exit_status(&s, NOW), 1);
+    }
+
     #[test]
     fn json_fields() {
         let v = json(&snap(Some(400), vec![api()]), Path::new("/s.mdb"), NOW);
@@ -2165,7 +2212,9 @@ mod tests {
     #[test]
     fn watch_merges_history_and_daemon_changes() {
         let yesterday = NOW - 2 * 86_400_000;
-        let mut s = snap(Some(100), vec![api()]);
+        // The first frame is drawn at NOW - 5000, so its heartbeat is made
+        // 100 ms older than that and counts as fresh, not as in the future.
+        let mut s = snap(Some(5100), vec![api()]);
         let h = s.history.entry("api.svc.emfor".into()).or_default();
         h.backends.insert(
             "10.0.0.12:8080".into(),

@@ -228,7 +228,7 @@ tests:
 ---
 ### Requirement: Stale heartbeat makes every backend unknown
 
-The store SHALL be treated as stale when `meta/heartbeat` is `0`, or when the reader's current Unix time in milliseconds minus the heartbeat is greater than the maximum staleness (default 3 seconds). A heartbeat later than the reader's clock SHALL count as fresh. When the store is stale, the lookup SHALL ignore every backend's `state` and treat no backend as healthy, so the service's `on_all_down` decides the result. There SHALL be no separate error code for staleness.
+The store SHALL be treated as stale when `meta/heartbeat` is `0`, or when the heartbeat differs from the reader's current Unix time in milliseconds by more than the maximum staleness (default 3 seconds), whether the heartbeat is older or later than the reader's clock. A heartbeat later than the reader's clock by no more than the maximum staleness SHALL count as fresh. When the store is stale, the lookup SHALL ignore every backend's `state` and treat no backend as healthy, so the service's `on_all_down` decides the result. There SHALL be no separate error code for staleness.
 
 #### Scenario: Stale store with each on_all_down setting
 
@@ -246,62 +246,36 @@ The store SHALL be treated as stale when `meta/heartbeat` is `0`, or when the re
 | --- | --- |
 | `1700000007000` (3000 ms old) | fresh |
 | `1700000006999` (3001 ms old) | stale |
-| `1700000015000` (in the future) | fresh |
+| `1700000013000` (3000 ms in the future) | fresh |
+| `1700000013001` (3001 ms in the future) | stale |
+| `1700000015000` (5000 ms in the future) | stale |
 | `0` | stale |
+
+#### Scenario: Future heartbeat of a stopped daemon
+
+- **WHEN** the reader's clock was set back by 60 seconds after the daemon last wrote its heartbeat, the daemon no longer runs, the service has `on_all_down = "closed"` and every backend is recorded `healthy`
+- **THEN** the lookup fails with `ALL_DOWN`, because the store is stale, instead of returning a backend until the clock catches up with the heartbeat
 
 
 <!-- @trace
-source: emfor-clients
-updated: 2026-11-12
+source: emfor-future-heartbeat-stale
+updated: 2026-11-22
 code:
-  - clients/c/example.c
-  - clients/rust/src/capi.rs
-  - tests/conformance/v1/sticky-v1.json
-  - clients/rust/src/store.rs
-  - clients/rust/README.md
-  - clients/c/README.md
-  - clients/rust/src/client.rs
-  - clients/rust/examples/lookup.rs
-  - tests/conformance/v1/cases.json
-  - clients/c/Makefile
+  - CHANGELOG.md
   - clients/rust/src/select.rs
-  - tools/emfor-fixture/Cargo.toml
-  - tools/emfor-fixture/src/lib.rs
+  - crates/emfor-daemon/src/status.rs
+  - docs/manual.zh_TW/03-concepts.md
+  - docs/manual.zh_TW/12-operating.md
+  - docs/manual.zh_TW/16-troubleshooting.md
+  - docs/manual/03-concepts.md
+  - docs/manual/12-operating.md
+  - docs/manual/16-troubleshooting.md
   - tests/conformance/v1/README.md
-  - tests/spike/probe_read.py
-  - tests/spike/RESULTS.md
-  - clients/rust/src/config.rs
-  - tests/spike/probe/Cargo.toml
-  - clients/rust/src/lib.rs
-  - Cargo.toml
-  - tests/spike/probe/cbindgen.toml
-  - tools/emfor-fixture/src/main.rs
-  - clients/rust/cbindgen.toml
-  - tests/spike/probe_read.php
-  - .github/workflows/ci.yml
-  - clients/rust/Cargo.toml
-  - tests/spike/probe_read.c
-  - tests/spike/run.sh
-  - tests/spike/probe/src/lib.rs
-  - tests/spike/check_symbols.sh
+  - tests/conformance/v1/cases.json
+  - tools/emfor-fixture/src/lib.rs
 tests:
-  - clients/rust/tests/conformance_capi.rs
-  - clients/rust/tests/fork.rs
-  - clients/rust/tests/lock_format.rs
-  - clients/c/tests/check_symbols.sh
-  - clients/c/tests/test_fork.c
-  - clients/rust/tests/env_default.rs
-  - clients/rust/tests/env_invalid.rs
-  - clients/rust/tests/threads.rs
-  - clients/rust/tests/support/mod.rs
-  - clients/c/tests/test_threads.c
-  - clients/c/tests/common.h
   - clients/rust/tests/conformance.rs
-  - clients/rust/tests/same_lmdb.rs
-  - clients/c/tests/fixture.json
-  - clients/rust/tests/env_retry.rs
   - tools/emfor-fixture/tests/conformance_data.rs
-  - clients/c/tests/test_lookup.c
 -->
 
 ---

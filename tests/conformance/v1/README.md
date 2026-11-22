@@ -17,7 +17,8 @@ data" of the emfor-clients change.
   call the lookup the sum of the counts in a row; each address appears
   exactly its count and nothing else appears, errors included).
 - `store.heartbeat` is `fresh`, `stale` (now minus twice the maximum
-  staleness), `zero` or `missing`; `store.raw` holds keys written verbatim,
+  staleness), `future` (now plus twice the maximum staleness), `zero` or
+  `missing`; `store.raw` holds keys written verbatim,
   such as `meta/site` for `locality` or malformed records.
 - `store.schema_version` is written to `meta/schema_version`. Cases use the
   store format versions `1` and `2` (which adds the backend field `backup`);

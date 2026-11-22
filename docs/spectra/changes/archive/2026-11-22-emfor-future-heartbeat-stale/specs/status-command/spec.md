@@ -1,0 +1,248 @@
+## MODIFIED Requirements
+
+### Requirement: Status text output
+
+`emfor status` SHALL print, in this order:
+
+1. `store: <path>`;
+2. one daemon line: `daemon: running, heartbeat <age> ago, up <duration>` followed by `, site <site>` when `meta/site` is set, then `, dns <addresses>` when `meta/dns_listen` holds a JSON array of strings, and then `, metrics <addresses>` when `meta/metrics_listen` does, the addresses of each separated by single spaces in stored order; `daemon: stale, heartbeat <age> ago` when the heartbeat is older than 3 seconds; `daemon: stale, heartbeat <age> in the future` when the heartbeat is later than the current time by more than 3 seconds; a heartbeat later than the current time by 3 seconds or less keeps the state `running`, and the line then says `heartbeat <age> in the future` in place of `heartbeat <age> ago`; `daemon: stopped` when the heartbeat is `0`;
+3. when the daemon is running and `meta/peers` holds a JSON object of the shape defined in spec state-store, a line `peers: <live>/<members> live`, where `<members>` is the number of entries in `members` and `<live>` the number of them with `live` true, followed by `, not live <addresses>` with the addresses of the members that are not live separated by single spaces in stored order when there are any; followed by `, checks <n>/<m> backends here` when at least one shown backend is voted (see below), where `<m>` is the number of shown backends and `<n>` the number of them that are not voted, or by `, too few live members to vote` when the group cannot vote (see below); then, for each member in stored order whose `services_off` (spec state-store) contains at least one shown service, a line `peers: <member> leaves out <services>` with those shown services in name order separated by single spaces; then, for each shown service with entries in `digest_mismatch`, a line `peers: check definition of <service> differs at <members>` with that service's members separated by single spaces in stored order;
+4. for each service in name order, a line `<name>  <balance>  on_all_down=<open|closed>` (`unknown` for a value it does not know) followed by `  ALL DOWN` when `all_down` is true;
+5. under each service, one line per backend in store order with the backend `id`, its health state (`healthy`, `unhealthy` or `unknown`, or `unrecognized`, colored like `unhealthy`, for a state written by a newer daemon), the time since `checked_at` as `<age> ago` (`never` when absent), the check latency (`-` when absent), the marker `pool` for members of a `fastest` service's pool, the marker `backup` when the backend's `backup` is true, the marker `local-up` when the daemon is running and `meta/peers` lists the backend in `disagreements`, the marker `voted` when the backend is voted, the marker `FLAPPING (<n> changes in 10m)` when it is flapping (see "Flapping backends"), the marker `last check failed` when the backend's state is `healthy` and its `reason` is present, and the last failure `reason` when present. The marker `last check failed` SHALL NOT be written for a backend whose state is `unhealthy`, `unknown` or `unrecognized`.
+
+A backend SHALL be voted when the daemon is running, `meta/peers` has the shape defined in spec state-store with a `listen` and member addresses that are all valid `ip:port` strings, and the backend's assigned checkers, chosen as in spec peer-group "Assigned checkers and check results" with `listen` as this daemon and, as the live members for the backend's service, the members whose `live` is true and whose `services_off` does not contain that service, exist and do not include `listen`, and the backend's service is not in `services_off`. `services_off`, at the top level and in each member, SHALL count as empty when it is absent, so that a store written by a daemon without these fields still shows voted backends. The same choice of assigned checkers SHALL give the `checkers` of `assigned_checkers` in `--json` output (see "Status filtering and JSON output"). A voted backend is one this daemon does not check at every check time (spec peer-group, "Split checks").
+
+The group SHALL count as unable to vote when the assigned checkers can be computed as above (`listen` and every member address are valid `ip:port` strings), at least one shown backend belongs to a service that is not in `services_off`, and none of the shown backends of such services has assigned checkers, that is, for each of those services the daemon and the live members that do not leave it out number fewer than three (spec peer-group, "Assigned checkers and check results"). Services in `services_off` SHALL NOT be taken into account. The `peers:` line then ends with `, too few live members to vote`, after any `not live` part and never together with a `checks` part. The marker is written for the whole line: when some services can vote and others cannot, the line is unchanged and `assigned_checkers` in `--json` output tells which backends have checkers.
+
+Ages and durations SHALL be written as `<s>.<tenths>s` under one minute, `<m>m<ss>s` under one hour, `<h>h<mm>m` under one day, and `<d>d<hh>h` otherwise. Latency SHALL be written in milliseconds with one decimal (`1.2ms`), or in seconds with one decimal at 1000 ms and above (`1.4s`). When standard output is not a terminal or the environment variable `NO_COLOR` is set, the output SHALL contain no terminal escape sequences.
+
+#### Scenario: One healthy and one failing backend
+
+- **WHEN** the store holds `api.svc.emfor` (`round-robin`, `open`) with backend `10.0.0.11:8080` healthy, checked 800 ms ago, latency 1200 µs, and backend `10.0.0.12:8080` unhealthy, checked 900 ms ago, reason `connect: Connection refused`
+- **THEN** the backend lines contain, in order, `10.0.0.11:8080`, `healthy`, `0.8s ago`, `1.2ms`, and `10.0.0.12:8080`, `unhealthy`, `0.9s ago`, `-`, `connect: Connection refused`
+
+##### Example: age and latency formatting
+
+| Value | Printed |
+| --- | --- |
+| age 800 ms | `0.8s` |
+| age 61 s | `1m01s` |
+| age 3 h 12 min | `3h12m` |
+| age 2 days 3 h | `2d03h` |
+| latency 350 µs | `0.4ms` |
+| latency 1200 µs | `1.2ms` |
+| latency 1 400 000 µs | `1.4s` |
+
+#### Scenario: Metrics addresses on the daemon line
+
+- **WHEN** the daemon is running with heartbeat 400 ms old, started 3 h 12 min ago, `meta/site` `tpe1` and `meta/metrics_listen` `["127.0.0.1:5301","[::1]:5301"]`
+- **THEN** the daemon line is `daemon: running, heartbeat 0.4s ago, up 3h12m, site tpe1, metrics 127.0.0.1:5301 [::1]:5301`
+
+##### Example: metrics part of the daemon line
+
+| `meta/metrics_listen` | Daemon state | Daemon line ends with |
+| --- | --- | --- |
+| `["127.0.0.1:5301"]` | running | `, metrics 127.0.0.1:5301` |
+| `["127.0.0.1:5301","[::1]:5301"]` | running | `, metrics 127.0.0.1:5301 [::1]:5301` |
+| absent | running | `up <duration>` or `site <site>`, no `metrics` |
+| `not json` | running | no `metrics` |
+| `["127.0.0.1:5301"]` | stopped | `daemon: stopped` |
+
+#### Scenario: DNS and metrics addresses on the daemon line
+
+- **WHEN** the daemon is running with heartbeat 400 ms old, started 3 h 12 min ago, `meta/site` `tpe1`, `meta/dns_listen` `["127.0.0.1:5300"]` and `meta/metrics_listen` `["127.0.0.1:5301"]`
+- **THEN** the daemon line is `daemon: running, heartbeat 0.4s ago, up 3h12m, site tpe1, dns 127.0.0.1:5300, metrics 127.0.0.1:5301`
+
+##### Example: DNS part of the daemon line
+
+| `meta/dns_listen` | Daemon state | Daemon line contains |
+| --- | --- | --- |
+| `["127.0.0.1:5300"]` | running | `, dns 127.0.0.1:5300` |
+| `["127.0.0.1:5300","[::1]:5300"]` | running | `, dns 127.0.0.1:5300 [::1]:5300` |
+| absent | running | no `dns` |
+| `not json` | running | no `dns` |
+| `["127.0.0.1:5300"]` | stopped | no `dns` (the line is `daemon: stopped`) |
+
+#### Scenario: Stopped daemon
+
+- **WHEN** the daemon shut down cleanly and the heartbeat is `0`
+- **THEN** the daemon line is `daemon: stopped` and the services from the last run are still listed
+
+#### Scenario: Service with no healthy backend
+
+- **WHEN** `db.svc.emfor` has `all_down` true
+- **THEN** its service line ends with `ALL DOWN`
+
+#### Scenario: Peer group lines
+
+- **WHEN** the daemon is running and `meta/peers` holds `{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true},{"addr":"10.0.0.7:5302","live":false},{"addr":"10.0.0.8:5302","live":true}],"digest_mismatch":[{"service":"api.svc.emfor","member":"10.0.0.8:5302"}],"disagreements":[{"service":"api.svc.emfor","backend":"10.0.0.11:8080","down":2,"fresh":3}]}`
+- **THEN** right after the daemon line the output has `peers: 2/3 live, not live 10.0.0.7:5302` and `peers: check definition of api.svc.emfor differs at 10.0.0.8:5302`, and the line of backend `10.0.0.11:8080` of `api.svc.emfor` contains `local-up`
+
+##### Example: peers line
+
+The `meta/peers` values here hold `"listen":"10.0.0.5:5302"`.
+
+| `meta/peers` | Daemon state | Output |
+| --- | --- | --- |
+| 2 members, both live, no mismatch | running | `peers: 2/2 live` |
+| 2 members, none live | running | `peers: 0/2 live, not live 10.0.0.6:5302 10.0.0.7:5302, too few live members to vote` |
+| absent | running | no `peers:` line |
+| `not json` | running | no `peers:` line |
+| 2 members, both live | stopped | no `peers:` line and no `local-up` marker |
+
+#### Scenario: Backends this daemon is not an assigned checker of
+
+- **WHEN** the daemon is running, `meta/peers` holds `{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true},{"addr":"10.0.0.7:5302","live":true},{"addr":"10.0.0.8:5302","live":true},{"addr":"10.0.0.9:5302","live":true}],"digest_mismatch":[],"disagreements":[]}`, and `api.svc.emfor` has the backends `10.0.0.11:8080` and `10.0.0.12:8080`
+- **THEN** the output has `peers: 4/4 live, checks 1/2 backends here`, the line of `10.0.0.12:8080` contains `voted`, and the line of `10.0.0.11:8080` does not
+
+##### Example: voted backends of api.svc.emfor at 10.0.0.5:5302
+
+| Live members | `10.0.0.11:8080` | `10.0.0.12:8080` | `peers:` line ends with |
+| --- | --- | --- | --- |
+| .6, .7, .8, .9 | not voted (assigned .5, .8, .6) | voted (assigned .9, .6, .7) | `live, checks 1/2 backends here` |
+| .6, .7, .9 (.8 not live) | not voted (assigned .5, .6, .7) | voted (assigned .9, .6, .7) | `not live 10.0.0.8:5302, checks 1/2 backends here` |
+| .6 only | not voted (no assigned checkers) | not voted (no assigned checkers) | `not live 10.0.0.7:5302 10.0.0.8:5302 10.0.0.9:5302, too few live members to vote` |
+| `listen` is `"bad"` | not voted | not voted | `live` (no `checks` part) |
+
+#### Scenario: Service left out of the peer group is not voted
+
+- **WHEN** `meta/peers` is as in "Backends this daemon is not an assigned checker of" with `"services_off":["api.svc.emfor"]` added, and `api.svc.emfor` is the only service
+- **THEN** the output has `peers: 4/4 live` with no `checks` part, and no backend line contains `voted`
+
+#### Scenario: Members that leave a service out are not candidates
+
+- **WHEN** the daemon is running, `meta/peers` is as in "Backends this daemon is not an assigned checker of" except that the members `10.0.0.6:5302` and `10.0.0.9:5302` have `"services_off":["api.svc.emfor"]`, and `api.svc.emfor` is the only service
+- **THEN** the output has `peers: 4/4 live` with no `checks` part, no backend line contains `voted`, and `emfor status --json` gives `assigned_checkers` equal to `[{"service":"api.svc.emfor","backend":"10.0.0.11:8080","checkers":["10.0.0.5:5302","10.0.0.8:5302","10.0.0.7:5302"]},{"service":"api.svc.emfor","backend":"10.0.0.12:8080","checkers":["10.0.0.7:5302","10.0.0.8:5302","10.0.0.5:5302"]}]`
+
+##### Example: members' services_off and voted backends of api.svc.emfor at 10.0.0.5:5302
+
+All four other members are live.
+
+| Members with `api.svc.emfor` in `services_off` | `10.0.0.11:8080` | `10.0.0.12:8080` | `peers:` line ends with |
+| --- | --- | --- | --- |
+| none | not voted (assigned .5, .8, .6) | voted (assigned .9, .6, .7) | `live, checks 1/2 backends here` |
+| .9 | not voted (assigned .5, .8, .6) | voted (assigned .6, .7, .8) | `live, checks 1/2 backends here` |
+| .6, .9 | not voted (assigned .5, .8, .7) | not voted (assigned .7, .8, .5) | `live` (no `checks` part) |
+| .6, .7, .9 | not voted (no assigned checkers) | not voted (no assigned checkers) | `live, too few live members to vote` |
+
+#### Scenario: Members that leave services out
+
+- **WHEN** the daemon is running, the shown services are `api.svc.emfor` and `db.svc.emfor` (which has a backend, so that the daemon and the members that do not leave it out can vote for it), and `meta/peers` holds `{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true,"services_off":["db.svc.emfor","api.svc.emfor"]},{"addr":"10.0.0.7:5302","live":true,"services_off":[]},{"addr":"10.0.0.8:5302","live":true,"services_off":["api.svc.emfor"]}],"digest_mismatch":[{"service":"api.svc.emfor","member":"10.0.0.7:5302"}],"disagreements":[]}`
+- **THEN** right after the `peers: 3/3 live` line the output has `peers: 10.0.0.6:5302 leaves out api.svc.emfor db.svc.emfor` and then `peers: 10.0.0.8:5302 leaves out api.svc.emfor`, followed by `peers: check definition of api.svc.emfor differs at 10.0.0.7:5302`
+
+##### Example: leaves-out lines for member 10.0.0.6:5302
+
+| Member's `services_off` | Shown services | Daemon state | Line for 10.0.0.6:5302 |
+| --- | --- | --- | --- |
+| `["db.svc.emfor","api.svc.emfor"]` | all | running | `peers: 10.0.0.6:5302 leaves out api.svc.emfor db.svc.emfor` |
+| `["db.svc.emfor","api.svc.emfor"]` | `--service api.svc.emfor` | running | `peers: 10.0.0.6:5302 leaves out api.svc.emfor` |
+| `["db.svc.emfor"]` | `--service api.svc.emfor` | running | none |
+| `[]` or absent | all | running | none |
+| `["api.svc.emfor"]` | all | stopped | none (no `peers:` lines) |
+
+#### Scenario: Backup backend
+
+- **WHEN** the store holds `db.svc.emfor` with backend `10.0.1.5:5432` (`backup` false) and backend `10.1.1.5:5432` (`backup` true), both healthy
+- **THEN** the line of `10.1.1.5:5432` contains `backup` and the line of `10.0.1.5:5432` does not, and a store of format version 1, where `backup` is missing, shows no `backup` marker
+
+#### Scenario: Healthy backend whose last check failed
+
+- **WHEN** the store holds `api.svc.emfor` with backend `10.0.0.11:8080` healthy with reason `connect: Connection refused`, backend `10.0.0.12:8080` healthy without a reason, and backend `10.0.0.13:8080` unhealthy with reason `connect: Connection refused`
+- **THEN** the line of `10.0.0.11:8080` contains `last check failed` before its reason, and the lines of `10.0.0.12:8080` and `10.0.0.13:8080` do not contain `last check failed`
+
+##### Example: when `last check failed` is written
+
+| State | `reason` | Marker |
+| --- | --- | --- |
+| `healthy` | absent | none |
+| `healthy` | `connect: Connection refused` | `last check failed` |
+| `unhealthy` | `connect: Connection refused` | none |
+| `unknown` | present | none |
+| `unrecognized` | present | none |
+
+#### Scenario: Group that cannot vote
+
+- **WHEN** the daemon is running, `meta/peers` holds `{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true},{"addr":"10.0.0.7:5302","live":false}],"digest_mismatch":[],"disagreements":[]}`, and `api.svc.emfor` is the only service
+- **THEN** the output has `peers: 1/2 live, not live 10.0.0.7:5302, too few live members to vote`
+
+#### Scenario: Group with exactly three candidates can vote
+
+- **WHEN** the daemon is running, `meta/peers` holds `{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true},{"addr":"10.0.0.7:5302","live":true}],"digest_mismatch":[],"disagreements":[]}`, and `api.svc.emfor` is the only service
+- **THEN** the output has `peers: 2/2 live` with no `checks` part and no `too few live members to vote` part
+
+#### Scenario: Service left out of the group does not make the group unable to vote
+
+- **WHEN** the daemon is running, `meta/peers` holds `{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":false}],"services_off":["api.svc.emfor"],"digest_mismatch":[],"disagreements":[]}`, and `api.svc.emfor` is the only service
+- **THEN** the output has `peers: 0/1 live, not live 10.0.0.6:5302` with no `too few live members to vote` part
+
+#### Scenario: Group that can vote for some services only
+
+- **WHEN** the daemon is running, `meta/peers` holds `{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true,"services_off":["db.svc.emfor"]},{"addr":"10.0.0.7:5302","live":true,"services_off":["db.svc.emfor"]},{"addr":"10.0.0.8:5302","live":true,"services_off":["db.svc.emfor"]}],"digest_mismatch":[],"disagreements":[]}`, and the shown services are `api.svc.emfor` and `db.svc.emfor`
+- **THEN** the `peers:` line has no `too few live members to vote` part, because the daemon and the three members can vote for `api.svc.emfor`, and `assigned_checkers` in `--json` output gives no checkers for the backends of `db.svc.emfor`
+
+#### Scenario: Heartbeat in the future
+
+- **WHEN** the clock of the host was set back, so that the heartbeat is later than the current time, and an operator runs `emfor status`
+- **THEN** the daemon line is as listed
+
+##### Example: heartbeat later than the current time
+
+| Heartbeat is | Daemon line starts with |
+| --- | --- |
+| 900 ms in the future | `daemon: running, heartbeat 0.9s in the future` |
+| 3000 ms in the future | `daemon: running, heartbeat 3.0s in the future` |
+| 5000 ms in the future | `daemon: stale, heartbeat 5.0s in the future` |
+
+### Requirement: Status filtering and JSON output
+
+`emfor status --service <name>` SHALL show only that service; when the store has no such service it SHALL print `service <name> not found` and exit 2. `emfor status --json` SHALL print one JSON object instead of text: `store` (path), `daemon` (`running`, `stale` or `stopped`), `heartbeat_ms` (the stored value), `heartbeat_age_ms` (null when stopped, a negative number of milliseconds when the heartbeat is later than the current time), `started_at_ms`, `site` (null when absent), `dns_listen` (the array of strings stored in `meta/dns_listen`, null when the key is absent or does not hold a JSON array of strings), `metrics_listen` (the array of strings stored in `meta/metrics_listen`, null when the key is absent or does not hold a JSON array of strings), `services`, an array of the service records exactly as stored, in name order, `history`, an object mapping each listed service name that has a `hist/` key to that key's value exactly as stored, `peers`, the value of `meta/peers` parsed as JSON when it holds a JSON object and null otherwise, not limited by `--service`, `assigned_checkers`, null unless the daemon is running and `meta/peers` has the shape and valid addresses required for voted backends (see "Status text output"), and otherwise an array of `{"service":<name>,"backend":<id>,"checkers":[<listen>, ...]}` for every backend of the listed services, in service name order and then store order, `checkers` holding the backend's assigned checkers in rank order, or empty when the service is in `services_off`, each written in canonical `ip:port` form as `meta/peers` stores addresses (IPv6 as `[addr]:port`) (empty when it has none), and `flapping`, an array of `{"service":<name>,"backend":<id>,"changes":<n>}` for every flapping backend of the listed services (see "Flapping backends"), in service name order and then store order. `--json` and `--service` SHALL combine, and `--service` SHALL limit `history` and `flapping` the same way as `services`. Exit statuses SHALL be the same as for text output.
+
+#### Scenario: JSON for one service
+
+- **WHEN** an operator runs `emfor status --json --service api.svc.emfor` while the daemon is running
+- **THEN** the output parses as JSON with `daemon` equal to `running` and `services` holding one record whose `name` is `api.svc.emfor`
+
+#### Scenario: JSON metrics addresses
+
+- **WHEN** `meta/metrics_listen` holds `["127.0.0.1:5301"]` and an operator runs `emfor status --json`
+- **THEN** `metrics_listen` equals `["127.0.0.1:5301"]`, and with the key absent it is `null`
+
+#### Scenario: JSON DNS addresses
+
+- **WHEN** `meta/dns_listen` holds `["127.0.0.1:5300"]` and an operator runs `emfor status --json`
+- **THEN** `dns_listen` equals `["127.0.0.1:5300"]`, and with the key absent it is `null`
+
+#### Scenario: Unknown service
+
+- **WHEN** an operator runs `emfor status --service nope.svc.emfor`
+- **THEN** the command prints `service nope.svc.emfor not found` and exits 2
+
+#### Scenario: JSON includes history and flapping
+
+- **WHEN** `hist/api.svc.emfor` holds 6 healthy↔unhealthy entries from the last 8 minutes for `10.0.0.12:8080` and an operator runs `emfor status --json`
+- **THEN** `history["api.svc.emfor"]` equals the stored value and `flapping` contains `{"service":"api.svc.emfor","backend":"10.0.0.12:8080","changes":6}`
+
+#### Scenario: JSON without history
+
+- **WHEN** the store has no `hist/` keys and an operator runs `emfor status --json`
+- **THEN** `history` is `{}` and `flapping` is `[]`
+
+#### Scenario: JSON peer state
+
+- **WHEN** `meta/peers` holds `{"listen":"127.0.0.1:5302","members":[{"addr":"127.0.0.1:5303","live":true}],"digest_mismatch":[],"disagreements":[]}` and an operator runs `emfor status --json --service api.svc.emfor`
+- **THEN** `peers` equals that object, and with the key absent it is `null`
+
+#### Scenario: JSON assigned checkers
+
+- **WHEN** `meta/peers` is as in "Backends this daemon is not an assigned checker of" and an operator runs `emfor status --json --service api.svc.emfor` while the daemon is running
+- **THEN** `assigned_checkers` equals `[{"service":"api.svc.emfor","backend":"10.0.0.11:8080","checkers":["10.0.0.5:5302","10.0.0.8:5302","10.0.0.6:5302"]},{"service":"api.svc.emfor","backend":"10.0.0.12:8080","checkers":["10.0.0.9:5302","10.0.0.6:5302","10.0.0.7:5302"]}]`, and with `meta/peers` absent or the daemon stopped it is `null`
+
+#### Scenario: JSON assigned checkers of a service left out
+
+- **WHEN** `meta/peers` is as in "Backends this daemon is not an assigned checker of" with `"services_off":["api.svc.emfor"]` added, and an operator runs `emfor status --json --service api.svc.emfor` while the daemon is running
+- **THEN** `assigned_checkers` equals `[{"service":"api.svc.emfor","backend":"10.0.0.11:8080","checkers":[]},{"service":"api.svc.emfor","backend":"10.0.0.12:8080","checkers":[]}]`
+
+#### Scenario: Heartbeat in the future in JSON output
+
+- **WHEN** the heartbeat is 5000 ms later than the current time and an operator runs `emfor status --json`
+- **THEN** `daemon` is `stale`, `heartbeat_age_ms` is `-5000`, `heartbeat_ms` is the stored value, and the exit status is 1

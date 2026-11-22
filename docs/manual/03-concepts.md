@@ -104,10 +104,16 @@ with its own clock:
 - heartbeat at most 3 seconds old (`EMFOR_MAX_STALENESS`): the store is
   **fresh**, and the health states count;
 - older, or 0 (the daemon stopped cleanly): the store is **stale**, and the
-  client treats every backend as not healthy. `on_all_down` then decides.
+  client treats every backend as not healthy. `on_all_down` then decides;
+- more than `EMFOR_MAX_STALENESS` *ahead* of the client's clock (the clock
+  was set back): also **stale**.
 
 So an application never trusts health data from a daemon that hung or went
 away, and an `open` service still gives it an address.
+
+If the clock of the host is set back by more than `EMFOR_MAX_STALENESS` while
+the daemon runs, clients see a stale store until the daemon writes its next
+heartbeat, which takes at most about a second. A smaller step changes nothing.
 
 When the daemon starts, it rewrites every service with every backend
 `unknown`. It never reuses the health states of an earlier run; only the

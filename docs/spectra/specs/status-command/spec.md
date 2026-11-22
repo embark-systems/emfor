@@ -36,7 +36,7 @@ Defines `emfor status`, the read-only command that shows operators what the loca
 `emfor status` SHALL print, in this order:
 
 1. `store: <path>`;
-2. one daemon line: `daemon: running, heartbeat <age> ago, up <duration>` followed by `, site <site>` when `meta/site` is set, then `, dns <addresses>` when `meta/dns_listen` holds a JSON array of strings, and then `, metrics <addresses>` when `meta/metrics_listen` does, the addresses of each separated by single spaces in stored order; `daemon: stale, heartbeat <age> ago` when the heartbeat is older than 3 seconds; `daemon: stopped` when the heartbeat is `0`;
+2. one daemon line: `daemon: running, heartbeat <age> ago, up <duration>` followed by `, site <site>` when `meta/site` is set, then `, dns <addresses>` when `meta/dns_listen` holds a JSON array of strings, and then `, metrics <addresses>` when `meta/metrics_listen` does, the addresses of each separated by single spaces in stored order; `daemon: stale, heartbeat <age> ago` when the heartbeat is older than 3 seconds; `daemon: stale, heartbeat <age> in the future` when the heartbeat is later than the current time by more than 3 seconds; a heartbeat later than the current time by 3 seconds or less keeps the state `running`, and the line then says `heartbeat <age> in the future` in place of `heartbeat <age> ago`; `daemon: stopped` when the heartbeat is `0`;
 3. when the daemon is running and `meta/peers` holds a JSON object of the shape defined in spec state-store, a line `peers: <live>/<members> live`, where `<members>` is the number of entries in `members` and `<live>` the number of them with `live` true, followed by `, not live <addresses>` with the addresses of the members that are not live separated by single spaces in stored order when there are any; followed by `, checks <n>/<m> backends here` when at least one shown backend is voted (see below), where `<m>` is the number of shown backends and `<n>` the number of them that are not voted, or by `, too few live members to vote` when the group cannot vote (see below); then, for each member in stored order whose `services_off` (spec state-store) contains at least one shown service, a line `peers: <member> leaves out <services>` with those shown services in name order separated by single spaces; then, for each shown service with entries in `digest_mismatch`, a line `peers: check definition of <service> differs at <members>` with that service's members separated by single spaces in stored order;
 4. for each service in name order, a line `<name>  <balance>  on_all_down=<open|closed>` (`unknown` for a value it does not know) followed by `  ALL DOWN` when `all_down` is true;
 5. under each service, one line per backend in store order with the backend `id`, its health state (`healthy`, `unhealthy` or `unknown`, or `unrecognized`, colored like `unhealthy`, for a state written by a newer daemon), the time since `checked_at` as `<age> ago` (`never` when absent), the check latency (`-` when absent), the marker `pool` for members of a `fastest` service's pool, the marker `backup` when the backend's `backup` is true, the marker `local-up` when the daemon is running and `meta/peers` lists the backend in `disagreements`, the marker `voted` when the backend is voted, the marker `FLAPPING (<n> changes in 10m)` when it is flapping (see "Flapping backends"), the marker `last check failed` when the backend's state is `healthy` and its `reason` is present, and the last failure `reason` when present. The marker `last check failed` SHALL NOT be written for a backend whose state is `unhealthy`, `unknown` or `unrecognized`.
@@ -211,10 +211,45 @@ All four other members are live.
 - **WHEN** the daemon is running, `meta/peers` holds `{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true,"services_off":["db.svc.emfor"]},{"addr":"10.0.0.7:5302","live":true,"services_off":["db.svc.emfor"]},{"addr":"10.0.0.8:5302","live":true,"services_off":["db.svc.emfor"]}],"digest_mismatch":[],"disagreements":[]}`, and the shown services are `api.svc.emfor` and `db.svc.emfor`
 - **THEN** the `peers:` line has no `too few live members to vote` part, because the daemon and the three members can vote for `api.svc.emfor`, and `assigned_checkers` in `--json` output gives no checkers for the backends of `db.svc.emfor`
 
+#### Scenario: Heartbeat in the future
+
+- **WHEN** the clock of the host was set back, so that the heartbeat is later than the current time, and an operator runs `emfor status`
+- **THEN** the daemon line is as listed
+
+##### Example: heartbeat later than the current time
+
+| Heartbeat is | Daemon line starts with |
+| --- | --- |
+| 900 ms in the future | `daemon: running, heartbeat 0.9s in the future` |
+| 3000 ms in the future | `daemon: running, heartbeat 3.0s in the future` |
+| 5000 ms in the future | `daemon: stale, heartbeat 5.0s in the future` |
+
+
+<!-- @trace
+source: emfor-future-heartbeat-stale
+updated: 2026-11-22
+code:
+  - CHANGELOG.md
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/status.rs
+  - docs/manual.zh_TW/03-concepts.md
+  - docs/manual.zh_TW/12-operating.md
+  - docs/manual.zh_TW/16-troubleshooting.md
+  - docs/manual/03-concepts.md
+  - docs/manual/12-operating.md
+  - docs/manual/16-troubleshooting.md
+  - tests/conformance/v1/README.md
+  - tests/conformance/v1/cases.json
+  - tools/emfor-fixture/src/lib.rs
+tests:
+  - clients/rust/tests/conformance.rs
+  - tools/emfor-fixture/tests/conformance_data.rs
+-->
+
 ---
 ### Requirement: Status filtering and JSON output
 
-`emfor status --service <name>` SHALL show only that service; when the store has no such service it SHALL print `service <name> not found` and exit 2. `emfor status --json` SHALL print one JSON object instead of text: `store` (path), `daemon` (`running`, `stale` or `stopped`), `heartbeat_ms` (the stored value), `heartbeat_age_ms` (null when stopped), `started_at_ms`, `site` (null when absent), `dns_listen` (the array of strings stored in `meta/dns_listen`, null when the key is absent or does not hold a JSON array of strings), `metrics_listen` (the array of strings stored in `meta/metrics_listen`, null when the key is absent or does not hold a JSON array of strings), `services`, an array of the service records exactly as stored, in name order, `history`, an object mapping each listed service name that has a `hist/` key to that key's value exactly as stored, `peers`, the value of `meta/peers` parsed as JSON when it holds a JSON object and null otherwise, not limited by `--service`, `assigned_checkers`, null unless the daemon is running and `meta/peers` has the shape and valid addresses required for voted backends (see "Status text output"), and otherwise an array of `{"service":<name>,"backend":<id>,"checkers":[<listen>, ...]}` for every backend of the listed services, in service name order and then store order, `checkers` holding the backend's assigned checkers in rank order, or empty when the service is in `services_off`, each written in canonical `ip:port` form as `meta/peers` stores addresses (IPv6 as `[addr]:port`) (empty when it has none), and `flapping`, an array of `{"service":<name>,"backend":<id>,"changes":<n>}` for every flapping backend of the listed services (see "Flapping backends"), in service name order and then store order. `--json` and `--service` SHALL combine, and `--service` SHALL limit `history` and `flapping` the same way as `services`. Exit statuses SHALL be the same as for text output.
+`emfor status --service <name>` SHALL show only that service; when the store has no such service it SHALL print `service <name> not found` and exit 2. `emfor status --json` SHALL print one JSON object instead of text: `store` (path), `daemon` (`running`, `stale` or `stopped`), `heartbeat_ms` (the stored value), `heartbeat_age_ms` (null when stopped, a negative number of milliseconds when the heartbeat is later than the current time), `started_at_ms`, `site` (null when absent), `dns_listen` (the array of strings stored in `meta/dns_listen`, null when the key is absent or does not hold a JSON array of strings), `metrics_listen` (the array of strings stored in `meta/metrics_listen`, null when the key is absent or does not hold a JSON array of strings), `services`, an array of the service records exactly as stored, in name order, `history`, an object mapping each listed service name that has a `hist/` key to that key's value exactly as stored, `peers`, the value of `meta/peers` parsed as JSON when it holds a JSON object and null otherwise, not limited by `--service`, `assigned_checkers`, null unless the daemon is running and `meta/peers` has the shape and valid addresses required for voted backends (see "Status text output"), and otherwise an array of `{"service":<name>,"backend":<id>,"checkers":[<listen>, ...]}` for every backend of the listed services, in service name order and then store order, `checkers` holding the backend's assigned checkers in rank order, or empty when the service is in `services_off`, each written in canonical `ip:port` form as `meta/peers` stores addresses (IPv6 as `[addr]:port`) (empty when it has none), and `flapping`, an array of `{"service":<name>,"backend":<id>,"changes":<n>}` for every flapping backend of the listed services (see "Flapping backends"), in service name order and then store order. `--json` and `--service` SHALL combine, and `--service` SHALL limit `history` and `flapping` the same way as `services`. Exit statuses SHALL be the same as for text output.
 
 #### Scenario: JSON for one service
 
@@ -261,26 +296,31 @@ All four other members are live.
 - **WHEN** `meta/peers` is as in "Backends this daemon is not an assigned checker of" with `"services_off":["api.svc.emfor"]` added, and an operator runs `emfor status --json --service api.svc.emfor` while the daemon is running
 - **THEN** `assigned_checkers` equals `[{"service":"api.svc.emfor","backend":"10.0.0.11:8080","checkers":[]},{"service":"api.svc.emfor","backend":"10.0.0.12:8080","checkers":[]}]`
 
+#### Scenario: Heartbeat in the future in JSON output
+
+- **WHEN** the heartbeat is 5000 ms later than the current time and an operator runs `emfor status --json`
+- **THEN** `daemon` is `stale`, `heartbeat_age_ms` is `-5000`, `heartbeat_ms` is the stored value, and the exit status is 1
+
 
 <!-- @trace
-source: emfor-peers-service-off
-updated: 2026-11-13
+source: emfor-future-heartbeat-stale
+updated: 2026-11-22
 code:
-  - crates/emfor-daemon/src/writer.rs
-  - docs/manual/05-configuring.md
-  - crates/emfor-daemon/src/quorum.rs
-  - crates/emfor-daemon/src/peers/
-  - docs/manual/12-operating.md
-  - crates/emfor-daemon/src/status.rs
-  - crates/emfor-daemon/src/supervisor.rs
-  - crates/emfor-daemon/src/cli.rs
-  - crates/emfor-daemon/src/config.rs
-  - examples/emfor.toml
   - CHANGELOG.md
+  - clients/rust/src/select.rs
+  - crates/emfor-daemon/src/status.rs
+  - docs/manual.zh_TW/03-concepts.md
+  - docs/manual.zh_TW/12-operating.md
+  - docs/manual.zh_TW/16-troubleshooting.md
   - docs/manual/03-concepts.md
-  - crates/emfor-daemon/src/schedule.rs
+  - docs/manual/12-operating.md
+  - docs/manual/16-troubleshooting.md
+  - tests/conformance/v1/README.md
+  - tests/conformance/v1/cases.json
+  - tools/emfor-fixture/src/lib.rs
 tests:
-  - crates/emfor-daemon/tests/peers.rs
+  - clients/rust/tests/conformance.rs
+  - tools/emfor-fixture/tests/conformance_data.rs
 -->
 
 ---
