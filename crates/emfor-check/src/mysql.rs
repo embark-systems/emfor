@@ -444,7 +444,6 @@ mod tests {
         }
     }
 
-    // spectra-scenario: database-checks / Slow backend
     #[tokio::test]
     async fn connection_cut_off_by_the_timeout_is_closed() {
         // The server sends the columns of SELECT 1 and then nothing; the
