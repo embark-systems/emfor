@@ -37,8 +37,10 @@ so programs linked against one minor release do not silently load another.
 | Interface | Stable | What may change in a compatible release |
 | --- | --- | --- |
 | Config file (`emfor.toml`) | Yes | New tables, keys and values. |
-| Commands, options and exit statuses (`emfor server`, `check-config`, `status`) | Yes | New options and subcommands. |
+| Commands, options and exit statuses (`emfor server`, `check-config`, `status`, `lookup`) | Yes | New options and subcommands. |
 | `emfor status --json` | Yes | New fields. |
+| `emfor lookup` output without `--explain`: the address line, and `--json` | Yes | New fields in `--json`. |
+| `emfor lookup --explain` and `--dns` text output | No | Layout and wording, at any release. Use `--json` or the exit status in scripts. |
 | `emfor status` text output | No | Layout and wording, at any release. Use `--json` or the exit status in scripts. |
 | Store format (`meta/schema_version` 2; clients and `emfor status` also read 1) | Yes | New fields in records, new keys. |
 | Client API (lookup call, the four error codes) | Yes | New functions. |
