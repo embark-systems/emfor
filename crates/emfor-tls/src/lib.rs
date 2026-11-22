@@ -361,6 +361,20 @@ impl FileStamp {
     }
 }
 
+/// The version of a file, as [`file_version`] sees it: equal for two calls
+/// exactly when the file was neither replaced nor rewritten in between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileVersion(FileStamp);
+
+/// The current version of `path`, `None` when it cannot be examined. A
+/// caller that built something from the file compares this with the version
+/// it saw then to know whether to build again.
+pub fn file_version(path: &Path) -> Option<FileVersion> {
+    std::fs::metadata(path)
+        .ok()
+        .map(|meta| FileVersion(FileStamp::of(&meta)))
+}
+
 /// A `ca_file` as read and parsed once.
 struct CaFile {
     certs: Vec<CertificateDer<'static>>,

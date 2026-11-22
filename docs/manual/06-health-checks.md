@@ -100,6 +100,7 @@ expect_body = '"status":"UP"'
 | `expect_status` | non-empty list | `["200-399"]` | Status codes that count as `up`: codes (`200` or `"200"`) or inclusive ranges (`"200-299"`), all within 100–599. |
 | `expect_body` | string | none | Bytes that must appear, case-sensitively, in the body. Up to 65536 bytes of the body are read. Not empty, at most 16384 bytes. |
 | `tls_verify` | boolean | `true` | With `https`: `false` accepts any certificate. |
+| `ca_file` | absolute path | none | With `https`: a PEM file of the CA certificates to trust, for a server whose certificate a private CA signed. Only this file is trusted, not the system's CA certificates (like `curl --cacert`). Each check notices a replaced or rewritten file and reads it again, so a new file needs no reload; one that cannot be read or has no certificate fails validation, or makes the check `error` if it breaks later. Needs `scheme = "https"`; with `tls_verify = false` it has no effect. |
 
 What the results look like:
 
@@ -110,7 +111,7 @@ What the results look like:
 | `body: ...` | The body could not be read. |
 | `error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)` | The connection failed. The reason never contains the request URL, so a token in `path` does not leak into logs. |
 | `timeout` | No complete answer within `timeout`. |
-| `cannot build http client: ...; https checks need the system CA certificates unless tls_verify = false` (`error`) | An `https` check with verification on a host without CA certificates (`ca-certificates` on Debian and RHEL). Plain `http` needs no CA certificates since 0.7.0. |
+| `cannot build http client: ...; https checks need the system CA certificates, or a ca_file, unless tls_verify = false` (`error`) | An `https` check with verification on a host without CA certificates (`ca-certificates` on Debian and RHEL). Plain `http` needs no CA certificates since 0.7.0. Put the private CA in a `ca_file` instead of installing it system-wide. |
 
 Use `expect_body` for health endpoints that answer 200 whatever their state and
 put the state in the body. The latency that `balance = "fastest"` uses then

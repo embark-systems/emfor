@@ -3,8 +3,10 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use emfor_tls::{FileVersion, TlsSettings};
 use futures::future::BoxFuture;
 use reqwest::redirect::Policy;
 
@@ -18,6 +20,7 @@ const ALLOWED: &[&str] = &[
     "expect_status",
     "tls_verify",
     "expect_body",
+    "ca_file",
 ];
 
 /// Longest `expect_body`, as for the tcp checker's `expect`.
@@ -47,6 +50,8 @@ pub struct HttpOptions {
     pub host_header: Option<String>,
     pub expect_status: Vec<StatusRange>,
     pub tls_verify: bool,
+    /// PEM file of the CA certificates to trust instead of the system's.
+    pub ca_file: Option<PathBuf>,
     /// Bytes the body must contain; the body is read only when this is set.
     pub expect_body: Option<Vec<u8>>,
 }
@@ -139,6 +144,25 @@ fn parse_options(options: &toml::Table) -> Result<HttpOptions, Vec<OptionError>>
         }
     };
 
+    let ca_file = match options.get("ca_file") {
+        None => None,
+        Some(toml::Value::String(_)) if !https => {
+            errors.push(OptionError::new("ca_file", "requires scheme = \"https\""));
+            None
+        }
+        Some(toml::Value::String(file)) => match emfor_tls::check_ca_file(Path::new(file)) {
+            Ok(()) => Some(PathBuf::from(file)),
+            Err(message) => {
+                errors.push(OptionError::new("ca_file", message));
+                None
+            }
+        },
+        Some(_) => {
+            errors.push(OptionError::new("ca_file", "must be a string"));
+            None
+        }
+    };
+
     let expect_body = match options.get("expect_body") {
         None => None,
         Some(toml::Value::String(b)) if b.is_empty() => {
@@ -166,6 +190,7 @@ fn parse_options(options: &toml::Table) -> Result<HttpOptions, Vec<OptionError>>
             host_header,
             expect_status,
             tls_verify,
+            ca_file,
             expect_body,
         })
     } else {
@@ -209,6 +234,9 @@ fn parse_status_item(item: &toml::Value) -> Result<StatusRange, String> {
     }
 }
 
+/// A client and the version of the `ca_file` it was built from.
+type BuiltClient = (Option<FileVersion>, reqwest::Client);
+
 #[derive(Debug)]
 pub struct HttpChecker {
     opts: HttpOptions,
@@ -217,7 +245,7 @@ pub struct HttpChecker {
     /// (correct SNI and certificate check) while the connection still goes
     /// to the backend. Otherwise one client shared by all backends (key:
     /// `None`), since the URL already holds the address.
-    clients: Mutex<HashMap<Option<SocketAddr>, reqwest::Client>>,
+    clients: Mutex<HashMap<Option<SocketAddr>, BuiltClient>>,
 }
 
 impl HttpChecker {
@@ -230,11 +258,21 @@ impl HttpChecker {
     async fn client_for(&self, target: SocketAddr) -> Result<reqwest::Client, String> {
         let name = self.host_name();
         let key = name.map(|_| target);
-        if let Some(c) = self
+        // A replaced or rewritten `ca_file` makes the cached client stale:
+        // it is built again, so the file takes effect without a reload.
+        let version = self
+            .opts
+            .ca_file
+            .as_deref()
+            // Not with verification off: the file is not used then.
+            .filter(|_| !skip_cert_verification(self.opts.https, self.opts.tls_verify))
+            .and_then(emfor_tls::file_version);
+        if let Some((built_from, c)) = self
             .clients
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&key)
+            && *built_from == version
         {
             return Ok(c.clone());
         }
@@ -248,14 +286,29 @@ impl HttpChecker {
         // and parses the system's CA certificates (rustls-platform-verifier
         // on Linux and FreeBSD), and with a domain `host_header` that
         // happens once per backend.
+        let skip = skip_cert_verification(self.opts.https, self.opts.tls_verify);
         let mut b = reqwest::Client::builder()
             .redirect(Policy::none())
             .no_proxy()
             .pool_max_idle_per_host(0)
-            .tls_danger_accept_invalid_certs(skip_cert_verification(
-                self.opts.https,
-                self.opts.tls_verify,
-            ));
+            .tls_danger_accept_invalid_certs(skip);
+        if let (false, Some(ca_file)) = (skip, &self.opts.ca_file) {
+            // Only the certificates of `ca_file` are trusted, not the
+            // system's. Read here, not at validation, so a file that went
+            // bad since then is an `error` of this check.
+            let tls = TlsSettings {
+                verify: true,
+                server_name: None,
+                ca_file: Some(ca_file.clone()),
+            };
+            let certs = emfor_tls::trusted_certificates(&tls).map_err(|f| f.reason)?;
+            let certs = certs
+                .iter()
+                .map(|der| reqwest::Certificate::from_der(der))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("ca_file: {e}"))?;
+            b = b.tls_certs_only(certs);
+        }
         if let Some(name) = name {
             b = b.resolve(name, target);
         }
@@ -264,13 +317,12 @@ impl HttpChecker {
             Ok(Err(e)) => return Err(e.to_string()),
             Err(e) => return Err(e.to_string()),
         };
-        Ok(self
-            .clients
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(key)
-            .or_insert(c)
-            .clone())
+        let mut clients = self.clients.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = clients.entry(key).or_insert_with(|| (version, c.clone()));
+        if entry.0 != version {
+            *entry = (version, c.clone());
+        }
+        Ok(entry.1.clone())
     }
 
     /// Request URL. The connection always goes to `target`: either the URL
@@ -302,11 +354,12 @@ fn skip_cert_verification(https: bool, tls_verify: bool) -> bool {
 /// The reason for a client that cannot be built. For `https` with
 /// certificate verification on, the usual cause is a host without system CA
 /// certificates, which the error text of the client does not say.
-fn build_failure(error: &str, verified_https: bool) -> String {
-    let hint = if verified_https {
-        "; https checks need the system CA certificates unless tls_verify = false"
-    } else {
-        ""
+fn build_failure(error: &str, verified_https: bool, ca_file: bool) -> String {
+    let hint = match (verified_https, ca_file) {
+        (true, false) => {
+            "; https checks need the system CA certificates, or a ca_file, unless tls_verify = false"
+        }
+        _ => "",
     };
     format!("cannot build http client: {error}{hint}")
 }
@@ -385,7 +438,11 @@ impl Checker for HttpChecker {
                 Ok(c) => c,
                 Err(e) => {
                     let verified_https = self.opts.https && self.opts.tls_verify;
-                    return CheckResult::Error(build_failure(&e, verified_https));
+                    return CheckResult::Error(build_failure(
+                        &e,
+                        verified_https,
+                        self.opts.ca_file.is_some(),
+                    ));
                 }
             };
             let mut req = client.get(self.url(target));
@@ -520,15 +577,135 @@ mod tests {
     // spectra-scenario: health-checking / https without CA certificates
     #[test]
     fn build_failure_names_the_missing_ca_certificates_for_verified_https_only() {
-        let hinted = super::build_failure("builder error", true);
+        let hinted = super::build_failure("builder error", true, false);
         assert!(hinted.starts_with("cannot build http client: builder error"));
         assert!(hinted.contains("system CA certificates"), "{hinted}");
         assert!(hinted.contains("tls_verify = false"), "{hinted}");
         // http, or https without verification, have no such cause
+        // With a ca_file the system CA certificates are not the cause.
         assert_eq!(
-            super::build_failure("builder error", false),
+            super::build_failure("builder error", true, true),
             "cannot build http client: builder error"
         );
+        assert_eq!(
+            super::build_failure("builder error", false, false),
+            "cannot build http client: builder error"
+        );
+    }
+
+    fn ca_options(toml_text: &str) -> Result<HttpOptions, Vec<OptionError>> {
+        let table: toml::Table = toml_text.parse().unwrap();
+        super::parse_options(&table)
+    }
+
+    /// Spec health-checking Example "ca_file options".
+    // spectra-scenario: health-checking / ca_file validation
+    // spectra-scenario: health-checking / ca_file validation / ca_file options
+    #[test]
+    fn ca_file_options_are_validated() {
+        let dir = tempfile::tempdir().unwrap();
+        let pem = dir.path().join("ca.pem");
+        std::fs::write(&pem, emfor_tls::testing::pki("ca.test").ca_pem).unwrap();
+        let empty = dir.path().join("empty.pem");
+        std::fs::write(&empty, "not a certificate\n").unwrap();
+        let (pem, empty) = (pem.display(), empty.display());
+
+        let ok = ca_options(&format!("scheme = \"https\"\nca_file = \"{pem}\"")).unwrap();
+        assert!(ok.tls_verify);
+        assert_eq!(
+            ok.ca_file.as_deref(),
+            Some(std::path::Path::new(&pem.to_string()))
+        );
+        let off = ca_options(&format!(
+            "scheme = \"https\"\nca_file = \"{pem}\"\ntls_verify = false"
+        ))
+        .unwrap();
+        assert!(!off.tls_verify && off.ca_file.is_some());
+
+        let fails = |text: String| -> (String, String) {
+            let e = ca_options(&text).unwrap_err();
+            assert_eq!(e.len(), 1, "{e:?}");
+            (e[0].key.clone(), e[0].message.clone())
+        };
+        let (k, m) = fails(format!("scheme = \"http\"\nca_file = \"{pem}\""));
+        assert_eq!(
+            (k.as_str(), m.as_str()),
+            ("ca_file", "requires scheme = \"https\"")
+        );
+        let (k, m) = fails("scheme = \"https\"\nca_file = \"/no/such/file\"".into());
+        assert_eq!((k.as_str(), m.as_str()), ("ca_file", "file not found"));
+        let (k, m) = fails(format!("scheme = \"https\"\nca_file = \"{empty}\""));
+        assert_eq!(
+            (k.as_str(), m.as_str()),
+            ("ca_file", "no certificate found")
+        );
+        let (k, m) = fails("scheme = \"https\"\nca_file = 5".into());
+        assert_eq!((k.as_str(), m.as_str()), ("ca_file", "must be a string"));
+        let (k, m) = fails("scheme = \"https\"\nca_file = \"ca.pem\"".into());
+        assert_eq!(
+            (k.as_str(), m.as_str()),
+            ("ca_file", "not an absolute path")
+        );
+    }
+
+    fn tls_checker(ca_file: &std::path::Path) -> HttpChecker {
+        let options = format!(
+            "scheme = \"https\"\nhost_header = \"ca.test\"\nca_file = \"{}\"",
+            ca_file.display()
+        );
+        HttpChecker {
+            opts: super::parse_options(&options.parse::<toml::Table>().unwrap()).unwrap(),
+            clients: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The system CA certificates cannot be what makes these checks pass or
+    /// fail: `ca_file` replaces them.
+    // spectra-scenario: health-checking / Private CA through ca_file
+    // spectra-scenario: health-checking / ca_file replaces the system CA certificates
+    #[tokio::test]
+    async fn ca_file_is_the_only_trust_source() {
+        let pki = emfor_tls::testing::pki("ca.test");
+        let other = emfor_tls::testing::pki("other.test");
+        let addr = emfor_tls::testing::https_server(pki.server_config.clone()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let (good, bad) = (dir.path().join("good.pem"), dir.path().join("bad.pem"));
+        std::fs::write(&good, &pki.ca_pem).unwrap();
+        std::fs::write(&bad, &other.ca_pem).unwrap();
+
+        assert_eq!(tls_checker(&good).check(req(addr)).await, CheckResult::Up);
+        let wrong = tls_checker(&bad).check(req(addr)).await;
+        assert!(matches!(wrong, CheckResult::Down(_)), "{wrong:?}");
+
+        // The file went bad after validation: an error naming `ca_file`.
+        let gone = tls_checker(&good);
+        std::fs::remove_file(&good).unwrap();
+        match gone.check(req(addr)).await {
+            CheckResult::Error(m) => assert!(m.contains("ca_file"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    // spectra-scenario: health-checking / Replaced ca_file takes effect without a reload
+    #[tokio::test]
+    async fn a_replaced_ca_file_takes_effect_at_the_next_check() {
+        let pki = emfor_tls::testing::pki("ca.test");
+        let other = emfor_tls::testing::pki("other.test");
+        let addr = emfor_tls::testing::https_server(pki.server_config.clone()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ca.pem");
+        std::fs::write(&file, &pki.ca_pem).unwrap();
+        let checker = tls_checker(&file);
+        assert_eq!(checker.check(req(addr)).await, CheckResult::Up);
+        assert_eq!(checker.check(req(addr)).await, CheckResult::Up, "reused");
+
+        // Replaced by another file (new inode), as a deploy tool does.
+        let next = dir.path().join("next.pem");
+        std::fs::write(&next, &other.ca_pem).unwrap();
+        std::fs::rename(&next, &file).unwrap();
+        let after = checker.check(req(addr)).await;
+        assert!(matches!(after, CheckResult::Down(_)), "{after:?}");
+        assert_eq!(checker.clients.lock().unwrap().len(), 1, "one client kept");
     }
 
     fn req(addr: SocketAddr) -> CheckRequest {

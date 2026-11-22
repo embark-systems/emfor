@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`http` checks take a `ca_file`.** For a server whose certificate a private
+  CA signed, set `ca_file` to the CA's PEM file instead of installing it
+  system-wide or turning off `tls_verify`. Only that file is trusted, not the
+  system's CA certificates, as with the other checks that have a `ca_file`.
+  A replaced file takes effect at the next check without a reload.
+
 - **The manual says how far peer clocks may differ.** A peer message whose
   timestamp is more than 5 seconds from the receiver's clock, in either
   direction, is dropped as `stale`; chapters 11 and 16 now say so. No code

@@ -89,6 +89,7 @@ expect_body = '"status":"UP"'
 | `expect_status` | 非空清單 | `["200-399"]` | 算 `up` 的狀態碼：可以是單一狀態碼（`200` 或 `"200"`），也可以是含頭尾的範圍（`"200-299"`），全部都要在 100–599 之間。 |
 | `expect_body` | 字串 | 無 | 回應內容裡一定要出現的位元組，區分大小寫。內容最多讀 65536 位元組。不能是空的，最長 16384 位元組。 |
 | `tls_verify` | 布林 | `true` | 用在 `https`：設成 `false` 就接受任何憑證。 |
+| `ca_file` | 絕對路徑 | 無 | 用在 `https`：要信任的 CA 憑證 PEM 檔，給憑證由私有 CA 簽發的伺服器用。只信這個檔案，不信系統的 CA 憑證（像 `curl --cacert`）。每次檢查都會看檔案有沒有被換掉或改寫，有的話就重新讀，所以換檔不必 reload；檔案讀不到或裡面沒有憑證，設定檢查會失敗，之後才壞掉則該次檢查結果是 `error`。要搭配 `scheme = "https"`；同時設 `tls_verify = false` 則沒有作用。 |
 
 結果會長這樣：
 
@@ -99,7 +100,7 @@ expect_body = '"status":"UP"'
 | `body: ...` | 內容讀不到。 |
 | `error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)` | 連線失敗。reason 從來不含請求的 URL，所以 `path` 裡的 token 不會漏到 log 裡。 |
 | `timeout` | 在 `timeout` 內沒收到完整的回答。 |
-| `cannot build http client: ...; https checks need the system CA certificates unless tls_verify = false`（`error`） | 在沒有 CA 憑證的主機上（Debian 與 RHEL 上是 `ca-certificates`）跑有開驗證的 `https` 檢查。從 0.7.0 起，單純的 `http` 不需要 CA 憑證。 |
+| `cannot build http client: ...; https checks need the system CA certificates, or a ca_file, unless tls_verify = false`（`error`） | 在沒有 CA 憑證的主機上（Debian 與 RHEL 上是 `ca-certificates`）跑有開驗證的 `https` 檢查。從 0.7.0 起，單純的 `http` 不需要 CA 憑證。私有 CA 請放進 `ca_file`，不必裝到系統。 |
 
 有些健康端點不管狀態好壞都回 200，只把狀態寫在內容裡，這種就要用 `expect_body`。這時 `balance = "fastest"` 用的延遲會包含讀內容的時間。
 

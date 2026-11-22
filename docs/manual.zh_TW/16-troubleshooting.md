@@ -105,7 +105,7 @@ ALL_DOWN: service db.svc.emfor: no backend is healthy, and on_all_down is closed
 | `expect: got "..."` | tcp | 回應和 `expect` 對不上。 |
 | `error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)` | http | 沒有程式在聽。 |
 | `unexpected status 503` | http | 狀態碼不在 `expect_status` 裡。 |
-| `cannot build http client: ...; https checks need the system CA certificates unless tls_verify = false` | http（error） | 安裝 `ca-certificates`，或設 `tls_verify = false`。 |
+| `cannot build http client: ...; https checks need the system CA certificates, or a ca_file, unless tls_verify = false` | http（error） | 安裝 `ca-certificates`、用 `ca_file` 指定私有 CA，或設 `tls_verify = false`。 |
 | `exit code 1`，或程式輸出的第一行 | exec | 檢查程式判定 down。 |
 | `cannot run /path: ...` | exec（error） | 程式找不到、不能執行，或 unit 的沙箱不允許。 |
 | `killed by signal 9` | exec | 程式當掉了，或被 kill 掉。 |

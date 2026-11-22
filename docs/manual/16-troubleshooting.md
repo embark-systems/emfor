@@ -113,7 +113,7 @@ ALL_DOWN: service db.svc.emfor: no backend is healthy, and on_all_down is closed
 | `expect: got "..."` | tcp | The answer did not match `expect`. |
 | `error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)` | http | Nothing listens. |
 | `unexpected status 503` | http | The status is not in `expect_status`. |
-| `cannot build http client: ...; https checks need the system CA certificates unless tls_verify = false` | http (error) | Install `ca-certificates`, or set `tls_verify = false`. |
+| `cannot build http client: ...; https checks need the system CA certificates, or a ca_file, unless tls_verify = false` | http (error) | Install `ca-certificates`, point `ca_file` at your private CA, or set `tls_verify = false`. |
 | `exit code 1`, or the program's first output line | exec | The check program said down. |
 | `cannot run /path: ...` | exec (error) | Not found, not executable, or not allowed under the unit's sandbox. |
 | `killed by signal 9` | exec | The program crashed or was killed. |

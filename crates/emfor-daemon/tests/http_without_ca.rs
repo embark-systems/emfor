@@ -82,3 +82,57 @@ fn http_works_and_verified_https_names_the_missing_certificates() {
     let (code, log) = d.stop();
     assert_eq!(code, 0, "{log}");
 }
+
+/// A TLS server whose certificate is for `ca.test`, run on its own thread
+/// and runtime; returns its address and the PEM of the CA that signed it.
+fn https_server() -> (String, String) {
+    let pki = emfor_tls::testing::pki("ca.test");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let config = pki.server_config.clone();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {
+            let addr = emfor_tls::testing::https_server(config).await;
+            tx.send(addr.to_string()).unwrap();
+            std::future::pending::<()>().await;
+        });
+    });
+    (rx.recv().unwrap(), pki.ca_pem)
+}
+
+// spectra-scenario: health-checking / Private CA through ca_file
+#[test]
+fn ca_file_makes_verified_https_work_without_system_ca_certificates() {
+    let (addr, ca_pem) = https_server();
+    let none = Path::new("/nonexistent-ca-certificates");
+    let dir = tempfile::tempdir().unwrap();
+    let ca = dir.path().join("private-ca.pem");
+    std::fs::write(&ca, ca_pem).unwrap();
+    let d = Daemon::spawn_with(
+        |dir| {
+            format!(
+                "{}{}",
+                common::store_header(dir),
+                service(
+                    "private.svc.emfor",
+                    &addr,
+                    &format!(
+                        "scheme = \"https\"\nhost_header = \"ca.test\"\nca_file = \"{}\"\n",
+                        ca.display()
+                    ),
+                ),
+            )
+        },
+        &[("SSL_CERT_FILE", none), ("SSL_CERT_DIR", none)],
+    );
+    d.wait_log("emfor started");
+    let r = Reader::open(&d.store());
+    wait_within("the backend has a result", WAIT, || {
+        r.backend("private.svc.emfor")
+            .is_some_and(|b| b.checked_at.is_some())
+    });
+    let b = r.backend("private.svc.emfor").unwrap();
+    assert_eq!(b.state, HealthState::Healthy, "{:?}", b.reason);
+    let (code, log) = d.stop();
+    assert_eq!(code, 0, "{log}");
+}

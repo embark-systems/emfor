@@ -113,6 +113,33 @@ pub async fn tls_server(config: Arc<ServerConfig>, greeting: &'static [u8]) -> S
     addr
 }
 
+/// Serve `HTTP/1.1 200 OK` with an empty body over TLS on a local port: each
+/// connection is answered after its request was read, then closed.
+pub async fn https_server(config: Arc<ServerConfig>) -> SocketAddr {
+    use tokio::io::AsyncReadExt;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let acceptor = TlsAcceptor::from(config);
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                if let Ok(mut tls) = acceptor.accept(stream).await {
+                    let mut buf = [0u8; 2048];
+                    let _ = tls.read(&mut buf).await;
+                    let _ = tls
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await;
+                    let _ = tls.shutdown().await;
+                }
+            });
+        }
+    });
+    addr
+}
+
 /// Like [`tls_server`], but each connection is dropped after `greeting`
 /// without a TLS close_notify, as servers often do on errors.
 pub async fn tls_server_without_close_notify(

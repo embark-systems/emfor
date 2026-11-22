@@ -1,0 +1,121 @@
+## MODIFIED Requirements
+
+### Requirement: HTTP checker
+
+The `http` checker SHALL send one `GET` request per check to the backend IP and port using `scheme` (`http` or `https`, default `http`) and `path` (default `/`), with the `Host` header set to `host_header` when configured. `path` SHALL start with `/` (otherwise `must start with '/'`) and SHALL NOT contain `#`, `\` or a control character, which the request URL would cut off, drop or turn into `/` (`must not contain '#', '\' or control characters`); other characters, such as a space, SHALL be sent percent-encoded. `host_header` SHALL be an IPv4 address, an IPv6 address in brackets, or a host name that a URL holds unchanged as its host (ignoring ASCII case), each with an optional `:port` of 1 to 5 digits up to 65535; anything else SHALL fail validation with `must be a host with an optional port, such as "api.internal" or "api.internal:8443"`. With a host name, the request URL SHALL use that name and the connection SHALL still go to the backend IP and port, so that with `https` the name is the TLS server name. It SHALL NOT follow redirects. The result SHALL be `up` when the response status matches any entry of `expect_status` (default `["200-399"]`; each entry is a status code or an inclusive `lo-hi` range) and `down` otherwise, with the status code in the reason. For `https`, certificate verification SHALL be on unless `tls_verify = false`. `ca_file` (a string) SHALL name a PEM file of CA certificates, checked at validation with the same rules and messages as the `ca_file` of the other checks (the file is read, and holds at least one certificate); when it is set and verification is on, the checker SHALL trust only the certificates in that file and not the system's CA certificates, and SHALL NOT need the system CA certificates. `ca_file` with `scheme = "http"` SHALL fail validation on `ca_file` with `requires scheme = "https"`. `ca_file` together with `tls_verify = false` SHALL be accepted, and verification stays off. A `ca_file` that is replaced while the daemon runs SHALL take effect at the next check without a reload. When the file can no longer be read or holds no certificate while a check builds its client, the result SHALL be `error` with a reason that names `ca_file`, not `down`. When `expect_body` is set (a string of 1 to 16384 bytes), a response whose status matches SHALL also be read, up to 65536 bytes and stopping as soon as `expect_body` is found as a case-sensitive byte substring; the result SHALL be `up` only when it is found, and otherwise `down` with reason `expect_body: got "<first 64 bytes of the body, escaped>"`. A failure while reading the body SHALL be `down` with a reason starting `body: `. Without `expect_body`, the checker SHALL NOT read the body. A reason built from an error of the HTTP client SHALL NOT contain the request URL: the client appends it to its messages, and `path` can carry a token in its query string. With `scheme = "http"` the checker SHALL NOT need the system's CA certificates: it SHALL work on a host that has none, because a plain `http` request starts no TLS handshake. With `https`, verification on and no system CA certificates on the host, the result SHALL be `error` with a reason that starts `cannot build http client:` and names the system CA certificates and `tls_verify = false`.
+
+#### Scenario: Status inside expected range
+
+- **WHEN** an `http` check with default options receives status 204
+- **THEN** the result is `up`
+
+##### Example: status matching
+
+| `expect_status` | Response status | Result |
+| --- | --- | --- |
+| default `["200-399"]` | 200 | up |
+| default `["200-399"]` | 302 | up (redirect not followed) |
+| default `["200-399"]` | 503 | down, reason contains 503 |
+| `["200", "204"]` | 204 | up |
+| `["200-299"]` | 301 | down, reason contains 301 |
+
+#### Scenario: Invalid expect_status
+
+- **WHEN** a service sets `expect_status = ["299-200"]`
+- **THEN** validation fails because the range lower bound exceeds the upper bound
+
+#### Scenario: Host header
+
+- **WHEN** a service sets `host_header = "api.internal"`
+- **THEN** each check request carries `Host: api.internal`
+
+##### Example: host_header validation
+
+| `host_header` | Validation |
+| --- | --- |
+| `api.internal` | ok |
+| `api.internal:8443` | ok |
+| `[2001:db8::1]:8080` | ok |
+| `10.0.0.1` | ok |
+| `api internal` | error |
+| `api.internal/` | error |
+| `http://api.internal` | error |
+| `2001:db8::1` | error (IPv6 needs brackets) |
+
+#### Scenario: Body must contain expect_body
+
+- **WHEN** a service sets `expect_body = "\"status\":\"UP\""` and the backend answers 200 with body `{"status":"DOWN"}`
+- **THEN** the result is `down` with reason `expect_body: got "{\"status\":\"DOWN\"}"`
+
+##### Example: body matching
+
+| `expect_body` | Response | Result |
+| --- | --- | --- |
+| (not set) | 200, body `{"status":"DOWN"}` | up |
+| `"status":"UP"` | 200, body `{"status":"UP"}` | up |
+| `"status":"UP"` | 200, body `{"status":"up"}` | down: `expect_body: got "{\"status\":\"up\"}"` |
+| `"status":"UP"` | 503, body `{"status":"UP"}` | down: `unexpected status 503` |
+| `ok` | 200, body sent in two parts `o` and `k` | up |
+| `ok` | 200, 70000 bytes of `a` followed by `ok` | down: `expect_body: got "aaaa…"` (first 64 bytes) |
+| `ok` | 200, empty body | down: `expect_body: got ""` |
+
+#### Scenario: Invalid expect_body
+
+- **WHEN** a service sets `expect_body = ""`
+- **THEN** validation fails on `expect_body` with `must not be empty`
+
+##### Example: expect_body validation
+
+| `expect_body` | Error |
+| --- | --- |
+| `""` | `expect_body`: must not be empty |
+| 16385 bytes | `expect_body`: must be at most 16384 bytes |
+| `200` (integer) | `expect_body`: must be a string |
+
+#### Scenario: Reason without the request URL
+
+- **WHEN** an `http` check with `path = "/health?token=s3cret"` fails because the backend refuses the connection, or because the TLS handshake fails, or because the body cannot be read
+- **THEN** the result is `down` and its reason contains neither `s3cret`, nor `token=`, nor the path
+
+
+#### Scenario: Plain http without CA certificates
+
+- **WHEN** an `http` check with `scheme = "http"` runs on a host that has no system CA certificates, against a server that answers 200
+- **THEN** the result is `up`, and it is `down` with 503 in the reason when the server answers 503
+
+#### Scenario: https without CA certificates
+
+- **WHEN** an `http` check with `scheme = "https"` and the default `tls_verify` runs on a host that has no system CA certificates
+- **THEN** the result is `error` and its reason names the system CA certificates and `tls_verify = false`
+
+#### Scenario: Private CA through ca_file
+
+- **WHEN** an `http` check with `scheme = "https"` and `ca_file` naming a PEM file with the CA that signed the backend certificate runs against a backend that answers 200
+- **THEN** the result is `up`, whether or not the host has system CA certificates
+
+#### Scenario: ca_file replaces the system CA certificates
+
+- **WHEN** an `http` check with `scheme = "https"` and `ca_file` naming a PEM file with an unrelated CA runs against a backend whose certificate is signed by another CA
+- **THEN** the certificate is not trusted and the result is not `up`
+
+#### Scenario: Replaced ca_file takes effect without a reload
+
+- **WHEN** an `http` check with `scheme = "https"` and `ca_file` has passed once against a backend whose certificate is signed by CA A, and the file is then replaced by one that holds only an unrelated CA B
+- **THEN** the next check does not trust the certificate and the result is not `up`, without a reload
+
+#### Scenario: ca_file validation
+
+- **WHEN** an `http` check is validated with the options listed
+- **THEN** validation fails or passes as listed
+
+##### Example: ca_file options
+
+| Options | Result |
+| --- | --- |
+| `{ scheme = "https", ca_file = "<valid PEM>" }` | passes |
+| `{ scheme = "https", ca_file = "<valid PEM>", tls_verify = false }` | passes, verification off |
+| `{ scheme = "http", ca_file = "<valid PEM>" }` | `ca_file`: `requires scheme = "https"` |
+| `{ scheme = "https", ca_file = "/no/such/file" }` | `ca_file`: the message of the other checks for an unreadable file |
+| `{ scheme = "https", ca_file = "<file with no certificate>" }` | `ca_file`: the message of the other checks for a file without certificates |
+| `{ scheme = "https", ca_file = 5 }` | `ca_file`: `must be a string` |
+| `{ scheme = "https", ca_file = "ca.pem" }` | `ca_file`: `not an absolute path` |

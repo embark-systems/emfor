@@ -209,7 +209,7 @@ tests:
 ---
 ### Requirement: HTTP checker
 
-The `http` checker SHALL send one `GET` request per check to the backend IP and port using `scheme` (`http` or `https`, default `http`) and `path` (default `/`), with the `Host` header set to `host_header` when configured. `path` SHALL start with `/` (otherwise `must start with '/'`) and SHALL NOT contain `#`, `\` or a control character, which the request URL would cut off, drop or turn into `/` (`must not contain '#', '\' or control characters`); other characters, such as a space, SHALL be sent percent-encoded. `host_header` SHALL be an IPv4 address, an IPv6 address in brackets, or a host name that a URL holds unchanged as its host (ignoring ASCII case), each with an optional `:port` of 1 to 5 digits up to 65535; anything else SHALL fail validation with `must be a host with an optional port, such as "api.internal" or "api.internal:8443"`. With a host name, the request URL SHALL use that name and the connection SHALL still go to the backend IP and port, so that with `https` the name is the TLS server name. It SHALL NOT follow redirects. The result SHALL be `up` when the response status matches any entry of `expect_status` (default `["200-399"]`; each entry is a status code or an inclusive `lo-hi` range) and `down` otherwise, with the status code in the reason. For `https`, certificate verification SHALL be on unless `tls_verify = false`. When `expect_body` is set (a string of 1 to 16384 bytes), a response whose status matches SHALL also be read, up to 65536 bytes and stopping as soon as `expect_body` is found as a case-sensitive byte substring; the result SHALL be `up` only when it is found, and otherwise `down` with reason `expect_body: got "<first 64 bytes of the body, escaped>"`. A failure while reading the body SHALL be `down` with a reason starting `body: `. Without `expect_body`, the checker SHALL NOT read the body. A reason built from an error of the HTTP client SHALL NOT contain the request URL: the client appends it to its messages, and `path` can carry a token in its query string. With `scheme = "http"` the checker SHALL NOT need the system's CA certificates: it SHALL work on a host that has none, because a plain `http` request starts no TLS handshake. With `https`, verification on and no system CA certificates on the host, the result SHALL be `error` with a reason that starts `cannot build http client:` and names the system CA certificates and `tls_verify = false`.
+The `http` checker SHALL send one `GET` request per check to the backend IP and port using `scheme` (`http` or `https`, default `http`) and `path` (default `/`), with the `Host` header set to `host_header` when configured. `path` SHALL start with `/` (otherwise `must start with '/'`) and SHALL NOT contain `#`, `\` or a control character, which the request URL would cut off, drop or turn into `/` (`must not contain '#', '\' or control characters`); other characters, such as a space, SHALL be sent percent-encoded. `host_header` SHALL be an IPv4 address, an IPv6 address in brackets, or a host name that a URL holds unchanged as its host (ignoring ASCII case), each with an optional `:port` of 1 to 5 digits up to 65535; anything else SHALL fail validation with `must be a host with an optional port, such as "api.internal" or "api.internal:8443"`. With a host name, the request URL SHALL use that name and the connection SHALL still go to the backend IP and port, so that with `https` the name is the TLS server name. It SHALL NOT follow redirects. The result SHALL be `up` when the response status matches any entry of `expect_status` (default `["200-399"]`; each entry is a status code or an inclusive `lo-hi` range) and `down` otherwise, with the status code in the reason. For `https`, certificate verification SHALL be on unless `tls_verify = false`. `ca_file` (a string) SHALL name a PEM file of CA certificates, checked at validation with the same rules and messages as the `ca_file` of the other checks (the file is read, and holds at least one certificate); when it is set and verification is on, the checker SHALL trust only the certificates in that file and not the system's CA certificates, and SHALL NOT need the system CA certificates. `ca_file` with `scheme = "http"` SHALL fail validation on `ca_file` with `requires scheme = "https"`. `ca_file` together with `tls_verify = false` SHALL be accepted, and verification stays off. A `ca_file` that is replaced while the daemon runs SHALL take effect at the next check without a reload. When the file can no longer be read or holds no certificate while a check builds its client, the result SHALL be `error` with a reason that names `ca_file`, not `down`. When `expect_body` is set (a string of 1 to 16384 bytes), a response whose status matches SHALL also be read, up to 65536 bytes and stopping as soon as `expect_body` is found as a case-sensitive byte substring; the result SHALL be `up` only when it is found, and otherwise `down` with reason `expect_body: got "<first 64 bytes of the body, escaped>"`. A failure while reading the body SHALL be `down` with a reason starting `body: `. Without `expect_body`, the checker SHALL NOT read the body. A reason built from an error of the HTTP client SHALL NOT contain the request URL: the client appends it to its messages, and `path` can carry a token in its query string. With `scheme = "http"` the checker SHALL NOT need the system's CA certificates: it SHALL work on a host that has none, because a plain `http` request starts no TLS handshake. With `https`, verification on and no system CA certificates on the host, the result SHALL be `error` with a reason that starts `cannot build http client:` and names the system CA certificates and `tls_verify = false`.
 
 #### Scenario: Status inside expected range
 
@@ -295,15 +295,50 @@ The `http` checker SHALL send one `GET` request per check to the backend IP and 
 - **WHEN** an `http` check with `scheme = "https"` and the default `tls_verify` runs on a host that has no system CA certificates
 - **THEN** the result is `error` and its reason names the system CA certificates and `tls_verify = false`
 
+#### Scenario: Private CA through ca_file
+
+- **WHEN** an `http` check with `scheme = "https"` and `ca_file` naming a PEM file with the CA that signed the backend certificate runs against a backend that answers 200
+- **THEN** the result is `up`, whether or not the host has system CA certificates
+
+#### Scenario: ca_file replaces the system CA certificates
+
+- **WHEN** an `http` check with `scheme = "https"` and `ca_file` naming a PEM file with an unrelated CA runs against a backend whose certificate is signed by another CA
+- **THEN** the certificate is not trusted and the result is not `up`
+
+#### Scenario: Replaced ca_file takes effect without a reload
+
+- **WHEN** an `http` check with `scheme = "https"` and `ca_file` has passed once against a backend whose certificate is signed by CA A, and the file is then replaced by one that holds only an unrelated CA B
+- **THEN** the next check does not trust the certificate and the result is not `up`, without a reload
+
+#### Scenario: ca_file validation
+
+- **WHEN** an `http` check is validated with the options listed
+- **THEN** validation fails or passes as listed
+
+##### Example: ca_file options
+
+| Options | Result |
+| --- | --- |
+| `{ scheme = "https", ca_file = "<valid PEM>" }` | passes |
+| `{ scheme = "https", ca_file = "<valid PEM>", tls_verify = false }` | passes, verification off |
+| `{ scheme = "http", ca_file = "<valid PEM>" }` | `ca_file`: `requires scheme = "https"` |
+| `{ scheme = "https", ca_file = "/no/such/file" }` | `ca_file`: the message of the other checks for an unreadable file |
+| `{ scheme = "https", ca_file = "<file with no certificate>" }` | `ca_file`: the message of the other checks for a file without certificates |
+| `{ scheme = "https", ca_file = 5 }` | `ca_file`: `must be a string` |
+| `{ scheme = "https", ca_file = "ca.pem" }` | `ca_file`: `not an absolute path` |
+
 
 <!-- @trace
-source: emfor-http-check-without-ca
-updated: 2026-11-21
+source: emfor-http-ca-file
+updated: 2026-11-23
 code:
   - CHANGELOG.md
   - crates/emfor-daemon/src/checker/http.rs
-  - docs/manual.zh_TW/04-health-checks.md
-  - docs/manual/06-health-checks.md
+  - crates/emfor-tls/src/lib.rs
+  - crates/emfor-tls/src/testing.rs
+  - crates/emfor-tls/src/tests.rs
+  - docs/manual.zh_TW/16-troubleshooting.md
+  - docs/manual/16-troubleshooting.md
 -->
 
 ---

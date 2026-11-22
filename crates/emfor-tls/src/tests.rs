@@ -465,3 +465,21 @@ fn ca_file_without_a_usable_certificate() {
     assert!(client_config(&settings(Some(&ca), None, true)).is_ok());
     assert_eq!(check_ca_file(&ca), Ok(()));
 }
+
+// spectra-scenario: health-checking / Replaced ca_file takes effect without a reload
+#[test]
+fn file_version_changes_with_the_file_and_only_then() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("ca.pem");
+    assert_eq!(file_version(&file), None, "missing file");
+    std::fs::write(&file, "one").unwrap();
+    let first = file_version(&file).unwrap();
+    assert_eq!(file_version(&file), Some(first), "untouched");
+    std::fs::write(&file, "longer content").unwrap();
+    let rewritten = file_version(&file).unwrap();
+    assert_ne!(rewritten, first, "size changed");
+    let next = dir.path().join("next.pem");
+    std::fs::write(&next, "longer content").unwrap();
+    std::fs::rename(&next, &file).unwrap();
+    assert_ne!(file_version(&file), Some(rewritten), "replaced file");
+}
