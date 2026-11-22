@@ -36,6 +36,7 @@ development.
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
+cargo test -p emfor-client --doc     # the default build of the Rust client
 make -C clients test
 ```
 

@@ -9,7 +9,7 @@ set -eu
 cd "$(dirname "$0")/.."
 docker image inspect emfor-clients-test >/dev/null 2>&1 \
     || docker build -q -t emfor-clients-test tests/clients
-cmd=${1:-'cargo fmt --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features'}
+cmd=${1:-'cargo fmt --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features && cargo test -p emfor-client --doc'}
 exec docker run --rm -v "$PWD":/src -w /src \
     -v emfor-clients-cargo:/usr/local/cargo/registry \
     -v emfor-clients-target:/src/target \

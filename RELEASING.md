@@ -65,6 +65,7 @@ On macOS and in the Debian image `emfor-clients-test`:
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
+cargo test -p emfor-client --doc
 make -C clients test
 ```
 
@@ -87,6 +88,7 @@ docker run --rm -v "$PWD":/src -w /src \
     cargo fmt --check &&
     cargo clippy --workspace --all-targets --all-features -- -D warnings &&
     cargo test --workspace --all-features &&
+    cargo test -p emfor-client --doc &&
     make -C clients test'
 ```
 

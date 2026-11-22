@@ -32,6 +32,33 @@ use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub use client::Client;
+
+/// The default build, the one `libemfor` is built with, has no function that
+/// names the store: `Client::for_store` needs `daemon-internal` and
+/// `Client::new` is not public. These doctests run only without the
+/// `daemon-internal` and `testing` features
+/// (`cargo test -p emfor-client --doc`).
+#[cfg(not(any(feature = "daemon-internal", feature = "testing")))]
+mod default_build {
+    /// The way to get a client is the environment:
+    ///
+    /// ```no_run
+    /// let _ = emfor_client::Client::from_env();
+    /// ```
+    ///
+    /// Naming the store is not possible:
+    ///
+    /// ```compile_fail,E0599
+    /// let _ = emfor_client::Client::for_store(std::path::PathBuf::from("/x"));
+    /// ```
+    ///
+    /// ```compile_fail,E0624
+    /// let _ = emfor_client::Client::new(std::path::PathBuf::from("/x"), Ok(3000));
+    /// ```
+    // spectra-scenario: client-lookup / Default build
+    #[allow(dead_code)] // it only carries the doctests above
+    pub struct DefaultBuildApi;
+}
 pub use select::{Explanation, Selection, describe as explain_record};
 
 /// Why a lookup failed. The names ([`ErrorCode::as_str`]) are shared by every
