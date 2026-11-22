@@ -99,6 +99,15 @@ wait_srv() { # <name> <n>
     done
     fail "emfor offers $(srv_count "$1") records for $1, not $2"
 }
+# Until a backend has been checked once it is "unknown", and emfor offers every
+# backend of a service that has none healthy: two records say nothing about
+# the checks. Wait until every backend has a result, then for the records.
+t=0
+while emfor status --config /etc/emfor/emfor.toml 2>/dev/null | grep -q ' unknown '; do
+    t=$((t + 1))
+    [ "$t" -lt 50 ] || fail "backends still unknown after 10 s: $(emfor status --config /etc/emfor/emfor.toml 2>&1 | grep ' unknown ' | head -3)"
+    sleep 0.2
+done
 for n in _kerberos._tcp.kdc.svc.emfor _ldap._tcp.ldap.svc.emfor _mongodb._tcp.db.svc.emfor; do wait_srv "$n" 2; done
 
 # --- Kerberos: SRV of the realm, UDP first, then TCP
