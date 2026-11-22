@@ -403,6 +403,28 @@ async fn answers_between_unanswered_requests_keep_the_plugin() {
     host.stop().await;
 }
 
+/// The third row of the example: an answer to a request nobody waits for
+/// any more also resets the count. One caller gives up on a slow answer, the
+/// answer arrives, and two more callers give up: three in all, but not in a
+/// row, so the plugin keeps running.
+// spectra-scenario: checker-plugins / Plugin stops answering / unanswered requests
+#[tokio::test]
+async fn late_answer_resets_the_unanswered_count() {
+    let host = PluginHost::start("fake", &command(&[])).await.unwrap();
+    let pid = host.pid().unwrap();
+    // `slow_first` answers the first check after 300 ms.
+    let r = tokio::time::timeout(Duration::from_millis(100), host.call(check("slow_first"))).await;
+    assert!(r.is_err());
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    for _ in 0..2 {
+        let r = tokio::time::timeout(Duration::from_millis(100), host.call(check("hang"))).await;
+        assert!(r.is_err());
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(host.pid(), Some(pid), "plugin was restarted");
+    host.stop().await;
+}
+
 /// Spec checker-plugins "Request queue": a plugin that stops reading its
 /// stdin gets at most `REQUEST_QUEUE` requests queued; further calls fail
 /// at once as `Busy` instead of piling up in memory.

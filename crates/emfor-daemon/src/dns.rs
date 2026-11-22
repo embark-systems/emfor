@@ -2041,6 +2041,33 @@ mod tests {
         }
     }
 
+    /// The service `a.b.svc.emfor` has one label more than the query
+    /// `a\.b.svc.emfor` (labels `a.b`, `svc`, `emfor`), so the query is not
+    /// for it: the zone answers NXDOMAIN, while the service's own name is
+    /// answered.
+    // spectra-scenario: dns-server / Unknown service / name classification with zone `svc.emfor` and service `a.b.svc.emfor`
+    #[test]
+    fn dotted_service_is_not_its_one_label_lookalike() {
+        let v = view(vec![srv_service(
+            "a.b.svc.emfor",
+            &[("10.0.0.11:8080", Healthy)],
+            OnAllDown::Open,
+            Balance::RoundRobin,
+            None,
+        )]);
+        let nx = (ResponseCode::NXDomain, Vec::<String>::new(), true);
+        assert_eq!(
+            summary(&ask(&v, "a\\.b.svc.emfor", RecordType::A)),
+            nx,
+            "one label `a.b`"
+        );
+        assert_eq!(
+            summary(&ask(&v, "a.b.svc.emfor", RecordType::A)).0,
+            ResponseCode::NoError,
+            "the service itself"
+        );
+    }
+
     /// A service name of 252 characters: one A record does not fit in 512
     /// bytes, because hickory does not compress the owner name against the
     /// question. `fit_response` trims it (and keeps the OPT record).

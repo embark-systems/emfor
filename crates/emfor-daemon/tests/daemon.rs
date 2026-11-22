@@ -640,6 +640,73 @@ fn with_conf_d(fragments: &'static [(&'static str, &'static str)]) -> impl FnOnc
     }
 }
 
+/// Spec service-config "Plugin start failure and restart-required change
+/// name their file", the plugin half: a plugin of a fragment that exits at
+/// once is an error of `plugins.probe.command` followed by that fragment's
+/// path.
+// spectra-scenario: service-config / Plugin start failure and restart-required change name their file
+#[test]
+fn plugin_start_failure_names_its_fragment() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("emfor.toml");
+    let d = conf_d(dir.path());
+    fragment(
+        &d,
+        "20-probe.toml",
+        "[plugins.probe]\ncommand = [\"/bin/sh\", \"-c\", \"exit 1\"]\n",
+    );
+    write_main_file(&cfg, "include_dir = \"conf.d\"\n");
+    let out = Command::new(cargo_bin("emfor"))
+        .args(["check-config", "--config"])
+        .arg(&cfg)
+        .output_locked()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{err}");
+    let line = err
+        .lines()
+        .find(|l| l.contains("plugins.probe.command"))
+        .unwrap_or_else(|| panic!("{err}"));
+    assert!(
+        line.ends_with(&format!("(in {})", d.join("20-probe.toml").display())),
+        "{line}"
+    );
+}
+
+/// The reload half of the same scenario: a fragment that changes the
+/// `[dns]` listen address is rejected, and the error names the fragment.
+// spectra-scenario: service-config / Plugin start failure and restart-required change name their file
+#[test]
+fn restart_required_change_names_its_fragment() {
+    let first = common::free_udp();
+    let second = common::free_udp();
+    let dns = |addr: std::net::SocketAddr| format!("[dns]\nlisten = [\"{addr}\"]\n");
+    let d = Daemon::spawn_with(
+        |dir| {
+            fragment(&conf_d(dir), "20-dns.toml", &dns(first));
+            format!("include_dir = \"conf.d\"\n\n{}", store_header(dir))
+        },
+        &[],
+    );
+    d.wait_log("emfor started");
+    let dir = d.config().parent().unwrap().to_path_buf();
+    let fragment_path = dir.join("conf.d").join("20-dns.toml");
+    fragment(&dir.join("conf.d"), "20-dns.toml", &dns(second));
+    d.signal(Signal::SIGHUP);
+    d.wait_log("reload rejected");
+    let log = d.log();
+    let line = log
+        .lines()
+        .find(|l| l.contains("dns.listen"))
+        .unwrap_or_else(|| panic!("{log}"));
+    assert!(
+        line.contains(&format!("(in {})", fragment_path.display())),
+        "{line}"
+    );
+    let (code, log) = d.stop();
+    assert_eq!(code, 0, "{log}");
+}
+
 /// Spec service-config "Config directory with ordered fragments" and
 /// "Listing the files read": check-config lists the files, in read order,
 /// only when `include_dir` is set.
@@ -1659,6 +1726,46 @@ fn status_without_a_store() {
     );
     assert!(!store.exists());
     assert!(!dir.path().join("none.mdb-lock").exists());
+}
+
+/// Spec status-command "Truncated store", through the command: a store that
+/// a daemon made and that is then cut short by its last page is refused with
+/// the message and exit status 2, and `emfor status` does not end with
+/// `SIGBUS`.
+// spectra-scenario: status-command / Truncated store
+#[test]
+fn status_refuses_a_truncated_store() {
+    let mut d = Daemon::spawn("");
+    d.wait_log("emfor started");
+    let cfg = d.config();
+    let store = d.store();
+    // `stop` would remove the directory with the store.
+    d.signal(Signal::SIGTERM);
+    let (code, log) = d.wait();
+    assert_eq!(code, 0, "{log}");
+    // SAFETY: sysconf has no preconditions.
+    let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
+    let len = std::fs::metadata(&store).unwrap().len();
+    assert!(
+        len >= 3 * page,
+        "a data page after the two meta pages: {len}"
+    );
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&store)
+        .unwrap();
+    f.set_len(len - page).unwrap();
+    drop(f);
+    let (code, _, err) = status(&cfg, &[]);
+    assert_eq!(code, 2, "{err}");
+    let first = err.lines().next().unwrap_or_default();
+    assert!(
+        first.starts_with(&format!(
+            "cannot open store {}: truncated:",
+            store.display()
+        )),
+        "{err}"
+    );
 }
 
 #[test]

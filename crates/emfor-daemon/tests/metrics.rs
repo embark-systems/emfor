@@ -137,6 +137,28 @@ fn store_and_plugin_metrics() {
     assert_eq!(code, 0, "{log}");
 }
 
+/// Spec scenario "Default listen address": an empty `[metrics]` table
+/// answers on 127.0.0.1:5301. This is the one test that uses the default
+/// port, so it does nothing when another process holds it.
+// spectra-scenario: metrics-endpoint / Default listen address
+#[test]
+fn empty_metrics_table_listens_on_5301() {
+    let default: SocketAddr = "127.0.0.1:5301".parse().unwrap();
+    match sockets(|| TcpListener::bind(default)) {
+        Ok(probe) => drop(probe),
+        Err(e) => {
+            eprintln!("skipped: {default} is not free ({e})");
+            return;
+        }
+    }
+    let d = Daemon::spawn("[metrics]\n");
+    d.wait_log("emfor started");
+    let resp = scrape(default);
+    assert!(resp.starts_with("HTTP/1.1 200 OK\r\n"), "{resp}");
+    let (code, log) = d.stop();
+    assert_eq!(code, 0, "{log}");
+}
+
 /// Spec scenario "Address in use".
 // spectra-scenario: metrics-endpoint / Address in use
 #[test]

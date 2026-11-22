@@ -187,7 +187,7 @@ fn service_outside_zone_is_warned_and_refused() {
 fn health_change_visible_in_next_answer() {
     // Failover: 192.0.2.1 never answers; until the loopback backend is
     // healthy both are candidates (all down, open) and the first is chosen.
-    let (_l, backend) = listener();
+    let (l, backend) = listener();
     let port = free_port();
     let _d = Daemon::spawn(&format!(
         "{}{}",
@@ -198,11 +198,16 @@ fn health_change_visible_in_next_answer() {
             "balance = \"failover\"\n"
         )
     ));
-    wait_for(|| {
+    let first_ip = || {
         ask(port, "api.svc.emfor", RecordType::A)
             .and_then(|m| a_record(&m))
-            .is_some_and(|(ip, _)| ip == "127.0.0.1")
-    });
+            .map(|(ip, _)| ip)
+    };
+    wait_for(|| first_ip().as_deref() == Some("127.0.0.1"));
+    // And back: the loopback backend stops answering, nothing is healthy,
+    // and the first one is chosen again.
+    drop(l);
+    wait_for(|| first_ip().as_deref() == Some("192.0.2.1"));
 }
 
 // spectra-scenario: service-config / DNS listen change requires restart
