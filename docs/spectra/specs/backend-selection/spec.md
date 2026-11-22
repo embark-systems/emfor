@@ -139,13 +139,13 @@ code:
   - crates/emfor-daemon/src/config.rs
   - clients/python/README.md
   - clients/rust/README.md
-  - docs/manual/06-clients.md
-  - docs/manual/07-dns.md
+  - docs/manual/09-clients.md
+  - docs/manual/10-dns.md
   - CHANGELOG.md
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - crates/emfor-daemon/src/dns.rs
   - docs/manual.zh_TW/06-clients.md
-  - docs/manual/05-backend-selection.md
+  - docs/manual/08-choosing-a-backend.md
   - clients/rust/src/select.rs
   - crates/emfor-daemon/src/metrics.rs
   - crates/emfor-format/src/rules.rs
@@ -323,13 +323,13 @@ code:
   - crates/emfor-daemon/src/config.rs
   - clients/python/README.md
   - clients/rust/README.md
-  - docs/manual/06-clients.md
-  - docs/manual/07-dns.md
+  - docs/manual/09-clients.md
+  - docs/manual/10-dns.md
   - CHANGELOG.md
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - crates/emfor-daemon/src/dns.rs
   - docs/manual.zh_TW/06-clients.md
-  - docs/manual/05-backend-selection.md
+  - docs/manual/08-choosing-a-backend.md
   - clients/rust/src/select.rs
   - crates/emfor-daemon/src/metrics.rs
   - crates/emfor-format/src/rules.rs
@@ -431,15 +431,15 @@ code:
   - crates/emfor-format/src/rules.rs
   - tests/conformance/v1/cases.json
   - crates/emfor-format/src/lib.rs
-  - docs/manual/07-dns.md
+  - docs/manual/10-dns.md
   - crates/emfor-daemon/src/select.rs
   - crates/emfor-daemon/src/writer.rs
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - crates/emfor-daemon/src/supervisor.rs
   - docs/manual.zh_TW/05-backend-selection.md
   - crates/emfor-daemon/src/metrics.rs
   - CHANGELOG.md
-  - docs/manual/05-backend-selection.md
+  - docs/manual/08-choosing-a-backend.md
   - clients/rust/src/select.rs
   - crates/emfor-daemon/src/live.rs
   - crates/emfor-daemon/src/dns.rs
@@ -480,15 +480,15 @@ code:
   - crates/emfor-format/src/rules.rs
   - tests/conformance/v1/cases.json
   - crates/emfor-format/src/lib.rs
-  - docs/manual/07-dns.md
+  - docs/manual/10-dns.md
   - crates/emfor-daemon/src/select.rs
   - crates/emfor-daemon/src/writer.rs
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - crates/emfor-daemon/src/supervisor.rs
   - docs/manual.zh_TW/05-backend-selection.md
   - crates/emfor-daemon/src/metrics.rs
   - CHANGELOG.md
-  - docs/manual/05-backend-selection.md
+  - docs/manual/08-choosing-a-backend.md
   - clients/rust/src/select.rs
   - crates/emfor-daemon/src/live.rs
   - crates/emfor-daemon/src/dns.rs

@@ -148,7 +148,7 @@ code:
   - clients/rust/src/client.rs
   - clients/rust/src/store.rs
   - docs/manual.zh_TW/06-clients.md
-  - docs/manual/06-clients.md
+  - docs/manual/09-clients.md
 -->
 
 ---
@@ -411,13 +411,13 @@ code:
   - crates/emfor-daemon/src/config.rs
   - clients/python/README.md
   - clients/rust/README.md
-  - docs/manual/06-clients.md
-  - docs/manual/07-dns.md
+  - docs/manual/09-clients.md
+  - docs/manual/10-dns.md
   - CHANGELOG.md
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - crates/emfor-daemon/src/dns.rs
   - docs/manual.zh_TW/06-clients.md
-  - docs/manual/05-backend-selection.md
+  - docs/manual/08-choosing-a-backend.md
   - clients/rust/src/select.rs
   - crates/emfor-daemon/src/metrics.rs
   - crates/emfor-format/src/rules.rs
@@ -714,7 +714,7 @@ code:
   - clients/rust/Cargo.toml
   - clients/rust/src/lib.rs
   - README.md
-  - docs/manual/06-clients.md
+  - docs/manual/09-clients.md
   - README.zh-TW.md
 tests:
   - clients/c/tests/test_fork_threads.c
@@ -1171,15 +1171,15 @@ code:
   - crates/emfor-format/src/rules.rs
   - tests/conformance/v1/cases.json
   - crates/emfor-format/src/lib.rs
-  - docs/manual/07-dns.md
+  - docs/manual/10-dns.md
   - crates/emfor-daemon/src/select.rs
   - crates/emfor-daemon/src/writer.rs
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - crates/emfor-daemon/src/supervisor.rs
   - docs/manual.zh_TW/05-backend-selection.md
   - crates/emfor-daemon/src/metrics.rs
   - CHANGELOG.md
-  - docs/manual/05-backend-selection.md
+  - docs/manual/08-choosing-a-backend.md
   - clients/rust/src/select.rs
   - crates/emfor-daemon/src/live.rs
   - crates/emfor-daemon/src/dns.rs
@@ -1276,11 +1276,11 @@ With the weight of `.12` read as 101 the value of `h_100` (4277241900) would bea
 source: emfor-weighted-sticky
 updated: 2026-11-14
 code:
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - tests/conformance/v1/cases.json
   - clients/rust/src/lib.rs
   - docs/manual.zh_TW/03-configuration.md
-  - docs/manual/05-backend-selection.md
+  - docs/manual/08-choosing-a-backend.md
   - clients/rust/src/select.rs
   - docs/manual.zh_TW/05-backend-selection.md
   - tests/conformance/v1/README.md

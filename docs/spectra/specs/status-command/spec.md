@@ -267,17 +267,17 @@ source: emfor-peers-service-off
 updated: 2026-11-13
 code:
   - crates/emfor-daemon/src/writer.rs
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - crates/emfor-daemon/src/quorum.rs
   - crates/emfor-daemon/src/peers/
-  - docs/manual/08-operations.md
+  - docs/manual/12-operating.md
   - crates/emfor-daemon/src/status.rs
   - crates/emfor-daemon/src/supervisor.rs
   - crates/emfor-daemon/src/cli.rs
   - crates/emfor-daemon/src/config.rs
   - examples/emfor.toml
   - CHANGELOG.md
-  - docs/manual/01-concepts.md
+  - docs/manual/03-concepts.md
   - crates/emfor-daemon/src/schedule.rs
 tests:
   - crates/emfor-daemon/tests/peers.rs

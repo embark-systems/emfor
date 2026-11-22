@@ -90,7 +90,7 @@ code:
   - fuzz/fuzz_targets/plugins.rs
   - tests/plugins/run.sh
   - docs/deploy/plugins.md
-  - docs/manual/04-health-checks.md
+  - docs/manual/06-health-checks.md
   - examples/emfor.toml
   - crates/emfor-check/Cargo.toml
   - crates/emfor-check/src/quic.rs
@@ -207,7 +207,7 @@ code:
   - docs/manual.zh_TW/04-health-checks.md
   - crates/emfor-check/src/radius.rs
   - crates/emfor-check/src/mongodb.rs
-  - docs/manual/04-health-checks.md
+  - docs/manual/06-health-checks.md
   - crates/emfor-check/src/replica.rs
   - examples/emfor.toml
   - tests/plugins/run.sh
@@ -279,7 +279,7 @@ code:
   - docs/manual.zh_TW/04-health-checks.md
   - crates/emfor-check/src/radius.rs
   - crates/emfor-check/src/mongodb.rs
-  - docs/manual/04-health-checks.md
+  - docs/manual/06-health-checks.md
   - crates/emfor-check/src/replica.rs
   - examples/emfor.toml
   - tests/plugins/run.sh
@@ -345,7 +345,7 @@ code:
   - docs/manual.zh_TW/04-health-checks.md
   - crates/emfor-check/src/radius.rs
   - crates/emfor-check/src/mongodb.rs
-  - docs/manual/04-health-checks.md
+  - docs/manual/06-health-checks.md
   - crates/emfor-check/src/replica.rs
   - examples/emfor.toml
   - tests/plugins/run.sh
@@ -478,7 +478,7 @@ code:
   - docs/deploy/plugins.md
   - crates/emfor-check/src/net.rs
   - docs/manual.zh_TW/04-health-checks.md
-  - docs/manual/04-health-checks.md
+  - docs/manual/06-health-checks.md
   - crates/emfor-check/Cargo.toml
   - crates/emfor-check/src/main.rs
   - tests/plugins/Dockerfile

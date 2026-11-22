@@ -73,7 +73,7 @@ code:
   - docs/release-signing.md
   - docs/casa-assessment.md
   - docs/manual.zh_TW/03-configuration.md
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - CHANGELOG.md
   - crates/emfor-daemon/src/peers/task.rs
   - crates/emfor-daemon/src/config.rs
@@ -186,8 +186,8 @@ code:
   - docs/deploy/daemon.md
   - docs/manual.zh_TW/03-configuration.md
   - docs/manual.zh_TW/08-operations.md
-  - docs/manual/03-configuration.md
-  - docs/manual/08-operations.md
+  - docs/manual/05-configuring.md
+  - docs/manual/12-operating.md
   - examples/emfor.toml
 tests:
   - crates/emfor-daemon/tests/peers.rs
@@ -276,7 +276,7 @@ code:
   - docs/release-signing.md
   - docs/casa-assessment.md
   - docs/manual.zh_TW/03-configuration.md
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - CHANGELOG.md
   - crates/emfor-daemon/src/peers/task.rs
   - crates/emfor-daemon/src/config.rs
@@ -395,9 +395,9 @@ code:
   - docs/manual.zh_TW/03-configuration.md
   - docs/manual.zh_TW/04-health-checks.md
   - docs/manual.zh_TW/08-operations.md
-  - docs/manual/03-configuration.md
-  - docs/manual/04-health-checks.md
-  - docs/manual/08-operations.md
+  - docs/manual/05-configuring.md
+  - docs/manual/06-health-checks.md
+  - docs/manual/12-operating.md
 tests:
   - crates/emfor-daemon/tests/peers.rs
   - crates/emfor-daemon/tests/plugin_host.rs
@@ -455,14 +455,14 @@ source: emfor-peers-split-checks
 updated: 2026-11-13
 code:
   - crates/emfor-daemon/src/schedule.rs
-  - docs/manual/08-operations.md
+  - docs/manual/12-operating.md
   - crates/emfor-daemon/src/peers/
-  - docs/manual/01-concepts.md
+  - docs/manual/03-concepts.md
   - docs/deploy/daemon.md
   - crates/emfor-daemon/src/quorum.rs
   - crates/emfor-daemon/src/metrics.rs
   - CHANGELOG.md
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
 tests:
   - crates/emfor-daemon/tests/peers.rs
 -->
@@ -494,7 +494,7 @@ code:
   - fuzz/seeds/peers/down-emp1
   - fuzz/seeds/peers/heartbeat-payload
   - crates/emfor-daemon/src/peers/
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - examples/emfor.toml
   - docs/manual.zh_TW/03-configuration.md
   - fuzz/seeds/peers/result-emp1
@@ -508,7 +508,7 @@ code:
   - examples/freebsd/Makefile.crates
   - fuzz/seeds/peers/down-payload
   - fuzz/seeds/peers.py
-  - docs/manual/08-operations.md
+  - docs/manual/12-operating.md
   - fuzz/seeds/peers/down-emp2
 tests:
   - crates/emfor-daemon/tests/peers.rs
@@ -654,11 +654,11 @@ source: emfor-peers-quorum
 updated: 2026-11-13
 code:
   - crates/emfor-daemon/Cargo.toml
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - CHANGELOG.md
   - crates/emfor-daemon/src/status.rs
   - crates/emfor-daemon/src/metrics.rs
-  - docs/manual/08-operations.md
+  - docs/manual/12-operating.md
   - crates/emfor-daemon/src/peers/
   - crates/emfor-daemon/src/lib.rs
   - crates/emfor-daemon/src/schedule.rs
@@ -668,7 +668,7 @@ code:
   - crates/emfor-format/src/lib.rs
   - docs/deploy/daemon.md
   - crates/emfor-daemon/src/supervisor.rs
-  - docs/manual/01-concepts.md
+  - docs/manual/03-concepts.md
 tests:
   - crates/emfor-daemon/tests/peers.rs
 -->
@@ -753,14 +753,14 @@ updated: 2026-11-14
 code:
   - docs/deploy/daemon.md
   - crates/emfor-daemon/src/schedule.rs
-  - docs/manual/08-operations.md
+  - docs/manual/12-operating.md
   - CHANGELOG.md
   - docs/manual.zh_TW/08-operations.md
   - docs/manual.zh_TW/03-configuration.md
-  - docs/manual/01-concepts.md
+  - docs/manual/03-concepts.md
   - crates/emfor-daemon/src/quorum.rs
   - docs/manual.zh_TW/01-concepts.md
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
 tests:
   - crates/emfor-daemon/tests/peers.rs
 -->
@@ -807,15 +807,15 @@ updated: 2026-11-13
 code:
   - examples/emfor.toml
   - crates/emfor-daemon/src/peers/
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - crates/emfor-daemon/src/status.rs
   - crates/emfor-daemon/src/quorum.rs
   - CHANGELOG.md
   - docs/manual.zh_TW/03-configuration.md
-  - docs/manual/08-operations.md
+  - docs/manual/12-operating.md
   - docs/manual.zh_TW/01-concepts.md
   - crates/emfor-daemon/src/supervisor.rs
-  - docs/manual/01-concepts.md
+  - docs/manual/03-concepts.md
   - crates/emfor-daemon/src/metrics.rs
   - docs/manual.zh_TW/08-operations.md
   - crates/emfor-daemon/src/writer.rs
@@ -897,7 +897,7 @@ code:
   - CHANGELOG.md
   - docs/manual.zh_TW/03-configuration.md
   - docs/release-signing.md
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - docs/casa-assessment.md
   - crates/emfor-daemon/src/config.rs
 -->

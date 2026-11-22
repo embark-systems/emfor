@@ -303,7 +303,7 @@ code:
   - CHANGELOG.md
   - crates/emfor-daemon/src/checker/http.rs
   - docs/manual.zh_TW/04-health-checks.md
-  - docs/manual/04-health-checks.md
+  - docs/manual/06-health-checks.md
 -->
 
 ---
@@ -363,14 +363,14 @@ source: emfor-peers-split-checks
 updated: 2026-11-13
 code:
   - crates/emfor-daemon/src/schedule.rs
-  - docs/manual/08-operations.md
+  - docs/manual/12-operating.md
   - crates/emfor-daemon/src/peers/
-  - docs/manual/01-concepts.md
+  - docs/manual/03-concepts.md
   - docs/deploy/daemon.md
   - crates/emfor-daemon/src/quorum.rs
   - crates/emfor-daemon/src/metrics.rs
   - CHANGELOG.md
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
 tests:
   - crates/emfor-daemon/tests/peers.rs
 -->
@@ -426,11 +426,11 @@ source: emfor-peers-quorum
 updated: 2026-11-13
 code:
   - crates/emfor-daemon/Cargo.toml
-  - docs/manual/03-configuration.md
+  - docs/manual/05-configuring.md
   - CHANGELOG.md
   - crates/emfor-daemon/src/status.rs
   - crates/emfor-daemon/src/metrics.rs
-  - docs/manual/08-operations.md
+  - docs/manual/12-operating.md
   - crates/emfor-daemon/src/peers/
   - crates/emfor-daemon/src/lib.rs
   - crates/emfor-daemon/src/schedule.rs
@@ -440,7 +440,7 @@ code:
   - crates/emfor-format/src/lib.rs
   - docs/deploy/daemon.md
   - crates/emfor-daemon/src/supervisor.rs
-  - docs/manual/01-concepts.md
+  - docs/manual/03-concepts.md
 tests:
   - crates/emfor-daemon/tests/peers.rs
 -->
@@ -566,9 +566,9 @@ code:
   - docs/manual.zh_TW/03-configuration.md
   - docs/manual.zh_TW/04-health-checks.md
   - docs/manual.zh_TW/08-operations.md
-  - docs/manual/03-configuration.md
-  - docs/manual/04-health-checks.md
-  - docs/manual/08-operations.md
+  - docs/manual/05-configuring.md
+  - docs/manual/06-health-checks.md
+  - docs/manual/12-operating.md
 tests:
   - crates/emfor-daemon/tests/peers.rs
   - crates/emfor-daemon/tests/plugin_host.rs
@@ -612,7 +612,7 @@ Every check result's reason, from every checker and plugin, SHALL be normalized 
 source: emfor-reason-format-chars
 updated: 2026-11-19
 code:
-  - docs/manual/04-health-checks.md
+  - docs/manual/06-health-checks.md
   - docs/casa-assessment.md
   - crates/emfor-daemon/src/config.rs
   - docs/release-signing.md

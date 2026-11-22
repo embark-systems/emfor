@@ -46,9 +46,9 @@ code:
   - docs/manual.zh_TW/03-configuration.md
   - docs/manual.zh_TW/04-health-checks.md
   - docs/manual.zh_TW/08-operations.md
-  - docs/manual/03-configuration.md
-  - docs/manual/04-health-checks.md
-  - docs/manual/08-operations.md
+  - docs/manual/05-configuring.md
+  - docs/manual/06-health-checks.md
+  - docs/manual/12-operating.md
 tests:
   - crates/emfor-daemon/tests/peers.rs
   - crates/emfor-daemon/tests/plugin_host.rs
@@ -236,9 +236,9 @@ code:
   - docs/manual.zh_TW/03-configuration.md
   - docs/manual.zh_TW/04-health-checks.md
   - docs/manual.zh_TW/08-operations.md
-  - docs/manual/03-configuration.md
-  - docs/manual/04-health-checks.md
-  - docs/manual/08-operations.md
+  - docs/manual/05-configuring.md
+  - docs/manual/06-health-checks.md
+  - docs/manual/12-operating.md
 tests:
   - crates/emfor-daemon/tests/peers.rs
   - crates/emfor-daemon/tests/plugin_host.rs
@@ -346,9 +346,9 @@ code:
   - docs/manual.zh_TW/03-configuration.md
   - docs/manual.zh_TW/04-health-checks.md
   - docs/manual.zh_TW/08-operations.md
-  - docs/manual/03-configuration.md
-  - docs/manual/04-health-checks.md
-  - docs/manual/08-operations.md
+  - docs/manual/05-configuring.md
+  - docs/manual/06-health-checks.md
+  - docs/manual/12-operating.md
 tests:
   - crates/emfor-daemon/tests/peers.rs
   - crates/emfor-daemon/tests/plugin_host.rs
