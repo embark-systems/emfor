@@ -24,6 +24,7 @@ extern "C" fn on_alarm(_: libc::c_int) {
     FORKS.fetch_add(1, Ordering::Relaxed);
 }
 
+// spectra-scenario: client-lookup / Fork from a signal handler during a lookup
 #[test]
 fn fork_handlers_from_a_signal_handler_return() {
     let dir = tempfile::tempdir().unwrap();

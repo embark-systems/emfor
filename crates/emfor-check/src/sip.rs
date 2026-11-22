@@ -575,6 +575,7 @@ mod tests {
 
     // ---- options ----
 
+    // spectra-scenario: network-checks / Defaults
     #[test]
     fn defaults() {
         let s = parse(&Options::new(), true).unwrap();
@@ -589,6 +590,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: network-checks / Defaults / SIP option validation
     #[test]
     fn sip_option_validation() {
         assert_eq!(errors(json!({})), Vec::new());
@@ -700,6 +702,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / Request format
     #[test]
     fn request_format() {
         let local: SocketAddr = "10.0.0.5:40000".parse().unwrap();
@@ -921,6 +924,7 @@ mod tests {
         check(&req(addr), &s).await
     }
 
+    // spectra-scenario: network-checks / Server overloaded / SIP outcomes
     #[tokio::test]
     async fn sip_outcomes() {
         let other = Reply {
@@ -980,6 +984,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / Server answers OPTIONS
     #[tokio::test]
     async fn server_answers_options() {
         assert_eq!(
@@ -988,6 +993,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: network-checks / Server overloaded
     #[tokio::test]
     async fn server_overloaded() {
         assert_eq!(
@@ -1140,6 +1146,7 @@ mod tests {
         (addr, dir)
     }
 
+    // spectra-scenario: network-checks / SIP over TLS with a wrong certificate name
     #[tokio::test]
     async fn sip_over_tls() {
         let (addr, dir) = tls_sip("sbc.example.org").await;

@@ -49,6 +49,9 @@ fn call(name: &str, key: Option<&str>) -> Result<String, (String, String)> {
 
 // One test function: the C API uses the process's single client, so the
 // cases run one after another, each pointing it at its own store.
+// spectra-scenario: client-lookup / C status values
+// spectra-scenario: client-lookup / C status values / C status mapping
+// spectra-scenario: client-lookup / Client passes the shared cases
 #[test]
 fn conformance_and_status_mapping_through_the_c_api() {
     let dir = tempfile::tempdir().unwrap();

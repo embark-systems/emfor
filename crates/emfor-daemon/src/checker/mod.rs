@@ -242,6 +242,8 @@ mod tests {
     use super::*;
 
     /// Spec "Reasons are bounded and printable", example table.
+    // spectra-scenario: health-checking / Text direction override from a backend
+    // spectra-scenario: health-checking / Text direction override from a backend / normalization
     #[test]
     fn reasons_are_normalized() {
         let a = |n| "a".repeat(n);
@@ -277,6 +279,7 @@ mod tests {
         assert!(r.ends_with('…'));
     }
 
+    // spectra-scenario: health-checking / Escape sequence from a backend
     #[tokio::test]
     async fn run_check_normalizes_the_reason() {
         #[derive(Debug)]
@@ -320,6 +323,7 @@ mod tests {
         CheckRequest::new("api.svc.emfor", "127.0.0.1:1".parse().unwrap(), timeout)
     }
 
+    // spectra-scenario: health-checking / Timeout is a backend failure
     #[tokio::test(start_paused = true)]
     async fn slow_check_is_down_timeout() {
         let r = run_check(&Sleepy(Duration::from_secs(5)), req(Duration::from_secs(1))).await;

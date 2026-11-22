@@ -508,6 +508,8 @@ mod tests {
     const API: [&str; 3] = ["10.0.0.11:8080", "10.0.0.12:8080", "10.0.0.13:8080"];
     use HealthState::{Healthy, Unhealthy, Unknown};
 
+    // spectra-scenario: client-lookup / Heartbeat boundaries
+    // spectra-scenario: client-lookup / Heartbeat boundaries / heartbeat values
     #[test]
     fn heartbeat_boundaries() {
         let now = 1_700_000_010_000;
@@ -517,6 +519,8 @@ mod tests {
         assert!(is_stale(0, now, 3000), "zero");
     }
 
+    // spectra-scenario: client-lookup / Name forms that find the same record
+    // spectra-scenario: client-lookup / Name forms that find the same record / name normalization
     #[test]
     fn name_normalization() {
         assert_eq!(normalize("api.svc.emfor"), "api.svc.emfor");
@@ -525,6 +529,10 @@ mod tests {
         assert_eq!(normalize("api.svc.emfor.."), "api.svc.emfor.");
     }
 
+    // spectra-scenario: client-lookup / Stale store with each on_all_down setting
+    // spectra-scenario: client-lookup / Unhealthy backends are skipped
+    // spectra-scenario: client-lookup / Open service with every backend down
+    // spectra-scenario: backend-selection / Unhealthy backends are skipped
     #[test]
     fn candidates_follow_health_and_on_all_down() {
         let r = rec(
@@ -570,6 +578,7 @@ mod tests {
     /// Values a newer daemon may write: a backend `state` the client does
     /// not know counts as `unhealthy`, an `on_all_down` it does not know as
     /// `open`.
+    // spectra-scenario: client-lookup / State and on_all_down values from a newer daemon
     #[test]
     fn unknown_state_and_on_all_down_values() {
         let parse = |on_all_down: &str, second: &str| -> ServiceRecord {
@@ -598,6 +607,11 @@ mod tests {
 
     /// A healthy backend whose last check failed (`reason` set) is used
     /// only when no healthy backend passes; a stale store ignores `reason`.
+    // spectra-scenario: client-lookup / Failing backend is skipped while another passes
+    // spectra-scenario: client-lookup / Every healthy backend failing
+    // spectra-scenario: client-lookup / Stale store ignores reason
+    // spectra-scenario: backend-selection / Failing backends are skipped while another passes
+    // spectra-scenario: backend-selection / Every healthy backend failing
     #[test]
     fn candidates_prefer_passing_backends() {
         let failing = |id: &str| {
@@ -636,6 +650,8 @@ mod tests {
         );
     }
 
+    // spectra-scenario: client-lookup / Equal weights keep today's picks
+    // spectra-scenario: client-lookup / Equal weights keep today's picks / rendezvous hash vectors
     #[test]
     fn rendezvous_hash_vectors() {
         for (key, id, want) in [
@@ -650,6 +666,8 @@ mod tests {
         }
     }
 
+    // spectra-scenario: client-lookup / Equal weights keep today's picks
+    // spectra-scenario: client-lookup / Equal weights keep today's picks / rendezvous picks
     #[test]
     fn rendezvous_picks() {
         let all: Vec<BackendRecord> = API.iter().map(|a| be(a, Healthy)).collect();
@@ -693,6 +711,10 @@ mod tests {
     }
 
     /// Spec client-lookup Example "weighted hash vectors".
+    // spectra-scenario: client-lookup / Weights change the share of keys
+    // spectra-scenario: client-lookup / Weights change the share of keys / weighted hash vectors
+    // spectra-scenario: client-lookup / Weights above 100 count as 100
+    // spectra-scenario: client-lookup / Weights above 100 count as 100 / weights above 100
     #[test]
     fn weighted_hash_vectors() {
         let virtual_node = |key: &str, id: &str, i: u32| {
@@ -724,6 +746,8 @@ mod tests {
     }
 
     /// Spec client-lookup Example "weighted picks".
+    // spectra-scenario: client-lookup / Weights change the share of keys
+    // spectra-scenario: client-lookup / Weights change the share of keys / weighted picks
     #[test]
     fn weighted_picks() {
         let never = || panic!("sticky with a key must not use the counter");
@@ -754,6 +778,7 @@ mod tests {
 
     /// Spec client-lookup Scenario "Raising a weight only moves keys to
     /// that backend", and weight 1 picks as rendezvous hashing version 1.
+    // spectra-scenario: client-lookup / Raising a weight only moves keys to that backend
     #[test]
     fn raising_a_weight_only_moves_keys_to_it() {
         let version_1 = |key: &str| {
@@ -786,6 +811,7 @@ mod tests {
     }
 
     /// Slow start does not change the weights sticky with a key uses.
+    // spectra-scenario: client-lookup / Failover and sticky with a key ignore slow start
     #[test]
     fn weighted_sticky_ignores_slow_start() {
         let all: Vec<BackendRecord> = API
@@ -821,6 +847,10 @@ mod tests {
         );
     }
 
+    // spectra-scenario: client-lookup / Consecutive lookups cover every candidate
+    // spectra-scenario: client-lookup / First healthy backend wins
+    // spectra-scenario: client-lookup / Empty key falls back to round-robin
+    // spectra-scenario: backend-selection / Sticky without a key
     #[test]
     fn round_robin_and_failover() {
         let all: Vec<BackendRecord> = API.iter().map(|a| be(a, Healthy)).collect();
@@ -840,6 +870,8 @@ mod tests {
         );
     }
 
+    // spectra-scenario: client-lookup / Three to one
+    // spectra-scenario: client-lookup / Three to one / counter to backend
     #[test]
     fn weighted_counter_to_backend_example() {
         let mut heavy = be("10.0.0.11:8080", Healthy);
@@ -857,6 +889,9 @@ mod tests {
         assert_eq!(cumulative_index(&[u64::from(zero.weight)], 5), 0);
     }
 
+    // spectra-scenario: client-lookup / Unhealthy heavy backend
+    // spectra-scenario: client-lookup / Record from an older daemon
+    // spectra-scenario: backend-selection / Unhealthy heavy backend is skipped
     #[test]
     fn weighted_skips_unhealthy_and_reads_old_records() {
         let mut heavy = be("10.0.0.11:8080", Unhealthy);
@@ -882,6 +917,8 @@ mod tests {
         assert_eq!(got.len(), 2);
     }
 
+    // spectra-scenario: client-lookup / Error code by store condition / store conditions
+    // spectra-scenario: client-lookup / Future balance value
     #[test]
     fn unknown_balance_is_round_robin_and_ignores_the_key() {
         let all: Vec<BackendRecord> = API[..2].iter().map(|a| be(a, Healthy)).collect();
@@ -913,6 +950,8 @@ mod tests {
         r
     }
 
+    // spectra-scenario: client-lookup / Lookups stay in the pool
+    // spectra-scenario: backend-selection / Fast backends preferred
     #[test]
     fn fastest_lookups_stay_in_the_pool() {
         let r = fastest_rec(Some(&API[..2]));
@@ -922,12 +961,15 @@ mod tests {
         );
     }
 
+    // spectra-scenario: client-lookup / Stale heartbeat ignores the pool
     #[test]
     fn fastest_stale_heartbeat_ignores_the_pool() {
         let r = fastest_rec(Some(&API[..2]));
         assert_eq!(fastest_picks(&r, true, 3), API);
     }
 
+    // spectra-scenario: client-lookup / Missing or empty pool
+    // spectra-scenario: backend-selection / Empty pool
     #[test]
     fn fastest_missing_empty_or_unknown_pool_is_round_robin() {
         for pool in [None, Some(&[][..]), Some(&["10.9.9.9:80"][..])] {
@@ -967,6 +1009,7 @@ mod tests {
         pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
     }
 
+    // spectra-scenario: client-lookup / Ramping backend gets a smaller share
     #[test]
     fn slow_start_round_robin_share() {
         let (a, b) = (be(API[0], Healthy), ramping(API[1]));
@@ -990,6 +1033,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: client-lookup / Weighted ramping backend
     #[test]
     fn slow_start_weighted_share() {
         let mut a = ramping(API[0]);
@@ -1001,6 +1045,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: client-lookup / Slow start over
     #[test]
     fn slow_start_over_is_full_share() {
         let mut a = ramping(API[0]);
@@ -1012,6 +1057,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: client-lookup / Failover and sticky with a key ignore slow start
     #[test]
     fn slow_start_leaves_failover_and_sticky_key() {
         let (a, b) = (ramping(API[0]), be(API[1], Healthy));
@@ -1109,6 +1155,9 @@ mod tests {
     /// method, a drained backend is not a candidate, a sticky key moves to
     /// the other backend and comes back, and a record without `drain` reads
     /// as before.
+    // spectra-scenario: client-lookup / Lookup with a drained backend
+    // spectra-scenario: client-lookup / Older store
+    // spectra-scenario: backend-selection / Drained backend is skipped
     #[test]
     fn drained_backend_is_never_a_candidate() {
         let drained = serde_json::json!({"state": "unhealthy", "reason": "drained",
@@ -1137,6 +1186,8 @@ mod tests {
         assert_eq!(candidates(&rec, false).unwrap().len(), 2);
     }
 
+    // spectra-scenario: client-lookup / Lookup with a drained backend
+    // spectra-scenario: backend-selection / Sticky key moves away
     #[test]
     fn sticky_key_moves_away_from_a_drained_backend_and_comes_back() {
         let drained = serde_json::json!({"state": "unhealthy", "reason": "drained", "drain": true});
@@ -1167,6 +1218,8 @@ mod tests {
     }
 
     /// Every backend drained: nothing to choose, also for an open service.
+    // spectra-scenario: client-lookup / Lookup when all are drained
+    // spectra-scenario: backend-selection / Everything drained
     #[test]
     fn all_drained_is_all_down() {
         let drained = serde_json::json!({"state": "unhealthy", "reason": "drained", "drain": true});

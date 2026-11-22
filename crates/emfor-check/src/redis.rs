@@ -203,6 +203,7 @@ mod tests {
     /// A server that echoes the AUTH password in its error: the reason does not.
     /// The other `auth: ` reasons (`call`'s I/O and protocol errors) hold only
     /// fixed texts and the OS error, never reply bytes, so they need no redaction.
+    // spectra-scenario: database-checks / Wrong password
     #[tokio::test]
     async fn auth_error_does_not_echo_the_password() {
         let addr = fake_redis(|cmd| match cmd {
@@ -328,6 +329,9 @@ mod tests {
         addr
     }
 
+    // spectra-scenario: database-checks / Healthy redis
+    // spectra-scenario: database-checks / Replica that lost its master
+    // spectra-scenario: database-checks / Replica that lost its master / redis role
     #[tokio::test]
     async fn redis_role_table() {
         let down = |r: &str| CheckOutcome::Down(r.into());
@@ -413,6 +417,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: database-checks / Wrong password
     #[tokio::test]
     async fn auth_with_user_and_password() {
         let addr = fake_redis(|w| match w {

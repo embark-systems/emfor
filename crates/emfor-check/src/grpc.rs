@@ -390,6 +390,8 @@ mod tests {
         vec![(key.to_owned(), message.to_owned())]
     }
 
+    // spectra-scenario: network-checks / Defaults
+    // spectra-scenario: network-checks / Defaults / gRPC option validation
     #[test]
     fn grpc_option_validation() {
         let rows = [
@@ -583,6 +585,9 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / Serving
+    // spectra-scenario: network-checks / No health service
+    // spectra-scenario: network-checks / No health service / gRPC responses
     #[tokio::test]
     async fn grpc_responses() {
         let down = |r: &str| CheckOutcome::Down(r.into());
@@ -690,6 +695,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / Defaults
     #[tokio::test]
     async fn sends_the_health_request() {
         let (addr, seen) = fake_server(ok(&[0x08, 0x01]), None).await;
@@ -712,6 +718,7 @@ mod tests {
         assert_eq!(body, request_body("orders.v1.Orders"));
     }
 
+    // spectra-scenario: network-checks / No health service / gRPC responses
     #[tokio::test]
     async fn http1_server_is_an_http2_error() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -766,6 +773,7 @@ mod tests {
         assert_eq!(parts.uri.authority().unwrap().as_str(), "grpc.test");
     }
 
+    // spectra-scenario: network-checks / No health service / gRPC responses
     #[tokio::test]
     async fn tls_without_h2_is_refused() {
         // A server without ALPN completes the handshake and selects

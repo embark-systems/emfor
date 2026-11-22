@@ -10,6 +10,7 @@ static void lookup_ok(void) {
     CHECK(is_backend(out));
 }
 
+// spectra-scenario: client-lookup / Lookup after fork
 int main(void) {
     lookup_ok(); /* the parent opens the store before forking */
     pid_t pid = fork();

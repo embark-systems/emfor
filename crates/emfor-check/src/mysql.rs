@@ -418,6 +418,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: database-checks / NULL answer
     #[tokio::test]
     async fn select_one_answers() {
         let rows = [
@@ -443,6 +444,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: database-checks / Slow backend
     #[tokio::test]
     async fn connection_cut_off_by_the_timeout_is_closed() {
         // The server sends the columns of SELECT 1 and then nothing; the
@@ -504,6 +506,8 @@ mod tests {
         );
     }
 
+    // spectra-scenario: database-checks / Replicating replica
+    // spectra-scenario: database-checks / Replicating replica / mysql replica status
     #[test]
     fn mysql_replica_status_table() {
         let status = |io: &str, io_error: &str, sql: &str, sql_error: &str, behind| ReplicaStatus {

@@ -473,6 +473,7 @@ mod tests {
     }
 
     /// The replaced secret decrypts `EMP3` for 120 seconds.
+    // spectra-scenario: peer-group / Sender restarts / acceptance checks
     #[test]
     fn previous_secret_decrypts_emp3_for_120_seconds() {
         let start = Instant::now();
@@ -550,6 +551,7 @@ mod tests {
     }
 
     /// The replaced secret is accepted for 120 seconds in `EMP2` too.
+    // spectra-scenario: peer-group / Sender restarts / acceptance checks
     #[test]
     fn previous_secret_decrypts_for_120_seconds() {
         let start = Instant::now();
@@ -575,6 +577,7 @@ mod tests {
     }
 
     /// Spec peer-group "acceptance checks", rows on a replaced secret.
+    // spectra-scenario: peer-group / Sender restarts / acceptance checks
     #[test]
     fn previous_secret_accepted_for_120_seconds() {
         let start = Instant::now();
@@ -598,6 +601,7 @@ mod tests {
 
     /// Spec peer-group "Secret rotated on one host first": A's file changes
     /// first, B's 40 seconds later; every message both ways is accepted.
+    // spectra-scenario: peer-group / Secret rotated on one host first
     #[test]
     fn secret_rotated_on_one_host_first() {
         let start = Instant::now();
@@ -660,6 +664,7 @@ mod tests {
     /// daemon still signs with the first secret keeps signing with the
     /// first one, for 60 seconds after the second change, and every
     /// secret replaced in the last 120 seconds is accepted.
+    // spectra-scenario: peer-group / Secret changed twice
     #[test]
     fn second_rotation_keeps_signing_with_the_first_secret() {
         let start = Instant::now();

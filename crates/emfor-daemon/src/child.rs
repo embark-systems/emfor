@@ -284,6 +284,10 @@ mod env_tests {
         lines.iter().any(|l| l == line.as_bytes())
     }
 
+    // spectra-scenario: checker-plugins / Variable of the daemon is not passed to a plugin
+    // spectra-scenario: checker-plugins / Locale, time zone and PATH are passed to a plugin
+    // spectra-scenario: health-checking / Variable of the daemon is not passed
+    // spectra-scenario: health-checking / Locale, time zone and PATH are passed
     #[tokio::test]
     async fn only_the_default_variables_are_passed() {
         let lines = seen(&[]).await;
@@ -293,6 +297,8 @@ mod env_tests {
         assert_eq!(lines.len(), 4, "only the four defaults: {lines:?}");
     }
 
+    // spectra-scenario: checker-plugins / Variable named in env_pass reaches a plugin, also after a restart
+    // spectra-scenario: health-checking / Variable named in env_pass is passed
     #[tokio::test]
     async fn named_variables_are_passed_and_missing_ones_are_not() {
         let lines = seen(&["HOME", "http_proxy", "NOT_SET_ANYWHERE"]).await;
@@ -318,6 +324,8 @@ mod env_tests {
         parse_env_pass(t.get("env_pass"))
     }
 
+    // spectra-scenario: checker-plugins / Service uses a plugin / plugin declaration validation
+    // spectra-scenario: health-checking / Variable named in env_pass is passed / env_pass validation
     #[test]
     fn env_pass_is_validated() {
         assert_eq!(parse_env_pass(None), Ok(vec![]));

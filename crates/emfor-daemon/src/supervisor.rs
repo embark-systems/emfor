@@ -613,6 +613,7 @@ mod tests {
 
     /// A restarted task of an `unknown` backend: the new task has no
     /// latency, and neither have the record and the live view.
+    // spectra-scenario: health-checking / Restarted task of an unknown backend
     #[tokio::test]
     async fn restart_of_an_unknown_backend_leaves_it_without_latency() {
         use crate::checker::{CheckRequest, CheckResult, Checker};
@@ -727,6 +728,8 @@ mod tests {
         assert_eq!(count(&sup), 1, "the count started over");
     }
 
+    // spectra-scenario: state-store / Startup state is all down
+    // spectra-scenario: state-store / Old state discarded
     #[tokio::test]
     async fn old_state_discarded_on_start() {
         let h = harness();
@@ -761,6 +764,7 @@ mod tests {
         assert!(r.all_down);
     }
 
+    // spectra-scenario: state-store / Timing change keeps state
     #[tokio::test]
     async fn reload_timing_change_keeps_state() {
         let h = harness();
@@ -781,6 +785,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: state-store / Check options change resets state
     #[tokio::test]
     async fn reload_check_options_change_resets_state() {
         let h = harness();
@@ -862,6 +867,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: state-store / Removed service deleted
     #[tokio::test]
     async fn reload_removes_service_and_adds_backends_as_unknown() {
         let h = harness();
@@ -990,6 +996,8 @@ mod tests {
     /// state": a reload to `peers = false` takes the service out of the
     /// targets and drops its kept state; back to `true` puts it in again,
     /// with the same running tasks.
+    // spectra-scenario: service-config / Leaving the peer group on reload keeps backend state
+    // spectra-scenario: peer-group / Leaving the group on reload drops kept state
     #[tokio::test]
     async fn peers_off_leaves_the_targets() {
         let h = harness();

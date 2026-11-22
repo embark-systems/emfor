@@ -4,6 +4,8 @@ mod support;
 
 use emfor_client::{ErrorCode, lookup};
 
+// spectra-scenario: client-lookup / Staleness values
+// spectra-scenario: client-lookup / Staleness values / EMFOR_MAX_STALENESS parsing
 #[test]
 fn unset_staleness_is_three_seconds() {
     let dir = tempfile::tempdir().unwrap();

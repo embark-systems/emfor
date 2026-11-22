@@ -11,6 +11,7 @@ else
     syms=$(nm -D --defined-only "$lib" | awk '{print $3}')
 fi
 echo "exported: $(echo $syms)"
+# spectra-scenario: client-lookup / Only emfor symbols are exported
 bad=$(echo "$syms" | grep -v '^emfor_' | grep -v '^$' || true)
 if [ -n "$bad" ]; then echo "FAIL unexpected exports: $(echo $bad)"; exit 1; fi
 echo "PASS symbols"

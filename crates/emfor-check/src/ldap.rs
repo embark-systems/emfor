@@ -239,6 +239,8 @@ mod tests {
         }
     }
 
+    // spectra-scenario: database-checks / Anonymous bind
+    // spectra-scenario: database-checks / Anonymous bind / anonymous bind bytes
     #[tokio::test]
     async fn anonymous_bind_is_up_and_unbinds() {
         let (addr, task) = fake_ldap(vec![ber::response(1, BIND_RESPONSE, 0, "")]).await;
@@ -251,6 +253,7 @@ mod tests {
         assert_eq!(requests[1], ber::unbind_request(2));
     }
 
+    // spectra-scenario: database-checks / Bind with a password
     #[tokio::test]
     async fn bind_uses_user_and_password_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -269,6 +272,8 @@ mod tests {
         );
     }
 
+    // spectra-scenario: database-checks / Wrong LDAP password
+    // spectra-scenario: database-checks / Wrong LDAP password / result codes in reasons
     #[tokio::test]
     async fn rejected_binds_name_the_result_code() {
         let rows = [
@@ -291,6 +296,8 @@ mod tests {
         }
     }
 
+    // spectra-scenario: database-checks / StartTLS refused
+    // spectra-scenario: database-checks / StartTLS refused / refused StartTLS
     #[tokio::test]
     async fn starttls_refused_sends_no_bind() {
         let settings = Settings {
@@ -345,6 +352,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: database-checks / StartTLS upgrade
     #[tokio::test]
     async fn starttls_then_bind_over_tls() {
         use emfor_tls::testing::pki;
@@ -387,6 +395,7 @@ mod tests {
         assert_eq!(bind, ber::bind_request(2, "", ""));
     }
 
+    // spectra-scenario: database-checks / Malformed response
     #[tokio::test]
     async fn malformed_response_is_query() {
         let (addr, _task) = fake_ldap(vec![b"HTTP/1.1 400 Bad Request\r\n\r\n".to_vec()]).await;

@@ -2174,6 +2174,7 @@ backends = ["10.0.0.1:80"]
 
     /// Spec peer-group "Secret file larger than the limit": 65536 bytes with
     /// the line feed are accepted, one more is an error.
+    // spectra-scenario: peer-group / Secret file larger than the limit
     #[test]
     fn secret_file_has_a_size_limit() {
         let mut ok = vec![b'k'; MAX_SECRET_LEN - 1];
@@ -2209,6 +2210,8 @@ backends = ["10.0.0.1:80"]
     /// The rows of the example table of "Peer secret file owner" in the
     /// peer-group spec: root and the daemon's own user own a trusted secret,
     /// nobody else does.
+    // spectra-scenario: peer-group / Secret owned by root or by the checking user
+    // spectra-scenario: peer-group / Check-config accepts a secret owned by root for every account / Owner and checking user
     #[test]
     fn peer_secret_owner_is_root_or_the_daemon_user() {
         for (owner, euid, ok) in [
@@ -2224,6 +2227,7 @@ backends = ["10.0.0.1:80"]
 
     /// A secret the daemon's own user owns is read at mode 0600 and 0640,
     /// and through a link; the owner check does not look at the group.
+    // spectra-scenario: peer-group / Secret owned by root or by the checking user
     #[test]
     fn read_secret_accepts_a_secret_the_daemon_user_owns() {
         for mode in [0o600, 0o640] {
@@ -2242,6 +2246,8 @@ backends = ["10.0.0.1:80"]
     /// A secret that is owned by someone else is refused with the owner's
     /// uid. Only root can give a file away, so this runs as root only (the
     /// Docker test run is root); as another user it has nothing to check.
+    // spectra-scenario: peer-group / Secret owned by another user
+    // spectra-scenario: peer-group / Link to a file of another owner
     #[test]
     fn read_secret_refuses_a_secret_another_user_owns() {
         if nix::unistd::geteuid().as_raw() != 0 {
@@ -2270,6 +2276,7 @@ backends = ["10.0.0.1:80"]
 
     /// A peer secret that group or others can write is refused, as one that
     /// others can read is.
+    // spectra-scenario: peer-group / Writable secret
     #[test]
     fn writable_peer_secret_is_refused() {
         for mode in [0o620, 0o602, 0o660] {
@@ -2297,6 +2304,8 @@ backends = ["10.0.0.1:80"]
     /// A peer secret, and a previous one, that another user owns are refused
     /// at their own keys. Only root can give a file away, so this runs as
     /// root only (the Docker test run is root).
+    // spectra-scenario: peer-group / Secret owned by another user
+    // spectra-scenario: peer-group / Previous secret owned by another user
     #[test]
     fn peer_secret_owned_by_another_user_is_refused() {
         if nix::unistd::geteuid().as_raw() != 0 {
@@ -2335,6 +2344,8 @@ backends = ["10.0.0.1:80"]
     /// nothing set, plaintext is refused while `encrypt` is true (also when it
     /// is not set) and accepted while it is false; a value that is set wins,
     /// and `encrypt = false` with `accept_plaintext = false` is an error.
+    // spectra-scenario: peer-group / Default of accept_plaintext follows encrypt
+    // spectra-scenario: peer-group / Default of accept_plaintext follows encrypt / accept_plaintext default
     #[test]
     fn peers_accept_plaintext_default_follows_encrypt() {
         let (_d, key) = secret_file(&[b'k'; 64], 0o600);
@@ -2368,6 +2379,8 @@ backends = ["10.0.0.1:80"]
     }
 
     /// Spec peer-group "Key order does not matter" and "what changes the digest".
+    // spectra-scenario: peer-group / Key order does not matter
+    // spectra-scenario: peer-group / Plugin env_pass changes the digest / what changes the digest
     #[test]
     fn check_definition_digest() {
         let svc = |extra: &str| {
@@ -2426,6 +2439,7 @@ backends = ["10.0.0.1:80"]
     }
 
     /// Spec peer-group "Valid peer group".
+    // spectra-scenario: peer-group / Valid peer group
     #[test]
     fn valid_peer_group() {
         let (_d, key) = secret_file(&[b'k'; 64], 0o600);
@@ -2453,6 +2467,8 @@ backends = ["10.0.0.1:80"]
     }
 
     /// Spec peer-group "peer config validation" and the service-config rows.
+    // spectra-scenario: service-config / Multiple errors reported together / validation outcomes
+    // spectra-scenario: peer-group / No peers table / peer config validation
     #[test]
     fn peer_config_validation() {
         let (_d, key) = secret_file(&[b'k'; 64], 0o600);
@@ -2656,6 +2672,8 @@ backends = ["10.0.0.1:80"]
         );
     }
 
+    // spectra-scenario: service-config / Service inherits and overrides settings / effective settings resolution
+    // spectra-scenario: backend-selection / Default balance
     #[test]
     fn effective_settings_resolution() {
         // Rows of the "effective settings resolution" example.
@@ -2711,6 +2729,7 @@ backends = ["10.0.0.1:80"]
         }
     }
 
+    // spectra-scenario: service-config / Multiple errors reported together / validation outcomes
     #[test]
     fn peers_setting_validation() {
         // The `peers` rows of the "validation outcomes" example.
@@ -2728,6 +2747,8 @@ backends = ["10.0.0.1:80"]
         assert_eq!(e[0].message, "peers must be true or false");
     }
 
+    // spectra-scenario: service-config / Service inherits and overrides settings
+    // spectra-scenario: backend-selection / Default balance
     #[test]
     fn service_inherits_and_overrides() {
         let c = parse_ok(&format!(
@@ -2743,6 +2764,7 @@ backends = ["10.0.0.1:80"]
         assert!(s.peers);
     }
 
+    // spectra-scenario: backend-selection / Service overrides default
     #[test]
     fn service_balance_overrides_default() {
         let c = parse_ok(&format!(
@@ -2755,6 +2777,9 @@ backends = ["10.0.0.1:80"]
 
     /// Spec "Host site and backend weight and site", scenarios "Backup
     /// backends" and "Only backup backends", example "backup values".
+    // spectra-scenario: service-config / Backup backends
+    // spectra-scenario: service-config / Only backup backends
+    // spectra-scenario: service-config / Only backup backends / backup values
     #[test]
     fn backup_backends() {
         let svc = |backends: &str| {
@@ -2791,6 +2816,7 @@ backends = ["10.0.0.1:80"]
     /// Spec service-config "Draining a backend": `drain` is a boolean that
     /// defaults to false, a service of only drained backends is valid, and
     /// a wrong type is an error at the key.
+    // spectra-scenario: service-config / Drain value is validated
     #[test]
     fn drain_backends() {
         let svc = |backends: &str| {
@@ -2827,6 +2853,7 @@ backends = ["10.0.0.1:80"]
 
     /// Spec service-config "Draining a backend": drain is not part of the
     /// service definition digest, and does not restart the check.
+    // spectra-scenario: service-config / Drain does not change the digest
     #[test]
     fn drain_does_not_change_digest_or_check() {
         let svc = |d: &str| {
@@ -2842,6 +2869,9 @@ backends = ["10.0.0.1:80"]
 
     /// Spec "Slow start setting", scenario "Default and override" and
     /// example "slow_start validation".
+    // spectra-scenario: service-config / Default and override
+    // spectra-scenario: service-config / Out of range
+    // spectra-scenario: service-config / Out of range / slow_start validation
     #[test]
     fn slow_start_setting() {
         let c = parse_ok(
@@ -2903,6 +2933,7 @@ slow_start = "0s"
         assert_eq!(c.log.level, "info");
     }
 
+    // spectra-scenario: service-config / Name normalization
     #[test]
     fn name_normalization() {
         let c = parse_ok(
@@ -2911,6 +2942,7 @@ slow_start = "0s"
         assert_eq!(c.services[0].name, "api.svc.emfor");
     }
 
+    // spectra-scenario: service-config / Duplicate after normalization
     #[test]
     fn duplicate_after_normalization() {
         let e = parse_err(&format!(
@@ -2937,6 +2969,7 @@ slow_start = "0s"
         }
     }
 
+    // spectra-scenario: service-config / Multiple errors reported together
     #[test]
     fn multiple_errors_reported_together() {
         let e = parse_err(
@@ -2954,6 +2987,9 @@ slow_start = "0s"
         );
     }
 
+    // spectra-scenario: service-config / Multiple errors reported together / validation outcomes
+    // spectra-scenario: backend-selection / New methods accepted
+    // spectra-scenario: backend-selection / Unknown value rejected
     #[test]
     fn validation_outcomes_table() {
         // Rows of the "validation outcomes" example: (service lines, expected message fragment or None for ok).
@@ -3052,6 +3088,7 @@ slow_start = "0s"
         }
     }
 
+    // spectra-scenario: service-config / Multiple errors reported together / validation outcomes
     #[test]
     fn top_level_site() {
         let svc = "[services.a]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\"]\n";
@@ -3068,6 +3105,7 @@ slow_start = "0s"
         );
     }
 
+    // spectra-scenario: service-config / Mixed backend forms
     #[test]
     fn mixed_backend_forms() {
         let c = parse_ok(
@@ -3166,6 +3204,7 @@ slow_start = "0s"
         assert_eq!(parse_dns_listen("dns = 1\n"), None);
     }
 
+    // spectra-scenario: service-config / Multiple errors reported together / validation outcomes
     #[test]
     fn dns_table() {
         assert_eq!(parse_ok(SVC).dns, None);
@@ -3260,6 +3299,7 @@ slow_start = "0s"
     /// A 230-character service name in the default zone: an IPv4 target
     /// name fits (8 + 1 + 230), an IPv6 one (39 + 1 + 230) does not, so the
     /// DNS server could never answer SRV for it.
+    // spectra-scenario: service-config / Multiple errors reported together / validation outcomes
     #[test]
     fn srv_target_names_must_fit() {
         let name = format!("{}.svc.emfor", long_zone(230 - ".svc.emfor".len()));
@@ -3293,6 +3333,7 @@ slow_start = "0s"
     }
 
     /// Spec service-config "Config validation rules": `[metrics]` rows.
+    // spectra-scenario: service-config / Multiple errors reported together / validation outcomes
     #[test]
     fn metrics_table() {
         assert_eq!(parse_ok(SVC).metrics, None);
@@ -3370,6 +3411,7 @@ slow_start = "0s"
         assert_eq!(specs[0].env_pass, vec!["http_proxy".to_string()]);
     }
 
+    // spectra-scenario: checker-plugins / Service uses a plugin / plugin declaration validation
     #[test]
     fn plugin_declaration_validation() {
         // Rows of the "plugin declaration validation" example; /bin/sh
@@ -3491,6 +3533,8 @@ slow_start = "0s"
     }
 
     /// The `EMFOR_PREFIX` rule behind `DEFAULT_CONFIG_PATH`.
+    // spectra-scenario: service-config / Built with a prefix
+    // spectra-scenario: service-config / Built with a prefix / prefix to default path
     #[test]
     fn prefix_to_default_config_path() {
         for (prefix, want) in [
@@ -3574,6 +3618,7 @@ interval = "2s"
         t
     }
 
+    // spectra-scenario: service-config / Table merges key by key
     #[test]
     fn tables_merge_key_by_key() {
         let t = merged(
@@ -3584,6 +3629,7 @@ interval = "2s"
         assert_eq!(t["s"]["a"]["interval"].as_str(), Some("500ms"));
     }
 
+    // spectra-scenario: service-config / List is replaced
     #[test]
     fn lists_and_mixed_types_are_replaced() {
         let t = merged(
@@ -3602,6 +3648,7 @@ interval = "2s"
         assert_eq!(t["s"]["a"]["y"].as_integer(), Some(3));
     }
 
+    // spectra-scenario: service-config / Files are read in filename order
     #[test]
     fn files_are_read_in_byte_order() {
         let (_d, main) = setup(
@@ -3615,6 +3662,7 @@ interval = "2s"
         );
     }
 
+    // spectra-scenario: service-config / Unselected entries are ignored
     #[test]
     fn unselected_entries_are_ignored() {
         let (d, main) = setup(
@@ -3633,6 +3681,7 @@ interval = "2s"
 
     /// macOS file systems refuse a name that is not UTF-8, so only Linux
     /// and the BSDs can create one.
+    // spectra-scenario: service-config / Non-UTF-8 file name
     #[cfg(target_os = "linux")]
     #[test]
     fn non_utf8_file_name_is_skipped_with_a_warning() {
@@ -3647,6 +3696,7 @@ interval = "2s"
     }
 
     /// A failed load still hands back the warnings (Linux only: the name).
+    // spectra-scenario: service-config / Skipped name reported by check-config and by a failed load
     #[cfg(target_os = "linux")]
     #[test]
     fn warnings_survive_a_failed_load() {
@@ -3659,6 +3709,7 @@ interval = "2s"
         assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
 
+    // spectra-scenario: service-config / Symbolic link to a regular file is followed
     #[test]
     fn symlink_to_a_regular_file_is_followed() {
         let (d, main) = setup(MAIN, &[]);
@@ -3671,6 +3722,7 @@ interval = "2s"
         assert_eq!(l.table["site"].as_str(), Some("dc9"));
     }
 
+    // spectra-scenario: service-config / Relative include_dir
     #[test]
     fn relative_include_dir_is_relative_to_the_main_file() {
         let (_d, main) = setup(MAIN, &[("a.toml", "")]);
@@ -3690,6 +3742,7 @@ interval = "2s"
         assert_eq!(l.table["site"].as_str(), Some("dc1"));
     }
 
+    // spectra-scenario: service-config / Table merges key by key
     #[test]
     fn later_fragment_overrides_the_main_file() {
         let (_d, main) = setup(
@@ -3706,6 +3759,7 @@ interval = "2s"
         assert_eq!(s.backends.len(), 2);
     }
 
+    // spectra-scenario: service-config / List is replaced
     #[test]
     fn backends_list_is_replaced() {
         let (_d, main) = setup(
@@ -3721,6 +3775,8 @@ interval = "2s"
         assert_eq!(c.services[0].backends[0].id, "10.0.0.3:80");
     }
 
+    // spectra-scenario: service-config / Store in a fragment
+    // spectra-scenario: service-config / Nested include
     #[test]
     fn store_and_include_dir_are_main_only() {
         let (_d, main) = setup(MAIN, &[("10-store.toml", "[store]\npath = \"/x\"\n")]);
@@ -3729,6 +3785,7 @@ interval = "2s"
         assert!(errs(read_layers(&main)).contains("20-inc.toml: include_dir is only allowed"));
     }
 
+    // spectra-scenario: service-config / status and lookup need only the main file
     #[test]
     fn load_store_reads_only_the_main_file() {
         let (d, main) = setup(MAIN, &[("10.toml", "this is not toml")]);
@@ -3740,6 +3797,7 @@ interval = "2s"
         assert!(load_store(&main).is_ok());
     }
 
+    // spectra-scenario: service-config / Group-writable fragment
     #[test]
     fn group_writable_fragment_is_refused() {
         let (d, main) = setup(MAIN, &[("10-a.toml", "")]);
@@ -3750,6 +3808,7 @@ interval = "2s"
     }
 
     /// A link is judged by the file it points to, not by the link.
+    // spectra-scenario: service-config / Link to a file that is not trusted
     #[test]
     fn symlink_to_a_group_writable_file_is_refused() {
         let (d, main) = setup(MAIN, &[]);
@@ -3763,6 +3822,9 @@ interval = "2s"
 
     /// A fragment owned by someone else is refused, whatever its mode. Only
     /// root can give a file away, so this runs in the Debian container.
+    // spectra-scenario: service-config / Fragment owned by another user
+    // spectra-scenario: service-config / Link to a file that is not trusted
+    // spectra-scenario: service-config / Directory owned by another user
     #[test]
     fn foreign_owner_is_refused() {
         if nix::unistd::geteuid().as_raw() != 0 {
@@ -3792,6 +3854,7 @@ interval = "2s"
 
     /// Spec "Config directory permissions": the owner must be root or the
     /// user running emfor, whatever the mode.
+    // spectra-scenario: service-config / Fragment owned by another user
     #[test]
     fn owner_must_be_root_or_the_daemon_user() {
         assert_eq!(untrusted(0o100644, 0, 1000), None);
@@ -3807,6 +3870,7 @@ interval = "2s"
         assert!(untrusted(0o040777, 0, 0).is_some());
     }
 
+    // spectra-scenario: service-config / World-writable directory
     #[test]
     fn world_writable_directory_is_refused() {
         let (d, main) = setup(MAIN, &[]);
@@ -3821,6 +3885,8 @@ interval = "2s"
 
     /// Spec "Config directory permissions", "Main file modes": the main file
     /// is refused when group or others can write it, whatever else it holds.
+    // spectra-scenario: service-config / Main file that others can write
+    // spectra-scenario: service-config / Main file that others can write / Main file modes
     #[test]
     fn main_file_modes() {
         let (_d, main) = setup("site = \"dc1\"\n", &[]);
@@ -3861,6 +3927,7 @@ interval = "2s"
     }
 
     /// A link is judged by the file it points to.
+    // spectra-scenario: service-config / Link to a main file that is not trusted
     #[test]
     fn main_file_link_to_a_file_others_can_write_is_refused() {
         let (d, main) = setup("site = \"dc1\"\n", &[]);
@@ -3877,6 +3944,7 @@ interval = "2s"
     /// The main file owned by someone else is refused, whatever its mode,
     /// with the command that fixes it. Only root can give a file away, so
     /// this runs in the Debian container.
+    // spectra-scenario: service-config / Main file owned by another user
     #[test]
     fn main_file_foreign_owner_is_refused() {
         if nix::unistd::geteuid().as_raw() != 0 {
@@ -3895,6 +3963,7 @@ interval = "2s"
 
     /// `status` and `lookup` read only `[store]` and do not check the main
     /// file (spec "Config directory permissions").
+    // spectra-scenario: service-config / status and lookup do not check the main file
     #[test]
     fn load_store_does_not_check_the_main_file() {
         let (_d, main) = setup("[store]\npath = \"/tmp/x.mdb\"\n", &[]);
@@ -3912,6 +3981,7 @@ interval = "2s"
         );
     }
 
+    // spectra-scenario: service-config / Missing directory at start
     #[test]
     fn missing_directory_is_an_error() {
         let (d, main) = setup(MAIN, &[]);
@@ -3928,6 +3998,7 @@ interval = "2s"
         assert!(errs(read_layers(&main)).contains("not a directory"));
     }
 
+    // spectra-scenario: service-config / Empty include_dir
     #[test]
     fn empty_include_dir_is_an_error() {
         let (_d, main) = setup("include_dir = \"\"\n", &[]);
@@ -3937,6 +4008,7 @@ interval = "2s"
     /// A link that points at itself is neither missing nor a file: the error
     /// must not be swallowed like a dangling link (EACCES cannot be tested
     /// as root).
+    // spectra-scenario: service-config / Dangling link is skipped, unreadable link is an error
     #[test]
     fn unreadable_fragment_link_is_an_error() {
         let (d, main) = setup(MAIN, &[]);
@@ -3955,6 +4027,7 @@ interval = "2s"
         assert_eq!(errs(read_layers(&main)), "include_dir: must be a string");
     }
 
+    // spectra-scenario: service-config / Syntax error in a fragment
     #[test]
     fn syntax_error_names_file_line_and_column() {
         let (_d, main) = setup(MAIN, &[("20-x.toml", "a = 1\nb = 2\nc = = 3\n")]);
@@ -3962,6 +4035,7 @@ interval = "2s"
         assert!(e.contains("20-x.toml:3:5: invalid TOML"), "{e}");
     }
 
+    // spectra-scenario: service-config / Invalid value in a fragment
     #[test]
     fn invalid_value_names_key_path_and_file() {
         let (_d, main) = setup(
@@ -4003,6 +4077,7 @@ interval = "2s"
         parse(text, &Registry::builtin()).expect_err("invalid")
     }
 
+    // spectra-scenario: service-config / Plugin declared in a fragment
     #[test]
     fn plugin_in_a_fragment_is_declared() {
         let (_d, main) = setup(
@@ -4016,6 +4091,7 @@ interval = "2s"
         assert_eq!(specs[0].name, "probe");
     }
 
+    // spectra-scenario: service-config / Fragment changes a listen address
     #[test]
     fn listen_change_in_a_fragment_is_seen() {
         let (_d, main) = setup(
@@ -4028,6 +4104,8 @@ interval = "2s"
     }
 
     /// Spec peer-group "Plugin env_pass changes the digest".
+    // spectra-scenario: peer-group / Plugin env_pass changes the digest
+    // spectra-scenario: peer-group / Plugin env_pass changes the digest / what changes the digest
     #[test]
     fn env_pass_is_part_of_the_check_digest() {
         let t = Duration::from_secs(1);
@@ -4063,6 +4141,7 @@ interval = "2s"
         );
     }
 
+    // spectra-scenario: service-config / Peer digest does not depend on file splitting
     #[test]
     fn digest_does_not_depend_on_splitting() {
         let one = "site = \"dc1\"\ninclude_dir = \"conf.d\"\n[services.\"api.svc.emfor\"]\ncheck = \"http\"\nbackends = [\"10.0.0.1:80\"]\ntimeout = \"500ms\"\n[services.\"api.svc.emfor\".check_options]\npath = \"/h\"\n";
@@ -4095,6 +4174,7 @@ interval = "2s"
     /// Spec "Showing the merged config", scenario "Round trip": the text
     /// parses to the merged table without `include_dir`, whatever the keys and
     /// values look like.
+    // spectra-scenario: service-config / Round trip
     #[test]
     fn show_round_trips_the_merged_table() {
         let main = "include_dir = \"conf.d\"\nsite = \"dc#1\"\n\n[dns]\n\n[services.\"api.svc.emfor\"]\ncheck = \"tcp\"\nbackends = [\"10.0.0.1:80\", { addr = \"10.0.0.2:80\", weight = 3 }]\n[services.\"api.svc.emfor\".check_options]\npath = \"/a # b\"\nnote = \"line one\\nline two\"\n\"a\\\"b\" = 1\n\"c\\\\d\" = 2\n[services.\"api.svc.emfor\".check_options.\"q\\\"r\"]\nx = 1\n";
@@ -4125,6 +4205,7 @@ interval = "2s"
         );
     }
 
+    // spectra-scenario: service-config / Valid config with fragments
     #[test]
     fn show_names_the_file_that_set_each_value() {
         let (text, _l, d) = shown(
@@ -4157,6 +4238,7 @@ interval = "2s"
         assert!(text.contains("[services.\"api.svc.emfor\"]"), "{text}");
     }
 
+    // spectra-scenario: service-config / Without include_dir
     #[test]
     fn show_without_include_dir_has_one_comment() {
         let (text, _l, d) = shown(
@@ -4188,6 +4270,7 @@ interval = "2s"
         );
     }
 
+    // spectra-scenario: service-config / Defaults are not shown
     #[test]
     fn show_has_no_defaults() {
         let (text, _l, _d) = shown(MAIN, &[]);

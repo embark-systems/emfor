@@ -374,6 +374,8 @@ mod tests {
         text
     }
 
+    // spectra-scenario: database-checks / Name mismatch
+    // spectra-scenario: database-checks / Verification turned off
     #[tokio::test]
     async fn tls_with_the_right_ca_and_name() {
         let pki = pki("db.test");
@@ -425,6 +427,7 @@ mod tests {
         assert!(matches!(by_ip, Err(CheckOutcome::Down(ref r)) if r.starts_with("tls: ")));
     }
 
+    // spectra-scenario: database-checks / Server without TLS
     #[tokio::test]
     async fn tls_to_a_plaintext_server_is_down() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -448,6 +451,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: database-checks / Backend stopped
     #[tokio::test]
     async fn nothing_listening_is_down_connect() {
         let addr = emfor_fixture::refused_addr();
@@ -557,6 +561,7 @@ mod tests {
         (d == b"yes").then_some("matched")
     }
 
+    // spectra-scenario: network-checks / Lost first datagram
     #[tokio::test]
     async fn udp_lost_first_datagram_is_sent_again_at_half_the_timeout() {
         let (addr, arrivals) = udp_server(|n| {
@@ -585,6 +590,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: network-checks / Unrelated datagrams are ignored
     #[tokio::test]
     async fn udp_unrelated_datagrams_are_ignored() {
         let (addr, arrivals) = udp_server(|_| vec![b"nope".to_vec(), b"yes".to_vec()]).await;
@@ -600,6 +606,7 @@ mod tests {
         assert_eq!(arrivals.lock().unwrap().len(), 1);
     }
 
+    // spectra-scenario: network-checks / Nothing listens on the UDP port
     #[tokio::test]
     async fn udp_nothing_listening_is_down_connect() {
         // Retry with a fresh port if another test takes the freed one.
@@ -627,6 +634,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / Local socket failure
     #[test]
     fn udp_socket_the_host_cannot_create_is_error() {
         for errno in [libc::EAFNOSUPPORT, libc::EMFILE] {
@@ -638,6 +646,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / No answer
     #[tokio::test]
     async fn udp_no_answer_sends_twice_and_times_out() {
         let (addr, arrivals) = udp_server(|_| vec![]).await;
@@ -659,6 +668,7 @@ mod tests {
         assert_eq!(arrivals.lock().unwrap().len(), 2);
     }
 
+    // spectra-scenario: network-checks / Local socket failure
     #[test]
     fn local_errors() {
         assert!(is_local_io_error(&io::Error::from_raw_os_error(

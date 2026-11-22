@@ -846,6 +846,7 @@ mod tests {
 
     /// Spec peer-group "Peer queue": a full queue drops new messages and
     /// counts them, logging at most once a minute; the queued ones stay.
+    // spectra-scenario: peer-group / Peer queue full
     #[tokio::test(start_paused = true)]
     #[tracing_test::traced_test]
     async fn full_queue_drops_and_counts() {
@@ -895,6 +896,8 @@ mod tests {
     /// "Heartbeat of a restarted sender": a heartbeat accepted after a later
     /// one of the same sender and boot leaves the tags alone; another boot
     /// replaces them.
+    // spectra-scenario: peer-group / Older heartbeat overtaken on the network
+    // spectra-scenario: peer-group / Heartbeat of a restarted sender
     #[test]
     fn older_heartbeat_leaves_the_tags_alone() {
         let now = Instant::now();
@@ -917,6 +920,8 @@ mod tests {
 
     /// Spec peer-group "Older result overtaken on the network": the older
     /// result is counted as received but the kept result is the later one.
+    // spectra-scenario: peer-group / Older result overtaken on the network
+    // spectra-scenario: peer-group / Result of a restarted sender
     #[test]
     fn older_result_is_counted_but_not_kept() {
         let now = Instant::now();
@@ -954,6 +959,7 @@ mod tests {
     /// Spec peer-group "Kept tags follow the latest heartbeat": only
     /// heartbeats replace a member's tags, and a member that stops being
     /// live forgets them.
+    // spectra-scenario: peer-group / Kept tags follow the latest heartbeat
     #[test]
     fn kept_tags_follow_the_latest_heartbeat() {
         let now = Instant::now();
@@ -985,6 +991,9 @@ mod tests {
     /// ran with the old secret and is restarted 30 seconds after its file
     /// changed signs and accepts as if it had not restarted, so a member
     /// whose file has not changed yet keeps accepting it.
+    // spectra-scenario: peer-group / Restart during a secret change
+    // spectra-scenario: peer-group / Stop, change the secret, start
+    // spectra-scenario: peer-group / First start after an upgrade
     #[test]
     fn previous_secret_file_survives_a_restart() {
         let new = vec![9u8; 32];
@@ -1232,6 +1241,8 @@ mod tests {
     }
 
     /// Spec peer-group "Member stops" and "Member added on reload".
+    // spectra-scenario: peer-group / Member stops
+    // spectra-scenario: peer-group / Member added on reload
     #[tokio::test]
     async fn heartbeats_liveness_and_reload() {
         let (ha, hb, _dir, path) = pair(Targets::default(), Targets::default()).await;
@@ -1382,6 +1393,7 @@ mod tests {
     /// supervisor leaves a `peers = false` service out of `Targets`, so a
     /// `down` for it reaches no backend task and records no mismatch, even
     /// with another digest.
+    // spectra-scenario: peer-group / Down message for a service left out
     #[tokio::test]
     async fn down_for_a_service_left_out_is_ignored() {
         let (ta, _) = targets(&"f".repeat(32));
@@ -1406,6 +1418,7 @@ mod tests {
     }
 
     /// A message with another digest is a mismatch in `meta/peers`.
+    // spectra-scenario: peer-group / Votes from members with a longer interval count once / which kept results are votes
     #[tokio::test]
     async fn other_digest_is_a_mismatch() {
         let (ta, _) = targets(DIGEST);
@@ -1472,6 +1485,7 @@ mod tests {
     /// Spec peer-group "Read of the secret file hangs" (the reader):
     /// one read however many ticks pass, a warning after 5 seconds and not
     /// again within a minute, and the result applied when it returns.
+    // spectra-scenario: peer-group / Read of the secret file hangs
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn hung_read_stays_one_and_is_warned_about() {
@@ -1535,6 +1549,7 @@ mod tests {
 
     /// Spec peer-group "Slow read of the secret file": no warning before
     /// 5 seconds; the secret is applied when the read returns.
+    // spectra-scenario: peer-group / Slow read of the secret file
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn slow_read_is_applied_without_a_warning() {
@@ -1566,6 +1581,7 @@ mod tests {
 
     /// Spec peer-group "Normal read applied at once": a read that returns
     /// in time is applied by the same call, before the heartbeats.
+    // spectra-scenario: peer-group / Normal read applied at once
     #[tokio::test]
     async fn quick_read_is_applied_by_the_same_call() {
         let start = Instant::now();
@@ -1621,6 +1637,7 @@ mod tests {
     /// A reload that changes `secret_file` while a read of the old path is
     /// in flight starts no second read; the new path is read after the old
     /// read is over.
+    // spectra-scenario: peer-group / Late result of the old path
     #[tokio::test]
     async fn changed_path_is_read_after_the_read_in_flight() {
         let start = Instant::now();
@@ -1664,6 +1681,7 @@ mod tests {
     /// Spec peer-group "Late result of the old path": a read of the old
     /// path that returns after a reload changed `secret_file` is dropped,
     /// and the new path is read.
+    // spectra-scenario: peer-group / Late result of the old path
     #[tokio::test]
     async fn late_result_of_the_old_path_is_dropped() {
         let start = Instant::now();
@@ -1701,6 +1719,7 @@ mod tests {
     /// goes on while its read of the secret file never returns. B stays
     /// live at A (A handles B's heartbeats) and A at B (A sends its own),
     /// and the file is read once however many ticks pass.
+    // spectra-scenario: peer-group / Read of the secret file hangs
     #[tokio::test]
     async fn heartbeats_go_on_while_the_secret_read_hangs() {
         let (ha, hb, _dir, _path) =
@@ -1760,6 +1779,7 @@ mod tests {
 
     /// Spec peer-group "Watch cannot be set up": the file is read before
     /// each round of heartbeats, and one `info` line says why.
+    // spectra-scenario: peer-group / Watch cannot be set up
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn unwatched_file_is_read_on_every_tick() {
@@ -1915,6 +1935,7 @@ mod tests {
     /// Spec peer-group "Secret file replaced by a rename", through the peer
     /// loop: while the file is watched the ticks do not read it, and a file
     /// renamed over it is read at once, not at the next poll.
+    // spectra-scenario: peer-group / Secret file replaced by a rename
     #[tokio::test]
     async fn loop_reads_a_replaced_secret_file_at_once() {
         let (_ha, _hb, _dir, path) =

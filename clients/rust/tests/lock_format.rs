@@ -11,6 +11,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use emfor_client::ErrorCode;
 use emfor_client::testing::Client;
 
+// spectra-scenario: client-lookup / Store written by a different LMDB format
 #[test]
 fn lock_format_mismatch_is_unavailable() {
     let dir = tempfile::tempdir().unwrap();

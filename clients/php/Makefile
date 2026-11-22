@@ -24,6 +24,7 @@ build: libemfor
 test: build
 	$(EMFOR_FIXTURE) $(EMFOR_ROOT)/clients/c/tests/fixture.json 0 $(STORE)
 	EMFOR_STORE=$(STORE) EMFOR_MAX_STALENESS=60s $(RUN) tests/emfor_test.php
+	# spectra-scenario: client-lookup / Client passes the shared cases
 	$(EMFOR_CONFORMANCE) -- $(RUN) $(CURDIR)/tests/conformance_lookup.php
 	@echo "PASS all PHP tests"
 

@@ -138,6 +138,7 @@ mod tests {
         assert!(responses >= 3, "{responses} responses");
     }
 
+    // spectra-scenario: checker-plugins / Wrong protocol version / timeout_ms from the service timeout
     #[test]
     fn timeout_ms_examples() {
         assert_eq!(timeout_ms(Duration::from_secs(1)), 900);

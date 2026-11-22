@@ -429,6 +429,7 @@ mod tests {
 
     /// Spec peer-group "Heartbeat announces services left out": tags are
     /// written as 8 lowercase hex digits, and no `off` without tags.
+    // spectra-scenario: peer-group / Heartbeat announces services left out
     #[test]
     fn heartbeat_off_on_the_wire() {
         let json = |kind| {
@@ -445,6 +446,7 @@ mod tests {
     /// Spec peer-group "More services left out than fit": the largest
     /// heartbeat, with [`crate::quorum::MAX_OFF_TAGS`] tags, fits one
     /// datagram.
+    // spectra-scenario: peer-group / More services left out than fit
     #[test]
     fn largest_heartbeat_fits_one_datagram() {
         let from = SocketAddr::V6(std::net::SocketAddrV6::new(

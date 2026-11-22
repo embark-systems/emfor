@@ -14,6 +14,7 @@ test: libemfor
 	$(EMFOR_FIXTURE) $(EMFOR_ROOT)/clients/c/tests/fixture.json 0 $(STORE)
 	EMFOR_STORE=$(STORE) EMFOR_MAX_STALENESS=60s PYTHONPATH=$(CURDIR) \
 	    $(PYTHON) -m unittest discover -s tests -v
+	# spectra-scenario: client-lookup / Client passes the shared cases
 	$(EMFOR_CONFORMANCE) -- $(PYTHON) $(CURDIR)/tests/conformance_lookup.py
 	@echo "PASS all Python tests"
 

@@ -49,6 +49,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
 /// Spec checker-plugins "Last stderr lines of an exiting plugin are logged":
 /// ending the tasks of a plugin that exited, or failed its handshake, does
 /// not drop what it wrote to stderr just before.
+// spectra-scenario: checker-plugins / Last stderr lines of an exiting plugin are logged
 #[tokio::test]
 async fn last_stderr_lines_of_an_exiting_plugin_are_logged() {
     let log = Captured::default();

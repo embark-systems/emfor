@@ -329,6 +329,7 @@ mod tests {
     /// Spec state-store "Drained backend record": a record without the new
     /// fields reads as not drained, writes back without them, and a drained
     /// one keeps `drain` and `checked_state`; the schema stays 2.
+    // spectra-scenario: state-store / Backend without drain is unchanged
     #[test]
     fn drain_fields_are_optional_and_only_written_when_set() {
         let plain: BackendRecord = serde_json::from_str(&backend_json("")).unwrap();
@@ -355,6 +356,7 @@ mod tests {
     /// Spec state-store "Drained backend record", scenario "Older reader": a
     /// reader with only the fields of version 0.5.0 reads a drained backend,
     /// as the daemon stores it, as an unhealthy one and does not fail.
+    // spectra-scenario: state-store / Older reader
     #[test]
     fn older_reader_reads_a_drained_backend_as_unhealthy() {
         #[derive(Deserialize)]
@@ -379,6 +381,7 @@ mod tests {
     }
 
     /// `all_down` does not count a drained backend as healthy.
+    // spectra-scenario: state-store / All backends drained
     #[test]
     fn drained_backends_do_not_keep_a_service_up() {
         let mut backend: BackendRecord = serde_json::from_str(&backend_json("")).unwrap();
@@ -401,6 +404,7 @@ mod tests {
 
     /// The client-lookup spec's length check example, plus an empty file
     /// and a page count that overflows.
+    // spectra-scenario: client-lookup / Store padded while the client opens it / length check
     #[test]
     fn truncated_store_rule() {
         assert_eq!(truncated_store(16384, 3, 4096), None);
@@ -443,6 +447,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: state-store / Values from a newer daemon / record shape
     #[test]
     fn serializes_spec_record_example_exactly() {
         let json = serde_json::to_string(&db_example()).unwrap();
@@ -475,6 +480,7 @@ mod tests {
         assert_eq!(rec.balance, Balance::RoundRobin);
     }
 
+    // spectra-scenario: backend-selection / New methods accepted
     #[test]
     fn balance_values_serialize() {
         for (b, s) in [
@@ -498,6 +504,7 @@ mod tests {
 
     /// Values a newer daemon may write: a backend state or `on_all_down`
     /// this reader does not know parses instead of failing the record.
+    // spectra-scenario: state-store / Values from a newer daemon
     #[test]
     fn unknown_state_and_on_all_down_parse() {
         let json = r#"{"name":"a","on_all_down":"some-future-mode","all_down":true,"backends":[{"id":"10.0.0.1:80","ip":"10.0.0.1","port":80,"state":"some-future-state","checked_at":1,"reason":null}]}"#;
@@ -528,6 +535,7 @@ mod tests {
         assert_eq!((b.weight, b.site, b.latency_us), (1, None, None));
     }
 
+    // spectra-scenario: state-store / Values from a newer daemon / weight and site written
     #[test]
     fn weight_and_site_serialize() {
         let mut rec = db_example();
@@ -539,6 +547,7 @@ mod tests {
 
     /// Spec "Store record format version 1", example "slow start fields
     /// written".
+    // spectra-scenario: state-store / Values from a newer daemon / slow start fields written
     #[test]
     fn slow_start_fields_written() {
         let mut rec = db_example();
@@ -567,6 +576,7 @@ mod tests {
     }
 
     /// Spec "Store record format version 2", example "backup written".
+    // spectra-scenario: state-store / Values from a newer daemon / backup written
     #[test]
     fn backup_written() {
         let mut rec = db_example();
@@ -637,6 +647,8 @@ mod tests {
         assert_eq!(back, h);
     }
 
+    // spectra-scenario: state-store / Oldest entry dropped past 20
+    // spectra-scenario: state-store / Oldest entry dropped past 20 / cap at 20
     #[test]
     fn history_capped_at_20() {
         let mut h = ServiceHistory::default();

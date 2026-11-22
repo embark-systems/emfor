@@ -18,6 +18,7 @@ static void *worker(void *arg) {
     return NULL;
 }
 
+// spectra-scenario: client-lookup / Concurrent lookups
 int main(void) {
     pthread_t t[THREADS];
     int count_a[THREADS] = {0};

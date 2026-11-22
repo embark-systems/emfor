@@ -687,6 +687,10 @@ mod tests {
     }
 
     /// `[peers]`.
+    // spectra-scenario: metrics-endpoint / Peer metrics
+    // spectra-scenario: metrics-endpoint / Peer result metrics
+    // spectra-scenario: metrics-endpoint / Skipped checks counted
+    // spectra-scenario: peer-group / No peers table
     #[test]
     fn peer_metrics() {
         use crate::peers::{Group, Keys, Kind, Message, PeerStats, encode};
@@ -780,6 +784,7 @@ mod tests {
 
     /// Spec "Backend and service metrics", scenario "One healthy and one
     /// failing backend".
+    // spectra-scenario: metrics-endpoint / One healthy and one failing backend
     #[test]
     fn one_healthy_and_one_failing_backend() {
         let body = render(&view(vec![api()]), "0.1.0");
@@ -809,6 +814,8 @@ mod tests {
 
     /// Spec metrics-endpoint "Drain metric": a drained backend is 1, every
     /// other backend 0; the state series keep the state the checks gave.
+    // spectra-scenario: metrics-endpoint / Drained backend
+    // spectra-scenario: metrics-endpoint / Backend without drain
     #[test]
     fn drain_metric() {
         let mut rec = api();
@@ -830,6 +837,7 @@ mod tests {
     }
 
     /// Spec "Daemon metrics" and the HELP / TYPE lines.
+    // spectra-scenario: metrics-endpoint / Store commit failure counted
     #[test]
     fn daemon_metrics_and_families() {
         let mut v = view(vec![api()]);
@@ -850,6 +858,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: metrics-endpoint / Counting results and transitions
     #[test]
     fn counters_and_order() {
         let db = service(
@@ -930,6 +939,8 @@ mod tests {
     }
 
     /// Spec "Metrics HTTP behavior", example "request outcomes".
+    // spectra-scenario: metrics-endpoint / Requests and statuses
+    // spectra-scenario: metrics-endpoint / Requests and statuses / request outcomes
     #[tokio::test]
     async fn request_outcomes() {
         let srv = server().await;
@@ -1017,6 +1028,7 @@ mod tests {
         panic!("no 200 after the idle connections closed");
     }
 
+    // spectra-scenario: metrics-endpoint / Address in use
     #[tokio::test]
     async fn bind_failure_names_the_address() {
         let srv = server().await;
@@ -1026,6 +1038,7 @@ mod tests {
     }
 
     /// Spec "Metrics HTTP behavior", scenario "Not ready yet".
+    // spectra-scenario: metrics-endpoint / Not ready yet
     #[tokio::test]
     async fn not_ready_yet() {
         let live = LiveState::default();

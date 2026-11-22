@@ -28,6 +28,8 @@ fn command_dumping_env(dump: &std::path::Path) -> Vec<String> {
 /// Spec checker-plugins "Plugin environment": the plugin gets the default
 /// variables and the ones in `env_pass`, and gets them again after it was
 /// restarted.
+// spectra-scenario: checker-plugins / Variable of the daemon is not passed to a plugin
+// spectra-scenario: checker-plugins / Variable named in env_pass reaches a plugin, also after a restart
 #[tokio::test]
 async fn plugin_environment_is_the_default_one_plus_env_pass() {
     // cargo sets this in the environment of the test process.
@@ -131,6 +133,7 @@ async fn handshake_check_and_stop() {
     );
 }
 
+// spectra-scenario: checker-plugins / Wrong protocol version
 #[tokio::test]
 async fn wrong_protocol_fails_start() {
     let err = PluginHost::start("fake", &command(&["EMFOR_TEST_PLUGIN_PROTOCOL=2"]))
@@ -175,6 +178,7 @@ async fn no_hello_fails_start_after_timeout() {
     assert!(t.elapsed() >= Duration::from_secs(5));
 }
 
+// spectra-scenario: checker-plugins / Out-of-order answers
 #[tokio::test]
 async fn answers_out_of_order_reach_their_requests() {
     let host = std::sync::Arc::new(PluginHost::start("fake", &command(&[])).await.unwrap());
@@ -210,6 +214,7 @@ async fn garbage_lines_are_ignored() {
 
 /// Spec checker-plugins "Plugin output line limit": a first line that is not a
 /// valid hello is quoted with its first 200 characters and no more.
+// spectra-scenario: checker-plugins / Long handshake answer
 #[tokio::test]
 async fn long_handshake_answer_is_cut() {
     let err = PluginHost::start("fake", &command(&["EMFOR_TEST_PLUGIN_BAD_HELLO=1"]))
@@ -223,6 +228,7 @@ async fn long_handshake_answer_is_cut() {
     );
 }
 
+// spectra-scenario: checker-plugins / Crash and recovery
 #[tokio::test]
 async fn crash_fails_pending_then_restarts() {
     let host = std::sync::Arc::new(PluginHost::start("fake", &command(&[])).await.unwrap());
@@ -300,6 +306,7 @@ async fn dropped_request_is_forgotten() {
 /// Spec checker-plugins: a plugin that answers within the timeout is never
 /// killed. Calls whose tasks are aborted (a reload, shutdown) were not given
 /// up on after the timeout and do not count as unanswered.
+// spectra-scenario: checker-plugins / Reload cancels checks in flight
 #[tokio::test]
 async fn aborted_requests_do_not_restart_the_plugin() {
     let host = Arc::new(PluginHost::start("fake", &command(&[])).await.unwrap());
@@ -326,6 +333,8 @@ async fn aborted_requests_do_not_restart_the_plugin() {
     host.stop().await;
 }
 
+// spectra-scenario: checker-plugins / Plugin stops answering
+// spectra-scenario: checker-plugins / Plugin stops answering / unanswered requests
 #[tokio::test]
 async fn plugin_that_stops_answering_is_restarted() {
     let host = PluginHost::start("fake", &command(&[])).await.unwrap();
@@ -353,6 +362,8 @@ async fn plugin_that_stops_answering_is_restarted() {
 /// The production path: callers that wait a real time and give up when it
 /// passes (`run_check`'s timeout) are counted, so a plugin that never answers
 /// is restarted. Without this, stall detection could silently never fire.
+// spectra-scenario: checker-plugins / Plugin stops answering
+// spectra-scenario: checker-plugins / Callers give up after the timeout
 #[tokio::test]
 async fn plugin_that_never_answers_waiting_callers_is_restarted() {
     let host = PluginHost::start("fake", &command(&[])).await.unwrap();
@@ -373,6 +384,7 @@ async fn plugin_that_never_answers_waiting_callers_is_restarted() {
     host.stop().await;
 }
 
+// spectra-scenario: checker-plugins / Plugin stops answering / unanswered requests
 #[tokio::test]
 async fn answers_between_unanswered_requests_keep_the_plugin() {
     let host = PluginHost::start("fake", &command(&[])).await.unwrap();
@@ -394,6 +406,7 @@ async fn answers_between_unanswered_requests_keep_the_plugin() {
 /// Spec checker-plugins "Request queue": a plugin that stops reading its
 /// stdin gets at most `REQUEST_QUEUE` requests queued; further calls fail
 /// at once as `Busy` instead of piling up in memory.
+// spectra-scenario: checker-plugins / Plugin that stops reading its stdin
 #[tokio::test]
 async fn plugin_that_stops_reading_makes_calls_busy() {
     use emfor_daemon::plugin::host::REQUEST_QUEUE;
@@ -462,6 +475,9 @@ fn req(timeout: Duration) -> CheckRequest {
     CheckRequest::new("cache.svc.emfor", "10.0.2.1:6379".parse().unwrap(), timeout)
 }
 
+// spectra-scenario: checker-plugins / Service uses a plugin
+// spectra-scenario: checker-plugins / Plugin reports down
+// spectra-scenario: health-checking / Plugin timeout is not a backend failure
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_checker_results() {
     let (host, f) = factory(&[]).await;
@@ -500,6 +516,7 @@ async fn plugin_checker_results() {
     assert!(c.is_err(), "validate after stop must fail");
 }
 
+// spectra-scenario: checker-plugins / Crash and recovery
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_checker_unavailable_after_crash() {
     let (host, f) = factory(&[]).await;
@@ -516,6 +533,7 @@ async fn plugin_checker_unavailable_after_crash() {
     host.stop().await;
 }
 
+// spectra-scenario: checker-plugins / Plugin rejects an option
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_validation_errors_and_checker_id() {
     let (host, f) = factory(&[]).await;
@@ -599,6 +617,7 @@ async fn wait_gone(pid: i32) {
     }
 }
 
+// spectra-scenario: checker-plugins / Processes a plugin started are stopped with it
 #[tokio::test]
 async fn stop_kills_what_the_plugin_started() {
     let dir = tempfile::tempdir().unwrap();
@@ -612,6 +631,7 @@ async fn stop_kills_what_the_plugin_started() {
     wait_gone(child).await;
 }
 
+// spectra-scenario: checker-plugins / Processes a plugin started are stopped with it
 #[tokio::test]
 async fn restart_after_stall_kills_what_the_plugin_started() {
     let dir = tempfile::tempdir().unwrap();
@@ -637,6 +657,7 @@ async fn restart_after_stall_kills_what_the_plugin_started() {
     wait_gone(second).await;
 }
 
+// spectra-scenario: checker-plugins / Processes a plugin started are stopped with it
 #[tokio::test]
 async fn crash_kills_what_the_plugin_started() {
     let dir = tempfile::tempdir().unwrap();
@@ -675,6 +696,7 @@ impl Drop for Orphans {
 /// process that left the plugin's group keeps its stdout and stderr open;
 /// the tasks of each old plugin process still end, so the number of live
 /// tasks does not grow with each restart.
+// spectra-scenario: checker-plugins / Pipe held by a process outside the group
 #[tokio::test]
 async fn tasks_of_a_restarted_plugin_end_though_a_pipe_stays_open() {
     let dir = tempfile::tempdir().unwrap();

@@ -130,6 +130,7 @@ async fn closing_server(reset: bool) -> std::net::SocketAddr {
     addr
 }
 
+// spectra-scenario: health-checking / TLS port that closes the connection
 #[tokio::test]
 async fn closed_during_the_handshake() {
     for reset in [false, true] {

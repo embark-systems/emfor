@@ -334,6 +334,7 @@ mod tests {
         assert_eq!(c.transitions, [0, 1, 0]);
     }
 
+    // spectra-scenario: metrics-endpoint / Removed service disappears
     #[test]
     fn replace_keeps_counters_of_kept_services_and_drops_removed() {
         let live = LiveState::default();

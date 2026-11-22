@@ -14,6 +14,7 @@ fn data(file: &str) -> Value {
     serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
 }
 
+// spectra-scenario: client-lookup / Data covers every requirement
 #[test]
 fn every_store_writes_and_coverage_is_complete() {
     let cases = data("cases.json");

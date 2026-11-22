@@ -177,6 +177,11 @@ fn tls_cases(p: &mut Plugin, base: impl Fn(Value) -> Value, tls_port: u16, plain
     down(p.check(plain_port, base(tls("db.test", false))), "tls: ");
 }
 
+// spectra-scenario: database-checks / Wrong password
+// spectra-scenario: database-checks / Replica that lost its master
+// spectra-scenario: database-checks / Password rotated
+// spectra-scenario: database-checks / Name mismatch
+// spectra-scenario: database-checks / Verification turned off
 #[test]
 #[ignore = "needs the emfor-plugins-test container"]
 fn redis_live() {
@@ -234,6 +239,11 @@ fn redis_live() {
     up(p.check(6379, o));
 }
 
+// spectra-scenario: database-checks / Primary MySQL
+// spectra-scenario: database-checks / Read-only replica
+// spectra-scenario: database-checks / Replicating replica
+// spectra-scenario: database-checks / Name mismatch
+// spectra-scenario: database-checks / Verification turned off
 #[test]
 #[ignore = "needs the emfor-plugins-test container"]
 fn mysql_live() {
@@ -270,6 +280,11 @@ fn mysql_live() {
     tls_cases(&mut p, |t| opts("emfor", "good.pass", t), 3306, 3307);
 }
 
+// spectra-scenario: database-checks / Standby server
+// spectra-scenario: database-checks / Missing database
+// spectra-scenario: database-checks / Streaming standby
+// spectra-scenario: database-checks / Name mismatch
+// spectra-scenario: database-checks / Verification turned off
 #[test]
 #[ignore = "needs the emfor-plugins-test container"]
 fn pgsql_live() {
@@ -316,6 +331,12 @@ fn pgsql_live() {
     tls_cases(&mut p, db, 5432, 5433);
 }
 
+// spectra-scenario: database-checks / Password rotated
+// spectra-scenario: database-checks / Name mismatch
+// spectra-scenario: database-checks / Verification turned off
+// spectra-scenario: database-checks / StartTLS upgrade
+// spectra-scenario: database-checks / Bind with a password
+// spectra-scenario: database-checks / Wrong LDAP password
 #[test]
 #[ignore = "needs the emfor-plugins-test container"]
 fn ldap_live() {
@@ -364,6 +385,7 @@ fn ldap_live() {
     up(p.check(389, o));
 }
 
+// spectra-scenario: network-checks / Name resolves
 #[test]
 #[ignore = "needs the emfor-plugins-test container"]
 fn dns_live() {
@@ -417,6 +439,7 @@ fn dns_live() {
     );
 }
 
+// spectra-scenario: network-checks / Server answers Status-Server
 #[test]
 #[ignore = "needs the emfor-plugins-test container"]
 fn radius_live() {
@@ -476,6 +499,8 @@ fn radius_live() {
     );
 }
 
+// spectra-scenario: network-checks / Server answers OPTIONS
+// spectra-scenario: network-checks / SIP over TLS with a wrong certificate name
 #[test]
 #[ignore = "needs the emfor-plugins-test container"]
 fn sip_live() {
@@ -513,6 +538,9 @@ fn sip_live() {
     );
 }
 
+// spectra-scenario: network-checks / Peer accepts the connection
+// spectra-scenario: network-checks / Unknown peer
+// spectra-scenario: network-checks / Peer requires a client certificate
 #[test]
 #[ignore = "needs the emfor-plugins-test container"]
 fn diameter_live() {
@@ -566,6 +594,8 @@ fn diameter_live() {
     ));
 }
 
+// spectra-scenario: network-checks / Healthy server with STARTTLS
+// spectra-scenario: network-checks / STARTTLS not offered
 #[test]
 #[ignore = "needs the emfor-plugins-test container"]
 fn smtp_live() {
@@ -587,6 +617,8 @@ fn smtp_live() {
     down(p.check(2599, json!({})), "connect: ");
 }
 
+// spectra-scenario: network-checks / Password too long for the first frame
+// spectra-scenario: network-checks / Wrong password
 #[test]
 #[ignore = "needs the emfor-plugins-test container"]
 fn amqp_live() {
@@ -654,6 +686,7 @@ fn amqp_live() {
     up(p.check(5672, options));
 }
 
+// spectra-scenario: network-checks / Primary of a replica set
 #[test]
 #[ignore = "needs the emfor-plugins-test container"]
 fn mongodb_live() {
@@ -685,6 +718,8 @@ fn mongodb_live() {
     down(p.check(27099, json!({})), "connect: ");
 }
 
+// spectra-scenario: network-checks / Serving
+// spectra-scenario: network-checks / No health service
 #[test]
 #[ignore = "needs the emfor-plugins-test container"]
 fn grpc_live() {
@@ -706,6 +741,7 @@ fn grpc_live() {
     down(p.check(50099, json!({})), "connect: ");
 }
 
+// spectra-scenario: network-checks / HTTP/3 health endpoint
 #[test]
 #[ignore = "needs the emfor-plugins-test container"]
 fn quic_live() {

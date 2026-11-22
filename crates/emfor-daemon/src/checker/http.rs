@@ -501,6 +501,7 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
 
+    // spectra-scenario: health-checking / Plain http without CA certificates
     #[test]
     fn verification_is_skipped_for_plain_http_and_tls_verify_false_only() {
         // (https, tls_verify) -> skipped
@@ -516,6 +517,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: health-checking / https without CA certificates
     #[test]
     fn build_failure_names_the_missing_ca_certificates_for_verified_https_only() {
         let hinted = super::build_failure("builder error", true);
@@ -569,6 +571,8 @@ mod tests {
             .unwrap()
     }
 
+    // spectra-scenario: health-checking / Status inside expected range
+    // spectra-scenario: health-checking / Status inside expected range / status matching
     #[tokio::test]
     async fn status_matching_table() {
         // Rows of the "status matching" example in the health-checking spec.
@@ -593,6 +597,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: health-checking / Host header
     #[tokio::test]
     async fn sends_host_header_and_path() {
         let (addr, mut rx) = server(200).await;
@@ -606,6 +611,7 @@ path = "/healthz""#,
         assert!(req.contains("host: api.internal\r\n"), "request: {req}");
     }
 
+    // spectra-scenario: health-checking / Host header
     #[tokio::test]
     async fn ip_literal_host_header_still_connects_to_backend() {
         for host in [
@@ -626,6 +632,7 @@ path = "/healthz""#,
         }
     }
 
+    // spectra-scenario: health-checking / Timeout is a backend failure
     #[tokio::test]
     async fn silent_backend_times_out() {
         // Accepts the connection, never answers.
@@ -690,6 +697,7 @@ path = "/healthz""#,
         ));
     }
 
+    // spectra-scenario: health-checking / Invalid expect_status
     #[test]
     fn validation_errors() {
         let bad = |opts: &str| {
@@ -766,6 +774,8 @@ tls_verify = "yes""#)
         addr
     }
 
+    // spectra-scenario: health-checking / Body must contain expect_body
+    // spectra-scenario: health-checking / Body must contain expect_body / body matching
     #[tokio::test]
     async fn body_matching_table() {
         let up_json = br#"{"status":"UP"}"#.to_vec();
@@ -828,6 +838,8 @@ tls_verify = "yes""#)
         }
     }
 
+    // spectra-scenario: health-checking / Invalid expect_body
+    // spectra-scenario: health-checking / Invalid expect_body / expect_body validation
     #[test]
     fn expect_body_validation() {
         let bad = |opts: &str| {
@@ -854,6 +866,7 @@ tls_verify = "yes""#)
 
     /// `host_header` is a host with an optional port; anything else would
     /// either fail every check or reach a host other than the backend.
+    // spectra-scenario: health-checking / Host header / host_header validation
     #[test]
     fn host_header_must_be_host_and_port() {
         let validate = |h: &str| {
@@ -948,6 +961,7 @@ tls_verify = "yes""#)
 
     const TOKEN_PATH: &str = r#"path = "/health?token=s3cret""#;
 
+    // spectra-scenario: health-checking / Reason without the request URL
     #[tokio::test]
     async fn refused_connection_reason_has_no_url() {
         let addr = emfor_fixture::refused_addr();
@@ -959,6 +973,7 @@ tls_verify = "yes""#)
     /// Matches the spec scenario for a body failure, but cannot catch a
     /// regression: the client puts no URL in this error, with or without
     /// `client_reason`.
+    // spectra-scenario: health-checking / Reason without the request URL
     #[tokio::test]
     async fn body_failure_reason_has_no_url() {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -981,6 +996,7 @@ tls_verify = "yes""#)
         assert!(reason.starts_with("body: "), "{reason}");
     }
 
+    // spectra-scenario: health-checking / Reason without the request URL
     #[tokio::test]
     async fn tls_failure_reason_has_no_url() {
         // A server that answers in clear text to a TLS handshake.

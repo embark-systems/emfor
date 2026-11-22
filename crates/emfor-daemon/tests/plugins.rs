@@ -105,6 +105,8 @@ fn check_config(body: &str) -> (i32, String, String) {
 
 const SVC: &str = "cache.svc.emfor";
 
+// spectra-scenario: checker-plugins / Service uses a plugin
+// spectra-scenario: checker-plugins / Plugin stderr is logged
 #[test]
 fn plugin_service_becomes_healthy_and_stderr_is_logged() {
     let mark = marker("healthy");
@@ -147,6 +149,7 @@ fn check_config_with_plugin() {
     assert!(pgrep(&mark).is_empty(), "plugin left running");
 }
 
+// spectra-scenario: checker-plugins / Plugin rejects an option
 #[test]
 fn check_config_plugin_rejects_option() {
     let mark = marker("reject");
@@ -163,6 +166,7 @@ fn check_config_plugin_rejects_option() {
     assert!(pgrep(&mark).is_empty(), "plugin left running");
 }
 
+// spectra-scenario: checker-plugins / Check config with a broken plugin
 #[test]
 fn check_config_with_broken_plugin() {
     let mark = marker("broken");
@@ -181,6 +185,7 @@ fn check_config_with_broken_plugin() {
     assert!(pgrep(&mark).is_empty(), "plugin left running");
 }
 
+// spectra-scenario: checker-plugins / Wrong protocol version
 #[test]
 fn broken_plugin_at_startup_exits_two() {
     let mark = marker("startup");
@@ -201,6 +206,7 @@ fn broken_plugin_at_startup_exits_two() {
     assert!(pgrep(&mark).is_empty(), "plugin left running");
 }
 
+// spectra-scenario: checker-plugins / Unchanged plugin survives reload
 #[test]
 fn unchanged_plugin_survives_reload() {
     let mark = marker("keep");
@@ -226,6 +232,7 @@ fn unchanged_plugin_survives_reload() {
     assert_eq!(r.backend(SVC).unwrap().state, HealthState::Healthy);
 }
 
+// spectra-scenario: checker-plugins / Rejected reload with a new plugin
 #[test]
 fn rejected_reload_with_new_plugin() {
     let mark = marker("prev");
@@ -297,6 +304,7 @@ fn command_change_restarts_plugin_and_resets_backends() {
 }
 
 /// Spec checker-plugins "Changed env_pass restarts the plugin".
+// spectra-scenario: checker-plugins / Changed env_pass restarts the plugin
 #[test]
 fn env_pass_change_restarts_plugin_and_resets_backends() {
     let mark = marker("envpass");
@@ -337,6 +345,7 @@ fn env_pass_change_restarts_plugin_and_resets_backends() {
     assert!(alive(pids[1]));
 }
 
+// spectra-scenario: checker-plugins / Crash and recovery
 #[test]
 fn crash_and_recovery() {
     let mark = marker("crash");
@@ -381,6 +390,7 @@ fn crash_and_recovery() {
     assert_eq!(r.backend(SVC).unwrap().state, HealthState::Healthy);
 }
 
+// spectra-scenario: health-checking / Plugin timeout is not a backend failure
 #[test]
 fn plugin_timeout_is_not_a_backend_failure() {
     let mark = marker("hang");
@@ -421,6 +431,7 @@ fn invalid_plugin_output_is_logged() {
 
 /// Spec checker-plugins "Plugin output line limit": an invalid stdout line is
 /// logged with its first 200 characters and no more.
+// spectra-scenario: checker-plugins / Long invalid stdout line
 #[test]
 fn long_invalid_plugin_output_is_cut() {
     let mark = marker("long-garbage");
@@ -472,6 +483,7 @@ fn check_config_validation_timeout() {
     assert!(pgrep(&mark).is_empty(), "plugin left running");
 }
 
+// spectra-scenario: checker-plugins / Reload while a plugin is restarting
 #[test]
 fn reload_while_plugin_is_restarting() {
     let mark = marker("restarting");
@@ -556,6 +568,7 @@ fn sigterm_while_starting_stops_cleanly() {
 /// A SIGTERM while a reload waits on a plugin stops the daemon at once
 /// instead of after the reload (here a `validate` that never answers would
 /// hold it 5s).
+// spectra-scenario: state-store / Stop during a reload
 #[test]
 fn sigterm_during_a_reload_does_not_wait_for_it() {
     let mark = marker("kept");
@@ -590,6 +603,7 @@ fn sigterm_during_a_reload_does_not_wait_for_it() {
 
 /// A stop request while the daemon is still loading its config (here: a
 /// plugin that never answers validate) ends the start at once.
+// spectra-scenario: state-store / Stop during startup
 #[test]
 fn sigterm_during_startup_does_not_wait_for_it() {
     let hang = marker("start-hang");
@@ -613,6 +627,7 @@ fn sigterm_during_startup_does_not_wait_for_it() {
 }
 
 /// Spec "Plugin output line limit", oversized answer line.
+// spectra-scenario: checker-plugins / Oversized answer line
 #[test]
 fn oversized_stdout_line_restarts_the_plugin() {
     let mark = marker("long-stdout");
@@ -638,6 +653,7 @@ fn oversized_stdout_line_restarts_the_plugin() {
 }
 
 /// Spec "Plugin output line limit", oversized stderr line.
+// spectra-scenario: checker-plugins / Oversized stderr line
 #[test]
 fn oversized_stderr_line_is_cut() {
     let mark = marker("long-stderr");

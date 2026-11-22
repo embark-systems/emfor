@@ -40,6 +40,7 @@ fn grow(path: &std::path::Path) {
     env.prepare_for_closing().wait();
 }
 
+// spectra-scenario: client-lookup / Store grown past the client's map size
 #[test]
 fn store_grown_past_the_map_size_is_read() {
     let dir = tempfile::tempdir().unwrap();

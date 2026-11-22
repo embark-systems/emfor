@@ -470,6 +470,9 @@ mod tests {
         ErrorCode,
     );
 
+    // spectra-scenario: client-lookup / Error code by store condition
+    // spectra-scenario: client-lookup / Error code by store condition / store conditions
+    // spectra-scenario: client-lookup / Schema check wins over a missing service
     #[test]
     fn store_conditions() {
         use ErrorCode::*;
@@ -568,6 +571,8 @@ mod tests {
         }
     }
 
+    // spectra-scenario: client-lookup / Name forms that find the same record
+    // spectra-scenario: client-lookup / Name forms that find the same record / name normalization
     #[test]
     fn found_and_normalized() {
         let dir = tempfile::tempdir().unwrap();
@@ -605,6 +610,7 @@ mod tests {
         serde_json::json!({"on_all_down": "open", "backends": [{"id": format!("{ip}:8080"), "ip": ip, "port": 8080, "state": "healthy", "checked_at": 1, "reason": null}]})
     }
 
+    // spectra-scenario: client-lookup / Store replaced while the client runs
     #[test]
     fn stale_store_is_followed_to_its_replacement() {
         let dir = tempfile::tempdir().unwrap();
@@ -656,6 +662,7 @@ mod tests {
     /// hour, so a slow machine (writing the new store can take longer than
     /// `REPLACE_CHECK_MS`) cannot let it pass, and "later" is the time of
     /// the last check set back to the start of the clock.
+    // spectra-scenario: client-lookup / Store replaced while the client runs
     #[test]
     fn replacement_checks_are_spaced() {
         let dir = tempfile::tempdir().unwrap();
@@ -678,6 +685,7 @@ mod tests {
     }
 
     /// ALL_DOWN from a fresh store is the daemon's answer: no check.
+    // spectra-scenario: client-lookup / ALL_DOWN from a fresh store
     #[test]
     fn all_down_in_a_fresh_store_does_not_check() {
         let dir = tempfile::tempdir().unwrap();
@@ -698,6 +706,7 @@ mod tests {
     }
 
     /// A new file that cannot be opened leaves the open store in use.
+    // spectra-scenario: client-lookup / Replacement that cannot be opened yet
     #[test]
     fn unreadable_replacement_keeps_the_open_store() {
         let dir = tempfile::tempdir().unwrap();
@@ -765,6 +774,7 @@ mod tests {
 
     /// A data file replaced under the same lock file is followed too, by
     /// closing the open store first.
+    // spectra-scenario: client-lookup / Store replaced while the client runs
     #[test]
     fn replacement_with_the_same_lock_file_is_followed() {
         let dir = tempfile::tempdir().unwrap();
@@ -829,6 +839,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: client-lookup / Store written by a different LMDB format
     #[test]
     fn non_lmdb_file_names_the_release_rule() {
         let dir = tempfile::tempdir().unwrap();
@@ -849,6 +860,7 @@ mod tests {
 
     /// A store cut short by its last page would make the lookup read past
     /// the end of the mapped file (`SIGBUS`); the open refuses it instead.
+    // spectra-scenario: client-lookup / Truncated store fails instead of crashing
     #[test]
     fn truncated_store_is_unavailable() {
         let dir = tempfile::tempdir().unwrap();
@@ -899,6 +911,7 @@ mod tests {
 
     /// A store opened while the daemon has not yet padded it is opened once
     /// the file has its length, and the failure is not cached.
+    // spectra-scenario: client-lookup / Store padded while the client opens it
     #[test]
     fn store_padded_while_opening_is_opened() {
         use std::os::unix::fs::FileExt;
@@ -922,6 +935,7 @@ mod tests {
 
     /// A store that stays short is refused after the rechecks, not at once
     /// and not much later than they take.
+    // spectra-scenario: client-lookup / Truncated store fails instead of crashing
     #[test]
     fn store_staying_short_is_refused_after_the_rechecks() {
         let dir = tempfile::tempdir().unwrap();
@@ -943,6 +957,7 @@ mod tests {
 
     /// A store file that cannot be opened is tried again only after
     /// `open_retry`: lookups meanwhile fail with the same error.
+    // spectra-scenario: client-lookup / Unopenable store is retried after a pause
     #[test]
     fn unopenable_store_is_retried_after_a_pause() {
         let dir = tempfile::tempdir().unwrap();
@@ -972,6 +987,7 @@ mod tests {
     }
 
     /// A missing store has no pause: it is opened as soon as it exists.
+    // spectra-scenario: client-lookup / Missing store is retried
     #[test]
     fn missing_store_is_retried_at_once() {
         let dir = tempfile::tempdir().unwrap();
@@ -986,6 +1002,7 @@ mod tests {
 
     /// Spec "Unhealthy backend is never returned": four lookups skip the
     /// unhealthy backend and give each healthy one twice.
+    // spectra-scenario: client-lookup / Unhealthy backend is never returned
     #[test]
     fn round_robin_skips_unhealthy_evenly() {
         let dir = tempfile::tempdir().unwrap();
@@ -1058,6 +1075,10 @@ mod tests {
 
     /// Spec "Locality prefers backends in the host's site", every row of
     /// the locality-outcomes example plus the local-site-healthy scenario.
+    // spectra-scenario: client-lookup / Local site healthy
+    // spectra-scenario: client-lookup / Local site healthy / locality outcomes
+    // spectra-scenario: backend-selection / Local backends preferred
+    // spectra-scenario: backend-selection / Local backends preferred / locality outcomes
     #[test]
     fn locality_outcomes() {
         let dir = tempfile::tempdir().unwrap();
@@ -1151,6 +1172,7 @@ mod tests {
     }
 
     /// Spec lookup-command, scenario "Primary and backup backends".
+    // spectra-scenario: lookup-command / Primary and backup backends
     #[test]
     fn explain_gives_the_tier_and_the_reason_of_every_backend() {
         let dir = tempfile::tempdir().unwrap();
@@ -1238,6 +1260,8 @@ mod tests {
     }
 
     /// Spec "Closed service with no healthy backend" and "Stale store".
+    // spectra-scenario: lookup-command / Stale store
+    // spectra-scenario: lookup-command / Closed service with no healthy backend
     #[test]
     fn explain_when_no_backend_can_be_chosen() {
         let dir = tempfile::tempdir().unwrap();
@@ -1306,6 +1330,7 @@ mod tests {
     /// Spec "Explain between two lookups": explain does not advance the
     /// rotation, so lookups with explains in between still go round the
     /// candidates one after the other.
+    // spectra-scenario: lookup-command / Explain between two lookups
     #[test]
     fn explain_does_not_advance_the_rotation() {
         let dir = tempfile::tempdir().unwrap();
@@ -1346,6 +1371,7 @@ mod tests {
     /// the first one's seed), and explain called on one of them between its
     /// first and second lookup: both return the same addresses in the same
     /// order.
+    // spectra-scenario: lookup-command / Explain between two lookups
     #[test]
     fn explain_between_lookups_leaves_the_sequence_of_a_client_unchanged() {
         let dir = tempfile::tempdir().unwrap();

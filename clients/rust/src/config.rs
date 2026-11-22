@@ -56,6 +56,8 @@ pub fn parse_max_staleness(s: &str) -> Result<u64, String> {
 mod tests {
     use super::*;
 
+    // spectra-scenario: client-lookup / Staleness values
+    // spectra-scenario: client-lookup / Staleness values / EMFOR_MAX_STALENESS parsing
     #[test]
     fn staleness_values() {
         for (v, want) in [("3s", Some(3000)), ("1500ms", Some(1500)), ("1ms", Some(1))] {

@@ -116,6 +116,7 @@ mod tests {
     use crate::peers::test_support::*;
     use crate::peers::wire::Kind;
 
+    // spectra-scenario: peer-group / Digest differs
     #[test]
     fn deliver_checks_service_digest_and_backend() {
         let Kind::Down(d) = down("refused") else {

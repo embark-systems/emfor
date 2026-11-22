@@ -495,6 +495,9 @@ mod tests {
     /// A self-signed certificate in PEM form (any valid certificate works).
     const CERT_PEM: &str = include_str!("../tests/data/test-ca.pem");
 
+    // spectra-scenario: database-checks / Valid replica options
+    // spectra-scenario: database-checks / Valid replica options / option validation
+    // spectra-scenario: database-checks / PostgreSQL password with NUL
     #[test]
     fn option_validation_table() {
         let f = Files::new();
@@ -696,6 +699,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: database-checks / Valid options
     #[test]
     fn valid_options() {
         let f = Files::new();
@@ -755,6 +759,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: database-checks / Valid replica options / option validation
     #[test]
     fn password_file_must_be_utf8() {
         let f = Files::new();
@@ -802,6 +807,7 @@ mod tests {
 
     /// Spec database-checks "Passwords from password_file only": at check time
     /// a password that is not valid UTF-8 is an error that hides the content.
+    // spectra-scenario: database-checks / Password file not UTF-8 after validation
     #[test]
     fn read_password_refuses_non_utf8() {
         let f = Files::new();
@@ -812,6 +818,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: database-checks / Password file emptied after validation
     #[test]
     fn read_password_errors_hide_the_content() {
         let f = Files::new();

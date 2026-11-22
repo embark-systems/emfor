@@ -16,6 +16,7 @@ test: libemfor
 	$(MAKE) -f Makefile.xs
 	$(EMFOR_FIXTURE) $(EMFOR_ROOT)/clients/c/tests/fixture.json 0 $(STORE)
 	EMFOR_STORE=$(STORE) EMFOR_MAX_STALENESS=60s $(MAKE) -f Makefile.xs test
+	# spectra-scenario: client-lookup / Client passes the shared cases
 	$(EMFOR_CONFORMANCE) -- $(PERL) -I$(CURDIR)/blib/lib -I$(CURDIR)/blib/arch \
 	    $(CURDIR)/t/conformance_lookup.pl
 	@echo "PASS all Perl tests"

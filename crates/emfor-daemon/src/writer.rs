@@ -1087,6 +1087,7 @@ mod tests {
         .unwrap()
     }
 
+    // spectra-scenario: state-store / Host site written and removed
     #[tokio::test]
     async fn host_site_written_and_removed() {
         let dir = tempfile::tempdir().unwrap();
@@ -1114,6 +1115,12 @@ mod tests {
     /// State-store "DNS listen addresses in the store" and "Metrics listen
     /// addresses in the store": written at a fresh start, left alone by a
     /// reload, deleted at a start without the table.
+    // spectra-scenario: state-store / Metrics table written at start
+    // spectra-scenario: state-store / Key from an earlier run removed
+    // spectra-scenario: state-store / DNS table written at start
+    // spectra-scenario: state-store / DNS key from an earlier run removed
+    // spectra-scenario: state-store / Peer state written at start
+    // spectra-scenario: state-store / Peer key from an earlier run removed
     #[tokio::test]
     async fn listen_keys_written_at_start() {
         let dir = tempfile::tempdir().unwrap();
@@ -1253,6 +1260,11 @@ mod tests {
 
     /// Spec "Recovery time in the store", example "recovered_at after each
     /// transition", and the reload rules.
+    // spectra-scenario: state-store / Recovery recorded
+    // spectra-scenario: state-store / First healthy after start is not a recovery
+    // spectra-scenario: state-store / Recovery cleared when the backend fails again
+    // spectra-scenario: state-store / Recovery cleared when the backend fails again / recovered_at after each transition
+    // spectra-scenario: state-store / Values from a newer daemon / slow start fields written
     #[tokio::test]
     async fn recovered_at_follows_transitions() {
         use HealthState::*;
@@ -1318,6 +1330,8 @@ mod tests {
         assert_eq!(at(&store), None);
     }
 
+    // spectra-scenario: service-config / Weight change applies on reload
+    // spectra-scenario: state-store / Values from a newer daemon / weight and site written
     #[tokio::test]
     async fn weight_and_site_written_and_reloaded() {
         let dir = tempfile::tempdir().unwrap();
@@ -1365,6 +1379,10 @@ mod tests {
     /// the others carry no new field; `all_down` follows; a reload that
     /// removes `drain` brings back the state the checks gave, with no state
     /// change, no recovery time and no history entry.
+    // spectra-scenario: service-config / Reload applies drain without resetting state
+    // spectra-scenario: state-store / Drained backend as stored
+    // spectra-scenario: state-store / Backend without drain is unchanged
+    // spectra-scenario: state-store / All backends drained
     #[tokio::test]
     async fn drained_backend_written_and_undrained() {
         let dir = tempfile::tempdir().unwrap();
@@ -1491,6 +1509,7 @@ mod tests {
     /// Spec "Store record format version 2", example "backup written", and
     /// spec "Host site and backend weight and site": a reload that changes
     /// `backup` applies it and keeps the backend's health.
+    // spectra-scenario: state-store / Values from a newer daemon / backup written
     #[tokio::test]
     async fn backup_written_and_reloaded() {
         let dir = tempfile::tempdir().unwrap();
@@ -1530,6 +1549,7 @@ mod tests {
         assert_eq!(rec.backends[1].state, HealthState::Healthy);
     }
 
+    // spectra-scenario: state-store / Heartbeat advances
     #[tokio::test]
     async fn heartbeat_advances() {
         let dir = tempfile::tempdir().unwrap();
@@ -1550,6 +1570,7 @@ mod tests {
         assert!(store.get(KEY_STARTED_AT).unwrap().is_some());
     }
 
+    // spectra-scenario: state-store / State change visible before next heartbeat
     #[tokio::test]
     async fn state_change_committed_before_next_tick() {
         let dir = tempfile::tempdir().unwrap();
@@ -1575,6 +1596,7 @@ mod tests {
         assert!(!rec.all_down);
     }
 
+    // spectra-scenario: state-store / Startup state is all down / all_down computation
     #[tokio::test]
     async fn all_down_computation_table() {
         use HealthState::*;
@@ -1656,6 +1678,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: state-store / Transition recorded with its record
     #[tokio::test]
     async fn transition_recorded_with_its_record() {
         let dir = tempfile::tempdir().unwrap();
@@ -1837,6 +1860,7 @@ mod tests {
 
     /// History the caller could not read is not loaded and stays in the
     /// store; history loaded as empty (it did not parse) is deleted.
+    // spectra-scenario: state-store / Unparseable history discarded
     #[tokio::test]
     async fn unread_history_left_alone_and_empty_history_deleted() {
         let dir = tempfile::tempdir().unwrap();
@@ -1889,6 +1913,8 @@ mod tests {
         assert_eq!(store.get("hist/gone.svc.emfor").unwrap(), None);
     }
 
+    // spectra-scenario: state-store / History kept across a restart
+    // spectra-scenario: state-store / History pruned on start and reload
     #[tokio::test]
     async fn history_kept_and_pruned_on_start_and_reload() {
         let dir = tempfile::tempdir().unwrap();
@@ -2026,6 +2052,8 @@ mod tests {
     }
 
     /// Spec metrics-endpoint "Check and transition counters".
+    // spectra-scenario: metrics-endpoint / Counting results and transitions
+    // spectra-scenario: metrics-endpoint / Counters reset when a backend is removed and added back
     #[tokio::test]
     async fn counts_checks_and_transitions() {
         use crate::schedule::CheckOutcome::{Down, Up};
@@ -2102,6 +2130,7 @@ mod tests {
 
     /// Spec metrics-endpoint "Daemon metrics", scenario "Store commit failure
     /// counted".
+    // spectra-scenario: metrics-endpoint / Store commit failure counted
     #[tokio::test]
     async fn commit_failures_counted() {
         let dir = tempfile::tempdir().unwrap();
@@ -2136,6 +2165,7 @@ mod tests {
         assert_eq!(live.read().commit_failures, 1);
     }
 
+    // spectra-scenario: state-store / Map full
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn failed_commit_is_logged_and_retried() {
@@ -2197,6 +2227,7 @@ mod tests {
     /// A commit that waits for the disk does not hold up the live view:
     /// results that arrive meanwhile are served at once, and go to the
     /// store with the next commit.
+    // spectra-scenario: state-store / Slow commit does not hold up the served state
     #[tokio::test]
     async fn live_state_updated_while_a_commit_waits() {
         let dir = tempfile::tempdir().unwrap();
@@ -2313,6 +2344,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: state-store / Heartbeat zero after shutdown
     #[tokio::test]
     async fn stale_generation_dropped_and_shutdown_zeroes_heartbeat() {
         let dir = tempfile::tempdir().unwrap();
@@ -2349,6 +2381,7 @@ mod tests {
     /// A check task restarted while its backend is `unknown` (one `up` of
     /// `rise = 2`, which already measured a latency) starts with no
     /// latency: the record and the live view follow, without a transition.
+    // spectra-scenario: health-checking / Restarted task of an unknown backend
     #[tokio::test]
     async fn restart_of_an_unknown_backend_clears_its_latency() {
         let dir = tempfile::tempdir().unwrap();
@@ -2398,6 +2431,7 @@ mod tests {
     /// new check task. A result the removed task sent while it was being
     /// stopped, and the writer reads only after the second reload, is not
     /// the new task's: the backend stays `unknown`, as its new task is.
+    // spectra-scenario: health-checking / Result of a stopped task ignored
     #[tokio::test]
     async fn late_result_of_a_removed_task_is_dropped_when_the_backend_returns() {
         let dir = tempfile::tempdir().unwrap();
@@ -2533,6 +2567,7 @@ mod tests {
             .expect("fastest has a pool")
     }
 
+    // spectra-scenario: backend-selection / Nearly equal backends are fast
     #[tokio::test]
     async fn nearly_equal_backends_are_fast() {
         let dir = tempfile::tempdir().unwrap();
@@ -2550,6 +2585,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: backend-selection / A fast backend near the edge stays fast
     #[tokio::test]
     async fn fast_backend_near_the_edge_stays_fast() {
         let dir = tempfile::tempdir().unwrap();
@@ -2584,6 +2620,7 @@ mod tests {
         assert_eq!(record(&store, "f").pool.unwrap(), ids);
     }
 
+    // spectra-scenario: backend-selection / Missing latency is not fast
     #[tokio::test]
     async fn missing_latency_is_not_fast() {
         let dir = tempfile::tempdir().unwrap();
@@ -2598,6 +2635,7 @@ mod tests {
         assert_eq!(live_pool(&live), [ids[0]]);
     }
 
+    // spectra-scenario: state-store / Pool written for a fastest service
     #[tokio::test]
     async fn pool_written_for_a_fastest_service() {
         let dir = tempfile::tempdir().unwrap();

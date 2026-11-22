@@ -13,6 +13,7 @@ const FORKS: usize = 300;
 /// A child's lookup takes milliseconds; one that has not exited by then hangs.
 const CHILD_TIMEOUT: Duration = Duration::from_secs(5);
 
+// spectra-scenario: client-lookup / Fork while other threads look up
 #[test]
 fn child_of_a_busy_parent_looks_up() {
     let dir = tempfile::tempdir().unwrap();

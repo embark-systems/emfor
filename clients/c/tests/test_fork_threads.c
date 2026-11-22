@@ -31,6 +31,7 @@ static double now_s(void) {
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
+// spectra-scenario: client-lookup / Fork while other threads look up through the C library
 int main(void) {
     char out[EMFOR_ADDR_MAX];
     CHECK(emfor_lookup("api.svc.emfor", NULL, out, sizeof out) == EMFOR_OK);

@@ -315,6 +315,12 @@ mod tests {
         }
     }
 
+    // spectra-scenario: client-lookup / Open service prefers a passing unknown backend
+    // spectra-scenario: client-lookup / Open service with every unknown backend failing
+    // spectra-scenario: client-lookup / Open service with only unhealthy backends
+    // spectra-scenario: client-lookup / Backup takes over while no primary passes
+    // spectra-scenario: client-lookup / Primary passes again
+    // spectra-scenario: client-lookup / Primary passes again / candidates by state, reason and heartbeat
     #[test]
     fn healthy_or_all_table() {
         use HealthState::*;
@@ -545,6 +551,7 @@ mod tests {
 
     /// Spec "Slow start effective weight", example "step and effective
     /// weight", every row.
+    // spectra-scenario: backend-selection / Step during a 30 second slow start / step and effective weight
     #[test]
     fn slow_start_effective_weight_table() {
         let at = 1_762_905_600_000;
@@ -581,6 +588,7 @@ mod tests {
     }
 
     /// Spec scenario "Step during a 30 second slow start".
+    // spectra-scenario: backend-selection / Step during a 30 second slow start
     #[test]
     fn slow_start_steps_over_thirty_seconds() {
         let mut r = b("10.0.0.1:80", HealthState::Healthy, None);
@@ -727,6 +735,7 @@ mod tests {
     /// Spec backend-selection "Drained backends are never selected": a
     /// drained backend is in no tier, whatever its state, with a fresh or a
     /// stale store and either `on_all_down`; it is excluded as `drained`.
+    // spectra-scenario: backend-selection / Drained backend is skipped
     #[test]
     fn drained_backends_are_in_no_tier() {
         use HealthState::*;
@@ -773,6 +782,7 @@ mod tests {
     }
 
     /// The last tier of an open service never offers a drained backend.
+    // spectra-scenario: backend-selection / Not even the last tier
     #[test]
     fn last_tier_skips_the_drained_backend() {
         use HealthState::*;
@@ -787,6 +797,7 @@ mod tests {
     }
 
     /// Spec lookup-command, example "tier of the candidates".
+    // spectra-scenario: lookup-command / Closed service with no healthy backend / tier of the candidates
     #[test]
     fn tier_of_the_candidates_table() {
         use HealthState::*;
@@ -826,6 +837,7 @@ mod tests {
     }
 
     /// Spec scenario "Primary and backup backends" and "Stale store".
+    // spectra-scenario: lookup-command / Primary and backup backends
     #[test]
     fn explain_tiers_gives_the_reason_of_every_excluded_entry() {
         use HealthState::*;

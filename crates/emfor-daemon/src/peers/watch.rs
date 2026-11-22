@@ -408,6 +408,7 @@ mod tests {
     }
 
     /// A write in place is noticed.
+    // spectra-scenario: peer-group / Secret file written in place
     #[tokio::test]
     async fn write_in_place_is_noticed() {
         let dir = tempfile::tempdir().expect("a temporary directory");
@@ -421,6 +422,7 @@ mod tests {
 
     /// Another file renamed over the secret file is noticed, and so is a
     /// second one: the watch goes on after the file was replaced.
+    // spectra-scenario: peer-group / Secret file replaced by a rename
     #[tokio::test]
     async fn rename_over_the_file_is_noticed_each_time() {
         let dir = tempfile::tempdir().expect("a temporary directory");

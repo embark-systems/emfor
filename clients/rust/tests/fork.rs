@@ -7,6 +7,7 @@ use emfor_client::lookup;
 
 const CHILD_BACKEND: &str = "10.0.0.99:8080";
 
+// spectra-scenario: client-lookup / Lookup after fork
 #[test]
 fn lookup_after_fork() {
     let dir = tempfile::tempdir().unwrap();

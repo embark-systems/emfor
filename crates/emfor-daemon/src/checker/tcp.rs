@@ -289,6 +289,7 @@ mod tests {
         TcpFactory.validate(&opts.parse::<toml::Table>().unwrap())
     }
 
+    // spectra-scenario: health-checking / Listening backend
     #[tokio::test]
     async fn listening_backend_is_up() {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -296,6 +297,7 @@ mod tests {
         assert_eq!(checker("").unwrap().check(req(addr)).await, CheckResult::Up);
     }
 
+    // spectra-scenario: health-checking / Closed port
     #[tokio::test]
     async fn closed_port_is_down_refused() {
         let addr = emfor_fixture::refused_addr();
@@ -306,12 +308,15 @@ mod tests {
         }
     }
 
+    // spectra-scenario: health-checking / Unexpected option
     #[test]
     fn rejects_any_option() {
         let errs = checker(r#"path = "/""#).unwrap_err();
         assert_eq!(errs, vec![OptionError::new("path", "unknown key")]);
     }
 
+    // spectra-scenario: health-checking / Invalid send and expect options
+    // spectra-scenario: health-checking / Invalid send and expect options / validation errors
     #[test]
     fn send_and_expect_validation() {
         let long = format!("expect = \"{}\"", "a".repeat(MAX_RESPONSE + 1));
@@ -385,6 +390,8 @@ mod tests {
         (result, task.await.unwrap())
     }
 
+    // spectra-scenario: health-checking / Banner matches
+    // spectra-scenario: health-checking / Banner matches / SMTP greeting
     #[tokio::test]
     async fn banner_matches_without_sending() {
         let (result, received) = run(
@@ -396,6 +403,7 @@ mod tests {
         assert_eq!(received, b"");
     }
 
+    // spectra-scenario: health-checking / Banner matches
     #[tokio::test]
     async fn empty_send_is_banner_mode() {
         let (result, received) = run(
@@ -407,6 +415,8 @@ mod tests {
         assert_eq!(received, b"");
     }
 
+    // spectra-scenario: health-checking / Request and response match
+    // spectra-scenario: health-checking / Request and response match / memcached stats
     #[tokio::test]
     async fn request_and_response_match() {
         let (result, received) = run(
@@ -419,6 +429,8 @@ expect = "STAT pid""#,
         assert_eq!(received, [0x73, 0x74, 0x61, 0x74, 0x73, 0x0d, 0x0a]);
     }
 
+    // spectra-scenario: health-checking / Expected text split across reads
+    // spectra-scenario: health-checking / Expected text split across reads / split greeting
     #[tokio::test]
     async fn expected_text_split_across_reads() {
         let (result, _) = run(
@@ -434,6 +446,8 @@ expect = "STAT pid""#,
         assert_eq!(result, CheckResult::Up);
     }
 
+    // spectra-scenario: health-checking / Backend closes without the expected text
+    // spectra-scenario: health-checking / Backend closes without the expected text / excerpts
     #[tokio::test]
     async fn closed_without_expected_text() {
         let a64 = "a".repeat(64);
@@ -454,6 +468,7 @@ expect = "STAT pid""#,
         }
     }
 
+    // spectra-scenario: health-checking / Too much data without the expected text
     #[tokio::test]
     async fn too_much_data_is_down_before_timeout() {
         let start = std::time::Instant::now();
@@ -470,6 +485,7 @@ expect = "STAT pid""#,
         task.await.unwrap();
     }
 
+    // spectra-scenario: health-checking / Silent backend
     #[tokio::test]
     async fn silent_backend_is_timeout() {
         let (addr, task) = backend(vec![Hold]).await;
@@ -524,6 +540,8 @@ expect = "STAT pid""#,
         }
     }
 
+    // spectra-scenario: health-checking / Invalid TLS options
+    // spectra-scenario: health-checking / Invalid TLS options / TLS validation errors
     #[test]
     fn tls_option_validation() {
         let dir = tempfile::tempdir().unwrap();
@@ -602,6 +620,7 @@ expect = "STAT pid""#,
         crate::checker::run_check(&*checker(opts).unwrap(), req(addr)).await
     }
 
+    // spectra-scenario: health-checking / TLS handshake succeeds
     #[tokio::test]
     async fn tls_handshake_succeeds() {
         let (addr, _dir, ca) = tls_backend(b"").await;
@@ -609,6 +628,8 @@ expect = "STAT pid""#,
         assert_eq!(check_with(&opts, addr).await, CheckResult::Up);
     }
 
+    // spectra-scenario: health-checking / TLS with expected text
+    // spectra-scenario: health-checking / TLS with expected text / TLS greeting
     #[tokio::test]
     async fn tls_with_expected_text() {
         let (addr, _dir, ca) = tls_backend(b"+OK ready\r\n").await;
@@ -632,6 +653,7 @@ expect = "STAT pid""#,
         );
     }
 
+    // spectra-scenario: health-checking / TLS name mismatch
     #[tokio::test]
     async fn tls_name_mismatch_is_down() {
         let (addr, _dir, ca) = tls_backend(b"").await;
@@ -642,6 +664,7 @@ expect = "STAT pid""#,
         }
     }
 
+    // spectra-scenario: health-checking / TLS verification turned off
     #[tokio::test]
     async fn tls_verification_turned_off() {
         let (addr, _dir, _ca) = tls_backend(b"").await;
@@ -649,6 +672,7 @@ expect = "STAT pid""#,
         assert_eq!(check_with(opts, addr).await, CheckResult::Up);
     }
 
+    // spectra-scenario: health-checking / TLS to a plaintext port
     #[tokio::test]
     async fn tls_to_a_plaintext_port() {
         let (addr, task) = backend(vec![Hold]).await;
@@ -665,6 +689,7 @@ expect = "STAT pid""#,
         task.await.unwrap();
     }
 
+    // spectra-scenario: health-checking / CA file removed after validation
     #[tokio::test]
     async fn ca_file_removed_after_validation_is_error() {
         let (addr, dir, ca) = tls_backend(b"").await;

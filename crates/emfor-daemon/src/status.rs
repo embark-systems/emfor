@@ -1401,6 +1401,7 @@ mod tests {
         )
     }
 
+    // spectra-scenario: status-command / One healthy and one failing backend / age and latency formatting
     #[test]
     fn age_and_latency_formatting() {
         for (ms, want) in [
@@ -1426,6 +1427,7 @@ mod tests {
         assert_eq!(daemon_state(NOW + 900, NOW), (Daemon::Running, Some(0)));
     }
 
+    // spectra-scenario: status-command / One healthy and one failing backend
     #[test]
     fn one_healthy_and_one_failing_backend() {
         let lines = render(&snap(Some(400), vec![api()]));
@@ -1445,6 +1447,7 @@ mod tests {
 
     /// A record from a newer daemon: a state and an `on_all_down` this
     /// reader does not know are shown, the state colored like unhealthy.
+    // spectra-scenario: state-store / Values from a newer daemon
     #[test]
     fn unknown_state_and_on_all_down_values() {
         let mut v = serde_json::to_value(api()).unwrap();
@@ -1475,6 +1478,8 @@ mod tests {
         );
     }
 
+    // spectra-scenario: status-command / Stopped daemon
+    // spectra-scenario: status-command / Service with no healthy backend
     #[test]
     fn stopped_stale_and_all_down() {
         let db = service(
@@ -1530,6 +1535,8 @@ mod tests {
         assert!(colored.iter().any(|l| l.contains("\x1b[31munhealthy")));
     }
 
+    // spectra-scenario: status-command / Exit statuses
+    // spectra-scenario: status-command / Exit statuses / exit status table
     #[test]
     fn exit_statuses() {
         let db_down = service(
@@ -1556,6 +1563,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: status-command / Unknown service
     #[test]
     fn filter_by_service() {
         let s = snap(Some(100), vec![api()]);
@@ -1574,6 +1582,8 @@ mod tests {
 
     /// Spec "Status text output", example "metrics part of the daemon
     /// line", and scenario "Metrics addresses on the daemon line".
+    // spectra-scenario: status-command / Metrics addresses on the daemon line
+    // spectra-scenario: status-command / Metrics addresses on the daemon line / metrics part of the daemon line
     #[test]
     fn metrics_on_the_daemon_line() {
         let rows: [(Option<&str>, Option<u64>, &str); 5] = [
@@ -1609,6 +1619,8 @@ mod tests {
 
     /// Spec "Status text output", example "DNS part of the daemon line", and
     /// scenario "DNS and metrics addresses on the daemon line".
+    // spectra-scenario: status-command / DNS and metrics addresses on the daemon line
+    // spectra-scenario: status-command / DNS and metrics addresses on the daemon line / DNS part of the daemon line
     #[test]
     fn dns_on_the_daemon_line() {
         let rows: [(Option<&str>, Option<u64>, Option<&str>); 5] = [
@@ -1647,6 +1659,7 @@ mod tests {
 
     /// Spec "Status filtering and JSON output", scenario "JSON DNS
     /// addresses".
+    // spectra-scenario: status-command / JSON DNS addresses
     #[test]
     fn json_dns_listen() {
         let mut s = snap(Some(400), vec![]);
@@ -1664,6 +1677,7 @@ mod tests {
     const PEERS: &str = r#"{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true},{"addr":"10.0.0.7:5302","live":false},{"addr":"10.0.0.8:5302","live":true}],"digest_mismatch":[{"service":"api.svc.emfor","member":"10.0.0.8:5302"}],"disagreements":[{"service":"api.svc.emfor","backend":"10.0.0.11:8080","down":2,"fresh":3}]}"#;
 
     /// Spec "Status text output", scenario "Peer group lines".
+    // spectra-scenario: status-command / Peer group lines
     #[test]
     fn peer_group_lines() {
         let mut s = snap(Some(400), vec![api()]);
@@ -1690,6 +1704,7 @@ mod tests {
 
     /// Spec "Status text output", scenario "Members that leave services
     /// out".
+    // spectra-scenario: status-command / Members that leave services out
     #[test]
     fn members_leave_out_lines() {
         let value = r#"{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true,"services_off":["db.svc.emfor","api.svc.emfor"]},{"addr":"10.0.0.7:5302","live":true,"services_off":[]},{"addr":"10.0.0.8:5302","live":true,"services_off":["api.svc.emfor"]}],"digest_mismatch":[{"service":"api.svc.emfor","member":"10.0.0.7:5302"}],"disagreements":[]}"#;
@@ -1725,6 +1740,7 @@ mod tests {
 
     /// Spec "Status text output", example "leaves-out lines for member
     /// 10.0.0.6:5302".
+    // spectra-scenario: status-command / Members that leave services out / leaves-out lines for member 10.0.0.6:5302
     #[test]
     fn leave_out_lines_table() {
         let member = |off: &str| {
@@ -1781,6 +1797,7 @@ mod tests {
     }
 
     /// Spec "Status text output", example "peers line".
+    // spectra-scenario: status-command / Peer group lines / peers line
     #[test]
     fn peers_line_table() {
         let both_live = r#"{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true},{"addr":"10.0.0.7:5302","live":true}],"digest_mismatch":[],"disagreements":[]}"#;
@@ -1815,6 +1832,7 @@ mod tests {
     }
 
     /// Spec "Status filtering and JSON output", scenario "JSON peer state".
+    // spectra-scenario: status-command / JSON peer state
     #[test]
     fn json_peer_state() {
         let value = r#"{"listen":"127.0.0.1:5302","members":[{"addr":"127.0.0.1:5303","live":true}],"digest_mismatch":[],"disagreements":[]}"#;
@@ -1847,6 +1865,8 @@ mod tests {
     /// Spec "Status text output", scenario "Backends this daemon is not an
     /// assigned checker of" and example "voted backends of api.svc.emfor
     /// at 10.0.0.5:5302".
+    // spectra-scenario: status-command / Backends this daemon is not an assigned checker of
+    // spectra-scenario: status-command / Backends this daemon is not an assigned checker of / voted backends of api.svc.emfor at 10.0.0.5:5302
     #[test]
     fn voted_backends_table() {
         let me = "10.0.0.5:5302";
@@ -1891,6 +1911,7 @@ mod tests {
 
     /// Spec "Status filtering and JSON output", scenario "JSON assigned
     /// checkers".
+    // spectra-scenario: status-command / JSON assigned checkers
     #[test]
     fn json_assigned_checkers() {
         let mut s = snap(Some(400), vec![api()]);
@@ -1929,6 +1950,7 @@ mod tests {
 
     /// Spec "Status text output", scenario "Service left out of the peer
     /// group is not voted".
+    // spectra-scenario: status-command / Service left out of the peer group is not voted
     #[test]
     fn service_left_out_is_not_voted() {
         let mut s = snap(Some(400), vec![api()]);
@@ -1940,6 +1962,7 @@ mod tests {
 
     /// Spec "Status filtering and JSON output", scenario "JSON assigned
     /// checkers of a service left out".
+    // spectra-scenario: status-command / JSON assigned checkers of a service left out
     #[test]
     fn json_assigned_checkers_of_a_service_left_out() {
         let mut s = snap(Some(400), vec![api()]);
@@ -1968,6 +1991,7 @@ mod tests {
 
     /// Spec "Status text output", example "members' services_off and
     /// voted backends of api.svc.emfor at 10.0.0.5:5302".
+    // spectra-scenario: status-command / Members that leave a service out are not candidates / members' services_off and voted backends of api.svc.emfor at 10.0.0.5:5302
     #[test]
     fn members_services_off_table() {
         let rows: [(&[u8], bool, bool, &str); 4] = [
@@ -1994,6 +2018,7 @@ mod tests {
 
     /// Spec "Status text output", scenario "Members that leave a service
     /// out are not candidates".
+    // spectra-scenario: status-command / Members that leave a service out are not candidates
     #[test]
     fn members_that_leave_a_service_out_are_not_candidates() {
         let mut s = snap(Some(400), vec![api()]);
@@ -2012,6 +2037,7 @@ mod tests {
 
     /// Spec "Status filtering and JSON output", scenario "JSON metrics
     /// addresses".
+    // spectra-scenario: status-command / JSON metrics addresses
     #[test]
     fn json_metrics_listen() {
         let mut s = snap(Some(400), vec![]);
@@ -2046,6 +2072,7 @@ mod tests {
         assert!(stopped["heartbeat_age_ms"].is_null());
     }
 
+    // spectra-scenario: status-command / Backend goes down while watching
     #[test]
     fn watch_marks_changes_and_lists_transitions() {
         let mut w = Watch::default();
@@ -2133,6 +2160,8 @@ mod tests {
 
     /// Spec "Status watch mode", example "merged change list", and scenario
     /// "Earlier changes shown at start".
+    // spectra-scenario: status-command / Earlier changes shown at start
+    // spectra-scenario: status-command / Earlier changes shown at start / merged change list
     #[test]
     fn watch_merges_history_and_daemon_changes() {
         let yesterday = NOW - 2 * 86_400_000;
@@ -2183,6 +2212,7 @@ mod tests {
     }
 
     /// Spec "Flapping backends", example "counting rule".
+    // spectra-scenario: status-command / Backend marked as flapping / counting rule
     #[test]
     fn flap_counting_rule() {
         let mut unknown_first = alternating(&[2 * MIN, 3 * MIN, 4 * MIN, 5 * MIN]);
@@ -2227,6 +2257,8 @@ mod tests {
 
     /// Spec "Flapping backends", scenarios "Backend marked as flapping" and
     /// "Flapping does not change the exit status".
+    // spectra-scenario: status-command / Backend marked as flapping
+    // spectra-scenario: status-command / Flapping does not change the exit status
     #[test]
     fn flapping_keeps_the_exit_status() {
         let ages: Vec<u64> = (1..=6).map(|i| i * 80_000).collect();
@@ -2243,6 +2275,8 @@ mod tests {
     }
 
     /// Spec "Status filtering and JSON output": `history` and `flapping`.
+    // spectra-scenario: status-command / JSON includes history and flapping
+    // spectra-scenario: status-command / JSON without history
     #[test]
     fn json_history_and_flapping() {
         let ages: Vec<u64> = (1..=6).map(|i| i * 80_000).collect();
@@ -2277,6 +2311,7 @@ mod tests {
     }
 
     /// Spec "Status history output", scenario "History of one service".
+    // spectra-scenario: status-command / History of one service
     #[test]
     fn history_of_one_service() {
         let up = NOW - 22_000;
@@ -2346,6 +2381,7 @@ mod tests {
 
     /// Spec "Status reads the store read-only", truncated store: refused at
     /// open instead of read past the end of the file (`SIGBUS`).
+    // spectra-scenario: status-command / Truncated store
     #[test]
     fn reader_refuses_a_truncated_store() {
         let dir = tempfile::tempdir().unwrap();
@@ -2429,6 +2465,7 @@ mod tests {
     }
 
     /// Spec "Status watch mode", scenario "Output fits the terminal".
+    // spectra-scenario: status-command / Output fits the terminal
     #[test]
     fn watch_frame_that_fits_has_no_footer() {
         let content = lines("c", 13);
@@ -2443,6 +2480,8 @@ mod tests {
 
     /// Spec "Status watch mode", scenario "Scrolling a long list" and its
     /// keys table.
+    // spectra-scenario: status-command / Scrolling a long list
+    // spectra-scenario: status-command / Scrolling a long list / keys from the first frame
     #[test]
     fn watch_scrolls_a_long_list() {
         let content = lines("c", 60);
@@ -2497,6 +2536,7 @@ mod tests {
 
     /// Spec "Status watch mode", scenario "Position kept across refreshes
     /// and limited when the list shrinks".
+    // spectra-scenario: status-command / Position kept across refreshes and limited when the list shrinks
     #[test]
     fn watch_keeps_and_limits_the_position() {
         let mut scroll = Scroll::default();
@@ -2621,6 +2661,7 @@ mod tests {
     /// Spec "Status watch mode": a store file replaced while `--watch` runs
     /// (the daemon replaces a damaged one at start) is read from the next
     /// refresh on, not the old file.
+    // spectra-scenario: status-command / Store replaced while watching
     #[test]
     fn watch_reopens_a_replaced_store() {
         let write = |dir: &Path, name: &str| {
@@ -2681,6 +2722,8 @@ mod tests {
     /// the backend drained and gives the state of its checks; the others are
     /// as before; the JSON carries `drain` and `checked_state` for the
     /// drained one only.
+    // spectra-scenario: status-command / Text output
+    // spectra-scenario: status-command / JSON output
     #[test]
     fn drained_marker() {
         let plain = backend_with("10.0.1.5:5432", "healthy", None, json!({}));
@@ -2711,6 +2754,7 @@ mod tests {
     }
 
     /// Spec "Status text output", scenario "Backup backend".
+    // spectra-scenario: status-command / Backup backend
     #[test]
     fn backup_marker() {
         let primary = backend_with("10.0.1.5:5432", "healthy", None, json!({"backup": false}));
@@ -2771,6 +2815,8 @@ mod tests {
 
     /// Spec "Status text output", scenario "Healthy backend whose last
     /// check failed" and its example.
+    // spectra-scenario: status-command / Healthy backend whose last check failed
+    // spectra-scenario: status-command / Healthy backend whose last check failed / when `last check failed` is written
     #[test]
     fn last_check_failed_table() {
         let refused = Some("connect: Connection refused");
@@ -2834,6 +2880,9 @@ mod tests {
     /// "Group with exactly three candidates can vote", "Service left out of
     /// the group does not make the group unable to vote" and "Group that
     /// can vote for some services only".
+    // spectra-scenario: status-command / Group that cannot vote
+    // spectra-scenario: status-command / Group with exactly three candidates can vote
+    // spectra-scenario: status-command / Service left out of the group does not make the group unable to vote
     #[test]
     fn too_few_live_members_to_vote() {
         let with = |v: &str| {
@@ -2881,6 +2930,7 @@ mod tests {
 
     /// Spec "Status text output", scenario "Group that can vote for some
     /// services only".
+    // spectra-scenario: status-command / Group that can vote for some services only
     #[test]
     fn group_that_can_vote_for_some_services_only() {
         let db = service(

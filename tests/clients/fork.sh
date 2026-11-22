@@ -26,6 +26,7 @@ EMFOR_STORE="$work/state.mdb"
 EMFOR_MAX_STALENESS=60s
 export EMFOR_STORE EMFOR_MAX_STALENESS
 
+# spectra-scenario: client-lookup / Fork while other threads look up through the C library
 for t in test_fork test_fork_threads; do
     # The flags of clients/c/Makefile.
     ${CC:-cc} -O2 -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror \

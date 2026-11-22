@@ -9,6 +9,17 @@ fn exe() -> Command {
     Command::new(env!("CARGO_BIN_EXE_emfor-check"))
 }
 
+// spectra-scenario: database-checks / Handshake names the plugin
+// spectra-scenario: database-checks / LDAP plugin handshake
+// spectra-scenario: database-checks / DNS plugin handshake
+// spectra-scenario: database-checks / RADIUS plugin handshake
+// spectra-scenario: database-checks / SIP plugin handshake
+// spectra-scenario: database-checks / Diameter plugin handshake
+// spectra-scenario: database-checks / SMTP plugin handshake
+// spectra-scenario: database-checks / AMQP plugin handshake
+// spectra-scenario: database-checks / MongoDB plugin handshake
+// spectra-scenario: database-checks / gRPC plugin handshake
+// spectra-scenario: database-checks / QUIC plugin handshake
 #[test]
 fn each_plugin_names_itself_in_the_handshake() {
     for name in [
@@ -39,6 +50,7 @@ fn each_plugin_names_itself_in_the_handshake() {
     }
 }
 
+// spectra-scenario: database-checks / Unknown plugin argument
 #[test]
 fn bad_arguments_exit_2_without_answering() {
     for args in [&[][..], &["memcached"][..], &["redis", "mysql"][..]] {
@@ -67,6 +79,7 @@ fn bad_arguments_exit_2_without_answering() {
     }
 }
 
+// spectra-scenario: database-checks / Password file removed after validation
 #[test]
 fn password_file_removed_after_validation_is_error() {
     let dir = tempfile::tempdir().unwrap();

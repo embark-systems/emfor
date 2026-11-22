@@ -78,6 +78,9 @@ fn three() -> [Backend<'static>; 3] {
 }
 
 /// Scenario "Failover returns the first healthy backend".
+// spectra-scenario: lookup-command / Failover returns the first healthy backend
+// spectra-scenario: lookup-command / Exit statuses
+// spectra-scenario: lookup-command / Exit statuses / exit status table
 #[test]
 fn failover_prints_the_first_healthy_backend() {
     let f = fixture(
@@ -92,6 +95,9 @@ fn failover_prints_the_first_healthy_backend() {
 
 /// Scenario "Sticky with a key gives the same backend": twice the same, and
 /// the address the client library gives.
+// spectra-scenario: client-lookup / Same key gives the same backend
+// spectra-scenario: client-lookup / emfor lookup
+// spectra-scenario: lookup-command / Sticky with a key gives the same backend
 #[test]
 fn sticky_with_a_key_matches_the_client_library() {
     let f = fixture(
@@ -108,6 +114,7 @@ fn sticky_with_a_key_matches_the_client_library() {
 }
 
 /// Scenario "Round-robin prints one candidate".
+// spectra-scenario: lookup-command / Round-robin prints one candidate
 #[test]
 fn round_robin_prints_a_candidate() {
     let f = fixture("fresh", "2", service(json!({}), &three()));
@@ -123,6 +130,7 @@ fn round_robin_prints_a_candidate() {
 /// Spec lookup-command "Lookup output errors": a standard output that cannot
 /// be written gives exit 3 and a message, not a panic (101). Only Linux has
 /// /dev/full. The store is good, so the lookup reaches the write.
+// spectra-scenario: lookup-command / Full disk
 #[cfg(target_os = "linux")]
 #[test]
 fn lookup_reports_a_full_disk() {
@@ -153,6 +161,7 @@ fn lookup_reports_a_full_disk() {
 
 /// Scenario "Lookup does not write the store": the data file is the same
 /// after a lookup, with and without `--explain`.
+// spectra-scenario: lookup-command / Lookup does not write the store
 #[test]
 fn lookup_does_not_write_the_store() {
     let f = fixture("fresh", "2", service(json!({}), &three()));
@@ -168,6 +177,9 @@ fn lookup_does_not_write_the_store() {
 }
 
 /// Example "exit status table".
+// spectra-scenario: lookup-command / Unknown family
+// spectra-scenario: lookup-command / Exit statuses
+// spectra-scenario: lookup-command / Exit statuses / exit status table
 #[test]
 fn exit_statuses() {
     // 1: a closed service with no healthy backend.
@@ -260,6 +272,8 @@ fn drained_service(n: usize) -> Value {
 /// is excluded as `drained` in the text and the JSON, and is never the
 /// answer; when every backend is drained there is no candidate and the exit
 /// status is 1.
+// spectra-scenario: lookup-command / Excluded with a reason
+// spectra-scenario: lookup-command / Everything drained
 #[test]
 fn explain_names_drained_backends() {
     let f = fixture("fresh", "2", drained_service(1));
@@ -289,6 +303,7 @@ fn explain_names_drained_backends() {
 }
 
 /// Scenario "Primary and backup backends".
+// spectra-scenario: lookup-command / Primary and backup backends
 #[test]
 fn explain_names_the_tier_and_the_reason_of_every_backend() {
     let f = fixture("fresh", "2", service(json!({}), &four()));
@@ -311,6 +326,7 @@ fn explain_names_the_tier_and_the_reason_of_every_backend() {
 }
 
 /// Scenario "Stale store".
+// spectra-scenario: lookup-command / Stale store
 #[test]
 fn explain_says_when_the_store_is_stale() {
     let healthy = [
@@ -329,6 +345,7 @@ fn explain_says_when_the_store_is_stale() {
 
 /// Scenario "Closed service with no healthy backend": the explanation is
 /// printed, no address, exit status 1.
+// spectra-scenario: lookup-command / Closed service with no healthy backend
 #[test]
 fn explain_when_a_closed_service_has_no_healthy_backend() {
     let down = [
@@ -351,6 +368,7 @@ fn explain_when_a_closed_service_has_no_healthy_backend() {
 }
 
 /// Scenario "JSON for a fixed choice".
+// spectra-scenario: lookup-command / JSON for a fixed choice
 #[test]
 fn json_for_a_fixed_choice() {
     let f = fixture(
@@ -386,6 +404,7 @@ fn json_for_a_fixed_choice() {
 
 /// Scenario "JSON for a rotating choice"; and `--json` without `--explain`
 /// has no `explain` field.
+// spectra-scenario: lookup-command / JSON for a rotating choice
 #[test]
 fn json_for_a_rotating_choice() {
     let f = fixture("fresh", "2", service(json!({}), &three()));
@@ -399,6 +418,7 @@ fn json_for_a_rotating_choice() {
 
 /// A failure before the store is read is still one JSON object, with the
 /// error and the exit status of the failure.
+// spectra-scenario: lookup-command / Exit statuses
 #[test]
 fn json_of_a_failed_lookup() {
     let f = fixture("fresh", "2", service(json!({}), &three()));
@@ -440,6 +460,7 @@ fn mixed() -> [Backend<'static>; 3] {
 }
 
 /// Scenario "A and AAAA have different tiers".
+// spectra-scenario: lookup-command / A and AAAA have different tiers
 #[test]
 fn dns_a_and_aaaa_have_different_tiers() {
     let f = fixture("fresh", "2", service(json!({}), &mixed()));
@@ -471,6 +492,9 @@ fn dns_a_and_aaaa_have_different_tiers() {
 }
 
 /// Scenario "No backend of the family".
+// spectra-scenario: lookup-command / No backend of the family
+// spectra-scenario: lookup-command / Exit statuses
+// spectra-scenario: lookup-command / Exit statuses / exit status table
 #[test]
 fn dns_with_no_backend_of_the_family() {
     let v4 = [("10.0.0.11:8080", "healthy", None, false)];

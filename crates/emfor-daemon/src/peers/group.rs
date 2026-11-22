@@ -503,6 +503,7 @@ mod tests {
 
     /// Spec peer-group "Assigned checkers and check results": a `result`
     /// that lacks a field or has an invalid value is malformed.
+    // spectra-scenario: peer-group / Sender restarts / acceptance checks
     #[test]
     fn malformed_result_messages() {
         let now = Instant::now();
@@ -532,6 +533,7 @@ mod tests {
     }
 
     /// Spec peer-group "heartbeat `off` field" table.
+    // spectra-scenario: peer-group / Kept tags follow the latest heartbeat / heartbeat `off` field
     #[test]
     fn heartbeat_off_field() {
         let now = Instant::now();
@@ -561,6 +563,7 @@ mod tests {
     }
 
     /// Spec peer-group "acceptance checks", the `EMP2` rows.
+    // spectra-scenario: peer-group / Sender restarts / acceptance checks
     #[test]
     fn encrypted_acceptance_checks() {
         let now = Instant::now();
@@ -623,6 +626,7 @@ mod tests {
     }
 
     /// Spec peer-group "acceptance checks", the `EMP3` rows.
+    // spectra-scenario: peer-group / Sender restarts / acceptance checks
     #[test]
     fn emp3_acceptance_checks() {
         let now = Instant::now();
@@ -687,6 +691,7 @@ mod tests {
     /// message is accepted from the member, then `EMP3`, and `EMP2` again
     /// after an `EMP2` or `EMP1` one; dropped messages change nothing; one
     /// `info` line per change.
+    // spectra-scenario: peer-group / Format follows the member
     #[test]
     #[tracing_test::traced_test]
     fn format_follows_the_member() {
@@ -755,6 +760,7 @@ mod tests {
     /// Spec peer-group "EMP2 messages announce EMP3": an `EMP2` message
     /// with `"emp3":true` moves the member to `EMP3`, one without it (or
     /// with another value) back to `EMP2`.
+    // spectra-scenario: peer-group / Sender restarts / acceptance checks
     #[test]
     fn emp2_with_emp3_field_moves_the_member_to_emp3() {
         let now = Instant::now();
@@ -802,6 +808,7 @@ mod tests {
     /// Spec peer-group "Member rolled back with encryption off": B is sent
     /// `EMP3`, then restarts as 0.4.0 with `encrypt = false`; after A
     /// accepts B's first `EMP1` message it sends `EMP2`, which B accepts.
+    // spectra-scenario: peer-group / Member rolled back with encryption off
     #[test]
     #[tracing_test::traced_test]
     fn member_rolled_back_with_encryption_off() {
@@ -834,6 +841,7 @@ mod tests {
     }
 
     /// `emp3` is written in the `EMP2` datagram only.
+    // spectra-scenario: peer-group / Encrypted heartbeat
     #[test]
     fn only_emp2_carries_the_emp3_field() {
         let now = Instant::now();
@@ -860,6 +868,7 @@ mod tests {
     /// Spec peer-group "One message for members with different formats":
     /// an `EMP2` datagram for B, an `EMP3` one for C, same `seq`; only
     /// one datagram when every member takes the same format.
+    // spectra-scenario: peer-group / One message for members with different formats
     #[test]
     fn one_message_for_members_with_different_formats() {
         let now = Instant::now();
@@ -940,6 +949,8 @@ mod tests {
 
     /// Spec peer-group "Mixed formats during an upgrade": `EMP1` is still
     /// accepted while encrypting, with one warning a minute per source.
+    // spectra-scenario: peer-group / Mixed formats during an upgrade
+    // spectra-scenario: peer-group / Sender restarts / acceptance checks
     #[test]
     #[tracing_test::traced_test]
     fn plaintext_accepted_and_warned_once_a_minute() {
@@ -978,6 +989,8 @@ mod tests {
     /// false` every `EMP1` datagram is dropped as `plaintext`, also one
     /// whose tag does not verify, before anything else is looked at;
     /// `EMP2` is accepted as before.
+    // spectra-scenario: peer-group / Plaintext refused
+    // spectra-scenario: peer-group / Sender restarts / acceptance checks
     #[test]
     fn plaintext_refused_when_not_accepted() {
         let now = Instant::now();
@@ -1015,6 +1028,8 @@ mod tests {
     }
 
     /// Spec peer-group "acceptance checks" table.
+    // spectra-scenario: peer-group / Tampered message
+    // spectra-scenario: peer-group / Sender restarts / acceptance checks
     #[test]
     fn acceptance_checks() {
         let now = Instant::now();
@@ -1124,6 +1139,7 @@ mod tests {
     }
 
     /// Spec peer-group "Sender restarts".
+    // spectra-scenario: peer-group / Sender restarts
     #[test]
     fn sender_restarts() {
         let now = Instant::now();
@@ -1184,6 +1200,7 @@ mod tests {
     /// Spec peer-group "acceptance checks": the `EMP1` tag is checked
     /// before the payload is parsed, so a wrong tag on a payload that is not
     /// JSON counts as `auth`, and a right tag on one counts as `malformed`.
+    // spectra-scenario: peer-group / Sender restarts / acceptance checks
     #[test]
     fn emp1_tag_is_checked_before_the_payload() {
         let now = Instant::now();
@@ -1252,6 +1269,8 @@ mod tests {
     /// Spec peer-group "Messages arrive out of order": a message with a
     /// lower `seq` than the last accepted one of the same `boot` is
     /// accepted once while it is among the 64 latest.
+    // spectra-scenario: peer-group / Messages arrive out of order
+    // spectra-scenario: peer-group / Sender restarts / acceptance checks
     #[test]
     fn reordered_messages_are_accepted_once() {
         let now = Instant::now();
@@ -1275,6 +1294,7 @@ mod tests {
 
     /// Spec peer-group: fields of a kind the receiver does not know are
     /// not checked, even when a known kind uses the same name.
+    // spectra-scenario: peer-group / Sender restarts / acceptance checks
     #[test]
     fn unknown_kind_fields_are_not_checked() {
         let now = Instant::now();
@@ -1324,6 +1344,7 @@ mod tests {
 
     /// The quorum's live members follow the group's: when one becomes
     /// live, stops being live, or is removed on reload.
+    // spectra-scenario: peer-group / Too few live members
     #[test]
     fn quorum_follows_liveness() {
         let start = Instant::now();

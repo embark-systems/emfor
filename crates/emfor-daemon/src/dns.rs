@@ -942,6 +942,7 @@ mod tests {
         )
     }
 
+    // spectra-scenario: dns-server / Healthy backend answered
     #[test]
     fn healthy_backend_answered() {
         let v = view(vec![service(
@@ -961,6 +962,7 @@ mod tests {
         assert_eq!(r.answers[0].record_type(), RecordType::A);
     }
 
+    // spectra-scenario: dns-server / Healthy backend answered / replies by case
     #[test]
     fn replies_by_case_example() {
         use OnAllDown::{Closed, Open};
@@ -1025,6 +1027,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: dns-server / Per-service TTL
     #[test]
     fn per_service_ttl() {
         let v = view(vec![service(
@@ -1037,6 +1040,8 @@ mod tests {
         assert_eq!(ask(&v, "api.svc.emfor", RecordType::A).answers[0].ttl, 5);
     }
 
+    // spectra-scenario: backend-selection / Round-robin alternates
+    // spectra-scenario: backend-selection / Failover returns the first healthy backend
     #[test]
     fn round_robin_is_global_and_failover_is_fixed() {
         let rr = view(vec![service(
@@ -1080,6 +1085,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: backend-selection / Proportions over one cycle
     #[test]
     fn weighted_proportions_over_one_cycle() {
         let (name, mut svc) = service(
@@ -1107,6 +1113,7 @@ mod tests {
     /// Spec "Weight change applies on reload": after the record changes from
     /// weights 1:1 to 1:3 (the choice state is kept across reloads), the next
     /// four answers follow the new weights.
+    // spectra-scenario: service-config / Weight change applies on reload
     #[test]
     fn weight_change_applies_to_answers() {
         let (name, old) = service(
@@ -1127,6 +1134,7 @@ mod tests {
         assert_eq!((count("10.0.0.1"), count("10.0.0.2")), (1, 4), "{got:?}");
     }
 
+    // spectra-scenario: backend-selection / Local backends preferred
     #[test]
     fn locality_answers_only_local_backends() {
         let (name, mut svc) = service(
@@ -1151,6 +1159,8 @@ mod tests {
         );
     }
 
+    // spectra-scenario: dns-server / Unknown service
+    // spectra-scenario: dns-server / Unknown service / name classification with zone `svc.emfor` and service `a.b.svc.emfor`
     #[test]
     fn name_classification_example() {
         let v = view(vec![service(
@@ -1210,6 +1220,7 @@ mod tests {
         assert_eq!(r.answers[0].record_type(), RecordType::SOA);
     }
 
+    // spectra-scenario: dns-server / SOA values
     #[test]
     fn soa_values() {
         let rec = soa_record(&settings());
@@ -1241,6 +1252,7 @@ mod tests {
         assert_eq!(soa.rname.to_ascii(), format!("hostmaster.{zone}."));
     }
 
+    // spectra-scenario: dns-server / Unsupported opcode
     #[test]
     fn malformed_and_unsupported() {
         let v = LiveView::default();
@@ -1350,6 +1362,7 @@ mod tests {
         assert_eq!(l("2001:DB8::"), "2001-0db8-0000-0000-0000-0000-0000-0000");
     }
 
+    // spectra-scenario: dns-server / Target of a down backend / target labels and queries for service `api.svc.emfor`
     #[test]
     fn target_labels_example() {
         let v = view(vec![srv_service(
@@ -1394,6 +1407,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: dns-server / Target of a down backend
     #[test]
     fn target_of_down_backend() {
         let v = view(vec![srv_service(
@@ -1415,6 +1429,7 @@ mod tests {
         assert_eq!(r.answers[0].ttl, 5);
     }
 
+    // spectra-scenario: dns-server / Healthy backend answered / replies by case
     #[test]
     fn srv_on_service_name() {
         let v = view(vec![srv_service(
@@ -1439,6 +1454,8 @@ mod tests {
         assert_eq!(r.additionals[0].name.to_ascii(), "10-0-0-11.api.svc.emfor.");
     }
 
+    // spectra-scenario: dns-server / SRV-related names
+    // spectra-scenario: dns-server / SRV-related names / SRV owner, empty non-terminal and target names
     #[test]
     fn srv_related_names_example() {
         let v = view(vec![srv_service(
@@ -1505,6 +1522,9 @@ mod tests {
         );
     }
 
+    // spectra-scenario: dns-server / Both families listed
+    // spectra-scenario: dns-server / Shared IP
+    // spectra-scenario: dns-server / SRV TTL
     #[test]
     fn srv_both_families_shared_ip_and_ttl() {
         let v = view(vec![srv_service(
@@ -1547,6 +1567,7 @@ mod tests {
         assert!(r.answers.iter().chain(&r.additionals).all(|x| x.ttl == 5));
     }
 
+    // spectra-scenario: dns-server / All down closed
     #[test]
     fn srv_all_down_closed_is_servfail() {
         let v = view(vec![srv_service(
@@ -1562,6 +1583,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: dns-server / Truncated over UDP, complete over TCP / size limit by request
     #[test]
     fn size_limit_example() {
         assert_eq!(udp_limit(None), 512);
@@ -1623,6 +1645,8 @@ mod tests {
         assert_eq!((no_edns, edns), ((8, 11), (19, 27)), "measured");
     }
 
+    // spectra-scenario: dns-server / Glue dropped without truncation
+    // spectra-scenario: dns-server / Truncated over UDP, complete over TCP
     #[test]
     fn glue_dropped_when_it_does_not_fit() {
         let q = srv_queries();
@@ -1740,6 +1764,7 @@ mod tests {
 
     /// Spec dns-server "Rate limit" over the wire: past the limit a UDP
     /// client gets an empty truncated answer or none; TCP is not limited.
+    // spectra-scenario: dns-server / Flood over UDP
     #[tokio::test]
     async fn rate_limited_over_udp() {
         let live = LiveState::default();
@@ -1842,6 +1867,9 @@ mod tests {
         Message::from_vec(&buf).unwrap()
     }
 
+    // spectra-scenario: dns-server / Glue dropped without truncation
+    // spectra-scenario: dns-server / Truncated over UDP, complete over TCP
+    // spectra-scenario: dns-server / Truncated over UDP, complete over TCP / size limit by request
     #[tokio::test]
     async fn srv_over_the_wire_fits_the_transport() {
         let (with, _) = srv_fit_counts(None, 512);
@@ -1935,6 +1963,7 @@ mod tests {
 
     /// Only class IN has a zone: CH, HS and the rest are REFUSED, like a
     /// name outside the zone.
+    // spectra-scenario: dns-server / Other class
     #[tokio::test]
     async fn class_other_than_in_is_refused() {
         let (_s, udp, _) = live_server(api_view()).await;
@@ -1953,6 +1982,7 @@ mod tests {
 
     /// RFC 6891 6.1.3: an EDNS version above 0 gets BADVERS with an OPT
     /// record of version 0 and no answer.
+    // spectra-scenario: dns-server / EDNS version 1
     #[tokio::test]
     async fn edns_version_above_zero_is_badvers() {
         let (_s, udp, tcp) = live_server(api_view()).await;
@@ -1984,6 +2014,7 @@ mod tests {
     /// Names are compared label by label: a label holding a `.` byte does
     /// not make a name part of the zone, and inside the zone it never
     /// matches a service, an SRV owner or a target name.
+    // spectra-scenario: dns-server / Unknown service / name classification with zone `svc.emfor` and service `a.b.svc.emfor`
     #[test]
     fn label_with_a_dot_byte() {
         let v = view(vec![srv_service(
@@ -2123,6 +2154,7 @@ mod tests {
     /// More than MAX_TCP_CONNECTIONS at once: the extra one is closed right
     /// away, the open ones still answer, and once they close new ones are
     /// served again.
+    // spectra-scenario: dns-server / TCP connection limit
     #[tokio::test]
     async fn tcp_connection_limit() {
         let (_s, _, tcp) = live_server(api_view()).await;

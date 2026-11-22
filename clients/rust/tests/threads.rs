@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use emfor_client::lookup;
 
+// spectra-scenario: client-lookup / Concurrent lookups
 #[test]
 fn concurrent_lookups() {
     let dir = tempfile::tempdir().unwrap();

@@ -1,6 +1,8 @@
 /* Lookups against a store written by emfor-fixture, and the status codes. */
 #include "common.h"
 
+// spectra-scenario: client-lookup / Library from the same release reads the daemon's store
+// spectra-scenario: client-lookup / C status values
 int main(void) {
     char out[EMFOR_ADDR_MAX];
     char first[EMFOR_ADDR_MAX];

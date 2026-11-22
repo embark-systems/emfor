@@ -20,12 +20,15 @@ function thrown(callable $f): ?Throwable {
 check(extension_loaded('emfor'), 'extension loaded');
 check(getenv('EMFOR_STORE') !== false, 'EMFOR_STORE set');
 
+// spectra-scenario: client-lookup / Each wrapper returns an address
 $a = Emfor\lookup('api.svc.emfor');
 $b = Emfor\lookup('API.svc.emfor.', '');
 check(in_array($a, $backends, true), "address $a");
 check(in_array($b, $backends, true) && $a !== $b, "next address $b alternates");
 check(in_array(Emfor\lookup('api.svc.emfor', null), $backends, true), 'null key');
 
+// spectra-scenario: client-lookup / Each wrapper reports the shared code
+// spectra-scenario: client-lookup / Each wrapper reports the shared code / wrapper call and failure form
 $e = thrown(fn() => Emfor\lookup('nope.svc.emfor'));
 check($e instanceof Emfor\LookupException && $e instanceof RuntimeException, 'missing service throws LookupException');
 check($e->errorCode === 'NOT_FOUND', 'errorCode NOT_FOUND');
@@ -33,11 +36,14 @@ check($e->getCode() === 3, 'getCode() is the C status');
 check(str_starts_with($e->getMessage(), 'NOT_FOUND: ') && strlen($e->getMessage()) > 11, 'message');
 check(thrown(function () use ($e) { $e->errorCode = 'X'; }) instanceof Error, 'errorCode is readonly');
 
+// spectra-scenario: client-lookup / Invalid argument
+// spectra-scenario: client-lookup / Invalid argument / argument error by language
 foreach ([["api\0svc", null], ['api.svc.emfor', "a\0b"], ["\xff", null]] as [$n, $k]) {
     $x = thrown(fn() => Emfor\lookup($n, $k));
     check($x instanceof ValueError, 'ValueError for ' . bin2hex($n) . '/' . bin2hex((string)$k));
 }
 
+// spectra-scenario: client-lookup / Lookup after fork in a wrapper
 if (function_exists('pcntl_fork')) {
     $pid = pcntl_fork();
     if ($pid === 0) {
@@ -51,6 +57,7 @@ if (function_exists('pcntl_fork')) {
     check(false, 'pcntl is loaded (needed for the fork check)');
 }
 
+// spectra-scenario: client-lookup / Another LMDB in the same process
 if (function_exists('dba_handlers') && in_array('lmdb', dba_handlers(), true)) {
     // The system's LMDB (through dba) and libemfor's in one process.
     $path = sys_get_temp_dir() . '/emfor-php-dba-' . getmypid() . '.mdb';

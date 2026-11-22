@@ -4,6 +4,8 @@ mod support;
 
 use emfor_client::{ErrorCode, lookup};
 
+// spectra-scenario: client-lookup / Missing store is retried
+// spectra-scenario: client-lookup / Custom store path
 #[test]
 fn missing_store_is_retried_and_env_is_used() {
     let dir = tempfile::tempdir().unwrap();

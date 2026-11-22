@@ -17,6 +17,7 @@ needs_store = unittest.skipUnless(os.environ.get("EMFOR_STORE"), "EMFOR_STORE no
 
 @needs_store
 class LookupTest(unittest.TestCase):
+    # spectra-scenario: client-lookup / Each wrapper returns an address
     def test_returns_a_backend_and_alternates(self):
         a = emfor.lookup("api.svc.emfor")
         b = emfor.lookup("API.svc.emfor.", affinity_key="")
@@ -24,6 +25,8 @@ class LookupTest(unittest.TestCase):
         self.assertIn(b, BACKENDS)
         self.assertNotEqual(a, b)
 
+    # spectra-scenario: client-lookup / Each wrapper reports the shared code
+    # spectra-scenario: client-lookup / Each wrapper reports the shared code / wrapper call and failure form
     def test_not_found(self):
         with self.assertRaises(emfor.NotFoundError) as cm:
             emfor.lookup("nope.svc.emfor")
@@ -33,6 +36,7 @@ class LookupTest(unittest.TestCase):
         self.assertTrue(e.message)
         self.assertEqual(str(e), "NOT_FOUND: " + e.message)
 
+    # spectra-scenario: client-lookup / Lookup after fork in a wrapper
     def test_lookup_after_fork(self):
         emfor.lookup("api.svc.emfor")
         pid = os.fork()
@@ -46,6 +50,7 @@ class LookupTest(unittest.TestCase):
         self.assertTrue(os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, status)
         self.assertIn(emfor.lookup("api.svc.emfor"), BACKENDS)
 
+    # spectra-scenario: client-lookup / Concurrent lookups
     def test_concurrent_lookups(self):
         counts = collections.Counter()
         lock = threading.Lock()
@@ -71,6 +76,8 @@ class LookupTest(unittest.TestCase):
 
 
 class ArgumentTest(unittest.TestCase):
+    # spectra-scenario: client-lookup / Invalid argument
+    # spectra-scenario: client-lookup / Invalid argument / argument error by language
     def test_nul_is_value_error(self):
         for args in (("api\0svc", None), ("api.svc.emfor", "a\0b")):
             with self.assertRaises(ValueError) as cm:
@@ -87,6 +94,7 @@ class ArgumentTest(unittest.TestCase):
         with self.assertRaises(TypeError):
             emfor.lookup("api.svc.emfor", 42)
 
+    # spectra-scenario: client-lookup / Each wrapper reports the shared code / wrapper call and failure form
     def test_codes(self):
         self.assertEqual(
             [c.code for c in (emfor.UnavailableError, emfor.IncompatibleError, emfor.NotFoundError, emfor.AllDownError)],
@@ -95,6 +103,7 @@ class ArgumentTest(unittest.TestCase):
 
 
 class LoadTest(unittest.TestCase):
+    # spectra-scenario: client-lookup / Python cannot find the library
     def test_missing_library_names_the_variable(self):
         env = dict(os.environ, EMFOR_LIBRARY="/nonexistent/libemfor.so")
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

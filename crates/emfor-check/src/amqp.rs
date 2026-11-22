@@ -531,6 +531,8 @@ mod tests {
         (key.to_owned(), message.to_owned())
     }
 
+    // spectra-scenario: network-checks / Minimal options
+    // spectra-scenario: network-checks / Password file grows after validation / AMQP option validation
     #[test]
     fn amqp_option_validation() {
         let pass = "/etc/emfor/amqp.pass";
@@ -591,6 +593,7 @@ mod tests {
     }
 
     /// PLAIN separates user and password with NUL, so neither may hold one.
+    // spectra-scenario: network-checks / Password file grows after validation / AMQP option validation
     #[test]
     fn amqp_plain_login_without_nul() {
         assert_eq!(
@@ -616,6 +619,7 @@ mod tests {
 
     /// Start-Ok goes out before Tune, so it must fit in AMQP's 4096-byte
     /// frame-min-size; a longer password is refused when validated.
+    // spectra-scenario: network-checks / Password too long for the first frame
     #[test]
     fn amqp_login_fits_the_first_frame() {
         let fits = |password: &str| method_frame(START_OK, &start_ok("emfor", password)).len();
@@ -776,6 +780,9 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / Successful handshake
+    // spectra-scenario: network-checks / Wrong password
+    // spectra-scenario: network-checks / Wrong password / AMQP broker answers
     #[tokio::test]
     async fn amqp_broker_answers() {
         let dir = tempfile::tempdir().unwrap();
@@ -896,6 +903,7 @@ mod tests {
         seen.lock().unwrap().clone()
     }
 
+    // spectra-scenario: network-checks / Successful handshake
     #[tokio::test]
     async fn sent_methods() {
         let dir = tempfile::tempdir().unwrap();
@@ -969,6 +977,7 @@ mod tests {
 
     /// A password file that grew too long after validation fails the
     /// check as a configuration error before anything is sent.
+    // spectra-scenario: network-checks / Password file grows after validation
     #[tokio::test]
     async fn too_long_password_is_error() {
         let dir = tempfile::tempdir().unwrap();

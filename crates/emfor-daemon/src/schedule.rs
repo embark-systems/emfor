@@ -491,6 +491,7 @@ fn peer_reason_for_log(reason: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // spectra-scenario: peer-group / Reason with a line break
     #[test]
     fn peer_reason_is_one_bounded_line() {
         let reason = format!("line one\nline two\r\u{1b}[31m{}", "x".repeat(1000));
@@ -510,6 +511,7 @@ mod tests {
 
     /// Fast waits stop after `rise + fall` in a row while unknown, and the
     /// count starts over once the state is known.
+    // spectra-scenario: health-checking / Fast checks stop after rise + fall
     #[test]
     fn fast_waits_are_capped_while_unknown() {
         use HealthState::*;
@@ -528,6 +530,8 @@ mod tests {
     }
 
     /// Spec "Check scheduling with jitter and no overlap", example table.
+    // spectra-scenario: health-checking / Spacing between checks
+    // spectra-scenario: health-checking / Fast checks until the state is known / wait before the next check
     #[test]
     fn wait_after_a_check() {
         use HealthState::*;
@@ -569,6 +573,8 @@ mod tests {
         }
     }
 
+    // spectra-scenario: health-checking / Spacing between checks
+    // spectra-scenario: health-checking / Zero jitter
     #[test]
     fn wait_bounds() {
         let mut rng = StdRng::seed_from_u64(7);
@@ -633,6 +639,7 @@ mod tests {
         Backend::new("10.0.0.11:8080".parse().unwrap())
     }
 
+    // spectra-scenario: health-checking / Zero jitter
     #[tokio::test(start_paused = true)]
     async fn checks_never_overlap_and_wait_after_finishing() {
         let chk = recording(Duration::from_millis(900), CheckResult::Up);
@@ -709,6 +716,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: health-checking / Transition is logged
     #[tokio::test(start_paused = true)]
     #[tracing_test::traced_test]
     async fn transition_is_logged() {
@@ -774,6 +782,7 @@ mod tests {
 
     /// Spec "Check scheduling with jitter and no overlap": a reload that
     /// shortens `interval` applies to the wait already under way.
+    // spectra-scenario: health-checking / Reload shortens the wait under way
     #[tokio::test(start_paused = true)]
     async fn new_interval_cuts_the_current_wait_short() {
         let chk = recording(Duration::from_millis(1), CheckResult::Up);
@@ -831,6 +840,7 @@ mod tests {
 
     /// Spec "Check scheduling with jitter and no overlap": the fast pace
     /// while unknown lasts `rise + fall` waits at most.
+    // spectra-scenario: health-checking / Fast checks stop after rise + fall
     #[tokio::test(start_paused = true)]
     async fn fast_checks_while_unknown_are_capped() {
         let chk = Arc::new(Alternating::default());
@@ -865,6 +875,8 @@ mod tests {
 
     /// Spec peer-group "whether a received down message starts a fast
     /// recheck run" (interval 2s, fall 3: cooldown 6s).
+    // spectra-scenario: peer-group / Startup failures are not announced / whether a received down message starts a fast recheck run
+    // spectra-scenario: peer-group / Assigned checkers stop being live / whether a failed own check starts a fast recheck run
     #[test]
     fn whether_a_report_starts_a_fast_run() {
         use HealthState::*;
@@ -1002,6 +1014,9 @@ mod tests {
 
     /// Spec health-checking "Combined result feeds the state machine": two
     /// other assigned checkers report down, this daemon's own checks pass.
+    // spectra-scenario: peer-group / Assigned checkers among five live members
+    // spectra-scenario: peer-group / Two of three assigned checkers see the backend down
+    // spectra-scenario: health-checking / Combined result feeds the state machine
     #[tokio::test(start_paused = true)]
     async fn two_down_votes_make_an_up_backend_unhealthy() {
         let refused = || Outcome::Down("refused".into());
@@ -1039,6 +1054,7 @@ mod tests {
     }
 
     /// Spec peer-group "Only one daemon sees the backend down".
+    // spectra-scenario: peer-group / Only one daemon sees the backend down
     #[tokio::test(start_paused = true)]
     async fn own_down_against_up_votes_is_local() {
         let chk = Arc::new(Switch::default());
@@ -1056,6 +1072,8 @@ mod tests {
 
     /// Spec peer-group "Not an assigned checker" and "Error results are not
     /// sent".
+    // spectra-scenario: peer-group / Not an assigned checker
+    // spectra-scenario: peer-group / Error results are not sent
     #[tokio::test(start_paused = true)]
     async fn results_only_from_assigned_checkers_and_not_for_errors() {
         let (updates, out) = with_votes(5, &[], Arc::new(Switch::default())).await;
@@ -1135,6 +1153,7 @@ mod tests {
     /// row, then the cases that always check. Where the table's action is
     /// an own check, its applied result is the combined result, covered by
     /// quorum.rs `combined_result_table`.
+    // spectra-scenario: peer-group / Assigned checkers stop being live / what this daemon does at one check time
     #[test]
     fn split_check_time_table() {
         let up = || Outcome::Up;
@@ -1307,6 +1326,8 @@ mod tests {
     /// Spec peer-group "Services left out of the peer group": with
     /// `peers = false` the votes are not counted, every check time is an
     /// own check, and nothing is sent to the peer task.
+    // spectra-scenario: peer-group / Leaving the group on reload drops kept state
+    // spectra-scenario: peer-group / Leaving the group on reload drops kept state / what this daemon does for one backend
     #[tokio::test(start_paused = true)]
     async fn service_left_out_ignores_votes() {
         let (otx, mut orx) = peer_channel();
@@ -1397,6 +1418,8 @@ mod tests {
     /// Spec peer-group "Sparse own checks while the assigned checkers see
     /// the backend up" and health-checking "Check times decided by votes
     /// keep the schedule".
+    // spectra-scenario: peer-group / Sparse own checks while the assigned checkers see the backend up
+    // spectra-scenario: health-checking / Check times decided by votes keep the schedule
     #[tokio::test(start_paused = true)]
     async fn sparse_own_checks_while_the_region_is_up() {
         let (chk, h, mut rx, _orx, task) = not_assigned().await;
@@ -1425,6 +1448,8 @@ mod tests {
     /// Spec peer-group "Local failure while the region is up": the failed
     /// own check at the 4th check time starts a fast recheck run, so the
     /// next two own checks follow 200 ms apart (plus the 10 ms check).
+    // spectra-scenario: peer-group / Local failure while the region is up
+    // spectra-scenario: peer-group / Assigned checkers stop being live / whether a failed own check starts a fast recheck run
     #[tokio::test(start_paused = true)]
     async fn local_failure_while_the_region_is_up() {
         let (chk, _h, mut rx, mut orx, task) = not_assigned().await;
@@ -1469,6 +1494,8 @@ mod tests {
     /// failure": with three live candidates (.5, .6, .7) every one is an
     /// assigned checker, and a failed own check against two `up` votes is
     /// followed by the next check one `interval` later.
+    // spectra-scenario: peer-group / Assigned checker does not start a run on its own failure
+    // spectra-scenario: peer-group / Assigned checkers stop being live / whether a failed own check starts a fast recheck run
     #[tokio::test(start_paused = true)]
     async fn assigned_checker_does_not_start_a_run_on_its_own_failure() {
         let (chk, _h, mut rx, _orx, task) = with_live([6, 7], 3).await;
@@ -1502,6 +1529,7 @@ mod tests {
     /// check of a run started by a peer's report does not start another,
     /// so the run, whose later checks give `error`, ends after `fall` = 3
     /// checks.
+    // spectra-scenario: peer-group / Assigned checkers stop being live / whether a failed own check starts a fast recheck run
     #[tokio::test(start_paused = true)]
     async fn local_failure_during_a_run_keeps_the_run() {
         let (chk, _h, mut rx, _orx, task, link) = with_live_link(5..=9, 3).await;
@@ -1534,6 +1562,7 @@ mod tests {
     /// run", the row whose last run ended too recently: with `fall = 4` a
     /// run ends at an `up` check, and the failure at the next own check,
     /// about 3 s later (less than `fall × interval` = 4 s), starts none.
+    // spectra-scenario: peer-group / Assigned checkers stop being live / whether a failed own check starts a fast recheck run
     #[tokio::test(start_paused = true)]
     async fn no_new_run_soon_after_one_ended() {
         let (chk, _h, mut rx, _orx, task) = not_assigned_with_fall(4).await;
@@ -1572,6 +1601,8 @@ mod tests {
 
     /// Spec peer-group "Region down without an own check": the move is made
     /// by the own check at the third check time, so it is announced.
+    // spectra-scenario: peer-group / Region down without an own check
+    // spectra-scenario: peer-group / Leaving the group on reload drops kept state / what this daemon does for one backend
     #[tokio::test(start_paused = true)]
     async fn region_down_without_an_own_check() {
         let (chk, h, mut rx, mut orx, task) = not_assigned().await;
@@ -1613,6 +1644,7 @@ mod tests {
     /// once: two `down` results sent once move `fall` at one check time
     /// only; the own checks after it (`up`) add nothing, so the backend
     /// stays healthy and nothing more is stored.
+    // spectra-scenario: peer-group / Votes from members with a longer interval count once
     #[tokio::test(start_paused = true)]
     async fn votes_sent_once_count_once() {
         let (chk, h, mut rx, _orx, task) = not_assigned().await;
@@ -1654,6 +1686,7 @@ mod tests {
     /// Spec peer-group "Moves decided by votes are not announced": with
     /// `fall = 2` the backend turns unhealthy at a check time decided by
     /// votes alone, and nothing is sent.
+    // spectra-scenario: peer-group / Moves decided by votes are not announced
     #[tokio::test(start_paused = true)]
     async fn moves_decided_by_votes_are_not_announced() {
         let (chk, h, mut rx, mut orx, task) = not_assigned_with_fall(2).await;
@@ -1676,6 +1709,7 @@ mod tests {
     }
 
     /// Spec peer-group "Recovery decided by votes waits for a latency".
+    // spectra-scenario: peer-group / Recovery decided by votes waits for a latency
     #[tokio::test(start_paused = true)]
     async fn recovery_by_votes_waits_for_a_latency() {
         // `fall = 2`: unhealthy after two check times decided by votes,
@@ -1710,6 +1744,8 @@ mod tests {
 
     /// Spec peer-group "Assigned checkers stop being live": with only one
     /// other member live there are no assigned checkers.
+    // spectra-scenario: peer-group / Too few live members
+    // spectra-scenario: peer-group / Assigned checkers stop being live
     #[tokio::test(start_paused = true)]
     async fn no_assigned_checkers_check_every_time() {
         let (chk, h, mut rx, _orx, task) = not_assigned().await;
@@ -1759,6 +1795,8 @@ mod tests {
     }
 
     /// Spec health-checking "Fast recheck run after a peer report".
+    // spectra-scenario: peer-group / Peer sees the failure first
+    // spectra-scenario: health-checking / Fast recheck run after a peer report
     #[tokio::test(start_paused = true)]
     async fn fast_recheck_run_after_a_peer_report() {
         let (chk, link, mut drx, mut rx, h, _stx) = healthy_switch().await;
@@ -1848,6 +1886,7 @@ mod tests {
     }
 
     /// `unknown` -> `unhealthy` (just started) is not announced.
+    // spectra-scenario: peer-group / Startup failures are not announced
     #[tokio::test(start_paused = true)]
     async fn startup_failures_are_not_announced() {
         let chk = Arc::new(Switch::default());

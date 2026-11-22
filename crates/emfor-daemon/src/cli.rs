@@ -1184,6 +1184,7 @@ mod tests {
     /// The table "which modes warn" of the spec: a mode that lets other
     /// users write warns, and each line carries the four things that let the
     /// reader of `emfor check-config` act on it.
+    // spectra-scenario: state-store / Daemon starts with a world-writable mode / which modes warn
     #[test]
     fn store_mode_warnings_follow_the_other_users_write_bit() {
         // (file_mode, lock_file_mode, [(option, mode shown, recommended)])
@@ -1285,6 +1286,7 @@ mod tests {
 
     /// Spec dns-server "Rate limit": a warning for each listen address
     /// that is not loopback, none for loopback ones.
+    // spectra-scenario: dns-server / Listen beyond loopback
     #[test]
     fn non_loopback_listen_is_warned_about() {
         let d = DnsConfig {
@@ -1348,6 +1350,8 @@ mod tests {
 
     /// State-store "DNS listen addresses in the store" and "Metrics listen
     /// addresses in the store": the address forms written to the store.
+    // spectra-scenario: state-store / Metrics table written at start
+    // spectra-scenario: state-store / DNS table written at start
     #[test]
     fn listen_key_address_forms() {
         let parse = |text: &str| {
@@ -1368,6 +1372,7 @@ mod tests {
     }
 
     /// Example "which services are reported".
+    // spectra-scenario: dns-server / Mixed ports in the zone / which services are reported
     #[test]
     fn which_services_are_reported() {
         type Row<'a> = (bool, &'a str, &'a [&'a str], Option<&'a str>);

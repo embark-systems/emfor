@@ -265,6 +265,8 @@ mod tests {
         run_check(checker_for(&p).as_ref(), req(timeout)).await
     }
 
+    // spectra-scenario: health-checking / Script reports critical
+    // spectra-scenario: health-checking / Script reports critical / exit status mapping
     #[tokio::test]
     async fn exit_status_mapping() {
         let t = Duration::from_secs(5);
@@ -294,6 +296,7 @@ mod tests {
     /// Last row of the "exit status mapping" example (sleeps longer than
     /// `timeout` → down, `timeout`), kept apart because it needs a short
     /// timeout.
+    // spectra-scenario: health-checking / Script reports critical / exit status mapping
     #[tokio::test]
     async fn sleeping_past_timeout_is_down_timeout() {
         let r = run("sleep 30", Duration::from_millis(300)).await;
@@ -362,6 +365,7 @@ mod tests {
         assert_eq!(r, CheckResult::Down("still the reason".into()));
     }
 
+    // spectra-scenario: health-checking / Backend passed in the environment
     #[tokio::test]
     async fn backend_is_passed_in_environment() {
         let r = run(
@@ -372,6 +376,8 @@ mod tests {
         assert_eq!(r, CheckResult::Down("10.0.1.5 5432 db.svc.emfor".into()));
     }
 
+    // spectra-scenario: health-checking / Variable of the daemon is not passed
+    // spectra-scenario: health-checking / Variable named in env_pass is passed
     #[tokio::test]
     async fn only_the_default_variables_reach_the_command() {
         // cargo sets this in the environment of the test process.
@@ -400,6 +406,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: health-checking / Variable named in env_pass is passed / env_pass validation
     #[test]
     fn invalid_env_pass_is_an_error_at_env_pass() {
         let dir = TempDir::new().unwrap();
@@ -521,6 +528,7 @@ mod tests {
         assert_gone(child).await;
     }
 
+    // spectra-scenario: health-checking / Timeout kills child processes
     #[tokio::test]
     async fn timeout_kills_child_processes() {
         let dir = TempDir::new().unwrap();
@@ -541,6 +549,7 @@ mod tests {
         assert_gone(child).await;
     }
 
+    // spectra-scenario: health-checking / Invalid command option
     #[test]
     fn invalid_command_option() {
         let dir = TempDir::new().unwrap();

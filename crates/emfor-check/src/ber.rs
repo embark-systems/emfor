@@ -292,6 +292,8 @@ mod tests {
             .join(" ")
     }
 
+    // spectra-scenario: database-checks / Anonymous bind
+    // spectra-scenario: database-checks / Anonymous bind / anonymous bind bytes
     #[test]
     fn anonymous_bind_bytes() {
         assert_eq!(
@@ -355,6 +357,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: database-checks / Wrong LDAP password / result codes in reasons
     #[test]
     fn trailing_nul_bytes_are_not_part_of_the_diagnostic() {
         // As Active Directory sends it (Windows Server, invalid password).
@@ -408,6 +411,7 @@ mod tests {
         assert!(decode_response(&unbind_request(1)).is_err());
     }
 
+    // spectra-scenario: database-checks / Wrong LDAP password / result codes in reasons
     #[test]
     fn result_texts() {
         assert_eq!(result_text(49, ""), "49 invalidCredentials");

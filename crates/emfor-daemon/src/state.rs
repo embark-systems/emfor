@@ -182,6 +182,8 @@ mod tests {
         }
     }
 
+    // spectra-scenario: health-checking / Backend becomes healthy
+    // spectra-scenario: health-checking / Backend becomes healthy / state transitions with rise = 2, fall = 3
     #[test]
     fn transitions_table() {
         // Rows of the "state transitions with rise = 2, fall = 3" example.
@@ -205,6 +207,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: health-checking / Backend becomes healthy
     #[test]
     fn transition_reported_once() {
         let now = Instant::now();
@@ -220,6 +223,7 @@ mod tests {
         assert_eq!(h.apply(&CheckResult::Up, now, T), None);
     }
 
+    // spectra-scenario: health-checking / Persistent errors make the state unknown
     #[tokio::test(start_paused = true)]
     async fn persistent_errors_become_unknown() {
         let mut h = BackendHealth::new();
@@ -273,6 +277,9 @@ mod tests {
     }
 
     /// Rows of the "smoothing" example in the state-store spec.
+    // spectra-scenario: state-store / Latency after up checks
+    // spectra-scenario: state-store / Down result keeps latency
+    // spectra-scenario: state-store / Down result keeps latency / smoothing
     #[test]
     fn smoothing_table() {
         let down = CheckResult::Down("x".into());
@@ -295,6 +302,8 @@ mod tests {
 
     /// Scenario "Cleared on unhealthy": `fall` downs empty the latency, and the
     /// first up check after recovery starts afresh.
+    // spectra-scenario: state-store / Cleared on unhealthy
+    // spectra-scenario: state-store / Down result keeps latency
     #[test]
     fn latency_cleared_on_unhealthy() {
         let t = Thresholds {
@@ -339,6 +348,8 @@ mod tests {
         }
     }
 
+    // spectra-scenario: backend-selection / Missing latency is not fast
+    // spectra-scenario: backend-selection / Missing latency is not fast / fast membership
     #[test]
     fn fast_membership_table() {
         // Rows of the "fast membership" example: lowest latency in scope,
@@ -373,6 +384,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: backend-selection / Nearly equal backends are fast
     #[test]
     fn pool_in_config_order_and_empty_without_scope() {
         let backends = [
@@ -388,6 +400,7 @@ mod tests {
     /// Spec backend-selection "Fast membership decided by the daemon": a
     /// drained backend is not in the pool and does not set the lowest
     /// latency the others are compared with.
+    // spectra-scenario: backend-selection / Fast pool
     #[test]
     fn drained_backend_is_not_in_the_pool() {
         let mut a = backend("a", Healthy, Some(1_000));
@@ -396,6 +409,7 @@ mod tests {
         assert_eq!(fast_pool(&backends, &[]), ["b"]);
     }
 
+    // spectra-scenario: backend-selection / Backups do not decide which primaries are fast
     #[test]
     fn pool_per_tier_primaries_and_backups() {
         let mut c = backend("c", Healthy, Some(2000));

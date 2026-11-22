@@ -214,6 +214,8 @@ mod tests {
 
     const SSL_REQUEST: i32 = 80877103;
 
+    // spectra-scenario: database-checks / Streaming standby
+    // spectra-scenario: database-checks / Streaming standby / pgsql replica status
     #[test]
     fn pgsql_replica_status_table() {
         let st = |in_recovery, receiving, lag| ReplicaStatus {
@@ -332,6 +334,7 @@ mod tests {
 
     /// A password file that gained a NUL after validation fails the check
     /// as a configuration error, before connecting.
+    // spectra-scenario: database-checks / PostgreSQL password file gains a NUL after validation
     #[tokio::test]
     async fn password_with_nul_is_error() {
         let addr = fake_pg().await;
@@ -348,6 +351,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: database-checks / Server without TLS
     #[tokio::test]
     async fn tls_to_a_server_without_tls_is_down() {
         let addr = fake_pg().await;
@@ -362,6 +366,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: database-checks / Backend stopped
     #[tokio::test]
     async fn nothing_listening_is_connect() {
         let addr = emfor_fixture::refused_addr();

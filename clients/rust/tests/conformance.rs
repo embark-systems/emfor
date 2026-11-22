@@ -20,6 +20,57 @@ fn client_for(case: &Value, dir: &Path) -> Client {
     }
 }
 
+// spectra-scenario: client-lookup / IPv4 backend
+// spectra-scenario: client-lookup / IPv6 backend
+// spectra-scenario: client-lookup / Error code by store condition
+// spectra-scenario: client-lookup / Error code by store condition / store conditions
+// spectra-scenario: client-lookup / Schema check wins over a missing service
+// spectra-scenario: client-lookup / Name forms that find the same record
+// spectra-scenario: client-lookup / Name forms that find the same record / name normalization
+// spectra-scenario: client-lookup / Stale store with each on_all_down setting
+// spectra-scenario: client-lookup / Unhealthy backends are skipped
+// spectra-scenario: client-lookup / Open service with every backend down
+// spectra-scenario: client-lookup / Open service prefers a passing unknown backend
+// spectra-scenario: client-lookup / Open service with every unknown backend failing
+// spectra-scenario: client-lookup / Open service with only unhealthy backends
+// spectra-scenario: client-lookup / State and on_all_down values from a newer daemon
+// spectra-scenario: client-lookup / Failing backend is skipped while another passes
+// spectra-scenario: client-lookup / Every healthy backend failing
+// spectra-scenario: client-lookup / Stale store ignores reason
+// spectra-scenario: client-lookup / Backup takes over while no primary passes
+// spectra-scenario: client-lookup / Primary passes again
+// spectra-scenario: client-lookup / Consecutive lookups cover every candidate
+// spectra-scenario: client-lookup / Unhealthy backend is never returned
+// spectra-scenario: client-lookup / First healthy backend wins
+// spectra-scenario: client-lookup / Staleness values
+// spectra-scenario: client-lookup / Staleness values / EMFOR_MAX_STALENESS parsing
+// spectra-scenario: client-lookup / Client passes the shared cases
+// spectra-scenario: client-lookup / Future balance value
+// spectra-scenario: client-lookup / Unknown fields ignored
+// spectra-scenario: client-lookup / Three to one
+// spectra-scenario: client-lookup / Unhealthy heavy backend
+// spectra-scenario: client-lookup / Record from an older daemon
+// spectra-scenario: client-lookup / Local site healthy
+// spectra-scenario: client-lookup / Local site healthy / locality outcomes
+// spectra-scenario: client-lookup / Lookups stay in the pool
+// spectra-scenario: client-lookup / Stale heartbeat ignores the pool
+// spectra-scenario: client-lookup / Missing or empty pool
+// spectra-scenario: client-lookup / Ramping backend gets a smaller share
+// spectra-scenario: client-lookup / Weighted ramping backend
+// spectra-scenario: client-lookup / Slow start over
+// spectra-scenario: client-lookup / Failover and sticky with a key ignore slow start
+// spectra-scenario: client-lookup / Stale store does not ramp
+// spectra-scenario: client-lookup / Same key gives the same backend
+// spectra-scenario: client-lookup / Equal weights keep today's picks
+// spectra-scenario: client-lookup / Equal weights keep today's picks / rendezvous picks
+// spectra-scenario: client-lookup / Weights change the share of keys
+// spectra-scenario: client-lookup / Weights change the share of keys / weighted picks
+// spectra-scenario: client-lookup / Weights above 100 count as 100
+// spectra-scenario: client-lookup / Weights above 100 count as 100 / weights above 100
+// spectra-scenario: client-lookup / Empty key falls back to round-robin
+// spectra-scenario: client-lookup / Lookup with a drained backend
+// spectra-scenario: client-lookup / Lookup when all are drained
+// spectra-scenario: client-lookup / Older store
 #[test]
 fn every_case_through_the_rust_api() {
     let cases = data("cases.json");
@@ -50,6 +101,10 @@ fn every_case_through_the_rust_api() {
     );
 }
 
+// spectra-scenario: client-lookup / Client passes the shared cases
+// spectra-scenario: client-lookup / Equal weights keep today's picks
+// spectra-scenario: client-lookup / Equal weights keep today's picks / rendezvous hash vectors
+// spectra-scenario: client-lookup / Equal weights keep today's picks / rendezvous picks
 #[test]
 fn sticky_vectors() {
     let v = data("sticky-v1.json");
@@ -81,6 +136,7 @@ fn sticky_vectors() {
 
 /// Spec client-lookup Example "weighted picks", row `user-42` with weights
 /// 3, 1, 1; the same ids with every weight 1 pick as `rendezvous_pick`.
+// spectra-scenario: client-lookup / Weights change the share of keys / weighted picks
 #[test]
 fn weighted_pick() {
     let ids = ["10.0.0.11:8080", "10.0.0.12:8080", "10.0.0.13:8080"];

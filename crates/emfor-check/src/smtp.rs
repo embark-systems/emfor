@@ -344,6 +344,7 @@ mod tests {
         vec![(key.to_owned(), message.to_owned())]
     }
 
+    // spectra-scenario: network-checks / Defaults / SMTP option validation
     #[test]
     fn smtp_option_validation() {
         let dir = tempfile::tempdir().unwrap();
@@ -378,6 +379,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / Defaults
     #[test]
     fn helo_defaults_to_an_address_literal() {
         assert_eq!(
@@ -471,6 +473,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / STARTTLS not offered / SMTP replies
     #[tokio::test]
     async fn smtp_replies_without_tls() {
         let down = |r: &str| CheckOutcome::Down(r.into());
@@ -520,6 +523,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / Defaults
     #[tokio::test]
     async fn ehlo_names_the_local_address() {
         let (addr, seen) = fake_smtp(b"220 mx\r\n".to_vec(), plain, None).await;
@@ -540,6 +544,9 @@ mod tests {
         })
     }
 
+    // spectra-scenario: network-checks / Healthy server with STARTTLS
+    // spectra-scenario: network-checks / STARTTLS not offered
+    // spectra-scenario: network-checks / STARTTLS not offered / SMTP replies
     #[tokio::test]
     async fn smtp_replies_with_starttls() {
         use emfor_tls::testing::pki;
@@ -595,6 +602,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / STARTTLS not offered / SMTP replies
     #[tokio::test]
     async fn tls_against_a_plaintext_server_is_tls() {
         let dir = tempfile::tempdir().unwrap();

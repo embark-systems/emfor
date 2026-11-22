@@ -152,6 +152,7 @@ fn pair(backend: SocketAddr, b_extra: &str) -> (Member, Member, SocketAddr, Sock
 
 /// Spec peer-group "Peer sees the failure first": B, which would need a
 /// minute on its own, follows A within 2 seconds.
+// spectra-scenario: peer-group / Peer sees the failure first
 #[test]
 fn peer_sees_the_failure_first() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
@@ -188,6 +189,7 @@ fn peer_sees_the_failure_first() {
 
 /// Spec peer-group "Digest differs": B's service has another timeout, so
 /// it ignores A's report and keeps its own schedule.
+// spectra-scenario: peer-group / Digest differs
 #[test]
 fn digest_differs() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
@@ -235,6 +237,8 @@ fn digest_differs() {
 }
 
 /// Spec peer-group "Member stops" and "Member added on reload".
+// spectra-scenario: peer-group / Member stops
+// spectra-scenario: peer-group / Member added on reload
 #[test]
 fn member_stops_and_member_added_on_reload() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
@@ -274,6 +278,8 @@ fn member_stops_and_member_added_on_reload() {
 }
 
 /// Service-config "Peers listen change requires restart".
+// spectra-scenario: service-config / Peers listen change requires restart
+// spectra-scenario: peer-group / Listen change rejected
 #[test]
 fn reload_rejects_peers_listen_change() {
     let backend = free_tcp();
@@ -382,6 +388,11 @@ fn counter(body: &str, name: &str, label: &str) -> u64 {
 
 /// Spec peer-group "Two of three assigned checkers see the backend down"
 /// and "Only one daemon sees the backend down".
+// spectra-scenario: metrics-endpoint / Peer result metrics
+// spectra-scenario: peer-group / Two of three assigned checkers see the backend down
+// spectra-scenario: peer-group / Only one daemon sees the backend down
+// spectra-scenario: state-store / Liveness and disagreement reach the store
+// spectra-scenario: health-checking / Combined result feeds the state machine
 #[test]
 fn majority_of_three() {
     let flags = tempfile::tempdir().expect("a temporary directory can be created");
@@ -493,6 +504,10 @@ fn own_checks(path: &Path) -> usize {
 /// is not an assigned checker of the backend checks it about every third
 /// time, still notices a failure only it sees, and checks every time once
 /// a member is gone and it becomes an assigned checker.
+// spectra-scenario: metrics-endpoint / Skipped checks counted
+// spectra-scenario: peer-group / Sparse own checks while the assigned checkers see the backend up
+// spectra-scenario: peer-group / Local failure while the region is up
+// spectra-scenario: peer-group / Assigned checkers stop being live
 #[test]
 fn split_checks() {
     let files = tempfile::tempdir().expect("a temporary directory can be created");
@@ -612,6 +627,9 @@ fn split_checks() {
 /// "Services left out are listed": C has `peers = false` for the service,
 /// so it neither sends nor counts votes, while A and B still decide by
 /// theirs.
+// spectra-scenario: peer-group / A service left out on one member
+// spectra-scenario: status-command / Service left out of the peer group is not voted
+// spectra-scenario: status-command / JSON assigned checkers of a service left out
 #[test]
 fn service_left_out_on_one_member() {
     let flags = tempfile::tempdir().expect("a temporary directory can be created");
@@ -718,6 +736,7 @@ fn service_left_out_on_one_member() {
 /// heartbeats announce `api.svc.emfor` and `web.svc.emfor`; `meta/peers`
 /// names only the one this daemon has, and nothing once the member is not
 /// live.
+// spectra-scenario: state-store / Services another member leaves out
 #[test]
 fn services_another_member_leaves_out() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
@@ -796,6 +815,7 @@ fn services_another_member_leaves_out() {
 
 /// Spec state-store "Services left out are listed": `services_off` at
 /// start, and after a reload turns one service back on.
+// spectra-scenario: state-store / Services left out are listed
 #[test]
 fn services_off_follow_reloads() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
@@ -874,6 +894,7 @@ fn next_heartbeat_off(socket: &UdpSocket) -> serde_json::Value {
 /// Spec peer-group "Heartbeat announces services left out": heartbeats
 /// carry the tags of the services left out, and none after a reload puts
 /// them all back in the group.
+// spectra-scenario: peer-group / Heartbeat announces services left out
 #[test]
 fn heartbeat_announces_services_left_out() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
@@ -910,6 +931,7 @@ fn heartbeat_announces_services_left_out() {
 /// Spec peer-group "More services left out than fit": 81 services left
 /// out give one warning that 1 tag is not sent, also after a reload that
 /// changes nothing.
+// spectra-scenario: peer-group / More services left out than fit
 #[test]
 fn more_services_left_out_than_fit() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
@@ -955,6 +977,7 @@ fn next_datagram(socket: &UdpSocket) -> Vec<u8> {
 
 /// Spec peer-group "Encrypted heartbeat": by default heartbeats are `EMP2`,
 /// and the site cannot be read on the wire.
+// spectra-scenario: peer-group / Encrypted heartbeat
 #[test]
 fn heartbeats_are_encrypted_by_default() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
@@ -977,6 +1000,7 @@ fn heartbeats_are_encrypted_by_default() {
 /// Two members that both set `encrypt = true` read each other's messages:
 /// both are live, none is rejected, neither warns about plaintext, and each
 /// moves the other to `EMP3` after its first message.
+// spectra-scenario: peer-group / Encrypted heartbeat
 #[test]
 fn encrypting_members_are_live() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
@@ -1011,6 +1035,8 @@ fn encrypting_members_are_live() {
 /// yet gets `EMP2` with `emp3`; after one valid `EMP3` heartbeat from it,
 /// `EMP3`; after a valid `EMP2` one without `emp3` (an earlier version),
 /// `EMP2` again; one `info` line each time.
+// spectra-scenario: peer-group / Encrypted heartbeat
+// spectra-scenario: peer-group / Format follows the member
 #[test]
 fn format_follows_the_member() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
@@ -1073,6 +1099,9 @@ fn format_follows_the_member() {
 /// Spec peer-group "Mixed formats during an upgrade": A encrypts and has
 /// `accept_plaintext = true` (without it A drops B's plaintext), B does
 /// not encrypt; both stay live and A warns that B sends plaintext.
+// spectra-scenario: peer-group / Default of accept_plaintext follows encrypt
+// spectra-scenario: peer-group / Default of accept_plaintext follows encrypt / accept_plaintext default
+// spectra-scenario: peer-group / Mixed formats during an upgrade
 #[test]
 fn mixed_formats_during_an_upgrade() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
@@ -1095,6 +1124,7 @@ fn mixed_formats_during_an_upgrade() {
 /// Spec peer-group "Plaintext refused": A sets `accept_plaintext = false`
 /// and drops B's `EMP1` messages as `plaintext`, so B is not live at A;
 /// a reload that accepts plaintext again makes B live.
+// spectra-scenario: peer-group / Plaintext refused
 #[test]
 fn plaintext_refused_until_reload() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
@@ -1145,6 +1175,9 @@ fn plaintext_refused_until_reload() {
 /// nor `accept_plaintext`, so it drops the `EMP1` messages of B (which has
 /// `encrypt = false`) as `plaintext`; B is not live at A, while B accepts A's
 /// messages; a reload with `accept_plaintext = true` makes B live at A.
+// spectra-scenario: peer-group / Default of accept_plaintext follows encrypt
+// spectra-scenario: peer-group / Default of accept_plaintext follows encrypt / accept_plaintext default
+// spectra-scenario: peer-group / Plaintext refused by default
 #[test]
 fn plaintext_refused_by_default() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");

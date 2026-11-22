@@ -345,6 +345,7 @@ mod tests {
         vec![(key.to_owned(), message.to_owned())]
     }
 
+    // spectra-scenario: network-checks / Minimal options
     #[test]
     fn minimal_options_use_the_defaults() {
         let s = parse(&options(json!({ "name": "ns-check.example.org" }))).unwrap();
@@ -356,6 +357,7 @@ mod tests {
         assert!(!s.expect_answer);
     }
 
+    // spectra-scenario: network-checks / Minimal options / DNS option validation
     #[test]
     fn dns_option_validation() {
         assert_eq!(errors(json!({})), one("name", "missing required key"));
@@ -513,6 +515,9 @@ mod tests {
     /// How the fake server answers a query.
     type Answer = fn(&Message) -> Vec<u8>;
 
+    // spectra-scenario: network-checks / Name resolves
+    // spectra-scenario: network-checks / Server failure
+    // spectra-scenario: network-checks / Server failure / DNS outcomes
     #[tokio::test]
     async fn dns_outcomes() {
         let name = json!({ "name": "ns-check.example.org" });
@@ -601,6 +606,7 @@ mod tests {
         assert_eq!(r, down("rcode: 13"));
     }
 
+    // spectra-scenario: network-checks / Server failure / DNS outcomes
     #[tokio::test]
     async fn garbage_with_the_query_id_is_down_query() {
         let r = outcome(json!({ "name": "a.example" }), |q| {
@@ -639,6 +645,7 @@ mod tests {
         assert_eq!(check(&req(addr), &settings).await, CheckOutcome::Up);
     }
 
+    // spectra-scenario: network-checks / Response for another question
     #[tokio::test]
     async fn response_for_another_question_is_ignored() {
         let settings = parse(&options(json!({ "name": "a.example" }))).unwrap();
@@ -686,6 +693,7 @@ mod tests {
         addr
     }
 
+    // spectra-scenario: network-checks / DNS over TCP
     #[tokio::test]
     async fn dns_over_tcp() {
         let settings = parse(&options(json!({ "name": "a.example", "transport": "tcp" }))).unwrap();
@@ -708,6 +716,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: network-checks / TCP port closed
     #[tokio::test]
     async fn tcp_port_closed_is_down_connect() {
         let settings = parse(&options(json!({ "name": "a.example", "transport": "tcp" }))).unwrap();

@@ -205,6 +205,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: peer-group / Plugin env_pass changes the digest
     #[test]
     fn checker_id_has_env_pass_only_when_there_is_one() {
         let command = ["/a".to_string()];
@@ -220,6 +221,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: checker-plugins / Plugin reports down
     #[test]
     fn answers_map_to_results() {
         assert_eq!(check_result(answer("up", None)), CheckResult::Up);

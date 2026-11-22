@@ -498,6 +498,9 @@ mod tests {
     }
 
     /// Spec network-checks Example "QUIC option validation".
+    // spectra-scenario: network-checks / Defaults
+    // spectra-scenario: network-checks / HTTP option without http3
+    // spectra-scenario: network-checks / HTTP option without http3 / QUIC option validation
     #[test]
     fn quic_option_validation() {
         let rows = [
@@ -617,6 +620,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / Defaults
     #[test]
     fn defaults() {
         let s = parse(&options(json!({})), false).unwrap();
@@ -855,6 +859,8 @@ mod tests {
     }
 
     /// Spec Scenario "Handshake only": up, then closed with code 0.
+    // spectra-scenario: network-checks / Handshake only
+    // spectra-scenario: network-checks / HTTP/3 health endpoint / QUIC and HTTP/3 outcomes
     #[test]
     fn handshake_only_is_up_and_closes_with_code_0() {
         let mut s = server(Serve::Handshake);
@@ -867,6 +873,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / HTTP/3 health endpoint / QUIC and HTTP/3 outcomes
     #[test]
     fn alpn_without_overlap_is_a_tls_failure() {
         let s = server(Serve::Handshake);
@@ -876,6 +883,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: network-checks / HTTP/3 health endpoint / QUIC and HTTP/3 outcomes
     #[test]
     fn untrusted_certificate() {
         let s = server(Serve::Handshake);
@@ -889,6 +897,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: network-checks / HTTP/3 health endpoint / QUIC and HTTP/3 outcomes
     #[test]
     fn server_name_must_match_the_certificate() {
         let s = server(Serve::Handshake);
@@ -896,12 +905,14 @@ mod tests {
         assert!(down_starting(&outcome, "tls: "), "{outcome:?}");
     }
 
+    // spectra-scenario: network-checks / HTTP/3 health endpoint / QUIC and HTTP/3 outcomes
     #[test]
     fn refused_connection_is_closed_by_peer() {
         let s = server(Serve::Refuse);
         assert_eq!(s.check(json!({})), down("quic: closed by peer: 2"));
     }
 
+    // spectra-scenario: network-checks / HTTP/3 health endpoint / QUIC and HTTP/3 outcomes
     #[test]
     fn peer_close_with_a_reason() {
         let s = server(Serve::CloseBusy);
@@ -912,6 +923,8 @@ mod tests {
     }
 
     /// Spec Scenario "Nothing answers on the UDP port".
+    // spectra-scenario: network-checks / Nothing answers on the UDP port
+    // spectra-scenario: network-checks / HTTP/3 health endpoint / QUIC and HTTP/3 outcomes
     #[test]
     fn nothing_answers_on_the_udp_port() {
         let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -993,6 +1006,8 @@ mod tests {
     }
 
     /// Spec Example "QUIC and HTTP/3 outcomes", the `http3 = true` rows.
+    // spectra-scenario: network-checks / HTTP/3 health endpoint
+    // spectra-scenario: network-checks / HTTP/3 health endpoint / QUIC and HTTP/3 outcomes
     #[test]
     fn http3_outcomes() {
         let rows = [
@@ -1047,6 +1062,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: network-checks / HTTP/3 health endpoint / QUIC and HTTP/3 outcomes
     #[test]
     fn http3_authority_and_user_agent() {
         let agent = concat!("emfor-check/", env!("CARGO_PKG_VERSION")).to_owned();
@@ -1089,6 +1105,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / HTTP/3 health endpoint / QUIC and HTTP/3 outcomes
     #[test]
     fn http3_reset_stream() {
         let s = server(Serve::Reset);
@@ -1097,6 +1114,7 @@ mod tests {
     }
 
     /// Rule 10: a failure while reading the body.
+    // spectra-scenario: network-checks / HTTP/3 health endpoint / QUIC and HTTP/3 outcomes
     #[test]
     fn body_read_failure() {
         let s = server(Serve::ResetInBody);
@@ -1106,6 +1124,7 @@ mod tests {
 
     /// Rule 5 comes before rule 10: the peer closing the connection while
     /// the body is read is reported as the close.
+    // spectra-scenario: network-checks / HTTP/3 health endpoint / QUIC and HTTP/3 outcomes
     #[test]
     fn peer_close_while_reading_the_body() {
         let s = server(Serve::CloseInBody);

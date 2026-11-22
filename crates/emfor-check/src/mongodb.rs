@@ -764,6 +764,8 @@ mod tests {
         vec![(key.to_owned(), message.to_owned())]
     }
 
+    // spectra-scenario: network-checks / No credentials
+    // spectra-scenario: network-checks / No credentials / MongoDB option validation
     #[test]
     fn mongodb_option_validation() {
         let pass = "/etc/emfor/mongo.pass";
@@ -885,6 +887,7 @@ mod tests {
         assert_eq!(Doc::decode(&nested(MAX_NESTING + 1)), None);
     }
 
+    // spectra-scenario: network-checks / No credentials / MongoDB option validation
     #[test]
     fn non_ascii_password_is_refused_at_validation() {
         let dir = tempfile::tempdir().unwrap();
@@ -908,6 +911,7 @@ mod tests {
         assert_eq!(check("\n"), one("password_file", "file is empty"));
     }
 
+    // spectra-scenario: network-checks / SCRAM example from RFC 7677
     #[test]
     fn scram_example_from_rfc_7677() {
         let mut scram = Scram::new("user", "pencil", "rOprNGfwEbeRWgbNEkqO");
@@ -949,6 +953,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / SCRAM example from RFC 7677 / MongoDB replies
     #[test]
     fn scram_refuses_too_many_iterations() {
         let mut scram = Scram::new("u", "pw", "abc");
@@ -1116,6 +1121,8 @@ mod tests {
         Box::new(move |_, _, _| Answer::Reply(reply.clone()))
     }
 
+    // spectra-scenario: network-checks / Primary of a replica set
+    // spectra-scenario: network-checks / SCRAM example from RFC 7677 / MongoDB replies
     #[tokio::test]
     async fn mongodb_replies() {
         let down = |r: &str| CheckOutcome::Down(r.into());
@@ -1180,6 +1187,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / SCRAM example from RFC 7677 / MongoDB replies
     #[tokio::test]
     async fn mongodb_reply_framing() {
         let down = |r: &str| CheckOutcome::Down(r.into());
@@ -1245,6 +1253,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / SCRAM example from RFC 7677 / MongoDB replies
     #[tokio::test]
     async fn mongodb_logins() {
         let dir = tempfile::tempdir().unwrap();

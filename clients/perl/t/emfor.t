@@ -9,6 +9,8 @@ use Emfor;
 
 my %backend = map { $_ => 1 } ('10.0.0.11:8080', '10.0.0.12:8080');
 
+# spectra-scenario: client-lookup / Invalid argument
+# spectra-scenario: client-lookup / Invalid argument / argument error by language
 like(eval { Emfor::lookup("api\0svc") } // $@, qr/^Emfor::lookup: invalid argument/, 'NUL in name');
 like(eval { Emfor::lookup('api.svc.emfor', "a\0b") } // $@, qr/^Emfor::lookup: invalid argument/, 'NUL in key');
 ok(!ref $@, 'invalid argument is a plain string');
@@ -16,11 +18,14 @@ ok(!ref $@, 'invalid argument is a plain string');
 SKIP: {
     skip 'EMFOR_STORE not set; run make test', 15 unless $ENV{EMFOR_STORE};
 
+    # spectra-scenario: client-lookup / Each wrapper returns an address
     my $a = Emfor::lookup('api.svc.emfor');
     my $b = Emfor::lookup('API.svc.emfor.', '');
     ok($backend{$a}, "address $a");
     ok($backend{$b} && $a ne $b, "next address $b alternates");
 
+    # spectra-scenario: client-lookup / Each wrapper reports the shared code
+    # spectra-scenario: client-lookup / Each wrapper reports the shared code / wrapper call and failure form
     ok(!defined eval { Emfor::lookup('nope.svc.emfor'); 1 }, 'missing service dies');
     my $err = $@;
     isa_ok($err, 'Emfor::Error');
@@ -49,6 +54,7 @@ SKIP: {
     # Undecoded UTF-8 bytes are the four characters "cafÃ©" (README).
     is(Emfor::lookup('sticky.svc.emfor', "caf\xc3\xa9"), '10.0.0.11:8080', 'bytes are characters');
 
+    # spectra-scenario: client-lookup / Lookup after fork in a wrapper
     my $pid = fork() // die "fork: $!";
     if ($pid == 0) {
         my $ok = eval { $backend{ Emfor::lookup('api.svc.emfor') } };

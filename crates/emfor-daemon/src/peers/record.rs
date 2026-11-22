@@ -339,6 +339,7 @@ mod tests {
 
     /// Spec peer-group "Restart during a secret change": the daemon ran with
     /// K0, replaced it by K1 30 seconds ago, and restarts.
+    // spectra-scenario: peer-group / Restart during a secret change
     #[test]
     fn secret_replaced_by_this_daemon_is_resumed() {
         let now = 10_000;
@@ -367,6 +368,7 @@ mod tests {
     /// Spec peer-group "Stop, change the secret, start": the record names
     /// K0 as current, `secret_file` now holds K1, and was modified 30
     /// seconds ago.
+    // spectra-scenario: peer-group / Stop, change the secret, start
     #[test]
     fn secret_changed_while_stopped_is_resumed_from_the_file_time() {
         let now = 10_000;
@@ -381,6 +383,7 @@ mod tests {
 
     /// Spec peer-group "Previous secret retired by an earlier rotation":
     /// the file still holds K0, the record says K1 was replaced by K2.
+    // spectra-scenario: peer-group / Previous secret retired by an earlier rotation
     #[test]
     fn secret_retired_earlier_is_not_used_again() {
         let now = 10_000;
@@ -400,6 +403,7 @@ mod tests {
     }
 
     /// Spec peer-group "Secret file touched": same content, modified now.
+    // spectra-scenario: peer-group / Secret file touched
     #[test]
     fn touching_the_secret_file_changes_nothing() {
         let now = 10_000;
@@ -410,6 +414,7 @@ mod tests {
     }
 
     /// Spec peer-group "First start after an upgrade".
+    // spectra-scenario: peer-group / First start after an upgrade
     #[test]
     fn no_record_means_no_previous_secret() {
         let now = 10_000;

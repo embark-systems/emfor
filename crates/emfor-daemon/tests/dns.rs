@@ -71,6 +71,9 @@ fn a_record(m: &Message) -> Option<(String, u32)> {
     m.answers.first().map(|r| (r.data.to_string(), r.ttl))
 }
 
+// spectra-scenario: dns-server / UDP and TCP
+// spectra-scenario: dns-server / Healthy backend answered
+// spectra-scenario: dns-server / Unknown service
 #[test]
 fn healthy_backend_over_udp_and_tcp() {
     let (_l, backend) = listener();
@@ -103,6 +106,7 @@ fn healthy_backend_over_udp_and_tcp() {
     assert!(!err.contains("hickory_server"), "{err}");
 }
 
+// spectra-scenario: dns-server / Unsupported opcode
 #[test]
 fn update_opcode_is_notimp() {
     let port = free_port();
@@ -125,6 +129,7 @@ fn update_opcode_is_notimp() {
     );
 }
 
+// spectra-scenario: dns-server / No dns table
 #[test]
 fn no_dns_table_opens_no_dns_socket() {
     let d = Daemon::spawn(&service("api.svc.emfor", &["192.0.2.1:9"], ""));
@@ -137,6 +142,7 @@ fn no_dns_table_opens_no_dns_socket() {
     assert!(!err.contains("DNS server"), "{err}");
 }
 
+// spectra-scenario: dns-server / Address in use
 #[test]
 fn address_in_use_exits_one() {
     let taken = sockets(|| UdpSocket::bind("127.0.0.1:0")).unwrap();
@@ -151,6 +157,7 @@ fn address_in_use_exits_one() {
     assert!(err.contains(&format!("127.0.0.1:{port}")), "{err}");
 }
 
+// spectra-scenario: dns-server / Service outside zone
 #[test]
 fn service_outside_zone_is_warned_and_refused() {
     let port = free_port();
@@ -175,6 +182,7 @@ fn service_outside_zone_is_warned_and_refused() {
     );
 }
 
+// spectra-scenario: dns-server / Health change visible immediately
 #[test]
 fn health_change_visible_in_next_answer() {
     // Failover: 192.0.2.1 never answers; until the loopback backend is
@@ -197,6 +205,8 @@ fn health_change_visible_in_next_answer() {
     });
 }
 
+// spectra-scenario: service-config / DNS listen change requires restart
+// spectra-scenario: service-config / Balance change applies on reload
 #[test]
 fn reload_rejects_listen_change_and_applies_balance_and_ttl() {
     // Both backends never answer: with on_all_down open, both are candidates.
@@ -286,6 +296,7 @@ fn reload_removing_dns_table_is_reported_with_other_errors() {
     assert!(err.contains("timeout must not exceed interval"), "{err}");
 }
 
+// spectra-scenario: service-config / DNS listen change requires restart
 #[test]
 fn reload_adding_dns_table_requires_restart() {
     let d = Daemon::spawn(&service("api.svc.emfor", &["192.0.2.1:9"], ""));
@@ -327,6 +338,10 @@ fn srv_ports(m: &Message) -> Vec<(u16, u16)> {
 /// to end: a reload with `drain = true` takes the backend out of the DNS
 /// answers and writes it as unhealthy / drained while its checks go on; a
 /// reload without it brings it back at once, in the same health.
+// spectra-scenario: service-config / Reload applies drain without resetting state
+// spectra-scenario: backend-selection / Drained backend is skipped
+// spectra-scenario: backend-selection / Everything drained
+// spectra-scenario: state-store / Drained backend as stored
 #[test]
 fn drained_backend_leaves_the_answers_and_returns() {
     let (_l1, b1) = listener();
@@ -415,6 +430,7 @@ fn drained_backend_leaves_the_answers_and_returns() {
     assert_eq!(d.log().matches("changed from").count(), 2, "{}", d.log());
 }
 
+// spectra-scenario: dns-server / Fastest priorities
 #[test]
 fn fastest_srv_gives_slow_backend_priority_1() {
     let fast = http_backend(Duration::ZERO);

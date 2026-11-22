@@ -689,6 +689,8 @@ mod tests {
     }
 
     /// Spec peer-group "rendezvous values for api.svc.emfor".
+    // spectra-scenario: peer-group / Assigned checkers among five live members
+    // spectra-scenario: peer-group / Assigned checkers among five live members / rendezvous values for api.svc.emfor
     #[test]
     fn rendezvous_values() {
         let rows = [
@@ -714,6 +716,9 @@ mod tests {
 
     /// Spec peer-group "Assigned checkers among five live members", "A
     /// member stops being live" and "Two-member group".
+    // spectra-scenario: peer-group / Assigned checkers among five live members
+    // spectra-scenario: peer-group / A member stops being live
+    // spectra-scenario: peer-group / Two-member group
     #[test]
     fn assigned_checkers() {
         let me = addr("10.0.0.5:5302");
@@ -775,6 +780,8 @@ mod tests {
     /// (.5) is assigned the backend is 10.0.0.11:8080 (assigned .5, .8, .6);
     /// otherwise 10.0.0.12:8080 (assigned .9, .6, .7). Kept votes come from
     /// the other assigned checkers in rank order.
+    // spectra-scenario: peer-group / Too few live members
+    // spectra-scenario: peer-group / Votes from members with a longer interval count once / combined result
     #[test]
     fn combined_result_table() {
         let now = Instant::now();
@@ -874,6 +881,7 @@ mod tests {
     /// run", the columns about votes and the own result: only a `down` of a
     /// daemon that is not an assigned checker, against at least two `up`
     /// votes and fewer than two `down` votes, is a local failure.
+    // spectra-scenario: peer-group / Assigned checkers stop being live / whether a failed own check starts a fast recheck run
     #[test]
     fn local_failure_table() {
         let now = Instant::now();
@@ -964,6 +972,8 @@ mod tests {
     /// Spec peer-group "what this daemon does at one check time": the
     /// votes column, for backend 10.0.0.12:8080 (assigned .9, .6, .7; this
     /// daemon .5 is not one).
+    // spectra-scenario: peer-group / Two-member group
+    // spectra-scenario: peer-group / Assigned checkers stop being live / what this daemon does at one check time
     #[test]
     fn split_votes_table() {
         let now = Instant::now();
@@ -1015,6 +1025,7 @@ mod tests {
     }
 
     /// Spec peer-group "which kept results are votes".
+    // spectra-scenario: peer-group / Votes from members with a longer interval count once / which kept results are votes
     #[test]
     fn which_kept_results_are_votes() {
         let start = Instant::now();
@@ -1081,6 +1092,7 @@ mod tests {
     /// votes make the verdict at one check time; later own `up` results
     /// with no new vote do not apply, an own `down` does, and a new vote
     /// counts again. Votes that decided a check time decide no other.
+    // spectra-scenario: peer-group / Votes from members with a longer interval count once
     #[test]
     fn kept_results_count_once() {
         let now = Instant::now();
@@ -1204,6 +1216,8 @@ mod tests {
 
     /// Spec state-store "Peer state written at start" and the shape with
     /// both lists filled.
+    // spectra-scenario: state-store / Peer state written at start
+    // spectra-scenario: state-store / Services left out are listed
     #[test]
     fn summary_json() {
         let now = Instant::now();
@@ -1248,6 +1262,7 @@ mod tests {
     }
 
     /// Spec peer-group "service tags".
+    // spectra-scenario: peer-group / Heartbeat announces services left out / service tags
     #[test]
     fn service_tags() {
         for (name, tag) in [
@@ -1261,6 +1276,8 @@ mod tests {
 
     /// Spec peer-group "Heartbeat announces services left out" and "More
     /// services left out than fit": distinct sorted tags, at most 80.
+    // spectra-scenario: peer-group / Heartbeat announces services left out
+    // spectra-scenario: peer-group / More services left out than fit
     #[test]
     fn off_tags_sorted_and_limited() {
         let q = Quorum::new(addr("10.0.0.5:5302"));
@@ -1283,6 +1300,8 @@ mod tests {
     }
 
     /// Spec peer-group "A member announces a service left out".
+    // spectra-scenario: peer-group / A member announces a service left out
+    // spectra-scenario: peer-group / A service left out on one member
     #[test]
     fn announcing_members_are_not_candidates() {
         let me = addr("10.0.0.5:5302");
@@ -1334,6 +1353,7 @@ mod tests {
 
     /// Spec state-store "Services another member leaves out": names of
     /// this daemon's services only, and nothing once the member is not live.
+    // spectra-scenario: state-store / Services another member leaves out
     #[test]
     fn summary_names_what_members_announce() {
         let now = Instant::now();
@@ -1378,6 +1398,8 @@ mod tests {
         }
     }
 
+    // spectra-scenario: peer-group / Older result overtaken on the network
+    // spectra-scenario: peer-group / Result of a restarted sender
     #[test]
     fn older_result_does_not_replace_a_newer_one() {
         let from = addr("10.0.0.8:5302");
@@ -1410,6 +1432,8 @@ mod tests {
         assert_eq!(q.kept(SVC, "10.0.0.11:8080", from), Some(down("reset")));
     }
 
+    // spectra-scenario: peer-group / Older heartbeat overtaken on the network
+    // spectra-scenario: peer-group / Heartbeat of a restarted sender
     #[test]
     fn older_heartbeat_does_not_replace_newer_tags() {
         let m = addr("10.0.0.8:5302");

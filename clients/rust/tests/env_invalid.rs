@@ -4,6 +4,7 @@ mod support;
 
 use emfor_client::{ErrorCode, lookup};
 
+// spectra-scenario: client-lookup / Staleness values
 #[test]
 fn invalid_staleness_is_unavailable() {
     let dir = tempfile::tempdir().unwrap();

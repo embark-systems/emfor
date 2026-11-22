@@ -923,6 +923,7 @@ mod tests {
 
     use super::*;
 
+    // spectra-scenario: checker-plugins / Crash and recovery / restart delays
     #[test]
     fn restart_delays() {
         assert_eq!(restart_delay(1), Duration::from_secs(1));
@@ -972,6 +973,7 @@ mod tests {
     }
 
     /// Spec checker-plugins "Plugin log lines are rate limited".
+    // spectra-scenario: checker-plugins / Plugin log lines are rate limited
     #[tokio::test(start_paused = true)]
     #[tracing_test::traced_test]
     async fn stderr_lines_are_rate_limited() {
@@ -1025,6 +1027,7 @@ mod tests {
         });
     }
 
+    // spectra-scenario: checker-plugins / Crash and recovery / restart delays
     #[test]
     fn backoff_resets_after_long_uptime() {
         let mut b = Backoff::default();

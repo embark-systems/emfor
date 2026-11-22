@@ -843,6 +843,7 @@ mod tests {
     /// The message length field has 24 bits: options whose
     /// Capabilities-Exchange-Request would not fit are refused, counted
     /// with the longer IPv6 Host-IP-Address.
+    // spectra-scenario: network-checks / Request longer than the Message Length
     #[test]
     fn capabilities_exchange_request_fits_the_length_field() {
         let settings = parse(&options(base(json!({}))), true).unwrap();
@@ -870,6 +871,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: network-checks / Request longer than the Message Length / Diameter option validation
     #[test]
     fn diameter_option_validation() {
         assert_eq!(
@@ -985,6 +987,7 @@ mod tests {
         assert_eq!(wrong[0].0, "tls_key_file", "{wrong:?}");
     }
 
+    // spectra-scenario: network-checks / Gx peer options
     #[test]
     fn gx_peer_options() {
         let s = parse(
@@ -1100,6 +1103,7 @@ mod tests {
         end_to_end: 1,
     };
 
+    // spectra-scenario: network-checks / CER encoding
     #[test]
     fn cer_encoding() {
         let s = settings(json!({}));
@@ -1427,6 +1431,7 @@ mod tests {
         seen.iter().map(|m| m.command).collect()
     }
 
+    // spectra-scenario: network-checks / Unknown peer / Diameter outcomes
     #[tokio::test]
     async fn diameter_outcomes() {
         use Step::*;
@@ -1481,6 +1486,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / Peer accepts the connection
     #[tokio::test]
     async fn peer_accepts_the_connection() {
         let (outcome, seen) = run(vec![
@@ -1499,6 +1505,7 @@ mod tests {
         assert_ne!(seen[1].ids.hop_by_hop, seen[2].ids.hop_by_hop);
     }
 
+    // spectra-scenario: network-checks / Unknown peer
     #[tokio::test]
     async fn unknown_peer() {
         let (outcome, seen) = run(vec![Step::Answer(Some(3010), true)]).await;
@@ -1520,6 +1527,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: network-checks / Silent peer
     #[tokio::test]
     async fn silent_peer() {
         let (addr, _node) = node(vec![Step::Silent]).await;
@@ -1675,6 +1683,7 @@ mod tests {
         settings(extra)
     }
 
+    // spectra-scenario: network-checks / Peer requires a client certificate
     #[tokio::test]
     async fn peer_requires_a_client_certificate() {
         let (addr, dir, _) = mutual_tls_node().await;
@@ -1690,6 +1699,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: network-checks / Unreadable client key
     #[tokio::test]
     async fn unreadable_client_key() {
         use std::sync::atomic::Ordering;

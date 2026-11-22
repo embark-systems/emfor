@@ -64,6 +64,7 @@ fn start_dns(services: &str) -> (Daemon, String) {
     panic!("no free DNS port after 5 tries");
 }
 
+// spectra-scenario: service-config / Valid reload adds a service
 #[test]
 fn sighup_with_new_service_adds_its_record() {
     let (_l, addr) = listener();
@@ -82,6 +83,7 @@ fn sighup_with_new_service_adds_its_record() {
     wait_for(|| r.service("web.svc.emfor").unwrap().backends[0].state == HealthState::Healthy);
 }
 
+// spectra-scenario: service-config / Invalid reload is rejected
 #[test]
 fn invalid_reload_keeps_previous_config() {
     let (_l, addr) = listener();
@@ -110,6 +112,7 @@ fn invalid_reload_keeps_previous_config() {
     assert!(err.contains("reload rejected"), "{err}");
 }
 
+// spectra-scenario: service-config / Store settings change requires restart
 #[test]
 fn store_change_on_reload_requires_restart() {
     let (_l, addr) = listener();
@@ -127,6 +130,8 @@ fn store_change_on_reload_requires_restart() {
     assert!(err.contains("store settings require restart"), "{err}");
 }
 
+// spectra-scenario: service-config / Running the daemon
+// spectra-scenario: state-store / Heartbeat zero after shutdown
 #[test]
 fn sigterm_exits_zero_and_zeroes_heartbeat() {
     let (_l, addr) = listener();
@@ -141,6 +146,7 @@ fn sigterm_exits_zero_and_zeroes_heartbeat() {
 
 /// Spec "Damaged store is replaced at start": a store file whose meta
 /// pages are zero bytes, as after a power loss with `MDB_NOSYNC`.
+// spectra-scenario: state-store / Damaged store after a power loss
 #[test]
 fn damaged_store_is_replaced_at_start() {
     use std::io::Write;
@@ -178,6 +184,7 @@ fn damaged_store_is_replaced_at_start() {
 
 /// Spec "Reasons are bounded and printable": an escape sequence from a
 /// check script reaches the store only escaped.
+// spectra-scenario: health-checking / Escape sequence from a backend
 #[test]
 fn escape_sequence_in_a_reason_is_stored_escaped() {
     use std::os::unix::fs::PermissionsExt;
@@ -203,6 +210,8 @@ fn escape_sequence_in_a_reason_is_stored_escaped() {
 
 /// Spec "Check scheduling with jitter and no overlap": checks run at the
 /// fast pace while a backend's state is unknown.
+// spectra-scenario: service-config / Running the daemon
+// spectra-scenario: health-checking / Fast checks until the state is known
 #[test]
 fn backend_known_within_a_second_of_start() {
     let (_l, addr) = listener();
@@ -226,6 +235,8 @@ fn backend_known_within_a_second_of_start() {
     assert_eq!(code, 0);
 }
 
+// spectra-scenario: state-store / Second daemon refused
+// spectra-scenario: state-store / Another daemon's store is not replaced
 #[test]
 fn second_daemon_on_same_store_exits_one() {
     let (_l, addr) = listener();
@@ -247,6 +258,9 @@ fn second_daemon_on_same_store_exits_one() {
     assert!(!PathBuf::from(format!("{}.corrupt", d.store().display())).exists());
 }
 
+// spectra-scenario: service-config / Valid config
+// spectra-scenario: service-config / Invalid config
+// spectra-scenario: service-config / Without the flag
 #[test]
 fn check_config_valid_and_invalid() {
     let dir = tempfile::tempdir().unwrap();
@@ -279,6 +293,7 @@ fn check_config_valid_and_invalid() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("services.\"api.svc.emfor\".intervall"));
 }
 
+// spectra-scenario: service-config / Only backup backends
 #[test]
 fn check_config_rejects_a_service_of_only_backups() {
     let dir = tempfile::tempdir().unwrap();
@@ -313,6 +328,9 @@ fn check_config_rejects_a_service_of_only_backups() {
 /// been opened. This runs the real binary as uid 1001, so it needs root to
 /// switch users and to give files away (the Docker test run is root); as
 /// another user it has nothing to check.
+// spectra-scenario: peer-group / Secret owned by root or by the checking user
+// spectra-scenario: peer-group / Check-config run by an account that is not the daemon user
+// spectra-scenario: peer-group / Check-config accepts a secret owned by root for every account
 #[test]
 fn check_config_compares_the_secret_owner_with_the_user_that_runs_it() {
     use std::os::unix::fs::{PermissionsExt, chown};
@@ -384,6 +402,7 @@ fn check_config_compares_the_secret_owner_with_the_user_that_runs_it() {
 /// Spec "Store file mode warning", `emfor check-config` scenario: a mode that
 /// lets other users write is a warning on standard error that says what to
 /// do, not an error; the default settings give none.
+// spectra-scenario: state-store / World-writable lock file
 #[test]
 fn check_config_warns_about_a_store_mode_that_others_can_write() {
     let dir = tempfile::tempdir().unwrap();
@@ -436,6 +455,7 @@ fn check_config_warns_about_a_store_mode_that_others_can_write() {
 
 /// Spec "Store file mode warning", daemon scenario: one `warn` line at
 /// start, the daemon runs, and a reload does not repeat it.
+// spectra-scenario: state-store / Daemon starts with a world-writable mode
 #[test]
 fn daemon_warns_at_start_about_a_store_mode_that_others_can_write() {
     let (_l, addr) = listener();
@@ -491,6 +511,8 @@ fn chmod_config(d: &Daemon, mode: u32) {
 /// file that others can write" and "Main file that others can write": the
 /// daemon and `check-config` refuse it with status 2 and the fix, and the
 /// store is not opened.
+// spectra-scenario: service-config / Main file that others can write
+// spectra-scenario: service-config / Start with a main file that others can write
 #[test]
 fn main_file_that_others_can_write_is_refused_at_start_and_by_check_config() {
     use std::os::unix::fs::PermissionsExt;
@@ -530,6 +552,7 @@ fn main_file_that_others_can_write_is_refused_at_start_and_by_check_config() {
 
 /// Spec "Reload with a main file that others can write": the reload is
 /// rejected, the daemon keeps its config, and a good file is read again.
+// spectra-scenario: service-config / Reload with a main file that others can write
 #[test]
 fn reload_with_a_main_file_that_others_can_write_keeps_the_old_config() {
     let (_l, addr) = listener();
@@ -569,6 +592,7 @@ fn reload_with_a_main_file_that_others_can_write_keeps_the_old_config() {
 
 /// Spec "status and lookup do not check the main file": they read only
 /// `[store]` and run no plugin.
+// spectra-scenario: service-config / status and lookup do not check the main file
 #[test]
 fn status_and_lookup_read_a_main_file_that_others_can_write() {
     let (_l, addr) = listener();
@@ -619,6 +643,9 @@ fn with_conf_d(fragments: &'static [(&'static str, &'static str)]) -> impl FnOnc
 /// Spec service-config "Config directory with ordered fragments" and
 /// "Listing the files read": check-config lists the files, in read order,
 /// only when `include_dir` is set.
+// spectra-scenario: service-config / check-config with fragments
+// spectra-scenario: service-config / check-config without include_dir
+// spectra-scenario: service-config / Without the flag
 #[test]
 fn check_config_lists_the_files_it_read() {
     let dir = tempfile::tempdir().unwrap();
@@ -676,6 +703,9 @@ fn check_config_lists_the_files_it_read() {
 /// Spec service-config "Showing the merged config": the merged TOML alone on
 /// standard output, the usual lines on standard error, and the saved output
 /// checks again.
+// spectra-scenario: service-config / Valid config with fragments
+// spectra-scenario: service-config / Round trip
+// spectra-scenario: service-config / Invalid config
 #[test]
 fn check_config_show_prints_the_merged_config() {
     let dir = tempfile::tempdir().unwrap();
@@ -759,6 +789,7 @@ fn check_config_show_prints_the_merged_config() {
 
 /// A write error on standard output is reported with a status, not a panic
 /// (101): `emfor check-config > /dev/full`. Only Linux has /dev/full.
+// spectra-scenario: service-config / Full disk
 #[cfg(target_os = "linux")]
 #[test]
 fn check_config_reports_a_full_disk() {
@@ -793,6 +824,7 @@ fn check_config_reports_a_full_disk() {
 
 /// A reader that has gone away is not a failure: `emfor check-config | head`.
 /// The read end is closed before the child writes, so it gets EPIPE.
+// spectra-scenario: service-config / Closed pipe
 #[test]
 fn check_config_ignores_a_closed_pipe() {
     let dir = tempfile::tempdir().unwrap();
@@ -823,6 +855,7 @@ fn check_config_ignores_a_closed_pipe() {
 
 /// A name that is not UTF-8 is skipped with a warning that `check-config`,
 /// which has no log, prints on stderr. Only Linux can create such a name.
+// spectra-scenario: service-config / Skipped name reported by check-config and by a failed load
 #[cfg(target_os = "linux")]
 #[test]
 fn check_config_warns_about_a_non_utf8_file_name() {
@@ -843,6 +876,7 @@ fn check_config_warns_about_a_non_utf8_file_name() {
 
 /// A fragment that changes `[dns] listen` is caught by the reload's restart
 /// check, as the same change in the main file is.
+// spectra-scenario: service-config / Fragment changes a listen address
 #[test]
 fn listen_change_in_a_fragment_requires_restart() {
     let mut d = Daemon::spawn_with(
@@ -872,6 +906,7 @@ fn listen_change_in_a_fragment_requires_restart() {
 }
 
 /// Spec "Missing config directory": at start it is a config error.
+// spectra-scenario: service-config / Missing directory at start
 #[test]
 fn missing_include_dir_at_startup_exits_two_without_store() {
     let dir = tempfile::tempdir().unwrap();
@@ -895,6 +930,8 @@ fn missing_include_dir_at_startup_exits_two_without_store() {
 /// Spec "Fragment merge rules", "Errors name their file" and "Missing
 /// config directory": a reload re-reads the fragments; any error, a missing
 /// directory included, rejects it and the daemon keeps its config.
+// spectra-scenario: service-config / Directory removed before a reload
+// spectra-scenario: service-config / One bad fragment rejects a reload
 #[test]
 fn reload_rereads_fragments_and_rejects_any_error() {
     let mut d = Daemon::spawn_with(
@@ -943,6 +980,7 @@ fn reload_rereads_fragments_and_rejects_any_error() {
     assert_eq!(code, 0);
 }
 
+// spectra-scenario: service-config / Daemon refuses an invalid config
 #[test]
 fn invalid_config_at_startup_exits_two_without_store() {
     let dir = tempfile::tempdir().unwrap();
@@ -1042,6 +1080,7 @@ fn seed_store(path: &Path, pairs: &[(&str, &str)]) {
 
 /// Spec state-store "Backend state history", scenario "Unparseable history
 /// discarded".
+// spectra-scenario: state-store / Unparseable history discarded
 #[test]
 fn unparseable_history_discarded_at_start() {
     let dir = tempfile::tempdir().unwrap();
@@ -1124,6 +1163,7 @@ fn reload_reports_store_change_together_with_other_errors() {
 
 /// Spec scenario "Mixed ports in the zone": a warning at startup naming both
 /// ports, and A queries still answered.
+// spectra-scenario: dns-server / Mixed ports in the zone
 #[test]
 fn startup_reports_backends_on_different_ports() {
     use hickory_proto::op::{Message, Query};
@@ -1191,6 +1231,7 @@ fn startup_reports_backends_on_different_ports() {
 /// Spec scenario "Reload reports the new config": no port warning while all
 /// backends share a port, a warning naming both ports after a reload adds
 /// a backend on another port.
+// spectra-scenario: dns-server / Reload reports the new config
 #[test]
 fn reload_reports_backends_on_different_ports() {
     let (_l, addr) = listener();
@@ -1248,6 +1289,7 @@ fn reload_applies_log_level() {
 
 /// Spec scenario "Service record after checks": one healthy and one unhealthy
 /// backend, in config order, with `all_down` false and a reason on the failed one.
+// spectra-scenario: state-store / Service record after checks
 #[test]
 fn service_record_with_healthy_and_unhealthy_backends() {
     let (_l, up) = listener();
@@ -1278,6 +1320,8 @@ fn service_record_with_healthy_and_unhealthy_backends() {
     assert!(rec.backends[1].reason.is_some());
 }
 
+// spectra-scenario: service-config / Balance change applies on reload
+// spectra-scenario: state-store / Balance written from config
 #[test]
 fn balance_written_from_config_and_changed_on_reload() {
     use emfor_format::Balance;
@@ -1307,6 +1351,9 @@ fn fastest_service(name: &str, check: &str, backends: &[&str]) -> String {
     )
 }
 
+// spectra-scenario: backend-selection / New methods accepted
+// spectra-scenario: backend-selection / All down open
+// spectra-scenario: state-store / Pool written for a fastest service
 #[test]
 fn fastest_pool_follows_health() {
     let (l, addr) = listener();
@@ -1349,6 +1396,7 @@ fn fastest_pool_excludes_slow_backend() {
     assert_eq!(code, 0);
 }
 
+// spectra-scenario: service-config / Help shows the built-in default
 #[test]
 fn help_shows_the_built_in_config_path() {
     let out = Command::new(cargo_bin("emfor"))
@@ -1372,6 +1420,9 @@ fn help_shows_the_built_in_config_path() {
 /// Service-config "Command line subcommands": without a usable subcommand,
 /// emfor prints usage or the `--check-config` hint, exits 2, and leaves
 /// the store alone.
+// spectra-scenario: service-config / No subcommand
+// spectra-scenario: service-config / No subcommand / invocations without a usable subcommand
+// spectra-scenario: service-config / No subcommand leaves the store alone
 #[test]
 fn no_subcommand_prints_usage_and_touches_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -1410,6 +1461,7 @@ fn no_subcommand_prints_usage_and_touches_nothing() {
 /// Service-config "Command line subcommands", scenario "No subcommand":
 /// beside a running daemon, `emfor` prints usage and the daemon keeps
 /// publishing heartbeats.
+// spectra-scenario: service-config / No subcommand
 #[test]
 fn no_subcommand_beside_a_running_daemon() {
     let (_l, addr) = listener();
@@ -1430,6 +1482,7 @@ fn no_subcommand_beside_a_running_daemon() {
     assert_eq!(code, 0);
 }
 
+// spectra-scenario: service-config / Global config option position
 #[test]
 fn config_option_before_or_after_the_subcommand() {
     let (_dir, example) = example_config();
@@ -1468,6 +1521,12 @@ fn status(cfg: &Path, args: &[&str]) -> (i32, String, String) {
     )
 }
 
+// spectra-scenario: status-command / Status beside a running daemon
+// spectra-scenario: status-command / Rest of the config is not validated
+// spectra-scenario: status-command / Stopped daemon
+// spectra-scenario: status-command / JSON for one service
+// spectra-scenario: status-command / Unknown service
+// spectra-scenario: status-command / Exit statuses
 #[test]
 fn status_beside_a_running_daemon() {
     let (_l, addr) = listener();
@@ -1533,6 +1592,12 @@ fn status_beside_a_running_daemon() {
 /// output": the daemon line and `--json` show the `[dns]` and `[metrics]`
 /// addresses the running daemon wrote to `meta/dns_listen` and
 /// `meta/metrics_listen`.
+// spectra-scenario: state-store / Metrics table written at start
+// spectra-scenario: state-store / DNS table written at start
+// spectra-scenario: status-command / Metrics addresses on the daemon line
+// spectra-scenario: status-command / DNS and metrics addresses on the daemon line
+// spectra-scenario: status-command / JSON metrics addresses
+// spectra-scenario: status-command / JSON DNS addresses
 #[test]
 fn status_shows_listen_addresses() {
     let (_l, backend) = listener();
@@ -1577,6 +1642,9 @@ fn status_shows_listen_addresses() {
     assert_eq!(code, 0);
 }
 
+// spectra-scenario: status-command / Store missing
+// spectra-scenario: status-command / Exit statuses
+// spectra-scenario: status-command / Exit statuses / exit status table
 #[test]
 fn status_without_a_store() {
     let dir = tempfile::tempdir().unwrap();
@@ -1625,6 +1693,7 @@ fn status_refuses_another_format_version() {
     );
 }
 
+// spectra-scenario: status-command / Watch without a terminal
 #[test]
 fn status_watch_needs_a_terminal() {
     let dir = tempfile::tempdir().unwrap();
@@ -1717,6 +1786,8 @@ fn watch_on_a_pty(cfg: &Path, stop: &WatchStop) -> (Option<i32>, Vec<u8>, libc::
 /// and "Ending with a signal": `status --watch` gives the terminal back
 /// (line wrapping, cursor, main screen, cooked mode) when it is ended by
 /// `q`, Ctrl-C, `kill` or a closed ssh session.
+// spectra-scenario: status-command / Ending with a key
+// spectra-scenario: status-command / Ending with a signal
 #[test]
 fn status_watch_restores_the_terminal() {
     let dir = tempfile::tempdir().unwrap();
@@ -1748,6 +1819,7 @@ fn status_watch_restores_the_terminal() {
 
 /// Spec status-command "Status history output", scenario "History with
 /// watch refused".
+// spectra-scenario: status-command / History with watch refused
 #[test]
 fn status_history_refuses_watch_and_json() {
     let dir = tempfile::tempdir().unwrap();
@@ -1762,6 +1834,8 @@ fn status_history_refuses_watch_and_json() {
 
 /// Spec state-store "Backend state history", scenario "History kept across
 /// a restart", and status-command "Status history output".
+// spectra-scenario: state-store / History kept across a restart
+// spectra-scenario: status-command / History of one service
 #[test]
 fn history_kept_across_a_restart() {
     let (l, addr) = listener();
@@ -1844,6 +1918,7 @@ fn config_that_hangs(d: &Daemon) -> PathBuf {
 /// Spec service-config "Stop request during a reload that cannot read the
 /// config": the read of the config does not return, and `SIGTERM` still ends
 /// the daemon.
+// spectra-scenario: service-config / Stop request during a reload that cannot read the config
 #[test]
 fn stop_request_ends_a_reload_that_cannot_read_the_config() {
     let (_l, addr) = listener();
@@ -1872,6 +1947,7 @@ fn stop_request_ends_a_reload_that_cannot_read_the_config() {
 
 /// Spec service-config "SIGHUP during a reload": three signals while a
 /// reload is blocked cause exactly one more reload after it.
+// spectra-scenario: service-config / SIGHUP during a reload
 #[test]
 fn sighups_during_a_reload_cause_one_more_reload() {
     use std::os::unix::fs::OpenOptionsExt;

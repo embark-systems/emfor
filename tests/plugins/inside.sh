@@ -448,6 +448,7 @@ done
 step "emfor-check against the servers"
 EMFOR_LIVE_DIR="$D" emfor-check-live-test --ignored --test-threads=1
 
+# spectra-scenario: database-checks / Unknown plugin argument
 step "emfor rejects an unknown plugin argument"
 mkdir -p /etc/emfor /var/lib/emfor
 cat > /etc/emfor/bad.toml <<'CFG'
@@ -463,6 +464,7 @@ if emfor check-config --config /etc/emfor/bad.toml >"$D/bad.out" 2>&1; then
 fi
 grep -q 'kv' "$D/bad.out" || fail "error does not name plugin kv: $(cat "$D/bad.out")"
 
+# spectra-scenario: database-checks / Config check reports plugin errors
 step "emfor check-config shows emfor-check validation errors"
 cat > /etc/emfor/mysql-bad.toml <<'CFG'
 [plugins."mysql"]
@@ -479,6 +481,7 @@ fi
 grep -qF 'services."app.svc.emfor".check_options.user: missing required key' "$D/mysql-bad.out" \
     || fail "unexpected error: $(cat "$D/mysql-bad.out")"
 
+# spectra-scenario: database-checks / Failover follows the primary
 step "emfor failover follows the PostgreSQL primary"
 cat > /etc/emfor/emfor.toml <<CFG
 [dns]

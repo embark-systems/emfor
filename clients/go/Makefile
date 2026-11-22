@@ -17,6 +17,7 @@ test: libemfor
 	$(EMFOR_FIXTURE) $(EMFOR_ROOT)/clients/c/tests/fixture.json 0 $(STORE)
 	EMFOR_STORE=$(STORE) EMFOR_MAX_STALENESS=60s go test -count=1 ./...
 	go build -o $(BUILD)/emfor-conformance-lookup ./cmd/emfor-conformance-lookup
+	# spectra-scenario: client-lookup / Client passes the shared cases
 	$(EMFOR_CONFORMANCE) -- $(BUILD)/emfor-conformance-lookup
 	@echo "PASS all Go tests"
 

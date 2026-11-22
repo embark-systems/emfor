@@ -434,6 +434,7 @@ pub(crate) mod tests {
     /// Spec state-store "Writer lock file mode": new and old lock files end 0600.
     /// Not covered: the chmod failure path (it only warns); a failing chmod on
     /// a file we just opened cannot be made in a test without a special fs.
+    // spectra-scenario: state-store / Writer lock file mode
     #[test]
     fn writer_lock_file_is_0600() {
         let dir = tempfile::tempdir().unwrap();
@@ -451,6 +452,7 @@ pub(crate) mod tests {
         }
     }
 
+    // spectra-scenario: state-store / Files created on first start
     #[test]
     fn creates_files_with_configured_modes() {
         let dir = tempfile::tempdir().unwrap();
@@ -465,6 +467,7 @@ pub(crate) mod tests {
         );
     }
 
+    // spectra-scenario: state-store / Existing files get the modes at start
     #[test]
     fn existing_files_get_the_default_modes_at_start() {
         let dir = tempfile::tempdir().unwrap();
@@ -484,6 +487,7 @@ pub(crate) mod tests {
         assert_eq!((mode(&c.path), mode(&lock)), (0o640, 0o660));
     }
 
+    // spectra-scenario: state-store / Modes set explicitly
     #[test]
     fn custom_modes() {
         let dir = tempfile::tempdir().unwrap();
@@ -498,6 +502,8 @@ pub(crate) mod tests {
         assert_eq!(mode(&lock_file_path(&c.path)), 0o666);
     }
 
+    // spectra-scenario: state-store / Commits do not wait for the disk by default
+    // spectra-scenario: state-store / Commits do not wait for the disk by default / sync setting and environment flags
     #[test]
     fn sync_setting_and_environment_flags() {
         for (sync, no_sync) in [(None, true), (Some(false), true), (Some(true), false)] {
@@ -610,6 +616,7 @@ pub(crate) mod tests {
         assert!(path.exists());
     }
 
+    // spectra-scenario: state-store / Damaged store after a power loss
     #[test]
     #[tracing_test::traced_test]
     fn zeroed_store_is_replaced() {
@@ -636,6 +643,7 @@ pub(crate) mod tests {
 
     /// Spec "Damaged store is replaced at start", truncated: reading the
     /// store to check it would end the daemon with `SIGBUS`.
+    // spectra-scenario: state-store / Truncated store at start
     #[test]
     #[tracing_test::traced_test]
     fn truncated_store_is_replaced() {
@@ -694,6 +702,7 @@ pub(crate) mod tests {
 
     /// Spec "Damaged store is replaced at start", scenario "Commits keep
     /// the file as long as LMDB records".
+    // spectra-scenario: state-store / Commits keep the file as long as LMDB records
     #[test]
     fn commits_keep_the_file_as_long_as_recorded() {
         let dir = tempfile::tempdir().unwrap();
@@ -712,6 +721,7 @@ pub(crate) mod tests {
     /// Spec "Damaged store is replaced at start", scenario "Store left
     /// short by pages nobody reads is set aside": it cannot be told from a
     /// truncated one without reading past the end.
+    // spectra-scenario: state-store / Store left short by pages nobody reads is set aside
     #[test]
     fn short_file_with_unread_pages_is_set_aside() {
         let dir = tempfile::tempdir().unwrap();
@@ -788,6 +798,7 @@ pub(crate) mod tests {
         assert!(!dir.path().join("state.mdb.corrupt").exists());
     }
 
+    // spectra-scenario: state-store / Second daemon refused
     #[test]
     fn second_writer_is_refused() {
         let dir = tempfile::tempdir().unwrap();

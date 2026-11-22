@@ -332,6 +332,9 @@ mod tests {
     /// leave the drained backend out, also when it is the only healthy one
     /// or when everything else is down and the service is open; and when
     /// every backend is drained nothing is chosen, `open` included.
+    // spectra-scenario: backend-selection / Drained backend is skipped
+    // spectra-scenario: backend-selection / Not even the last tier
+    // spectra-scenario: backend-selection / Everything drained
     #[test]
     fn drained_backend_is_never_chosen() {
         use OnAllDown::{Closed, Open};
@@ -415,6 +418,7 @@ mod tests {
         list.iter().map(|s| s.parse().unwrap()).collect()
     }
 
+    // spectra-scenario: backend-selection / Passing primary wins over a backup / candidate sets
     #[test]
     fn candidate_sets_example() {
         use OnAllDown::{Closed, Open};
@@ -522,6 +526,7 @@ mod tests {
 
     /// Spec "Candidate backends per address family", scenario "Backup used
     /// while no primary passes".
+    // spectra-scenario: backend-selection / Backup used while no primary passes
     #[test]
     fn backup_used_while_no_primary_passes() {
         let r = rec(
@@ -539,6 +544,7 @@ mod tests {
 
     /// Spec "Candidate backends per address family", scenario "Passing
     /// primary wins over a backup".
+    // spectra-scenario: backend-selection / Passing primary wins over a backup
     #[test]
     fn passing_primary_wins_over_a_backup() {
         let r = rec(
@@ -552,6 +558,7 @@ mod tests {
 
     /// Spec "Candidate backends per address family", example "candidate
     /// sets", the rows with a backup (10.0.1.1).
+    // spectra-scenario: backend-selection / Passing primary wins over a backup / candidate sets
     #[test]
     fn backup_candidate_sets() {
         use OnAllDown::{Closed, Open};
@@ -584,6 +591,7 @@ mod tests {
 
     /// Spec "Candidate backends per address family", scenario "Open
     /// service prefers unknown backends".
+    // spectra-scenario: backend-selection / Open service prefers unknown backends
     #[test]
     fn open_prefers_unknown_backends() {
         let r = rec(
@@ -601,6 +609,7 @@ mod tests {
 
     /// Spec "Candidate backends per address family", scenario "Failing
     /// backends are skipped while another passes".
+    // spectra-scenario: backend-selection / Failing backends are skipped while another passes
     #[test]
     fn failing_backends_are_skipped() {
         let r = failing(
@@ -623,6 +632,7 @@ mod tests {
 
     /// Spec "Candidate backends per address family", scenario "Every
     /// healthy backend failing".
+    // spectra-scenario: backend-selection / Every healthy backend failing
     #[test]
     fn every_healthy_backend_failing() {
         let r = rec(
@@ -646,6 +656,7 @@ mod tests {
         assert_eq!(picks, [a, b, a, b]);
     }
 
+    // spectra-scenario: backend-selection / Unhealthy backends are skipped
     #[test]
     fn unhealthy_backends_are_skipped() {
         let r = rec(
@@ -662,6 +673,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: backend-selection / Round-robin alternates
     #[test]
     fn round_robin_alternates() {
         let r = rec(
@@ -676,6 +688,8 @@ mod tests {
         assert_eq!(picks, [a, b, a, b]);
     }
 
+    // spectra-scenario: backend-selection / Failover returns the first healthy backend
+    // spectra-scenario: backend-selection / Failover returns the first healthy backend / failover order
     #[test]
     fn failover_order_example() {
         use OnAllDown::{Closed, Open};
@@ -707,6 +721,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: backend-selection / Sticky without a key
     #[test]
     fn sticky_without_key_rotates() {
         let r = rec(
@@ -740,6 +755,8 @@ mod tests {
         r
     }
 
+    // spectra-scenario: backend-selection / Proportions over one cycle
+    // spectra-scenario: backend-selection / Proportions over one cycle / answer order
     #[test]
     fn weighted_answer_order_example() {
         /// (ip, weight) in config order, then the expected answers.
@@ -777,6 +794,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: backend-selection / Unhealthy heavy backend is skipped
     #[test]
     fn weighted_skips_unhealthy_heavy_backend() {
         let r = rec_ws(
@@ -823,6 +841,7 @@ mod tests {
         assert_eq!(got, [a, a, b, a]);
     }
 
+    // spectra-scenario: backend-selection / Local backends preferred / locality outcomes
     #[test]
     fn locality_outcomes_example() {
         use OnAllDown::{Closed, Open};
@@ -893,6 +912,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: backend-selection / Local backends preferred
     #[test]
     fn local_backends_preferred() {
         let r = rec_ws(
@@ -962,6 +982,7 @@ mod tests {
         (ip.to_string(), port, priority, weight)
     }
 
+    // spectra-scenario: dns-server / Failover priorities
     #[test]
     fn srv_failover_priorities() {
         let r = srv_rec(
@@ -982,6 +1003,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: dns-server / Weighted weights
     #[test]
     fn srv_weighted_weights() {
         let r = srv_rec(
@@ -1006,6 +1028,7 @@ mod tests {
         }
     }
 
+    // spectra-scenario: dns-server / Round-robin rotation
     #[test]
     fn srv_round_robin_rotation() {
         for balance in [Balance::RoundRobin, Balance::Sticky, Balance::Unknown] {
@@ -1038,6 +1061,8 @@ mod tests {
         }
     }
 
+    // spectra-scenario: dns-server / Locality priorities
+    // spectra-scenario: dns-server / Locality priorities / locality priorities by host site
     #[test]
     fn srv_locality_priorities() {
         let r = srv_rec(
@@ -1084,6 +1109,10 @@ mod tests {
         );
     }
 
+    // spectra-scenario: dns-server / Health across families
+    // spectra-scenario: dns-server / All down closed
+    // spectra-scenario: dns-server / All down open
+    // spectra-scenario: dns-server / All down open with an unknown backend
     #[test]
     fn srv_health_across_families_and_all_down() {
         let mixed = srv_rec(
@@ -1131,6 +1160,7 @@ mod tests {
     }
 
     /// Spec "SRV answers", scenario "Failing backend left out".
+    // spectra-scenario: dns-server / Failing backend left out
     #[test]
     fn srv_failing_backend_left_out() {
         let r = srv_rec(
@@ -1152,6 +1182,7 @@ mod tests {
     }
 
     /// Spec "SRV answers", scenario "Every healthy backend failing in SRV".
+    // spectra-scenario: dns-server / Every healthy backend failing in SRV
     #[test]
     fn srv_every_healthy_backend_failing() {
         let r = srv_rec(
@@ -1172,6 +1203,7 @@ mod tests {
 
     /// Spec "SRV answers", scenario "Backups listed only while no primary
     /// passes".
+    // spectra-scenario: dns-server / Backups listed only while no primary passes
     #[test]
     fn srv_backups_listed_only_while_no_primary_passes() {
         let r = srv_rec(
@@ -1262,6 +1294,7 @@ mod tests {
 
     /// Spec "Slow start choice in the daemon", scenario "Ramping backend
     /// gets a smaller share".
+    // spectra-scenario: backend-selection / Ramping backend gets a smaller share
     #[test]
     fn slow_start_ramping_share() {
         let r = rec(
@@ -1285,6 +1318,7 @@ mod tests {
 
     /// Spec "Slow start choice in the daemon", scenario "Failover ignores
     /// slow start".
+    // spectra-scenario: backend-selection / Failover ignores slow start
     #[test]
     fn slow_start_failover_unchanged() {
         let r = rec(
@@ -1298,6 +1332,7 @@ mod tests {
 
     /// Spec "Slow start choice in the daemon", scenario "Weighted ramping
     /// backend".
+    // spectra-scenario: backend-selection / Weighted ramping backend
     #[test]
     fn slow_start_weighted_ramping() {
         let mut r = rec(
@@ -1323,6 +1358,7 @@ mod tests {
 
     /// Spec "SRV weights during slow start", scenario "Round-robin with a
     /// ramping backend".
+    // spectra-scenario: dns-server / Round-robin with a ramping backend
     #[test]
     fn srv_slow_start_round_robin() {
         let r = srv_rec(
@@ -1342,6 +1378,7 @@ mod tests {
 
     /// Spec "SRV weights during slow start", scenario "Weighted with a
     /// ramping backend".
+    // spectra-scenario: dns-server / Weighted with a ramping backend
     #[test]
     fn srv_slow_start_weighted() {
         let r = srv_rec(
@@ -1359,6 +1396,7 @@ mod tests {
 
     /// Spec "SRV weights during slow start", scenario "Failover keeps
     /// weight 1".
+    // spectra-scenario: dns-server / Failover keeps weight 1
     #[test]
     fn srv_slow_start_failover() {
         let r = srv_rec(
@@ -1405,6 +1443,7 @@ mod tests {
         (0..4).map(|_| select(r, Family::V4, &c, None)).collect()
     }
 
+    // spectra-scenario: backend-selection / Fast backends preferred
     #[test]
     fn fastest_backends_preferred() {
         let r = fastest(
@@ -1419,6 +1458,7 @@ mod tests {
         assert_eq!(four_a(&r), [a, b, a, b]);
     }
 
+    // spectra-scenario: backend-selection / Empty pool
     #[test]
     fn fastest_empty_pool_rotates_over_all() {
         let r = fastest(&[("10.0.0.1", Healthy), ("10.0.0.2", Healthy)], &[]);
@@ -1454,6 +1494,7 @@ mod tests {
         r
     }
 
+    // spectra-scenario: backend-selection / Backups do not decide which primaries are fast
     #[test]
     fn fastest_with_a_fast_backup_keeps_preferring_fast_primaries() {
         let r = fastest_with_fast_backup();
@@ -1465,6 +1506,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: backend-selection / All down open
     #[test]
     fn fastest_all_down_open() {
         let r = fastest(&[("10.0.0.1", Unhealthy), ("10.0.0.2", Unhealthy)], &[]);
@@ -1472,6 +1514,7 @@ mod tests {
         assert_eq!(four_a(&r), [a, b, a, b]);
     }
 
+    // spectra-scenario: backend-selection / Pool without the family
     #[test]
     fn fastest_pool_without_the_family() {
         let r = fastest(
@@ -1483,6 +1526,7 @@ mod tests {
         assert_eq!(four_a(&r)[..2], [a, a]);
     }
 
+    // spectra-scenario: dns-server / Fastest priorities
     #[test]
     fn srv_fastest_priorities() {
         let mut r = srv_rec(

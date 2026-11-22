@@ -487,6 +487,7 @@ mod tests {
 
     // ---- options ----
 
+    // spectra-scenario: network-checks / Status-Server with a secret
     #[test]
     fn status_server_with_a_secret() {
         let f = Files::new();
@@ -498,6 +499,7 @@ mod tests {
         assert_eq!(s.user, None);
     }
 
+    // spectra-scenario: network-checks / Status-Server with a secret / RADIUS option validation
     #[test]
     fn radius_option_validation() {
         let f = Files::new();
@@ -654,6 +656,7 @@ mod tests {
         parse(&f.options(extra), true).unwrap()
     }
 
+    // spectra-scenario: network-checks / Password hidden as in RFC 2865
     #[test]
     fn password_hidden_as_in_rfc_2865() {
         let hidden = hide_password(b"arctangent", RFC_SECRET, &rfc_authenticator());
@@ -674,6 +677,7 @@ mod tests {
         assert!(hidden[17..].iter().zip(&key[1..]).all(|(h, k)| h == k));
     }
 
+    // spectra-scenario: network-checks / Wrong shared secret
     #[test]
     fn response_authenticator_as_in_rfc_2865() {
         let s = settings(
@@ -904,6 +908,7 @@ mod tests {
         o
     }
 
+    // spectra-scenario: network-checks / Wrong shared secret / RADIUS outcomes
     #[tokio::test]
     async fn radius_outcomes() {
         let acct = json!({ "application": "acct" });
@@ -1020,6 +1025,7 @@ mod tests {
         );
     }
 
+    // spectra-scenario: network-checks / Server answers Status-Server
     #[tokio::test]
     async fn server_answers_status_server() {
         let f = Files::new();
@@ -1032,6 +1038,7 @@ mod tests {
         assert_eq!(check(&req(addr), &s).await, CheckOutcome::Up);
     }
 
+    // spectra-scenario: network-checks / Wrong shared secret
     #[tokio::test]
     async fn wrong_shared_secret() {
         let r = outcome(
@@ -1062,6 +1069,7 @@ mod tests {
         assert_eq!(check(&req(addr), &s).await, down("timeout"));
     }
 
+    // spectra-scenario: network-checks / Secret file removed
     #[tokio::test]
     async fn secret_file_removed() {
         let f = Files::new();
@@ -1088,6 +1096,7 @@ mod tests {
         assert_eq!(*count.lock().unwrap(), 0, "no request is sent");
     }
 
+    // spectra-scenario: network-checks / Server without Status-Server support
     #[tokio::test]
     async fn server_without_status_server_support() {
         let f = Files::new();

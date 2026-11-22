@@ -17,6 +17,7 @@ func needStore(t *testing.T) {
 	}
 }
 
+// spectra-scenario: client-lookup / Each wrapper returns an address
 func TestLookupReturnsABackend(t *testing.T) {
 	needStore(t)
 	a, err := Lookup("api.svc.emfor", "")
@@ -29,6 +30,8 @@ func TestLookupReturnsABackend(t *testing.T) {
 	}
 }
 
+// spectra-scenario: client-lookup / Each wrapper reports the shared code
+// spectra-scenario: client-lookup / Each wrapper reports the shared code / wrapper call and failure form
 func TestNotFoundIsAnError(t *testing.T) {
 	needStore(t)
 	_, err := Lookup("nope.svc.emfor", "")
@@ -41,6 +44,8 @@ func TestNotFoundIsAnError(t *testing.T) {
 	}
 }
 
+// spectra-scenario: client-lookup / Invalid argument
+// spectra-scenario: client-lookup / Invalid argument / argument error by language
 func TestInvalidArgument(t *testing.T) {
 	for _, args := range [][2]string{{"api\x00svc", ""}, {"api.svc.emfor", "a\x00b"}, {"\xff", ""}} {
 		_, err := Lookup(args[0], args[1])
@@ -51,6 +56,7 @@ func TestInvalidArgument(t *testing.T) {
 	}
 }
 
+// spectra-scenario: client-lookup / Each wrapper reports the shared code / wrapper call and failure form
 func TestCodeNames(t *testing.T) {
 	want := map[Code]string{Unavailable: "UNAVAILABLE", Incompatible: "INCOMPATIBLE", NotFound: "NOT_FOUND", AllDown: "ALL_DOWN", 9: "UNKNOWN"}
 	for c, s := range want {
@@ -60,6 +66,7 @@ func TestCodeNames(t *testing.T) {
 	}
 }
 
+// spectra-scenario: client-lookup / Concurrent lookups
 func TestConcurrentLookups(t *testing.T) {
 	needStore(t)
 	const workers, each = 8, 1000

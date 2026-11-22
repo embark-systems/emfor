@@ -39,6 +39,7 @@ fn wait_line(addr: SocketAddr, line: &str) -> String {
 
 /// Spec "Metrics endpoint enabled by the metrics table", scenario "No
 /// metrics table".
+// spectra-scenario: metrics-endpoint / No metrics table
 #[test]
 fn no_metrics_table_no_server() {
     let backend = sockets(|| TcpListener::bind("127.0.0.1:0")).unwrap();
@@ -92,6 +93,7 @@ fn serves_metrics() {
 
 /// Spec metrics-endpoint "Daemon metrics": store usage, last commit, and
 /// a plugin's up state and restarts.
+// spectra-scenario: metrics-endpoint / Plugin restart counted
 #[test]
 fn store_and_plugin_metrics() {
     let addr = free_tcp();
@@ -136,6 +138,7 @@ fn store_and_plugin_metrics() {
 }
 
 /// Spec scenario "Address in use".
+// spectra-scenario: metrics-endpoint / Address in use
 #[test]
 fn address_in_use_exits_1() {
     let held = sockets(|| TcpListener::bind("127.0.0.1:0")).unwrap();
@@ -149,6 +152,7 @@ fn address_in_use_exits_1() {
 
 /// Service-config "Reload on SIGHUP": a changed `[metrics] listen` rejects
 /// the reload and the old address keeps answering.
+// spectra-scenario: service-config / Metrics listen change requires restart
 #[test]
 fn reload_rejects_listen_change() {
     let addr = free_tcp();
@@ -171,6 +175,7 @@ fn reload_rejects_listen_change() {
 /// Spec scenario "Slow client": a connection that sends nothing is closed
 /// after 5 seconds without a response, and other requests are answered
 /// meanwhile.
+// spectra-scenario: metrics-endpoint / Slow client
 #[test]
 fn slow_client_closed() {
     let addr = free_tcp();
@@ -197,6 +202,7 @@ fn slow_client_closed() {
 /// A refused backend reads `state="unhealthy"` 1, and a service removed by
 /// a reload is gone from the next response (spec scenario "Removed service
 /// disappears").
+// spectra-scenario: metrics-endpoint / Removed service disappears
 #[test]
 fn unhealthy_backend_and_removed_service() {
     // Bound and dropped: connections are refused.

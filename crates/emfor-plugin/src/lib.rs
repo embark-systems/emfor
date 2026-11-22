@@ -457,6 +457,7 @@ mod tests {
         (answers, result)
     }
 
+    // spectra-scenario: checker-plugins / Reason from a plugin crate is cut
     #[test]
     fn long_reasons_are_cut() {
         let reason = |o| match check_response(7, o) {
@@ -501,6 +502,7 @@ mod tests {
 
     /// The `validate` answer is one line that the daemon reads up to 64 KiB:
     /// it is bounded, whatever the options give.
+    // spectra-scenario: checker-plugins / Many long errors
     #[tokio::test]
     async fn validate_answer_is_bounded() {
         let (answers, result) = exchange(concat!(
@@ -522,6 +524,7 @@ mod tests {
 
     /// The limit is on the bytes of the line the daemon reads (64 KiB), and
     /// a control character is six bytes of it.
+    // spectra-scenario: checker-plugins / Control characters
     #[tokio::test]
     async fn validate_answer_is_bounded_in_bytes() {
         let (answers, result) = exchange(concat!(
@@ -551,6 +554,7 @@ mod tests {
         assert_eq!(answers[0]["protocol"], 1);
     }
 
+    // spectra-scenario: checker-plugins / Target ip is not an address
     #[tokio::test]
     async fn check_results() {
         let (answers, result) = exchange(concat!(
@@ -597,6 +601,7 @@ mod tests {
         assert_eq!(ids, vec![8, 7]);
     }
 
+    // spectra-scenario: database-checks / Slow backend
     #[tokio::test(start_paused = true)]
     async fn slow_check_is_down_timeout() {
         let (answers, result) = exchange(concat!(

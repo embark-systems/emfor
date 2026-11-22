@@ -35,6 +35,7 @@ test: all
 	sh tests/check_header.sh $(PREFIX)/include/emfor/emfor.h
 	for t in $(TESTS); do $(RUN) $(BUILD)/$$t || exit 1; done
 	$(RUN) $(BUILD)/example api.svc.emfor user-42
+	# spectra-scenario: client-lookup / Client passes the shared cases
 	$(EMFOR_CONFORMANCE) -- $(BUILD)/conformance_lookup
 	@echo "PASS all C tests"
 

@@ -19,6 +19,8 @@ fn driver_with_args(script: &str, args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
+// spectra-scenario: client-lookup / Driver detects a wrong answer
+// spectra-scenario: client-lookup / Slow lookups do not turn a fresh store stale / lookup program protocol
 #[test]
 fn wrong_answers_fail() {
     // Prints one fixed line per requested lookup.
@@ -30,6 +32,7 @@ fn wrong_answers_fail() {
     assert!(!stdout.contains(" 0 failures"), "{stdout}");
 }
 
+// spectra-scenario: client-lookup / Slow lookups do not turn a fresh store stale / lookup program protocol
 #[test]
 fn crashing_program_fails() {
     let out = driver_with("exit 3\n");
@@ -58,6 +61,8 @@ fn missing_program_is_a_usage_error() {
 }
 
 /// Spec scenario "Driver detects wrong counts": 3:1 expected, 2:2 printed.
+// spectra-scenario: client-lookup / Driver detects wrong counts
+// spectra-scenario: client-lookup / Slow lookups do not turn a fresh store stale / lookup program protocol
 #[test]
 fn wrong_counts_fail() {
     let dir = tempfile::tempdir().unwrap();
@@ -141,6 +146,7 @@ fn driver_with_case(script: &str, case: serde_json::Value) -> String {
 }
 
 /// The right code with no message fails: every client must say why.
+// spectra-scenario: client-lookup / Driver detects an error without a message
 #[test]
 fn error_without_message_fails() {
     let case = serde_json::json!({
@@ -159,6 +165,8 @@ fn error_without_message_fails() {
 /// reads the heartbeat from the LMDB file (key and value are stored next to
 /// each other) and answers like a client would. The clock is read with
 /// python3: `date +%s%3N` is GNU only (macOS prints the `3N`).
+// spectra-scenario: client-lookup / Slow lookups do not turn a fresh store stale
+// spectra-scenario: client-lookup / Slow lookups do not turn a fresh store stale / lookup program protocol
 #[test]
 fn each_lookup_gets_a_fresh_store() {
     let script = r#"sleep 0.2

@@ -12,6 +12,7 @@ use std::time::Duration;
 use emfor_client::lookup;
 use emfor_client::testing::{fork_prepare, fork_release, fork_release_child};
 
+// spectra-scenario: client-lookup / Fork during the first lookup
 #[test]
 fn forking_flag_blocks_open() {
     let dir = tempfile::tempdir().unwrap();
