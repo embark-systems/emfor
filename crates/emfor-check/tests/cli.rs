@@ -115,3 +115,58 @@ fn password_file_removed_after_validation_is_error() {
     child.kill().unwrap();
     child.wait().unwrap();
 }
+
+/// A password file that is rewritten after validation to hold only `\n`, or
+/// bytes that are not UTF-8, makes the check an `error` with the reason
+/// of `read_password`, and no connection is opened to the backend.
+// spectra-scenario: database-checks / Password file emptied after validation
+// spectra-scenario: database-checks / Password file not UTF-8 after validation
+#[test]
+fn password_file_emptied_or_not_utf8_opens_no_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let pass = dir.path().join("redis.pass");
+    std::fs::write(&pass, "s3cret\n").unwrap();
+    let options = json!({"password_file": pass.to_str().unwrap()});
+    let backend = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    backend.set_nonblocking(true).unwrap();
+    let port = backend.local_addr().unwrap().port();
+
+    let mut child = exe()
+        .arg("redis")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut ask = |req: Value| -> Value {
+        writeln!(stdin, "{req}").unwrap();
+        stdin.flush().unwrap();
+        serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap()
+    };
+    let valid = ask(json!({"type":"validate","id":1,"options":options}));
+    assert_eq!(valid["errors"], json!([]));
+    let cases: [(&[u8], &str); 2] = [
+        (b"\n", "password_file: file is empty"),
+        (b"\xff\xfe\n", "password_file: not valid UTF-8"),
+    ];
+    for (i, (content, reason)) in cases.iter().enumerate() {
+        std::fs::write(&pass, content).unwrap();
+        let answer = ask(json!({
+            "type":"check","id":10 + i,"service":"cache",
+            "target":{"ip":"127.0.0.1","port":port},"options":options,"timeout_ms":900,
+        }));
+        assert_eq!(answer["result"], "error", "{answer}");
+        assert_eq!(answer["reason"].as_str(), Some(*reason), "{answer}");
+    }
+    let accepted = backend.accept();
+    assert!(
+        accepted
+            .as_ref()
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::WouldBlock),
+        "a connection was opened: {accepted:?}"
+    );
+    drop(ask);
+    child.kill().unwrap();
+    child.wait().unwrap();
+}

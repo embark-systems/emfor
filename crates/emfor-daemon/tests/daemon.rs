@@ -941,6 +941,41 @@ fn check_config_warns_about_a_non_utf8_file_name() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("not valid UTF-8"));
 }
 
+/// The daemon logs the same warning at start and at every reload, also when
+/// the load fails for another reason, where the skipped file may be the
+/// cause. Only Linux can create such a name.
+// spectra-scenario: service-config / Skipped name reported by check-config and by a failed load
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_logs_a_skipped_file_name_at_start_and_at_reload() {
+    use std::os::unix::ffi::OsStrExt;
+    let mut d = Daemon::spawn_with(
+        |dir| {
+            let c = conf_d(dir);
+            std::fs::write(c.join(std::ffi::OsStr::from_bytes(b"b\xff.toml")), "").unwrap();
+            format!("include_dir = \"conf.d\"\n\n{}", store_header(dir))
+        },
+        &[],
+    );
+    d.wait_log("emfor started");
+    let warned = |d: &Daemon| d.log().matches("not valid UTF-8").count();
+    assert_eq!(warned(&d), 1, "{}", d.log());
+    d.signal(Signal::SIGHUP);
+    wait_for(|| warned(&d) == 2);
+    // A load that fails for another reason: the warning is still logged.
+    fragment(
+        &d.dir.path().join("conf.d"),
+        "20-bad.toml",
+        "intervall = 1\n",
+    );
+    d.signal(Signal::SIGHUP);
+    d.wait_log("reload rejected");
+    wait_for(|| warned(&d) == 3);
+    assert!(d.running());
+    let (code, _) = d.stop();
+    assert_eq!(code, 0);
+}
+
 /// A fragment that changes `[dns] listen` is caught by the reload's restart
 /// check, as the same change in the main file is.
 // spectra-scenario: service-config / Fragment changes a listen address
@@ -1922,6 +1957,44 @@ fn status_watch_restores_the_terminal() {
             assert_ne!(lflag & flag, 0, "{what}: lflag {lflag:#x} lacks {flag:#x}");
         }
     }
+}
+
+/// Spec state-store "Oldest entry dropped past 20", through the writer: 22
+/// transitions of one backend leave the newest 20, in order, and the first
+/// (`unknown -> unhealthy`) is gone.
+// spectra-scenario: state-store / Oldest entry dropped past 20
+#[test]
+fn history_keeps_the_newest_20_entries() {
+    let addr = common::free_tcp();
+    let id = addr.to_string();
+    let d = Daemon::start(&tcp_service("api.svc.emfor", &id));
+    let r = Reader::open(&d.store());
+    let state = || r.service("api.svc.emfor").map(|s| s.backends[0].state);
+    wait_for(|| state() == Some(HealthState::Unhealthy));
+    let mut held = None;
+    for _ in 0..21 {
+        let want = if held.is_some() {
+            held = None;
+            HealthState::Unhealthy
+        } else {
+            held = Some(common::sockets(|| TcpListener::bind(addr)).expect("the port is free"));
+            HealthState::Healthy
+        };
+        wait_for(|| state() == Some(want));
+    }
+    let history: ServiceHistory =
+        serde_json::from_str(&r.get("hist/api.svc.emfor").unwrap()).unwrap();
+    let entries = &history.backends[&id];
+    assert_eq!(entries.len(), 20, "{entries:?}");
+    assert!(
+        entries.iter().all(|e| e.from != HealthState::Unknown),
+        "the first entry is still there: {entries:?}"
+    );
+    for pair in entries.windows(2) {
+        assert_eq!(pair[0].to, pair[1].from, "in order: {entries:?}");
+        assert!(pair[0].at <= pair[1].at, "oldest first: {entries:?}");
+    }
+    assert_eq!(entries[19].to, state().unwrap());
 }
 
 /// Spec status-command "Status history output", scenario "History with
