@@ -34,7 +34,7 @@ $ PLATFORM=linux/amd64 packages/build.sh    # 建其他架構（要模擬時很�
 | `/usr/lib/systemd/system/emfor.service` | 加固過的 systemd unit（[見下](#systemd-unit)）。 |
 | `/etc/emfor/emfor.toml` | 只設了 `include_dir = "conf.d"` 的設定檔。升級時會保留。 |
 | `/etc/emfor/conf.d/` | 你的服務檔案放這裡；裡面有一份 `README` 說明。 |
-| `/usr/share/doc/emfor/` | 附註解的範例設定和手冊（在 `manual/` 裡；deb 還有 Prometheus 規則）。 |
+| `/usr/share/doc/emfor/` | 附註解的範例設定、Prometheus 規則（在 `examples/prometheus/` 裡）和手冊（在 `manual/` 裡）。 |
 
 安裝 script 會建立使用者與群組 `emfor`，並把 `/etc/emfor` 與 `/etc/emfor/conf.d` 設成 root 擁有、權限 0755。store 目錄 `/var/lib/emfor` 則由 unit 建立（`StateDirectory=emfor`）。
 

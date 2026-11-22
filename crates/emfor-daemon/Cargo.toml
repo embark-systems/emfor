@@ -122,6 +122,7 @@ assets = [
     { source = "../../packages/common/conf.d-README", dest = "/etc/emfor/conf.d/README", mode = "644", config = "noreplace" },
     { source = "../../examples/emfor.toml", dest = "/usr/share/doc/emfor/examples/emfor.toml", mode = "644", doc = true },
     { source = "../../docs/manual/*.md", dest = "/usr/share/doc/emfor/manual/", mode = "644", doc = true },
+    { source = "../../examples/prometheus/*", dest = "/usr/share/doc/emfor/examples/prometheus/", mode = "644", doc = true },
     { source = "../../LICENSE", dest = "/usr/share/licenses/emfor/LICENSE", mode = "644", license = true },
     { source = "../../README.md", dest = "/usr/share/doc/emfor/README.md", mode = "644", doc = true },
 ]

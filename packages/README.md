@@ -53,7 +53,7 @@ other distributions, an apt or dnf repository.
 | `/usr/lib/systemd/system/emfor.service` | [`common/emfor.service`](common/emfor.service): the hardened unit of [`examples/systemd/`](../examples/systemd/emfor.service) with the binary under `/usr/bin`. |
 | `/etc/emfor/emfor.toml` | A config that only sets `include_dir = "conf.d"`: no service until you add one. Kept on upgrade (a conffile). |
 | `/etc/emfor/conf.d/` | For the services, one file per group (`01-`, `10-`, `99-` prefixes); a `README` explains it. |
-| `/usr/share/doc/emfor/` | The commented example config and the manual (`manual/`); the deb also has the Prometheus rules. |
+| `/usr/share/doc/emfor/` | The commented example config, the Prometheus rules (`examples/prometheus/`) and the manual (`manual/`). |
 
 Both packages depend on `ca-certificates`: an http check with
 `scheme = "https"` and certificate verification on builds its client with the

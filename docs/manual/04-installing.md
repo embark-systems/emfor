@@ -40,7 +40,7 @@ What a package installs:
 | `/usr/lib/systemd/system/emfor.service` | The hardened systemd unit ([below](#the-systemd-unit)). |
 | `/etc/emfor/emfor.toml` | A config that only sets `include_dir = "conf.d"`. Kept on upgrade. |
 | `/etc/emfor/conf.d/` | Your service files go here; a `README` explains it. |
-| `/usr/share/doc/emfor/` | The commented example config and the manual in `manual/` (and, in the deb, the Prometheus rules). |
+| `/usr/share/doc/emfor/` | The commented example config, the Prometheus rules in `examples/prometheus/` and the manual in `manual/`. |
 
 The scripts create the user and group `emfor` and make `/etc/emfor` and
 `/etc/emfor/conf.d` owned by root with mode 0755. The store directory
