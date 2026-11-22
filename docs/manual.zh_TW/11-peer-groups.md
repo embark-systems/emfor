@@ -114,6 +114,8 @@ peers: 1/2 live, not live 127.0.0.3:5302, too few live members to vote
 
 每則訊息都帶有時間戳記、boot id 和序號。下面這些訊息都會被丟掉：重送的、太舊的、格式錯誤的、簽章不對的、來自不在 `members` 裡的位址的、來自別的 site 的，以及（預設情況下）沒加密的。丟掉的訊息會分別以 `replay`、`stale`、`malformed`、`auth`、`sender`、`site` 或 `plaintext` 計入 `emfor_peer_messages_rejected_total{reason}`。
 
+「太舊」是拿接收端自己的時鐘來比，時間戳記在未來也一樣算：訊息的時間戳記和接收端的時鐘差超過 **5 秒**，不論往前或往後，都會以 `stale` 丟掉。這個上限是固定的。所以各成員的時鐘要校準到遠小於 5 秒（chrony 或 ntpd 做得到）；時鐘差得比這還多的成員，其他成員完全收不到它的訊息，在他們看來它就是不在線上。
+
 ## 更換密鑰
 
 daemon 會自己發現 `secret_file` 有變動（Linux 上用 inotify，FreeBSD 和 macOS 上用 kqueue，另外不管怎樣每 30 秒都會讀一次），不用 reload。發現變動後，daemon 會：

@@ -174,6 +174,14 @@ not in `members`, one from another site, and (by default) a plaintext one are
 dropped and counted in `emfor_peer_messages_rejected_total{reason}` as
 `replay`, `stale`, `malformed`, `auth`, `sender`, `site` or `plaintext`.
 
+"Too old" is measured against the receiver's own clock, and a timestamp in
+the future counts the same way: a message whose timestamp differs from the
+receiver's clock by more than **5 seconds**, in either direction, is dropped
+as `stale`. The limit is fixed. So the clocks of the members must agree to
+well within 5 seconds (chrony or ntpd does that); a member whose clock is
+further off than that is never heard by the others, and shows as not live
+for them.
+
 ## Rotating the secret
 
 The daemon notices a change of `secret_file` by itself (inotify on Linux,

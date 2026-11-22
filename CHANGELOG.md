@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The manual says how far peer clocks may differ.** A peer message whose
+  timestamp is more than 5 seconds from the receiver's clock, in either
+  direction, is dropped as `stale`; chapters 11 and 16 now say so. No code
+  change.
+
 - **A heartbeat far in the future counts as stale.** When the clock of the
   host is set back by more than `EMFOR_MAX_STALENESS` (3 s by default) and
   the daemon then stops writing, clients and `emfor status` no longer take

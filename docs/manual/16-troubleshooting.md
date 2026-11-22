@@ -186,7 +186,7 @@ lock file, then start the daemon. Never delete the lock file alone.
 | `reason="plaintext"` | A member sends `EMP1` (`encrypt = false`) to one that refuses it. |
 | `reason="sender"` | A message from an address that is not in `members` (NAT, a wrong `listen`). |
 | `reason="site"` | A member with another `site`. |
-| `reason="stale"` or `replay` | Clocks differ, or messages are duplicated on the way. |
+| `reason="stale"` or `replay` | Clocks differ by more than 5 seconds in either direction ([chapter 11](11-peer-groups.md#the-secret)), or messages are duplicated on the way. |
 | `peers: 1/2 live, ... too few live members to vote` | Fewer than three live members: no votes, each decides alone. |
 | A digest mismatch in `emfor status --json` | Members check a service differently (options, timeout, plugin command, `env_pass`). |
 | `local-up` in `emfor status` | Down by votes but up here: a network path from this host only, or a different check. |
