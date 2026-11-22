@@ -139,6 +139,7 @@ fn sigterm_exits_zero_and_zeroes_heartbeat() {
     let store = d.store();
     let r = Reader::open(&store);
     wait_for(|| r.get("meta/heartbeat").is_some_and(|h| h != "0"));
+    wait_for(|| r.service("api.svc.emfor").is_some());
     let (code, _) = d.stop();
     assert_eq!(code, 0);
     assert_eq!(r.get("meta/heartbeat").as_deref(), Some("0"));
@@ -1575,7 +1576,9 @@ fn no_subcommand_beside_a_running_daemon() {
     for args in [vec![], vec!["--config", cfg.to_str().unwrap()]] {
         let (code, _, err) = emfor(&args);
         assert_eq!(code, 2, "emfor {args:?}: {err}");
-        assert!(err.contains("server"), "emfor {args:?}: {err}");
+        for word in ["server", "check-config", "status"] {
+            assert!(err.contains(word), "emfor {args:?}: {err}");
+        }
     }
     assert!(d.running());
     let before = heartbeat();
