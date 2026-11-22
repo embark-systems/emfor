@@ -71,6 +71,29 @@ tested**: the rpm under systemd as a long-running service on a real host,
 x86-64 packages, other distributions. See
 [packages/README.md](../../packages/README.md).
 
+## Without network access
+
+The running daemon needs no network beyond the addresses it checks: backends
+are IP addresses, there is no update check and no telemetry, and the `http`
+check does not use a proxy. So the install is the problem, not the run.
+
+- **Build where you have a network, install where you do not.** Build the deb
+  or rpm with `packages/build.sh` on a connected machine ([above](#packages-deb-and-rpm)),
+  copy the file, and install it with `dpkg -i` or `rpm -i`. Check the copy with
+  `sha256sum` against the value you took at the build; the packages are not
+  signed.
+- **`ca-certificates` is a dependency of both packages.** Bring it from your
+  internal mirror. For a server whose certificate a private CA signed, point
+  the check's `ca_file` at the CA instead of installing it system-wide
+  ([chapter 6](06-health-checks.md)).
+- **From source without a network** is plain cargo: `cargo vendor` on a
+  connected machine, copy the directory and `Cargo.lock`, and build with
+  `--locked --offline`. The project does not ship a vendored tree, a bill of
+  materials or signed releases yet, and this offline build has not been run
+  for this manual.
+- **Documents:** the packages install this manual under
+  `/usr/share/doc/emfor/manual/`, so it is on the host.
+
 ## Building from source
 
 You need Rust 1.85 or later (the 2024 edition). From a checkout or an

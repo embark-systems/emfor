@@ -233,6 +233,22 @@ later because a file still holds it. At the **first start after an upgrade
 from 0.6** there is no record yet, and `previous_secret_file` is ignored, with
 one `info` line.
 
+### Many members
+
+The loop above changes one host after the other, and each `scp` and `ssh`
+takes time; with a dozen members or more it can run past the 60 seconds. Stage
+first, switch together: copy the new secret to `/etc/emfor/peers.key.new` on
+every member (nothing reads that name), check the owner and mode on each, and
+only then run the `mv` on all members at the same moment, from a parallel tool
+(pdsh, Ansible with `forks`, a `xargs -P` loop). A rename takes no time, so the
+spread is a few seconds. Afterwards watch
+`emfor_peer_messages_rejected_total{reason="auth"}`: a member that did not
+switch shows up there on all the others.
+
+If a member missed the window, it signs with the old secret and the others
+drop its messages until you replace its file too; there is nothing to repair
+on the others.
+
 ## Members from a cloud API
 
 `members` can be changed with a reload, so a group whose hosts come and go

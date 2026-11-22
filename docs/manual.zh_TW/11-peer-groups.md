@@ -154,6 +154,12 @@ previous_secret_file = "/etc/emfor/peers.key.old"
 `previous_secret_file` 只有在下列條件全部成立時才會用到：daemon 的記錄
 `<store>-peers`（`/var/lib/emfor/state.mdb-peers`，權限 0600）顯示被換掉的正是那把密鑰，而且是在 120 秒以內換的。這份記錄存的是 SHA-256 指紋和時間，從來不存密鑰本身。所以舊的密鑰不會因為某個檔案還留著它，之後又被拿回來用。**從 0.6 升級後第一次啟動**時還沒有這份記錄，`previous_secret_file` 會被忽略，並記一行 `info`。
 
+### 成員很多的時候
+
+上面的迴圈一台接一台改，每次 `scp` 和 `ssh` 都要時間；成員有十幾台以上，就可能超過 60 秒。做法是先備好、再一起切換：先把新密鑰複製到每個成員的 `/etc/emfor/peers.key.new`（沒有東西會讀這個名字），逐台確認擁有者和權限，然後才用平行的工具（pdsh、設了 `forks` 的 Ansible、`xargs -P`）在所有成員上同一時間執行 `mv`。rename 不花時間，所以差距只有幾秒。之後看 `emfor_peer_messages_rejected_total{reason="auth"}`：沒切換的成員，會在其他所有成員上出現。
+
+如果有成員錯過了時間窗，它還是用舊密鑰簽名，其他成員會丟掉它的訊息，直到你把它的檔案也換掉；其他成員不用修什麼。
+
 ## 從雲端 API 取得成員
 
 `members` 可以靠 reload 修改，所以主機會來來去去的群組，可以用 timer 讓成員清單保持最新。

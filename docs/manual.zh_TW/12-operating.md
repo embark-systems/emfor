@@ -280,7 +280,38 @@ backends = [
 
 根據 CHANGELOG，這支腳本在測試容器裡跑過；但沒有為了這份手冊跑過。
 
-## 在一台主機上執行多個 daemon
+## 出了問題的時候
+
+### 撤回一次設定變更
+
+reload 是全有或全無，所以被拒絕的 reload 不用撤回：daemon 還在跑前一份設定，log 會寫 `reload rejected; keeping the previous config`。**被接受**的 reload 是整份套用，daemon 沒辦法自己復原。要撤回就照你改的方式倒回去：把前一版檔案放回去，再送 `SIGHUP`。
+
+- 把設定目錄放在版本控制或設定管理工具底下；主機上沒有前一份設定的副本。
+- 先對放回去的檔案跑 `emfor check-config`，unit 啟動時也是這樣做。
+- reload 之後，拿 log 裡每一行 `config file read` 的 `sha256` 和這些檔案的 `sha256sum` 比對，再看稽核行（[reload 改了什麼](#reload-改了什麼)）：它們會列出這次 reload 撤掉了什麼。
+- backend 的狀態和任何 reload 的規則一樣。服務的 `check` 或 `check_options` 一改，它的 backend 就從 `unknown` 重來，所以撤回時也會再來一次；只改 `drain`、`weight` 或 `peers` 則保留狀態。
+- 要 restart 才生效的設定（`[store]`、各個 `listen` 位址、`[metrics] allow`）不管往哪個方向改，reload 都會拒絕：這些要 restart。
+
+### store 滿了
+
+`emfor_store_commit_failures_total` 一直增加，log 裡有 `MDB_MAP_FULL`：store 已經用到 `[store] map_size`。commit 會失敗，client 很快就會看到過期的 store（[第 3 章](03-concepts.md)），應用程式拿到什麼由 `on_all_down` 決定。
+
+1. 拿 `emfor_store_used_bytes` 對照 `emfor_store_map_size_bytes`，也看看服務和 backend 的數量是不是變多了。
+2. 在主設定檔把 `map_size` 調大（它不會 reload），並跑 `emfor check-config`。
+3. restart。一台一台做，和一般的 restart 一樣（[重新啟動時應用程式會看到什麼](#重新啟動時應用程式會看到什麼)、[用 drain 做滾動部署](#用-drain-做滾動部署)）。
+
+每次啟動 store 都會重建，所以調大 `map_size` 再 restart，除了 restart 那一小段空窗，不會遺失什麼。
+
+### 時鐘跳動之後
+
+heartbeat 和聯防訊息都是主機時鐘的時間戳，所以時鐘一跳，三個地方會看得到：
+
+- **在主機上：** client 拿 heartbeat 和自己的時鐘比。如果時鐘往回調超過 `EMFOR_MAX_STALENESS`，`emfor status` 會寫 `heartbeat <age> in the future`，store 也算過期；daemon 還在跑的話，下一次 heartbeat（約一秒內）就恢復。daemon 沒在跑（被 kill、沒有正常停止）時，留下的 heartbeat 會一直在未來，直到時鐘追上：把 daemon 啟動起來，它會寫一個新的。
+- **在聯防群組裡：** 時間戳和接收端時鐘差超過 5 秒（不論早或晚）的訊息會被當成 `stale` 丟掉。把時鐘修好（chrony 或 ntpd）就好，不用 restart。`emfor_peer_messages_rejected_total{reason="stale"}` 不再增加，就表示成員又對得上了。
+
+每一台跑 emfor 的主機，時鐘請用漸進調整（chrony 的預設），不要一次跳過去。
+
+
 
 每個 store 只能有一個寫入者。第二個用同一個 store 的 daemon 會啟動失敗：
 `cannot open state store: store is already in use by another emfor daemon: lock file /var/lib/emfor/state.mdb.writer is held`

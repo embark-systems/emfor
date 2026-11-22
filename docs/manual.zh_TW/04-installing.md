@@ -54,6 +54,15 @@ $ PLATFORM=linux/amd64 packages/build.sh    # 建其他架構（要模擬時很�
 
 測試過的範圍：deb 與 rpm 在 arm64 上的 Debian 12 與 Rocky Linux 9 container 裡（安裝、移除、purge、在改過的設定上升級），以及 deb 在 Debian 12 container 裡、以 systemd 252 當 PID 1 執行。**沒有測試過**：rpm 在實體主機上由 systemd 當長期服務執行、x86-64 套件、其他發行版。見 [packages/README.md](../../packages/README.md)。
 
+## 沒有網路的環境
+
+daemon 跑起來之後，除了它要檢查的位址，不需要任何網路：backend 是 IP 位址，沒有更新檢查、沒有 telemetry，`http` 檢查也不走 proxy。難的是安裝，不是執行。
+
+- **在有網路的地方建置，在沒網路的地方安裝。** 在連得上網的機器用 `packages/build.sh` 建出 deb 或 rpm（[上面](#套件deb-與-rpm)），把檔案複製過去，用 `dpkg -i` 或 `rpm -i` 安裝。複製後請用 `sha256sum` 對照建置時記下的值；套件沒有簽章。
+- **兩種套件都依賴 `ca-certificates`。** 請從你內部的 mirror 取得。伺服器的憑證如果是私有 CA 簽的，請在檢查裡用 `ca_file` 指到那個 CA，不必裝進整個系統（[第 6 章](06-health-checks.md)）。
+- **沒有網路時從原始碼建置**就是一般的 cargo：在連網的機器跑 `cargo vendor`，把目錄和 `Cargo.lock` 複製過去，用 `--locked --offline` 建置。專案還沒有提供 vendored 的原始碼樹、材料清單（SBOM）或簽章的發行版，這份離線建置也沒有為這份手冊實際跑過。
+- **文件：** 套件會把這份手冊裝在 `/usr/share/doc/emfor/manual/`，所以主機上就有。
+
 ## 從原始碼建置
 
 需要 Rust 1.85 或更新版本（2024 edition）。在 checkout 或解開的原始碼發行版裡執行：

@@ -380,6 +380,68 @@ steps 1, 2, 4 and 5 (it needs `jq`, and `ss` for `wait-idle`):
 The CHANGELOG records that this script was run in a test container; it was
 not run for this manual.
 
+## When something went wrong
+
+### Backing out a config change
+
+A reload is all or nothing, so a rejected reload needs no back-out: the daemon
+still runs the previous config and the log says so (`reload rejected; keeping
+the previous config`). An **accepted** reload is applied as a whole and cannot
+be undone by the daemon. Back it out the way you made it: put the previous
+files back and send `SIGHUP`.
+
+- Keep the config directory under version control or in your configuration
+  management tool; there is no copy of the previous config on the host.
+- Run `emfor check-config` on the restored files first, as the unit does.
+- After the reload, compare the `sha256` of each `config file read` line in
+  the log with `sha256sum` of the files, and read the audit lines ([what a
+  reload changed](#what-a-reload-changed)): they list what the reload undid.
+- Backend state follows the same rules as for any reload. A change of a
+  service's `check` or `check_options` starts its backends over from
+  `unknown`, so backing the change out does so again; a change of `drain`,
+  `weight` or `peers` alone keeps the state.
+- Changes that need a restart (`[store]`, the `listen` addresses, `[metrics]
+  allow`) are rejected on reload both ways: restart for them.
+
+### A full store
+
+`emfor_store_commit_failures_total` rises and the log has `MDB_MAP_FULL`: the
+store reached `[store] map_size`. Commits fail, and clients soon see a stale
+store ([chapter 3](03-concepts.md)): `on_all_down` then decides what
+applications get.
+
+1. Check `emfor_store_used_bytes` against `emfor_store_map_size_bytes`, and
+   whether the number of services and backends grew.
+2. Set a larger `map_size` in the main config file (it is not reloaded) and run
+   `emfor check-config`.
+3. Restart. Do it host by host as for any restart ([what applications see
+   during a restart](#what-applications-see-during-a-restart), [a rolling
+   deploy with drain](#a-rolling-deploy-with-drain)).
+
+The store is rebuilt at each start, so a restart with a larger `map_size`
+does not lose anything but the short gap of the restart.
+
+### After a clock jump
+
+The heartbeat and the peer messages are timestamps of the host's clock, so a
+jump shows up in three places:
+
+- **On the host:** clients compare the heartbeat with their own clock. If the
+  clock was set back by more than `EMFOR_MAX_STALENESS`, `emfor status` says
+  `heartbeat <age> in the future` and the store counts as stale; with a
+  running daemon this ends within about a second, at its next heartbeat. A
+  daemon that is not running (killed, not stopped cleanly) leaves a heartbeat
+  that stays in the future until the clock passes it: start the daemon, which
+  writes a new one.
+- **In a peer group:** a message whose timestamp is more than 5 seconds from
+  the receiver's clock, in either direction, is dropped as `stale`. Fix the
+  clock (chrony or ntpd); no restart is needed. When the counter
+  `emfor_peer_messages_rejected_total{reason="stale"}` stops rising, the
+  members agree again.
+
+Prefer slewing the clock (chrony's default) to stepping it, on every host that
+runs emfor.
+
 ## Running more than one daemon on a host
 
 Each store has one writer. A second daemon with the same store fails:
