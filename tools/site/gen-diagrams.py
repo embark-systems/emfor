@@ -168,6 +168,53 @@ def cover_060(lang):
     return s + "</svg>\n"
 
 
+def cover_071(lang):
+    T = {
+        "en": dict(
+            title="emfor 0.7.1: the same daemon, a new manual, a test for every scenario",
+            sub="No production code differs from 0.7.0; the packages, the documents and the tests do",
+            c1="Unchanged since 0.7.0", c1r=["daemon", "store format 2", "plugin protocol 1", "libemfor.so.0.7", "config format"],
+            same="same",
+            c2="New in 0.7.1", c2r=["rpm ships the manual and rules", "manual in English and 繁體中文", "Ansible, Puppet, Salt, Chef", "emfor-check-staged.sh", "emfor lookup is a stable interface"],
+            c3="Tests", c3r=["every spec scenario has a test", "daemon tests also run as root", "usage error of an unknown --dns", "no metrics socket without [metrics]", "log line when a plugin stops answering"],
+            up="Upgrading", up1="Nothing to change in your config.",
+            up2="A daemon left at 0.7.0 keeps working with 0.7.1 clients and plugins."),
+        "zh": dict(
+            title="emfor 0.7.1：daemon 沒變，手冊是新的，每個情境都有測試",
+            sub="正式程式碼和 0.7.0 一樣；動的是套件、文件和測試",
+            c1="和 0.7.0 一樣", c1r=["daemon", "store 格式 2", "plugin 協定 1", "libemfor.so.0.7", "設定檔格式"],
+            same="沒變",
+            c2="0.7.1 新增", c2r=["rpm 附手冊與規則", "手冊有英文和繁體中文", "Ansible、Puppet、Salt、Chef", "emfor-check-staged.sh", "emfor lookup 算穩定介面"],
+            c3="測試", c3r=["spec 每個情境都有測試", "daemon 測試也用 root 跑", "未知 --dns 會得到用法錯誤", "沒有 [metrics] 就不開 socket", "plugin 不回應時會記 log"],
+            up="怎麼升級", up1="設定檔不用改。",
+            up2="daemon 留在 0.7.0，也能和 0.7.1 的 client 與 plugin 一起用。"),
+    }[lang]
+    s = HEAD % (1200, 675, 1200, 675, 1200, 675)
+    s += text(60, 66, T["title"], 30, 700)
+    s += text(60, 102, T["sub"], 19, 400, "#5b6472")
+    cols = [
+        (60, T["c1"], T["c1r"], "#f8fafc", "#9aa1ab", "#e8f6ed", "#1f7a3d"),
+        (430, T["c2"], T["c2r"], "#eaf1ff", "#2f6fde", "#ffffff", "#2f6fde"),
+        (800, T["c3"], T["c3r"], "#f8fafc", "#9aa1ab", "#ffffff", "#9aa1ab"),
+    ]
+    for i, (x, head, rows, bg, bd, rf, rs) in enumerate(cols):
+        s += box(x, 140, 340, 330, bg, bd, 2.5 if i == 1 else 2)
+        s += text(x + 20, 172, head, 18, 700)
+        for j, r in enumerate(rows):
+            y = 190 + 56 * j
+            s += box(x + 20, y, 300, 48, rf, rs, 2)
+            if i == 0:
+                s += text(x + 36, y + 30, r, 15, 700, mono=True)
+                s += text(x + 304, y + 30, T["same"], 15, 600, "#1f7a3d", "end")
+            else:
+                s += text(x + 36, y + 30, r, 15, 600)
+    s += box(60, 500, 1080, 139, "#fff4e0", "#e0a43a")
+    s += text(84, 536, T["up"], 18, 700)
+    s += text(84, 578, T["up1"], 18, 600)
+    s += text(84, 614, T["up2"], 16, 400, "#5b6472")
+    return s + "</svg>\n"
+
+
 def arch(lang):
     T = {
         "en": dict(title="How emfor fits on one host",
@@ -220,4 +267,5 @@ os.makedirs(out, exist_ok=True)
 for lang, suf in (("en", ""), ("zh", ".zh")):
     open(f"{out}/emfor-0.5.0{suf}.svg", "w").write(cover(lang))
     open(f"{out}/emfor-0.6.0{suf}.svg", "w").write(cover_060(lang))
+    open(f"{out}/emfor-0.7.1{suf}.svg", "w").write(cover_071(lang))
     open(f"{out}/emfor-architecture{suf}.svg", "w").write(arch(lang))
