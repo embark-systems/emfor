@@ -4,12 +4,16 @@
 
 use std::io::Read;
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use nix::sys::signal::Signal;
 
 mod common;
 use common::{Daemon, free_tcp, scrape, sockets, wait_for};
+
+/// Two tests use the default port 5301; they take turns.
+static DEFAULT_PORT: Mutex<()> = Mutex::new(());
 
 fn metrics_table(addr: SocketAddr) -> String {
     format!("[metrics]\nlisten = [\"{addr}\"]\n\n")
@@ -42,6 +46,11 @@ fn wait_line(addr: SocketAddr, line: &str) -> String {
 // spectra-scenario: metrics-endpoint / No metrics table
 #[test]
 fn no_metrics_table_no_server() {
+    let _turn = DEFAULT_PORT.lock().unwrap_or_else(|e| e.into_inner());
+    // Hold the default port: a daemon that opened a metrics socket anyway
+    // would fail to bind it and exit 1. When another process holds the port,
+    // only the log line is checked.
+    let _held = sockets(|| TcpListener::bind("127.0.0.1:5301")).ok();
     let backend = sockets(|| TcpListener::bind("127.0.0.1:0")).unwrap();
     let addr = backend.local_addr().unwrap();
     let d = Daemon::spawn(&service("api.svc.emfor", &[addr.to_string()]));
@@ -143,6 +152,7 @@ fn store_and_plugin_metrics() {
 // spectra-scenario: metrics-endpoint / Default listen address
 #[test]
 fn empty_metrics_table_listens_on_5301() {
+    let _turn = DEFAULT_PORT.lock().unwrap_or_else(|e| e.into_inner());
     let default: SocketAddr = "127.0.0.1:5301".parse().unwrap();
     match sockets(|| TcpListener::bind(default)) {
         Ok(probe) => drop(probe),
