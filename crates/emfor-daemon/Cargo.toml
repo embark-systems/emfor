@@ -60,7 +60,9 @@ emfor-fixture = { path = "../../tools/emfor-fixture" }
 emfor-tls = { path = "../emfor-tls", features = ["testing"] }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["test-util", "full"] }
-tracing-test = "0.2.6"
+# no-env-filter: an integration test under tests/ also sees the log lines
+# of the emfor_daemon library, which the default filter leaves out.
+tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
 
 # cargo fuzz builds with --cfg fuzzing, see fuzz/README.md.
 [lints.rust]

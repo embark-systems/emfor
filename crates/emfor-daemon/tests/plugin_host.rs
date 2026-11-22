@@ -336,6 +336,7 @@ async fn aborted_requests_do_not_restart_the_plugin() {
 // spectra-scenario: checker-plugins / Plugin stops answering
 // spectra-scenario: checker-plugins / Plugin stops answering / unanswered requests
 #[tokio::test]
+#[tracing_test::traced_test]
 async fn plugin_that_stops_answering_is_restarted() {
     let host = PluginHost::start("fake", &command(&[])).await.unwrap();
     let first_pid = host.pid().unwrap();
@@ -353,6 +354,7 @@ async fn plugin_that_stops_answering_is_restarted() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     assert!(!alive(first_pid), "stuck plugin {first_pid} still running");
+    assert!(logs_contain("plugin fake stopped answering"));
     let (_, result, _) = result_of(host.call(check("up")).await.unwrap());
     assert_eq!(result, "up");
     host.stop().await;
@@ -365,6 +367,7 @@ async fn plugin_that_stops_answering_is_restarted() {
 // spectra-scenario: checker-plugins / Plugin stops answering
 // spectra-scenario: checker-plugins / Callers give up after the timeout
 #[tokio::test]
+#[tracing_test::traced_test]
 async fn plugin_that_never_answers_waiting_callers_is_restarted() {
     let host = PluginHost::start("fake", &command(&[])).await.unwrap();
     let first_pid = host.pid().unwrap();
@@ -381,6 +384,7 @@ async fn plugin_that_never_answers_waiting_callers_is_restarted() {
         assert!(Instant::now() < deadline, "stuck plugin not restarted");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    assert!(logs_contain("plugin fake stopped answering"));
     host.stop().await;
 }
 
