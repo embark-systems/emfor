@@ -3,12 +3,14 @@
 embark.systems (content.en/emfor or content/emfor), the way the pages were
 made by hand: TOML front matter instead of the heading, no previous/next line,
 chapter links as Hugo paths, repository links as GitHub URLs at a tag, and the
-ASCII architecture sketch of the concepts chapter as an image.
+ASCII architecture sketch of the concepts chapter as an image (when the
+chapter still has that sketch: the manual of 0.7.0 keeps its own diagrams).
+Pages of an earlier sync that the manual no longer has are removed first.
 
 usage: tools/site/sync-manual.py SRC_DIR DST_DIR TAG LANG   (LANG: en or zh)
 example, from the root of this repository (the site is a sibling checkout):
-  tools/site/sync-manual.py docs/manual ../embark.systems/content.en/emfor v0.5.0 en
-  tools/site/sync-manual.py docs/manual.zh_TW ../embark.systems/content/emfor v0.5.0 zh
+  tools/site/sync-manual.py docs/manual ../embark.systems/content.en/emfor v0.7.0 en
+  tools/site/sync-manual.py docs/manual.zh_TW ../embark.systems/content/emfor v0.7.0 zh
 The images (tools/site/gen-diagrams.py) go to the site's static/images.
 """
 import os
@@ -32,6 +34,9 @@ def rewrite_links(text):
         c = re.fullmatch(r"(\d\d-[a-z-]+)\.md(#.*)?", target)
         if c:
             return f"](../{c.group(1)}/{c.group(2) or ''})"
+        r = re.fullmatch(r"README\.md(#.*)?", target)
+        if r:
+            return f"](../00-guide/{r.group(1) or ''})"
         if target.startswith("../../"):
             return f"]({github(target[len('../../'):])})"
         if target.startswith("../") and not target.startswith("../manual"):
@@ -61,6 +66,11 @@ def replace_architecture(text):
 
 
 os.makedirs(dst, exist_ok=True)
+# the chapters of an earlier sync (the names changed between manuals);
+# _index.md of the section is not ours
+for old in os.listdir(dst):
+    if re.fullmatch(r"\d\d-.*\.md", old):
+        os.remove(os.path.join(dst, old))
 # The order of the chapters: README first, then by file name without ".md", so
 # that 07-dns comes before 07-dns-recipes ('.' sorts after '-'). Every chapter
 # gets its own weight, which the site's previous/next links and menu follow.
@@ -70,15 +80,18 @@ for position, name in enumerate(names, start=1):
     assert lines[0].startswith("# "), (name, lines[0])
     if name == "README.md":
         out_name, title, weight = "00-guide.md", guide_title, position
-        # the language switch line and the blank line after it
-        i = next(i for i, l in enumerate(lines) if "manual.zh_TW/README.md" in l or "manual/README.md" in l)
-        del lines[i : i + 2]
+        # the language switch line and the blank line after it, when the
+        # README has one (the manual of 0.7.0 has none)
+        i = next((i for i, l in enumerate(lines) if "manual.zh_TW/README.md" in l or "manual/README.md" in l), None)
+        if i is not None:
+            del lines[i : i + 2]
     else:
         out_name = name
         title = lines[0][2:]
         weight = position
         # the previous/next line and the blank line after it
         i = next(i for i, l in enumerate(lines) if "](README.md)" in l)
+        assert i < 4, (name, "the previous/next line is not at the top")
         del lines[i : i + 2]
     body = "\n".join(lines[1:])
     body = rewrite_links(body)
