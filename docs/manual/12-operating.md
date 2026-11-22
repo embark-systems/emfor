@@ -10,7 +10,7 @@
 | `emfor check-config [--show]` | Validates the config (and starts each plugin to validate its options); `--show` prints the merged config, each value followed by the file that set it (defaults are not added). |
 | `emfor status [--service NAME] [--json] [--watch] [--history]` | Shows what the daemon has published in the store. |
 | `emfor lookup SERVICE [--key KEY] [--explain] [--json] [--dns A\|AAAA]` | Looks up one backend as a client library would. |
-| `emfor --version` | `emfor 0.7.0`. |
+| `emfor --version` | Prints `emfor` and the version number. |
 
 Every command takes `--config PATH` (default `/etc/emfor/emfor.toml`, or
 the one built in, [chapter 4](04-installing.md#the-default-config-path)).

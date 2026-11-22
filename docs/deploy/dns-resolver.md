@@ -92,7 +92,7 @@ getent hosts api.svc.emfor                # through the system resolver
 
 `tests/resolver/freebsd.sh` checks this recipe and the port's rc.d script, `packages/freebsd/files/emfor.in` (`service emfor start`, `reload`, `stop`) on a FreeBSD host; it passes on FreeBSD 15.1-RELEASE (arm64), and the optional CI `freebsd` job runs it too.
 
-To run emfor itself, see [Running on FreeBSD](../manual/02-installation.md#running-on-freebsd).
+To run emfor itself, see [Running on FreeBSD](../manual/04-installing.md#freebsd).
 
 ## systemd-resolved
 

@@ -10,7 +10,7 @@
 | `emfor check-config [--show]` | 驗證設定（也會啟動每個 plugin，讓它驗證自己的選項）；`--show` 會印出合併後的設定，每個值後面註明是哪個檔案設的（不會補上預設值）。 |
 | `emfor status [--service NAME] [--json] [--watch] [--history]` | 顯示 daemon 在 store 裡發布了哪些內容。 |
 | `emfor lookup SERVICE [--key KEY] [--explain] [--json] [--dns A\|AAAA]` | 跟 client 函式庫一樣，查詢一個 backend。 |
-| `emfor --version` | `emfor 0.7.0`。 |
+| `emfor --version` | 印出 `emfor` 和版本號。 |
 
 每個指令都可以加 `--config PATH`（預設是 `/etc/emfor/emfor.toml`，或編譯時內建的路徑，[第 4 章](04-installing.md#預設設定檔路徑)）。`status` 和 `lookup` 只會從設定檔讀 `[store] path`，不看 `EMFOR_STORE`。它們需要的 store 讀取權限跟應用程式一樣。
 
