@@ -55,14 +55,17 @@ other distributions, an apt or dnf repository.
 | `/etc/emfor/conf.d/` | For the services, one file per group (`01-`, `10-`, `99-` prefixes); a `README` explains it. |
 | `/usr/share/doc/emfor/` | The commented example config, and (deb) the manual and the Prometheus rules. |
 
-Both packages depend on `ca-certificates`: the http check builds its client
-with the system's root certificates, even for `scheme = "http"`, and without
-them every http check fails with `cannot build http client`.
+Both packages depend on `ca-certificates`: an http check with
+`scheme = "https"` and certificate verification on builds its client with the
+system's root certificates, and without them it fails with `cannot build http
+client` (plain `scheme = "http"` and `tls_verify = false` need none); the TLS
+checks of `emfor-check` use them too when `ca_file` is not set.
 
 The store is in `/var/lib/emfor`, which the unit creates (`StateDirectory`).
 The scripts create the user and group `emfor`, and make `/etc/emfor` and
 `/etc/emfor/conf.d` owned by root and mode 0755: emfor refuses a config
-directory that group or others can write, or that another user owns.
+directory that group or others can write, or that a user other than root or
+the user emfor runs as owns.
 
 - **deb**: the service is enabled and started when the package is installed
   (the Debian convention); `dpkg -r` keeps the config, `dpkg -P` removes the

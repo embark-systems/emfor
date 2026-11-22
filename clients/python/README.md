@@ -29,7 +29,7 @@ except emfor.Error as e:
 
 At import, the package loads the library from the path in `EMFOR_LIBRARY`
 if it is set, and otherwise tries, in order: the names of this release's
-library, `libemfor.so.0.5` and `libemfor.0.5.dylib` for release 0.5.x (they
+library, `libemfor.so.0.7` and `libemfor.0.7.dylib` for release 0.7.x (they
 follow `emfor.__version__`); what `ctypes.util.find_library("emfor")` finds,
 which may be another release's; and `libemfor.so` and `libemfor.dylib`. If
 none loads, the import raises `ImportError`. On Linux,

@@ -2,12 +2,13 @@ Files of this directory that end in .toml are read, in file name order, after
 /etc/emfor/emfor.toml (include_dir). Use 01-, 10-, 99- as prefixes; a later
 file overrides an earlier one. This file is not read.
 
-The directory and the files must be owned by root and not writable by group or
-others, or emfor refuses the config. A service looks like this:
+The directory and the files must be owned by root (or by the user emfor runs
+as) and not writable by group or others, or emfor refuses the config. A service
+looks like this:
 
   [services."api.svc.emfor"]
   check = "tcp"
   backends = ["10.0.0.11:8080", "10.0.0.12:8080"]
 
 Check with `emfor check-config`, apply with `systemctl reload emfor`.
-Manual: /usr/share/doc/emfor/ (chapter 3, "Configuration").
+Manual: /usr/share/doc/emfor/ (chapter 5, "Configuring emfor").

@@ -21,6 +21,7 @@ password_file = "/etc/emfor/redis.pass"
 
 - **Plugin name:** 1–63 characters of `a-z`, `0-9`, `_` and `-`. It must not be `tcp`, `http` or `exec`.
 - **`command`:** an array. The first element is an absolute path to an executable file. It is run without a shell, with working directory `/`.
+- **`env_pass`:** optional, a list of variable names. The plugin gets only `PATH`, `LANG`, `TZ`, the `LC_*` variables and the variables named here from the daemon's environment.
 - **Processes:** one per declared plugin, shared by every service that uses it. emfor starts every declared plugin, used or not.
 - **Config checks start plugins.** Loading a config (at startup, on `SIGHUP`, and for `emfor check-config`) starts the plugins and asks them to validate each service's `check_options`. `emfor check-config` stops them again before it exits.
 
@@ -29,7 +30,8 @@ password_file = "/etc/emfor/redis.pass"
 - **Format:** one JSON object per line, UTF-8, ending in `\n`.
 - **Direction:** emfor writes requests to the plugin's **stdin**. The plugin writes answers to its **stdout**.
 - **stdout carries protocol lines only.** Flush after every line.
-- **stderr is free-form.** emfor logs each line at `info` as `plugin <name>: <line>`, up to 100 lines at once and 10 lines a second after that; lines over the limit are dropped and counted in one `warn` line `plugin <name>: suppressed <n> stderr lines …`, logged with the next line that is logged or when the plugin exits. Invalid stdout lines are logged at `warn` under the same limit, counted separately.
+- **stdout lines are at most 65536 bytes** (not counting the `\n`). On a longer line emfor logs a `warn` line, stops reading the plugin's stdout and handles it as a crash (see [Rules](#rules)): its waiting checks become `error` with reason `plugin exited`, and the plugin is restarted.
+- **stderr is free-form.** emfor logs each line, cut to its first 1000 characters, at `info` as `plugin <name>: <line>`, up to 100 lines at once and 10 lines a second after that; lines over the limit are dropped and counted in one `warn` line `plugin <name>: suppressed <n> stderr lines …`, logged with the next line that is logged or when the plugin exits. Invalid stdout lines are logged at `warn`, cut to their first 200 characters, under the same limit, counted separately.
 - **Message type:** every object has a `type` field.
 - **Shutdown:** when stdin reaches end of file, exit. emfor closes stdin to stop a plugin, and kills it if it is still running 2 seconds later.
 - **Process group:** emfor starts each plugin in a process group of its own. Whenever the plugin exits, is stopped or is killed, emfor kills (`SIGKILL`) every process left in that group, so processes the plugin started do not outlive it. A process the plugin moves to another process group or session is not killed.
@@ -50,7 +52,7 @@ The plugin must answer within 5 seconds:
 {"type":"hello","protocol":1,"name":"redis","version":"0.1.0"}
 ```
 
-`name` and `version` describe the plugin and are only logged. The plugin fails to start if the answer is anything else, has a different `protocol`, or does not arrive in time.
+`name` and `version` describe the plugin and are only logged. The plugin fails to start if the answer is anything else (the error shows its first 200 characters), has a different `protocol`, or does not arrive in time.
 
 ### validate
 
@@ -69,8 +71,9 @@ Answer with the same `id` and a list of problems, or an empty list when the opti
 {"type":"validate","id":2,"errors":[]}
 ```
 
+- **`errors`** is required, also when it is empty, and each entry needs `key` and `message`. An answer without them is an invalid line: emfor logs it and ignores it, so the request runs into the deadline below.
 - **`key`** is relative to `check_options`. emfor reports the example above as `services."cache.svc.emfor".check_options.password_file: file not found`.
-- **Deadline:** answer within 5 seconds. Otherwise the config is rejected.
+- **Deadline:** answer within 5 seconds. Otherwise the config is rejected, and every later `validate` to that plugin in the same config load fails at once.
 
 ### check
 
@@ -93,7 +96,7 @@ Answer with the same `id`, a `result`, and an optional `reason`:
 | `error` | The plugin could not check, for example because of a local problem. This does not count against the backend. |
 
 Rules:
-- A `down` or `error` without `reason` is recorded with reason `no reason given`. emfor keeps at most 512 characters of a reason; plugins built on the `emfor-plugin` crate cut a longer one to its first 512 characters followed by `…` before sending it, so a backend's long error text never makes the answer line longer than 65536 bytes. The crate also answers a check whose code panics `error` with reason `check panicked: <message>`, so the request still gets an answer and the plugin keeps running.
+- A `down` or `error` without `reason` is recorded with reason `no reason given`. emfor writes control characters in a reason as escapes (`\n`, `\u{1b}`, …) and keeps at most 512 characters: a longer reason becomes its first 511 characters followed by `…`. Plugins built on the `emfor-plugin` crate cut a longer one to its first 512 characters followed by `…` (513 characters) before sending it, so a backend's long error text never makes the answer line longer than 65536 bytes; emfor then cuts it as above. The crate also answers a check whose code panics `error` with reason `check panicked: <message>`, so the request still gets an answer and the plugin keeps running. It answers `error` with reason `check was cancelled` when the check's task ends without a result for another reason, and `invalid target ip "<ip>"` when `target.ip` is not an IP address.
 - Any other `result` value is recorded as `error` with reason `invalid plugin response`.
 - **`timeout_ms`** is the service `timeout` minus `min(100ms, timeout / 10)`. For example, 1s gives 900 and 200ms gives 180.
   - Finish within `timeout_ms`, and answer `down` (for example `"reason":"timeout"`) if the backend is too slow.
@@ -105,12 +108,12 @@ Rules:
 - **Concurrency:** answers may be sent in any order. emfor sends checks for all services and backends that use the plugin to the same process, so handle requests concurrently. A plugin that works through them one at a time delays every other check.
 - **Ignored lines:** emfor logs a stdout line that is not JSON, or has an unknown `type`, at `warn` and ignores it. It ignores an answer whose `id` it is not waiting for, for example one that arrived after the timeout.
 - **Crashes:** if the plugin exits or closes stdout, every check waiting for an answer becomes `error` with reason `plugin exited`.
-  - A plugin that stops answering counts as crashed too: when emfor gives up waiting on 3 requests in a row and no answer to any request arrives in between, it logs that the plugin stopped answering and kills it. Answering every check within `timeout_ms` keeps this from ever happening.
+  - A plugin that stops answering counts as crashed too: when emfor gives up waiting on 3 requests in a row and no answer to any request arrives in between, it logs that the plugin stopped answering and kills it. A request emfor itself gives up early, because a reload or shutdown cancelled the check, does not count. Answering every check within `timeout_ms` keeps this from ever happening.
   - emfor restarts the plugin after 1s, then 2s, 4s, and so on, up to 30s between attempts. The delay goes back to 1s once the plugin has run for 30 seconds.
   - Until the plugin is running again, its checks are `error` with reason `plugin <name> unavailable`.
   - A plugin that stops reading stdin is not killed for that alone, but once 1024 requests wait to be written to it, further checks are `error` with reason `plugin <name> busy: it is not reading its requests` at once.
   - After a restart, options are not validated again.
-- **Reload:** on `SIGHUP`, a plugin whose `command` did not change keeps running. A plugin with a new `command` is started again, and the services that use it start over from `unknown`.
+- **Reload:** on `SIGHUP`, a plugin whose `command` and `env_pass` did not change keeps running. A plugin with a new `command` or `env_pass` is started again, and the services that use it start over from `unknown`.
 
 ## Example messages
 

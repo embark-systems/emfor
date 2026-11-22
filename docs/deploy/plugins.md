@@ -1,6 +1,6 @@
-# Checking redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB and gRPC with emfor-check
+# Checking redis, MySQL, PostgreSQL, LDAP, DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB, gRPC and QUIC with emfor-check
 
-`emfor-check` is the plugin program that ships with emfor. One executable holds twelve plugins; its only argument picks which one runs:
+`emfor-check` is the plugin program that ships with emfor. One executable holds thirteen plugins; its only argument picks which one runs:
 
 | Argument | Checks | Up when |
 | --- | --- | --- |
@@ -16,8 +16,9 @@
 | `amqp` | AMQP 0-9-1 brokers (RabbitMQ, …) | the login succeeds and the vhost opens (Connection.Open-Ok) |
 | `mongodb` | MongoDB 4.4 and later: replica set members, standalone servers, mongos | `hello` answers, the login succeeds when a user is set, and the role matches |
 | `grpc` | gRPC services with the standard health service (`grpc.health.v1`) | `Health/Check` answers `SERVING` |
+| `quic` | QUIC and HTTP/3 servers | the QUIC handshake completes, and with `http3 = true` an HTTP/3 `GET` gets an expected status |
 
-Each plugin runs as one long-lived child process of the emfor daemon, shared by every service that uses it (see [the plugin protocol](../plugins/protocol-v1.md)). Each check opens a new connection to the backend (for `dns` over UDP, a new socket) and closes it before answering, so a server that refuses new connections (for example because `max_connections` is reached) is reported as down.
+Each plugin runs as one long-lived child process of the emfor daemon, shared by every service that uses it (see [the plugin protocol](../plugins/protocol-v1.md)). Each check opens a new connection to the backend (for `dns`, `radius` and `sip` over UDP, a new socket; for `quic`, a new QUIC connection over a UDP socket that all checks of the plugin process share) and closes it, so a server that refuses new connections (for example because `max_connections` is reached) is reported as down. Most plugins close the connection before answering; `diameter` and `amqp` say goodbye (Disconnect-Peer-Request, Connection.Close) after the result is reported.
 
 ## Installing
 
@@ -57,11 +58,11 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 
 The plugin name in `[plugins."<name>"]` is your choice; the argument after the path decides the protocol. `emfor check-config` starts the plugins and has them validate every service's `check_options`, so mistakes are found before a reload.
 
-A plugin does not get the daemon's environment: it gets `PATH`, `LANG`, `TZ` and `LC_*`, and the names in `[plugins."<name>"] env_pass`. If you start the daemon with `SSL_CERT_FILE` or `SSL_CERT_DIR` (the system CAs of a TLS check without `ca_file`) or with a proxy variable, list it in `env_pass`; see [the environment of programs emfor starts](../manual/04-health-checks.md#the-environment-of-programs-emfor-starts).
+A plugin does not get the daemon's environment: it gets `PATH`, `LANG`, `TZ` and `LC_*`, and the names in `[plugins."<name>"] env_pass`. If you start the daemon with `SSL_CERT_FILE` or `SSL_CERT_DIR` (the system CAs of a TLS check without `ca_file`) or with a proxy variable, list it in `env_pass`; see [the environment of check programs](../manual/06-health-checks.md#the-environment-of-check-programs).
 
 ### Options
 
-These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns`, `radius`, `sip`, `diameter`, `smtp`, `amqp`, `mongodb` and `grpc` plugins have their own, see [DNS](#dns), [RADIUS](#radius), [SIP](#sip), [Diameter](#diameter), [SMTP](#smtp), [AMQP](#amqp), [MongoDB](#mongodb) and [gRPC](#grpc).
+These are the options of the database plugins `redis`, `mysql`, `pgsql` and `ldap`. The `dns`, `radius`, `sip`, `diameter`, `smtp`, `amqp`, `mongodb`, `grpc` and `quic` plugins have their own, see [DNS](#dns), [RADIUS](#radius), [SIP](#sip), [Diameter](#diameter), [SMTP](#smtp), [AMQP](#amqp), [MongoDB](#mongodb), [gRPC](#grpc) and [QUIC](#quic).
 
 | Key | Plugins | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
@@ -91,7 +92,7 @@ With `role` set, a backend in another role is down, with a reason such as `role 
 | `redis`, `mysql`, `pgsql` | `replica` | see [Replicas](#replicas) |
 | `mongodb` | `primary`, `secondary` | the `hello` reply, see [MongoDB](#mongodb) |
 
-For `mysql`, an answer to `SELECT 1` or `@@global.read_only` that is NULL or not an integer is down, for example `query: @@global.read_only answered NULL, want an integer`. A redis reply longer than 2 MiB is down with `query: invalid reply: reply too long`.
+For `mysql`, an answer to `SELECT 1` or `@@global.read_only` that is NULL or not an integer is down, for example `query: @@global.read_only answered NULL, want an integer`. A redis reply longer than 2 MiB is down with `query: invalid reply: reply too long` (`auth: invalid reply: reply too long` for the answer to `AUTH`).
 
 ### Replicas
 
@@ -128,17 +129,17 @@ MariaDB Galera, multi-source replication (only the default connection is read), 
 
 ### Passwords
 
-`password_file` names a file whose content is the password; one trailing newline (`\n` or `\r\n`) is removed. The plugin reads the file on every check, so you can change the password on the server and in the file without reloading emfor.
+`password_file` names a file whose content is the password; one trailing newline (`\n` or `\r\n`) is removed. The rest must not be empty and must be valid UTF-8: `emfor check-config` refuses the file with `file is empty` or `not valid UTF-8`, and a file that changes into one later makes the check `error` with `password_file: file is empty` or `password_file: not valid UTF-8`. The plugin reads the file on every check, so you can change the password on the server and in the file without reloading emfor.
 
 - Make the file readable only by the account emfor runs as: `install -m 0600 -o emfor /dev/stdin /etc/emfor/pg.pass`.
 - emfor warns when a secret file (`password_file`, `secret_file`, `tls_key_file` in a service's `check_options`) can be read by every user (any "other" permission bit) or written by anyone but its owner (a group or other write bit). The warning is one line for each file, naming up to three of the services that use it: it is printed by `emfor check-config` on standard error, and logged at startup and on reload. It is only a warning: the config stays valid, the exit status of `check-config` is unchanged, and a file that cannot be read is left to the check to report. A file that only its owner and the group can read (`0640`) gives no warning.
-- emfor also warns about a check of kind `redis`, `ldap`, `mysql`, `pgsql` or `amqp` that has a `password_file` and no `tls = true` (for `ldap`, neither `tls = true` nor `starttls = true`): the password is then not protected on the network, and anyone who can see the traffic, or answer in the backend's place, can get it. `amqp` sends it in clear text with SASL PLAIN; `pgsql` lets the server ask for it in clear text; `mysql` sends it encrypted with a key that the server supplies. The kind is the first argument of the plugin's command when the plugin runs `emfor-check` (`command = ["/usr/local/libexec/emfor-check", "pgsql"]`), whatever the plugin is called; a plugin that does not run `emfor-check` is taken for `redis` or `ldap` by its name alone. It does not warn for `mongodb`, whose SCRAM does not send the password.
+- emfor also warns about a check of kind `redis`, `ldap`, `mysql`, `pgsql` or `amqp` that has a `password_file` and no `tls = true` (for `ldap`, neither `tls = true` nor `starttls = true`): for `mysql`, `pgsql` and `amqp` the warning says the password is not protected on the network, and anyone who can see the traffic, or answer in the backend's place, can get it; for `redis` and `ldap` it says the password is sent in clear text, and anyone who can see the traffic can read it. `amqp` sends it in clear text with SASL PLAIN; `pgsql` lets the server ask for it in clear text; `mysql` sends it encrypted with a key that the server supplies. The kind is the first argument of the plugin's command when the plugin runs `emfor-check` (`command = ["/usr/local/libexec/emfor-check", "pgsql"]`), whatever the plugin is called; a plugin that does not run `emfor-check` is taken for `redis` or `ldap` by its name alone. It does not warn for `mongodb`, whose SCRAM does not send the password.
 - Give emfor its own account with the least rights the check needs: login, `SELECT 1`, and for `role` the role query.
 - The password never appears in check reasons, in emfor's log, or in the plugin's stderr.
 
 If the file cannot be read during a check, the check is `error`, which does not count against the backend.
 
-A `user` (and for `pgsql` a `database`) with a NUL character is refused by `emfor check-config`: the protocols end those strings at NUL. For `pgsql` the password must not contain NUL either (PostgreSQL cannot store one, and the driver refuses to send it), nor for `amqp`, since the PLAIN login separates the fields with it. The password file is read again at every check: a file that gained a NUL since is `error` with `password_file: password must not contain NUL`. A `mysql` password may contain NUL, but one does not always log in: MySQL's default `caching_sha2_password` without TLS sends it whole only once the server has cached it, so after a server restart or `FLUSH PRIVILEGES` such a check is down with `auth: ERROR 1045 (28000): Access denied …` until a TLS login caches it again. Set `tls = true` for an account whose password contains NUL; `mysql_native_password` and MariaDB are not affected (tested against MySQL 8.4 and MariaDB 11.4).
+A `user` with a NUL character is refused by `emfor check-config` for `mysql`, `pgsql` and `amqp` (and for `pgsql` a `database` too): the protocols end those strings at NUL, or separate fields with it. For `pgsql` the password must not contain NUL either (PostgreSQL cannot store one, and the driver refuses to send it), nor for `amqp`, since the PLAIN login separates the fields with it. For `pgsql` the password file is read again at every check: a file that gained a NUL since is `error` with `password_file: password must not contain NUL`. `amqp` checks for NUL only when the options are validated. A `mysql` password may contain NUL, but one does not always log in: MySQL's default `caching_sha2_password` without TLS sends it whole only once the server has cached it, so after a server restart or `FLUSH PRIVILEGES` such a check is down with `auth: ERROR 1045 (28000): Access denied …` until a TLS login caches it again. Set `tls = true` for an account whose password contains NUL; `mysql_native_password` and MariaDB are not affected (tested against MySQL 8.4 and MariaDB 11.4).
 
 ### TLS
 
@@ -161,7 +162,7 @@ check_options = { user = "cn=monitor,dc=example,dc=org", password_file = "/etc/e
 - Without `user`, the bind is anonymous. Many servers accept an anonymous bind even when their database is broken, so a bind with a dedicated account says more: give it an entry with a password and no other rights.
 - Use `starttls = true` on port 389 or `tls = true` (LDAPS) on port 636, so the password is never sent in plaintext. With `starttls`, a server that refuses StartTLS is down with `tls: StartTLS refused: <code> <name>`, and no bind is sent.
 - A rejected bind is down with `auth: <code> <name>`, followed by the server's diagnostic message when it sends one, for example `auth: 49 invalidCredentials`, `auth: 53 unwillingToPerform: …` or `auth: 8 strongerAuthRequired` (the server wants TLS). Active Directory adds its own code to the message, for example `auth: 49 invalidCredentials: 80090308: LdapErr: DSID-0C090434, comment: AcceptSecurityContext error, data 52e, v4f7c` (`data 52e` is a wrong user name or password). The names are those of RFC 4511; an unknown code shows only the number.
-- A response that is not valid LDAP, answers another message, is longer than 65536 bytes, or is a Notice of Disconnection is down with `query: `.
+- A bind response that is not valid LDAP, answers another message, is longer than 65536 bytes, or is a Notice of Disconnection is down with `query: `; a server that closes the connection before answering the bind is down with `connect: connection closed by the server`. With `starttls`, the same failures in answer to the StartTLS request, and a close, are down with `tls: StartTLS refused: ` and the detail, for example `tls: StartTLS refused: connection closed`.
 - Every check is a bind, which LDAP servers usually log. Lower the server's log level for this account, or use a longer `interval`.
 
 ### DNS
@@ -215,8 +216,8 @@ check_options = { secret_file = "/etc/emfor/radius.secret" }
 | `secret_file` | absolute path | required | File holding the shared secret; one trailing newline is removed, and it is read on every check |
 | `request` | string | `status-server` | `status-server` or `access-request` |
 | `application` | string | `auth` | `auth` (port 1812) or `acct` (port 1813, Status-Server only) |
-| `user` | string | none | `access-request` only, and required there: the test account |
-| `password_file` | absolute path | none | `access-request` only, and required there: the test account's password |
+| `user` | string | none | `access-request` only, and required there: the test account, 1 to 253 bytes |
+| `password_file` | absolute path | none | `access-request` only, and required there: the test account's password, at most 128 bytes (the longest User-Password can carry); a file that grew longer since is `error` at a check |
 | `reject_is_up` | boolean | `false` | `access-request` only: an Access-Reject counts as up |
 | `nas_identifier` | string | `emfor` | NAS-Identifier sent with every request, 1 to 253 bytes |
 | `require_message_authenticator` | boolean | `false` | A response without Message-Authenticator is down |
@@ -249,8 +250,8 @@ backends = ["10.0.9.11:5060", "10.0.9.12:5060"]
 | `transport` | string | `udp` | `udp` or `tcp` |
 | `tls` | boolean | `false` | SIP over TLS (usually port 5061); needs `transport = "tcp"` |
 | `tls_verify`, `server_name`, `ca_file` | | | As for the other plugins, see [TLS](#tls); need `tls = true` |
-| `uri` | string | `sip:<backend IP>:<port>` (`sips:` with TLS) | Request-URI and To; a `sip:` or `sips:` URI of at most 256 bytes, without `<` or `>` |
-| `from` | string | `sip:emfor@emfor.invalid` | From; without `<` or `>` |
+| `uri` | string | `sip:<backend IP>:<port>` (`sips:` with TLS) | Request-URI and To; a `sip:` or `sips:` URI of at most 256 bytes, without whitespace, control characters, `<` or `>` |
+| `from` | string | `sip:emfor@emfor.invalid` | From; the same rules as `uri` |
 | `expect_status` | array of strings | `["200-499"]` | Final status codes that count as up: codes from 200 to 699 or ranges `lo-hi` |
 
 Any other key is an error. SCTP, WebSocket, REGISTER and authentication are not supported.
@@ -337,7 +338,7 @@ check_options = { starttls = true, server_name = "mx.example.org" }
 
 Any other key is an error.
 
-- With `starttls`, a server whose `EHLO` answer does not list `STARTTLS` is down with `tls: STARTTLS not offered`, and one that answers `STARTTLS` with anything but `220` is down with `tls: STARTTLS refused: <code> <text>`. Nothing is sent after either. The server's second `EHLO` answer, over TLS, must be `250` too.
+- With `starttls`, a server whose `EHLO` answer does not list `STARTTLS` is down with `tls: STARTTLS not offered`, and one that answers `STARTTLS` with anything but `220` is down with `tls: STARTTLS refused: <code> <text>`. After either, only `QUIT` is sent; the plugin never goes on in plaintext. The server's second `EHLO` answer, over TLS, must be `250` too.
 - A greeting other than `220` (for example `421` or `554` from an overloaded or blocking server) is down with `greeting: <code> <text>`; an `EHLO` answer other than `250` is down with `ehlo: <code> <text>`. The text is the first line of the reply.
 - A reply that is not SMTP, has a line longer than 2048 bytes, or is longer than 65536 bytes in all is down with `query: `; so is a server that closes the connection before answering.
 - Mail servers log every connection, and some count one without mail against the client (Postfix's `anvil`, `postscreen`, fail2ban rules). Allow the emfor hosts there, and use an `interval` of 10 seconds or more.
@@ -455,7 +456,7 @@ Any other key is an error. The server must register the health service: in Go `g
 
 ### QUIC
 
-The `quic` plugin opens a new QUIC version 1 connection over UDP on every check, without 0-RTT, offering the ALPN values of `alpn` and verifying the certificate with TLS 1.3. With `http3 = false` (the default) it is up when the handshake completes, and it then closes the connection with application error code 0. With `http3 = true` it also sends one HTTP/3 `GET` for `path`, judged like the built-in [`http` check](../manual/04-health-checks.md#http): `:authority` is `host_header`, else `server_name` (an IPv6 address in brackets), else the backend's `ip:port`; redirects are not followed; `user-agent` is `emfor-check/<version>`. The connection then ends with `H3_NO_ERROR`. All checks of one plugin process share one local UDP socket per address family.
+The `quic` plugin opens a new QUIC version 1 connection over UDP on every check, without 0-RTT, offering the ALPN values of `alpn` and verifying the certificate with TLS 1.3. With `http3 = false` (the default) it is up when the handshake completes, and it then closes the connection with application error code 0. With `http3 = true` it also sends one HTTP/3 `GET` for `path`, judged like the built-in [`http` check](../manual/06-health-checks.md#http): `:authority` is `host_header`, else `server_name` (an IPv6 address in brackets), else the backend's `ip:port`; redirects are not followed; `user-agent` is `emfor-check/<version>`. The connection then ends with `H3_NO_ERROR`. All checks of one plugin process share one local UDP socket per address family.
 
 ```toml
 [plugins."quic"]
@@ -501,9 +502,9 @@ Any other key is an error, `tls` included. The result is decided in this order; 
 
 | Reason starts with | Result | Meaning |
 | --- | --- | --- |
-| `connect: ` | down | Connection refused or dropped |
+| `connect: ` | down | Connection refused or dropped; `error` when the failure is on the emfor host (out of file descriptors, buffers or memory, no usable local address, a UDP socket that cannot be opened) |
 | `timeout` | down | No answer within the service `timeout` (for `radius`, possibly a wrong secret, see [RADIUS](#radius)) |
-| `tls: ` | down | TLS handshake or certificate check failed, the port does not speak TLS, or the LDAP or SMTP server refused or did not offer StartTLS |
+| `tls: ` | down | TLS handshake or certificate check failed, the port does not speak TLS, or the LDAP or SMTP server refused or did not offer StartTLS; `error` when the failure is on the emfor host (no system CA certificates without `ca_file`, or the same local failures as for `connect: `) |
 | `auth: ` | down | Login rejected (wrong password, unknown user or database, too many connections); for `ldap`, the resultCode and its name, see [LDAP](#ldap); for `radius`, a reject or a response not signed with the secret, see [RADIUS](#radius) |
 | `query: ` | down | A query failed or answered something unexpected (for `dns`, a response that cannot be parsed or, over TCP, answers another query; for `radius`, a malformed response or an unexpected response code) |
 | `role is ` | down | The backend has another role |
@@ -514,7 +515,7 @@ Any other key is an error, `tls` included. The result is decided in this order; 
 | `greeting: `, `ehlo: ` | down | `smtp`: a greeting other than 220 or an `EHLO` answer other than 250, see [SMTP](#smtp) |
 | `vhost: ` | down | `amqp`: the broker refused to open the vhost, see [AMQP](#amqp) |
 | `grpc: ` | down | `grpc`: a `grpc-status` other than 0, for example no health service (`12 UNIMPLEMENTED`) or an unknown `service` (`5 NOT_FOUND`), see [gRPC](#grpc) |
-| `quic: ` | down | `quic`: the server closed the connection, sent a stateless reset, or another QUIC transport error, see [QUIC](#quic) |
+| `quic: ` | down | `quic`: the server closed the connection, sent a stateless reset, or another QUIC transport error, see [QUIC](#quic); `quic: cannot open a UDP socket` is `error` |
 | `unexpected status `, `expect_body: `, `body: ` | down | `quic` with `http3 = true`: a status outside `expect_status`, or a body without `expect_body`, see [QUIC](#quic) |
 | `password_file: `, `secret_file: `, `ca_file: `, `tls_cert_file: `, `tls_key_file: ` | error | The file could not be read during the check |
 

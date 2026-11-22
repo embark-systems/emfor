@@ -64,7 +64,7 @@ it under **Breaking**, with the setting that keeps the old behavior.
 ### Store format
 
 Records are JSON values under the keys described in
-`docs/spectra/specs/state-store/spec.md`. Within format version 1, a
+`docs/spectra/specs/state-store/spec.md`. Within format version 2, a
 release may add fields and keys; readers ignore what they do not know, and
 a `balance` value a client does not know is treated as `round-robin`, a
 backend `state` as `unhealthy` and an `on_all_down` as `open`. A
