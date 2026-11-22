@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+The daemon, the store format and the plugin protocol are unchanged: this is
+about the packages, the documents and the examples.
+
+- **The rpm ships the manual and the Prometheus rules**, as the deb does:
+  `/usr/share/doc/emfor/manual/` and
+  `/usr/share/doc/emfor/examples/prometheus/`.
+- **A new user manual**, in English and Traditional Chinese
+  ([docs/manual](docs/manual/README.md), `docs/manual.zh_TW`), in place of the
+  earlier set of documents. Entries of this changelog that link to the old
+  file names (`docs/manual/03-configuration.md` and the like) now point at
+  files that are gone; the chapter numbers changed.
+- **Managing emfor with Ansible, Puppet, Salt or Chef**: a section of
+  [chapter 5](docs/manual/05-configuring.md) says where the usual defaults of
+  such tools do not fit (reload, not restart; `check-config` as the daemon's
+  user; the owner and mode rules), and the new
+  [examples/deploy/emfor-check-staged.sh](examples/deploy/emfor-check-staged.sh)
+  checks one `conf.d` file before it replaces the old one, for the validation
+  option of the tool. Tried with Ansible 2.14, Puppet 7.23, Salt 3008 and Cinc
+  Client 19.4 (the free build of Chef Infra Client).
+- [docs/compatibility.md](docs/compatibility.md) lists `emfor lookup` among
+  the stable interfaces: the address line without `--explain`, and `--json`.
+
 ## 0.7.0 — 2026-11-22
 
 The store format (`meta/schema_version` 2) and the plugin protocol (1) are
