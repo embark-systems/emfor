@@ -204,6 +204,32 @@ fn reload_rejects_listen_change() {
     assert_eq!(code, 0, "{log}");
 }
 
+/// A changed `[metrics] allow` rejects the reload; the old rule keeps
+/// applying, and a changed `listen` still gets its own message.
+// spectra-scenario: metrics-endpoint / Allow change requires restart
+#[test]
+fn reload_rejects_allow_change() {
+    let addr = free_tcp();
+    let table = |allow: &str| format!("[metrics]\nlisten = [\"{addr}\"]\nallow = {allow}\n\n");
+    let d = Daemon::spawn(&table("[\"127.0.0.0/8\"]"));
+    d.wait_log("emfor started");
+    d.write_config(&table("[\"127.0.0.0/8\", \"192.0.2.0/24\"]"));
+    d.signal(Signal::SIGHUP);
+    d.wait_log("reload rejected");
+    let log = d.log();
+    assert!(
+        log.contains("metrics.allow") && log.contains("metrics allow settings require restart"),
+        "{log}"
+    );
+    assert!(
+        !log.contains("metrics listen settings require restart"),
+        "{log}"
+    );
+    assert!(scrape(addr).starts_with("HTTP/1.1 200 OK\r\n"));
+    let (code, log) = d.stop();
+    assert_eq!(code, 0, "{log}");
+}
+
 /// Spec scenario "Slow client": a connection that sends nothing is closed
 /// after 5 seconds without a response, and other requests are answered
 /// meanwhile.

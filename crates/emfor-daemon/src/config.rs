@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -177,12 +177,64 @@ impl Default for DnsConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetricsConfig {
     pub listen: Vec<SocketAddr>,
+    /// `allow`: the networks that may read `/metrics`; `None` when not set,
+    /// which allows every source.
+    pub allow: Option<Vec<Cidr>>,
+}
+
+/// An address with a prefix length, such as `10.0.0.0/8`. Host bits after
+/// the prefix are accepted and ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cidr {
+    addr: IpAddr,
+    prefix: u8,
+}
+
+impl Cidr {
+    /// `address/prefix`, the prefix 0-32 for IPv4 and 0-128 for IPv6.
+    pub fn parse(text: &str) -> Option<Cidr> {
+        let (addr, prefix) = text.split_once('/')?;
+        let addr: IpAddr = addr.parse().ok()?;
+        if prefix.is_empty() || !prefix.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let prefix: u8 = prefix.parse().ok()?;
+        let longest = if addr.is_ipv4() { 32 } else { 128 };
+        (prefix <= longest).then_some(Cidr { addr, prefix })
+    }
+
+    /// Whether `ip` is inside; an IPv4-mapped IPv6 address counts as the
+    /// IPv4 address it carries and also as itself, so both `10.0.0.0/8` and
+    /// `::ffff:0:0/96` cover `::ffff:10.1.2.3`.
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        if let IpAddr::V6(v6) = ip
+            && let Some(v4) = v6.to_ipv4_mapped()
+            && self.matches(IpAddr::V4(v4))
+        {
+            return true;
+        }
+        self.matches(ip)
+    }
+
+    fn matches(&self, ip: IpAddr) -> bool {
+        let (net, ip, bits) = match (self.addr, ip) {
+            (IpAddr::V4(n), IpAddr::V4(i)) => {
+                (u128::from(u32::from(n)), u128::from(u32::from(i)), 32)
+            }
+            (IpAddr::V6(n), IpAddr::V6(i)) => (u128::from(n), u128::from(i), 128),
+            _ => return false,
+        };
+        let host_bits = bits - u32::from(self.prefix);
+        // A shift by the full width is not defined; prefix 0 matches all.
+        host_bits == bits || (net >> host_bits) == (ip >> host_bits)
+    }
 }
 
 impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
             listen: vec![SocketAddr::from(([127, 0, 0, 1], 5301))],
+            allow: None,
         }
     }
 }
@@ -1534,10 +1586,45 @@ impl Validator {
 
     fn metrics(&mut self, root: &toml::Table) -> Option<MetricsConfig> {
         let t = self.table(root, "metrics")?;
-        self.unknown_keys(t, "metrics", &["listen"]);
+        self.unknown_keys(t, "metrics", &["listen", "allow"]);
         Some(MetricsConfig {
             listen: self.listen(t, "metrics", MetricsConfig::default().listen),
+            allow: self.allow(t),
         })
+    }
+
+    /// `[metrics] allow`: a non-empty array of distinct CIDR strings.
+    fn allow(&mut self, t: &toml::Table) -> Option<Vec<Cidr>> {
+        const ENTRY: &str =
+            "allow entry must be an address with a prefix length, such as \"10.0.0.0/8\"";
+        match t.get("allow")? {
+            toml::Value::Array(a) if a.is_empty() => {
+                self.err("metrics.allow", "allow must not be empty");
+                None
+            }
+            toml::Value::Array(a) => {
+                let mut out: Vec<Cidr> = Vec::new();
+                let mut seen: Vec<&str> = Vec::new();
+                for (i, item) in a.iter().enumerate() {
+                    let path = format!("metrics.allow[{i}]");
+                    match item.as_str().and_then(|s| Cidr::parse(s).map(|c| (s, c))) {
+                        Some((text, _)) if seen.contains(&text) => {
+                            self.err(path, format!("duplicate allow entry \"{text}\""));
+                        }
+                        Some((text, cidr)) => {
+                            seen.push(text);
+                            out.push(cidr);
+                        }
+                        None => self.err(path, ENTRY),
+                    }
+                }
+                Some(out)
+            }
+            _ => {
+                self.err("metrics.allow", "must be an array of CIDR strings");
+                None
+            }
+        }
     }
 
     fn dns(&mut self, root: &toml::Table) -> Option<DnsConfig> {
@@ -3340,7 +3427,8 @@ slow_start = "0s"
         assert_eq!(
             parse_ok(&format!("[metrics]\n{SVC}")).metrics,
             Some(MetricsConfig {
-                listen: vec!["127.0.0.1:5301".parse().unwrap()]
+                listen: vec!["127.0.0.1:5301".parse().unwrap()],
+                allow: None,
             })
         );
         let c = parse_ok(&format!("[metrics]\nlisten = [\"[::1]:9000\"]\n{SVC}"));
@@ -3358,6 +3446,22 @@ slow_start = "0s"
                 "duplicate listen address",
             ),
             ("path = \"/m\"", "metrics.path", "unknown key"),
+            ("allow = []", "metrics.allow", "allow must not be empty"),
+            (
+                "allow = [\"10.0.0.1\"]",
+                "metrics.allow[0]",
+                "allow entry must be an address with a prefix length, such as \"10.0.0.0/8\"",
+            ),
+            (
+                "allow = [\"10.0.0.0/33\"]",
+                "metrics.allow[0]",
+                "allow entry must be an address with a prefix length",
+            ),
+            (
+                "allow = [\"10.0.0.0/8\", \"10.0.0.0/8\"]",
+                "metrics.allow[1]",
+                "duplicate allow entry",
+            ),
         ];
         for (line, path, frag) in rows {
             let e = parse_err(&format!("[metrics]\n{line}\n{SVC}"));
@@ -3367,12 +3471,63 @@ slow_start = "0s"
                 "{line}: {e:?}"
             );
         }
+        let c = parse_ok(&format!(
+            "[metrics]\nallow = [\"10.0.0.0/8\", \"fd00::/8\"]\n{SVC}"
+        ));
+        assert_eq!(
+            c.metrics.unwrap().allow,
+            Some(vec![
+                Cidr::parse("10.0.0.0/8").unwrap(),
+                Cidr::parse("fd00::/8").unwrap()
+            ])
+        );
         assert_eq!(parse_metrics_listen("[services.a]\nrise = 0\n"), Some(None));
         assert_eq!(
             parse_metrics_listen("[metrics]\nlisten = [\"127.0.0.1:9\"]\n[services.a]\nrise = 0\n"),
             Some(Some(vec!["127.0.0.1:9".parse().unwrap()]))
         );
         assert_eq!(parse_metrics_listen("[metrics]\nlisten = []\n"), None);
+    }
+
+    /// Spec metrics-endpoint Example "allow and peer address".
+    // spectra-scenario: metrics-endpoint / Source matching
+    // spectra-scenario: metrics-endpoint / Source matching / allow and peer address
+    #[test]
+    fn cidr_matching_table() {
+        let rows: &[(&str, &str, bool)] = &[
+            ("10.0.0.0/8", "10.20.30.40", true),
+            ("10.0.0.0/8", "11.0.0.1", false),
+            ("10.0.0.5/32", "10.0.0.5", true),
+            ("10.0.0.5/32", "10.0.0.6", false),
+            ("fd00::/8", "fd12::1", true),
+            ("fd00::/8", "fe80::1", false),
+            ("10.0.0.0/8", "::ffff:10.1.2.3", true),
+            ("0.0.0.0/0", "192.0.2.1", true),
+            ("0.0.0.0/0", "2001:db8::1", false),
+            ("::/0", "2001:db8::1", true),
+            ("::1/128", "::1", true),
+            ("::1/128", "::2", false),
+            ("::ffff:0:0/96", "::ffff:10.1.2.3", true),
+            ("::ffff:0:0/96", "10.1.2.3", false),
+            // host bits after the prefix are ignored
+            ("10.0.0.5/8", "10.9.9.9", true),
+        ];
+        for (cidr, ip, want) in rows {
+            let c = Cidr::parse(cidr).unwrap_or_else(|| panic!("{cidr}"));
+            assert_eq!(c.contains(ip.parse().unwrap()), *want, "{cidr} {ip}");
+        }
+        for bad in [
+            "10.0.0.1",
+            "10.0.0.0/33",
+            "::/129",
+            "10.0.0.0/",
+            "10.0.0.0/-1",
+            "x/8",
+            "/8",
+            "10.0.0.0/+8",
+        ] {
+            assert_eq!(Cidr::parse(bad), None, "{bad}");
+        }
     }
 
     #[test]

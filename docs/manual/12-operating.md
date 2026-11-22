@@ -133,7 +133,17 @@ loopback or behind a firewall: it names every service and backend.
 ```toml
 [metrics]
 listen = ["127.0.0.1:5301"]
+allow = ["127.0.0.0/8", "10.20.0.0/16"]   # optional
 ```
+
+`allow` is a list of networks (`address/prefix`, IPv4 or IPv6, no repeats). With
+it, a connection from any other source gets `403 Forbidden` and no metrics;
+without it every source is served. Nothing is exempt: with `allow` set, list
+`127.0.0.0/8` to read the metrics from the host itself. The daemon sees the
+address of the direct peer, so behind NAT or a reverse proxy it is the
+proxy's address that counts; `X-Forwarded-For` is not read. A change of
+`allow` needs a restart, as `listen` does. A `listen` address that is not
+loopback and has no `allow` gets a warning at start and after a reload.
 
 | Metric | Labels | Meaning |
 | --- | --- | --- |

@@ -15,7 +15,7 @@ code.
 | Backends | **No** | Anything a backend or a plugin sends is bounded and escaped before it reaches the store, logs, status or metrics. |
 | Peers | Only with the secret | Every message is authenticated (and by default encrypted) with the shared secret, and checked for replay, sender and site. |
 | Local users | Partly | Readers of the store share its lock file ([below](#the-store-and-local-users)). |
-| The network to DNS and `/metrics` | No authentication | Both listen on loopback by default. |
+| The network to DNS and `/metrics` | No authentication; `/metrics` can limit sources with `[metrics] allow` | Both listen on loopback by default. `allow` checks the address of the direct peer only (no `X-Forwarded-For`), so it does not replace a firewall. |
 
 ## The config files
 
@@ -103,7 +103,9 @@ secrets.
 ## DNS and metrics
 
 Neither has authentication. Both listen on `127.0.0.1` by default; the daemon
-warns when DNS listens elsewhere. If you expose them, firewall them to the
+warns when DNS listens elsewhere, and when `/metrics` does and `[metrics]
+allow` is not set. `allow` lists the networks that may read `/metrics`; the
+others get `403`. If you expose them, firewall them to the
 hosts that need them. The DNS server has a per-network rate limit for UDP
 ([chapter 10](10-dns.md#rate-limit)) and answers never exceed the query's
 offered size.

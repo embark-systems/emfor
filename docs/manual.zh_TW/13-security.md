@@ -13,7 +13,7 @@
 | backend | **否** | backend 或 plugin 送來的任何東西，進 store、log、status 或 metrics 之前，都會先限制長度再跳脫。 |
 | peer | 只在持有密鑰時 | 每則訊息都用共用密鑰驗證（預設也會加密），還會檢查是不是重送、寄件者和 site 對不對。 |
 | 本機使用者 | 部分 | 讀 store 的程式共用同一個 lock 檔（[見下](#store-與本機使用者)）。 |
-| 到 DNS 與 `/metrics` 的網路 | 沒有認證 | 兩者預設都只聽 loopback。 |
+| 到 DNS 與 `/metrics` 的網路 | 沒有認證；`/metrics` 可用 `[metrics] allow` 限制來源 | 兩者預設都只聽 loopback。`allow` 只看直接連進來的對端位址（不讀 `X-Forwarded-For`），不能取代防火牆。 |
 
 ## 設定檔
 
@@ -78,7 +78,7 @@ store 裡存的是服務名稱、backend 位址、狀態和 reason，不存任�
 
 ## DNS 與 metrics
 
-兩者都沒有認證，預設都只聽 `127.0.0.1`；DNS 聽在其他位址時，daemon 會發出警告。如果要對外開放，請用防火牆限制只讓需要的主機連進來。DNS server 對 UDP 有依網段計算的速率限制（[第 10 章](10-dns.md#速率限制)），回答的大小也絕不會超過查詢端宣告可接受的大小。
+兩者都沒有認證，預設都只聽 `127.0.0.1`；DNS 聽在其他位址時，daemon 會發出警告；`/metrics` 聽在其他位址又沒設 `[metrics] allow` 時也會。`allow` 列出可以讀 `/metrics` 的網段，其他來源得到 `403`。如果要對外開放，請用防火牆限制只讓需要的主機連進來。DNS server 對 UDP 有依網段計算的速率限制（[第 10 章](10-dns.md#速率限制)），回答的大小也絕不會超過查詢端宣告可接受的大小。
 
 ## 聯防訊息
 

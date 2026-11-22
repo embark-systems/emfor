@@ -99,7 +99,10 @@ $ emfor lookup web.svc.emfor --explain
 ```toml
 [metrics]
 listen = ["127.0.0.1:5301"]
+allow = ["127.0.0.0/8", "10.20.0.0/16"]   # 選用
 ```
+
+`allow` 是網段清單（`位址/前綴長度`，IPv4 或 IPv6，不能重複）。設了之後，來源不在清單內的連線會得到 `403 Forbidden`，拿不到任何 metrics；沒設就每個來源都服務。沒有例外：設了 `allow`，本機要讀就得把 `127.0.0.0/8` 列進去。daemon 看到的是直接連進來的對端位址，所以經過 NAT 或反向 proxy 時算的是 proxy 的位址，也不會讀 `X-Forwarded-For`。`allow` 改了要 restart，跟 `listen` 一樣。`listen` 有非 loopback 的位址又沒設 `allow` 時，daemon 在啟動和 reload 後都會發出警告。
 
 | Metric | Label | 意義 |
 | --- | --- | --- |

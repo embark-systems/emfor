@@ -103,7 +103,7 @@ The daemon SHALL reject a config that violates any of these rules and SHALL repo
 - `check` names a registered checker and `check_options` passes that checker's validation.
 - `[dns] listen` is a non-empty array of `IPv4:port` or `[IPv6]:port` with port 1–65535 and no repeats; `[dns] zone` follows the service name rules after the same normalization and is at most 242 characters, so that the SOA name `hostmaster.<zone>` fits in 253; `[dns] ttl` is a whole number of seconds from 0s to 3600s; `[dns] rate_limit` is an integer from 0 to 1000000.
 - With `[dns]` present, for every service whose name is in the zone, the SRV target name of each backend (`<ip label>.<service>`, spec dns-server "SRV target names") is at most 253 characters; otherwise the error is on that backend, `services."<name>".backends[<i>]`. A 230-character service name fits an IPv4 backend but not an IPv6 one.
-- `[metrics] listen` is a non-empty array of `IPv4:port` or `[IPv6]:port` with port 1–65535 and no repeats; `[metrics]` has no keys other than `listen`.
+- `[metrics] listen` is a non-empty array of `IPv4:port` or `[IPv6]:port` with port 1–65535 and no repeats; `[metrics] allow`, when present, is a non-empty array of CIDR strings (an IPv4 or IPv6 address, `/`, and a prefix length of 0–32 or 0–128) with no repeated entry; `[metrics]` has no keys other than `listen` and `allow`.
 - `[peers]` follows the peer group configuration rules (spec peer-group), and the top-level `site` is set when `[peers]` is present.
 - No unknown keys anywhere in the file.
 
@@ -150,6 +150,11 @@ The daemon SHALL reject a config that violates any of these rules and SHALL repo
 | `[metrics] listen` | `[]` | error: listen must not be empty |
 | `[metrics] listen` | `["localhost:5301"]` | error: listen address must be an IP literal with port |
 | `[metrics] listen` | `["127.0.0.1:5301", "127.0.0.1:5301"]` | error: duplicate listen address |
+| `[metrics] allow` | `[]` | error: allow must not be empty |
+| `[metrics] allow` | `["10.0.0.1"]` | error: allow entry must be an address with a prefix length, such as "10.0.0.0/8" |
+| `[metrics] allow` | `["10.0.0.0/33"]` | error: allow entry must be an address with a prefix length, such as "10.0.0.0/8" |
+| `[metrics] allow` | `["10.0.0.0/8", "10.0.0.0/8"]` | error: duplicate allow entry |
+| `[metrics] allow` | `["10.0.0.0/8", "fd00::/8"]` | valid |
 | `[metrics] path` | `"/m"` | error: unknown key |
 | `[peers]` | present, no top-level `site` | error: site is required when [peers] is set |
 | `[peers] members` | `["10.0.0.5:5302"]` | error: members must list 2 to 64 addresses |
@@ -159,24 +164,21 @@ The daemon SHALL reject a config that violates any of these rules and SHALL repo
 
 
 <!-- @trace
-source: emfor-peers-service-off
-updated: 2026-11-13
+source: emfor-metrics-allow
+updated: 2026-11-23
 code:
-  - crates/emfor-daemon/src/writer.rs
-  - docs/manual/05-configuring.md
-  - crates/emfor-daemon/src/quorum.rs
-  - crates/emfor-daemon/src/peers/
-  - docs/manual/12-operating.md
-  - crates/emfor-daemon/src/status.rs
-  - crates/emfor-daemon/src/supervisor.rs
+  - CHANGELOG.md
   - crates/emfor-daemon/src/cli.rs
   - crates/emfor-daemon/src/config.rs
-  - examples/emfor.toml
-  - CHANGELOG.md
-  - docs/manual/03-concepts.md
-  - crates/emfor-daemon/src/schedule.rs
+  - crates/emfor-daemon/src/metrics.rs
+  - docs/manual.zh_TW/05-configuring.md
+  - docs/manual.zh_TW/12-operating.md
+  - docs/manual.zh_TW/13-security.md
+  - docs/manual/05-configuring.md
+  - docs/manual/12-operating.md
+  - docs/manual/13-security.md
 tests:
-  - crates/emfor-daemon/tests/peers.rs
+  - crates/emfor-daemon/tests/metrics.rs
 -->
 
 ---

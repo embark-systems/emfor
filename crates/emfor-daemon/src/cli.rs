@@ -426,6 +426,7 @@ async fn run(
         tracing::info!("DNS server for zone {} on {}", d.zone, addrs.join(", "));
     }
     warn_dns(&config);
+    warn_metrics(&config);
     warn_credentials(&config);
     // Only here: `[store]` is applied at start, a reload does not change it.
     for m in store_mode_warnings(&config.store) {
@@ -433,7 +434,7 @@ async fn run(
     }
     // Kept until the daemon exits; dropping it stops the server.
     let _metrics_server = match &config.metrics {
-        Some(m) => match metrics::serve(&m.listen, live.clone()).await {
+        Some(m) => match metrics::serve(&m.listen, m.allow.as_deref(), live.clone()).await {
             Ok(server) => {
                 let addrs: Vec<String> = m.listen.iter().map(|a| a.to_string()).collect();
                 tracing::info!("metrics on {}", addrs.join(", "));
@@ -573,6 +574,7 @@ async fn run(
                             tx.send_replace(dns_settings(d));
                         }
                         warn_dns(&new);
+                        warn_metrics(&new);
                         warn_credentials(&new);
                         if let (Some(h), Some(p)) = (&peers, &new.peers) {
                             h.reload(p, &peer_site(&new));
@@ -623,6 +625,32 @@ fn warn_dns(config: &Config) {
     for m in port_warnings(config) {
         tracing::warn!("{m}");
     }
+}
+
+/// Warnings for the `[metrics]` table of a loaded config.
+fn warn_metrics(config: &Config) {
+    if let Some(m) = &config.metrics {
+        for w in metrics_warnings(m) {
+            tracing::warn!("{w}");
+        }
+    }
+}
+
+/// One message per `[metrics] listen` address that is not a loopback
+/// address, unless `allow` limits the sources.
+fn metrics_warnings(m: &config::MetricsConfig) -> Vec<String> {
+    if m.allow.is_some() {
+        return Vec::new();
+    }
+    m.listen
+        .iter()
+        .filter(|a| !a.ip().to_canonical().is_loopback())
+        .map(|a| {
+            format!(
+                "metrics listens on {a}, which is not a loopback address: every host that can reach it can read every service name, backend address and check failure reason; limit who can reach it with allow or a firewall"
+            )
+        })
+        .collect()
 }
 
 /// One message per `[dns] listen` address that is not a loopback address.
@@ -907,6 +935,14 @@ async fn load(
             errors.push(ConfigError::new(
                 "metrics.listen",
                 "metrics listen settings require restart",
+            ));
+        }
+        if let (Ok(new), Some(old)) = (&parsed, &current.metrics)
+            && new.metrics.as_ref().is_some_and(|m| m.allow != old.allow)
+        {
+            errors.push(ConfigError::new(
+                "metrics.allow",
+                "metrics allow settings require restart",
             ));
         }
         let current_listen = current.peers.as_ref().map(|p| p.listen);
@@ -1306,6 +1342,24 @@ mod tests {
         );
         assert!(w[1].contains("0.0.0.0:5300"), "{w:?}");
         assert!(listen_warnings(&DnsConfig::default()).is_empty());
+    }
+
+    // spectra-scenario: metrics-endpoint / Warning for a non-loopback address without allow
+    #[test]
+    fn non_loopback_metrics_listen_is_warned_about_unless_allow_is_set() {
+        let mk = |listen: &[&str], allow: Option<&str>| config::MetricsConfig {
+            listen: listen.iter().map(|a| a.parse().unwrap()).collect(),
+            allow: allow.map(|a| vec![config::Cidr::parse(a).unwrap()]),
+        };
+        let w = metrics_warnings(&mk(&["127.0.0.1:5301", "10.0.0.5:5301"], None));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].contains("10.0.0.5:5301") && w[0].contains("allow"),
+            "{w:?}"
+        );
+        assert!(metrics_warnings(&mk(&["10.0.0.5:5301"], Some("10.0.0.0/8"))).is_empty());
+        assert!(metrics_warnings(&mk(&["127.0.0.1:5301", "[::1]:5301"], None)).is_empty());
+        assert!(metrics_warnings(&config::MetricsConfig::default()).is_empty());
     }
 
     /// State-store "Backend state history": one value or key that is not

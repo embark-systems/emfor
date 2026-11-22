@@ -310,6 +310,7 @@ What a reload can change:
 | Anything in `[store]` | Rejected: `store: store settings require restart`. |
 | `[dns] listen`, adding or removing `[dns]` | Rejected: `dns.listen: dns listen settings require restart`. |
 | `[metrics] listen`, adding or removing `[metrics]` | Rejected: `metrics.listen: metrics listen settings require restart`. |
+| `[metrics] allow` | Rejected when it differs from the running one: `metrics.allow: metrics allow settings require restart`. |
 | `[peers] listen`, adding or removing `[peers]` | Rejected: `peers.listen: peers listen settings require restart`. |
 
 For the rejected ones, restart the daemon (`systemctl restart emfor`). A

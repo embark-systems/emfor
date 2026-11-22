@@ -24,6 +24,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
+use crate::config::Cidr;
 use crate::live::{BackendCounters, LiveState, LiveView};
 
 /// Longest request head (request line and headers) accepted.
@@ -57,9 +58,19 @@ impl Drop for MetricsServer {
     }
 }
 
-/// Bind every listen address and start serving `/metrics` from `live`.
-/// Errors name the address.
-pub async fn serve(listen: &[SocketAddr], live: LiveState) -> Result<MetricsServer, String> {
+/// The answer to a source outside `allow`. The request is not read.
+const FORBIDDEN: &[u8] =
+    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+/// Bind every listen address and start serving `/metrics` from `live`. With
+/// `allow`, only sources inside one of its networks are served; the others
+/// get `403 Forbidden`. Errors name the address.
+pub async fn serve(
+    listen: &[SocketAddr],
+    allow: Option<&[Cidr]>,
+    live: LiveState,
+) -> Result<MetricsServer, String> {
+    let allow: Option<Arc<[Cidr]>> = allow.map(Arc::from);
     let mut listeners = Vec::with_capacity(listen.len());
     for addr in listen {
         let l = TcpListener::bind(addr)
@@ -77,11 +88,11 @@ pub async fn serve(listen: &[SocketAddr], live: LiveState) -> Result<MetricsServ
             l.local_addr()
                 .map_err(|e| format!("metrics listener: {e}"))?,
         );
-        let (permits, live) = (permits.clone(), live.clone());
+        let (permits, live, allow) = (permits.clone(), live.clone(), allow.clone());
         server.tasks.push(tokio::spawn(async move {
             loop {
-                let stream = match l.accept().await {
-                    Ok((s, _)) => s,
+                let (stream, peer) = match l.accept().await {
+                    Ok(accepted) => accepted,
                     // Out of file descriptors and the like: back off.
                     Err(_) => {
                         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -92,14 +103,35 @@ pub async fn serve(listen: &[SocketAddr], live: LiveState) -> Result<MetricsServ
                     continue; // dropping the stream closes it
                 };
                 let live = live.clone();
+                let allowed = allow
+                    .as_deref()
+                    .is_none_or(|nets| nets.iter().any(|n| n.contains(peer.ip())));
                 tokio::spawn(async move {
-                    connection(stream, &live).await;
+                    if allowed {
+                        connection(stream, &live).await;
+                    } else {
+                        forbid(stream).await;
+                    }
                     drop(permit);
                 });
             }
         }));
     }
     Ok(server)
+}
+
+/// Refuse `stream` with a 403, without reading from it, then close it.
+async fn forbid(mut stream: TcpStream) {
+    let _ = tokio::time::timeout(IO_TIMEOUT, async {
+        stream.write_all(FORBIDDEN).await?;
+        stream.shutdown().await?;
+        // Take what the client already sent, so that closing does not reset
+        // the connection before it has read the 403.
+        let mut sink = [0u8; 1024];
+        let _ = tokio::time::timeout(Duration::from_millis(200), stream.read(&mut sink)).await;
+        Ok::<(), std::io::Error>(())
+    })
+    .await;
 }
 
 /// Serve one request on `stream`, then close it.
@@ -918,9 +950,45 @@ mod tests {
     async fn server() -> MetricsServer {
         let live = LiveState::default();
         live.replace(Default::default(), None);
-        serve(&["127.0.0.1:0".parse().unwrap()], live)
+        serve(&["127.0.0.1:0".parse().unwrap()], None, live)
             .await
             .unwrap()
+    }
+
+    async fn server_allowing(allow: Option<&[&str]>) -> MetricsServer {
+        let live = LiveState::default();
+        live.replace(Default::default(), None);
+        let nets: Option<Vec<Cidr>> =
+            allow.map(|a| a.iter().map(|c| Cidr::parse(c).unwrap()).collect());
+        serve(&["127.0.0.1:0".parse().unwrap()], nets.as_deref(), live)
+            .await
+            .unwrap()
+    }
+
+    // spectra-scenario: metrics-endpoint / Source inside an allowed network
+    // spectra-scenario: metrics-endpoint / Source outside every allowed network
+    // spectra-scenario: metrics-endpoint / Not set
+    #[tokio::test]
+    async fn allow_decides_who_gets_the_metrics() {
+        let get = b"GET /metrics HTTP/1.1\r\n\r\n";
+        let inside = server_allowing(Some(&["127.0.0.0/8"])).await;
+        let resp = exchange(inside.local_addrs()[0], get).await;
+        assert!(resp.starts_with("HTTP/1.1 200 OK"), "{resp}");
+        assert!(resp.contains("emfor_"), "{resp}");
+
+        let outside = server_allowing(Some(&["10.0.0.0/8"])).await;
+        let resp = exchange(outside.local_addrs()[0], get).await;
+        assert!(resp.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{resp}");
+        assert!(resp.contains("Content-Length: 0"), "{resp}");
+        assert!(resp.ends_with("\r\n\r\n"), "empty body: {resp}");
+        assert!(!resp.contains("emfor_"), "{resp}");
+        // Refused without reading: a request that is not even valid.
+        let resp = exchange(outside.local_addrs()[0], b"junk").await;
+        assert!(resp.starts_with("HTTP/1.1 403"), "{resp}");
+
+        let unset = server_allowing(None).await;
+        let resp = exchange(unset.local_addrs()[0], get).await;
+        assert!(resp.starts_with("HTTP/1.1 200 OK"), "{resp}");
     }
 
     /// Send `request` and read until the server closes the connection.
@@ -1033,7 +1101,10 @@ mod tests {
     async fn bind_failure_names_the_address() {
         let srv = server().await;
         let addr = srv.local_addrs()[0];
-        let err = serve(&[addr], LiveState::default()).await.err().unwrap();
+        let err = serve(&[addr], None, LiveState::default())
+            .await
+            .err()
+            .unwrap();
         assert!(err.contains(&addr.to_string()), "{err}");
     }
 
@@ -1042,7 +1113,7 @@ mod tests {
     #[tokio::test]
     async fn not_ready_yet() {
         let live = LiveState::default();
-        let srv = serve(&["127.0.0.1:0".parse().unwrap()], live.clone())
+        let srv = serve(&["127.0.0.1:0".parse().unwrap()], None, live.clone())
             .await
             .unwrap();
         let addr = srv.local_addrs()[0];

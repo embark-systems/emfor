@@ -249,6 +249,7 @@ reload 能改哪些東西：
 | `[store]` 裡的任何設定 | 拒絕：`store: store settings require restart`。 |
 | `[dns] listen`、新增或移除 `[dns]` | 拒絕：`dns.listen: dns listen settings require restart`。 |
 | `[metrics] listen`、新增或移除 `[metrics]` | 拒絕：`metrics.listen: metrics listen settings require restart`。 |
+| `[metrics] allow` | 和執行中的不同就拒絕：`metrics.allow: metrics allow settings require restart`。 |
 | `[peers] listen`、新增或移除 `[peers]` | 拒絕：`peers.listen: peers listen settings require restart`。 |
 
 被拒絕的這幾項，要重新啟動 daemon 才會生效（`systemctl restart emfor`）。重新啟動時會有一小段時間，查詢分不出哪些 backend 是好的、哪些是壞的（[第 12 章](12-operating.md#重新啟動時應用程式會看到什麼)），所以 reload 能解決的，就優先用 reload。

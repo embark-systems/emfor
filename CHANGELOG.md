@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`[metrics] allow` limits who can read `/metrics`.** A list of networks
+  (`"10.0.0.0/8"`, `"fd00::/8"`); a connection from any other source gets
+  `403 Forbidden` and no metrics. Loopback is not exempt once `allow` is set.
+  Without `allow` nothing changes, except a warning at start and after a
+  reload when `listen` has a non-loopback address and `allow` is not set. A changed `allow` needs a
+  restart.
+
 - **`http` checks take a `ca_file`.** For a server whose certificate a private
   CA signed, set `ca_file` to the CA's PEM file instead of installing it
   system-wide or turning off `tls_verify`. Only that file is trusted, not the
