@@ -198,11 +198,13 @@ fn exit_statuses() {
     );
     // 2: no service of that name, an unknown option, a config that cannot be read.
     assert_eq!(run(&f.config, &["other.svc.emfor"]).status.code(), Some(2));
-    assert_eq!(
-        run(&f.config, &["api.svc.emfor", "--dns", "SRV"])
-            .status
-            .code(),
-        Some(2)
+    let srv = run(&f.config, &["api.svc.emfor", "--dns", "SRV"]);
+    assert_eq!(srv.status.code(), Some(2));
+    assert!(stdout(&srv).is_empty());
+    let err = String::from_utf8_lossy(&srv.stderr);
+    assert!(
+        err.contains("invalid value 'SRV'") && err.contains("possible values: A, AAAA"),
+        "no usage error: {err}"
     );
     assert_eq!(
         run(&f.config, &["api.svc.emfor", "--nonsense"])
