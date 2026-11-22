@@ -259,7 +259,7 @@ fn second_daemon_on_same_store_exits_one() {
 }
 
 // spectra-scenario: service-config / Valid config
-// spectra-scenario: service-config / Invalid config
+// spectra-scenario: service-config / Invalid config in check-config
 // spectra-scenario: service-config / Without the flag
 #[test]
 fn check_config_valid_and_invalid() {
@@ -705,7 +705,7 @@ fn check_config_lists_the_files_it_read() {
 /// checks again.
 // spectra-scenario: service-config / Valid config with fragments
 // spectra-scenario: service-config / Round trip
-// spectra-scenario: service-config / Invalid config
+// spectra-scenario: service-config / Invalid config when showing the merged config
 #[test]
 fn check_config_show_prints_the_merged_config() {
     let dir = tempfile::tempdir().unwrap();

@@ -345,7 +345,7 @@ mod tests {
         vec![(key.to_owned(), message.to_owned())]
     }
 
-    // spectra-scenario: network-checks / Minimal options
+    // spectra-scenario: network-checks / DNS minimal options
     #[test]
     fn minimal_options_use_the_defaults() {
         let s = parse(&options(json!({ "name": "ns-check.example.org" }))).unwrap();
@@ -357,7 +357,7 @@ mod tests {
         assert!(!s.expect_answer);
     }
 
-    // spectra-scenario: network-checks / Minimal options / DNS option validation
+    // spectra-scenario: network-checks / DNS minimal options / DNS option validation
     #[test]
     fn dns_option_validation() {
         assert_eq!(errors(json!({})), one("name", "missing required key"));

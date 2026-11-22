@@ -189,7 +189,7 @@ tests:
 - **WHEN** an operator runs `emfor check-config --config emfor.toml` where `emfor.toml` has 2 services and 5 backends
 - **THEN** the command prints `config ok: 2 services, 5 backends` and exits 0
 
-#### Scenario: Invalid config
+#### Scenario: Invalid config in check-config
 
 - **WHEN** the config contains an unknown key `services."api.svc.emfor".intervall`
 - **THEN** the command prints an error containing `services."api.svc.emfor".intervall` and exits 2
@@ -840,7 +840,7 @@ When `include_dir` is set, `emfor check-config` SHALL print its usual `config ok
 - **WHEN** `include_dir` is not set
 - **THEN** the first line is `# merged from <main file>` and no other line has a comment
 
-#### Scenario: Invalid config
+#### Scenario: Invalid config when showing the merged config
 
 - **WHEN** the config has an error
 - **THEN** standard output is empty, standard error has the same errors as `emfor check-config`, and the exit status is 2

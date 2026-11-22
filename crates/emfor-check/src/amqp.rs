@@ -531,7 +531,7 @@ mod tests {
         (key.to_owned(), message.to_owned())
     }
 
-    // spectra-scenario: network-checks / Minimal options
+    // spectra-scenario: network-checks / AMQP minimal options
     // spectra-scenario: network-checks / Password file grows after validation / AMQP option validation
     #[test]
     fn amqp_option_validation() {

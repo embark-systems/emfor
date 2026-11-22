@@ -344,7 +344,7 @@ mod tests {
         vec![(key.to_owned(), message.to_owned())]
     }
 
-    // spectra-scenario: network-checks / Defaults / SMTP option validation
+    // spectra-scenario: network-checks / SMTP defaults / SMTP option validation
     #[test]
     fn smtp_option_validation() {
         let dir = tempfile::tempdir().unwrap();
@@ -379,7 +379,7 @@ mod tests {
         }
     }
 
-    // spectra-scenario: network-checks / Defaults
+    // spectra-scenario: network-checks / SMTP defaults
     #[test]
     fn helo_defaults_to_an_address_literal() {
         assert_eq!(
@@ -523,7 +523,7 @@ mod tests {
         }
     }
 
-    // spectra-scenario: network-checks / Defaults
+    // spectra-scenario: network-checks / SMTP defaults
     #[tokio::test]
     async fn ehlo_names_the_local_address() {
         let (addr, seen) = fake_smtp(b"220 mx\r\n".to_vec(), plain, None).await;

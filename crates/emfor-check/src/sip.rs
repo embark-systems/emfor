@@ -575,7 +575,7 @@ mod tests {
 
     // ---- options ----
 
-    // spectra-scenario: network-checks / Defaults
+    // spectra-scenario: network-checks / SIP defaults
     #[test]
     fn defaults() {
         let s = parse(&Options::new(), true).unwrap();
@@ -590,7 +590,7 @@ mod tests {
         );
     }
 
-    // spectra-scenario: network-checks / Defaults / SIP option validation
+    // spectra-scenario: network-checks / SIP defaults / SIP option validation
     #[test]
     fn sip_option_validation() {
         assert_eq!(errors(json!({})), Vec::new());

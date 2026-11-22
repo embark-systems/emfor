@@ -390,8 +390,8 @@ mod tests {
         vec![(key.to_owned(), message.to_owned())]
     }
 
-    // spectra-scenario: network-checks / Defaults
-    // spectra-scenario: network-checks / Defaults / gRPC option validation
+    // spectra-scenario: network-checks / gRPC defaults
+    // spectra-scenario: network-checks / gRPC defaults / gRPC option validation
     #[test]
     fn grpc_option_validation() {
         let rows = [
@@ -695,7 +695,7 @@ mod tests {
         }
     }
 
-    // spectra-scenario: network-checks / Defaults
+    // spectra-scenario: network-checks / gRPC defaults
     #[tokio::test]
     async fn sends_the_health_request() {
         let (addr, seen) = fake_server(ok(&[0x08, 0x01]), None).await;

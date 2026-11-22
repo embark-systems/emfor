@@ -498,7 +498,7 @@ mod tests {
     }
 
     /// Spec network-checks Example "QUIC option validation".
-    // spectra-scenario: network-checks / Defaults
+    // spectra-scenario: network-checks / QUIC defaults
     // spectra-scenario: network-checks / HTTP option without http3
     // spectra-scenario: network-checks / HTTP option without http3 / QUIC option validation
     #[test]
@@ -620,7 +620,7 @@ mod tests {
         }
     }
 
-    // spectra-scenario: network-checks / Defaults
+    // spectra-scenario: network-checks / QUIC defaults
     #[test]
     fn defaults() {
         let s = parse(&options(json!({})), false).unwrap();

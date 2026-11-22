@@ -102,7 +102,7 @@ The `dns` plugin SHALL accept these `check_options` keys and SHALL report every 
 
 A missing `name` SHALL be `missing required key`; a non-string `name`, `type` or `transport` SHALL be `must be a string`; a non-boolean `recursion_desired` or `expect_answer` SHALL be `must be a boolean`.
 
-#### Scenario: Minimal options
+#### Scenario: DNS minimal options
 
 - **WHEN** a service with `check = "dns"` sets `check_options = { name = "ns-check.example.org" }`
 - **THEN** the plugin reports no errors and checks with type `A` over UDP, recursion desired, expecting `NOERROR`
@@ -367,7 +367,7 @@ The `sip` plugin SHALL accept these `check_options` keys and SHALL report every 
 
 Type errors SHALL be `must be a string` and `must be a boolean`.
 
-#### Scenario: Defaults
+#### Scenario: SIP defaults
 
 - **WHEN** a service with `check = "sip"` and backend `10.0.9.11:5060` sets no `check_options`
 - **THEN** the plugin reports no errors and sends OPTIONS for `sip:10.0.9.11:5060` over UDP, accepting final responses 200 to 499
@@ -622,7 +622,7 @@ The `smtp` plugin SHALL accept these `check_options` keys and SHALL report every
 
 Type errors SHALL be `must be a string` and `must be a boolean`.
 
-#### Scenario: Defaults
+#### Scenario: SMTP defaults
 
 - **WHEN** a service with `check = "smtp"` sets no `check_options` and the plugin connects from `10.0.0.5`
 - **THEN** the plugin reports no errors and sends `EHLO [10.0.0.5]` in plaintext
@@ -761,7 +761,7 @@ The `amqp` plugin SHALL accept these `check_options` keys and SHALL report every
 
 Type errors SHALL be `must be a string` and `must be a boolean`.
 
-#### Scenario: Minimal options
+#### Scenario: AMQP minimal options
 
 - **WHEN** a service with `check = "amqp"` sets `check_options = { user = "emfor", password_file = "/etc/emfor/amqp.pass" }`
 - **THEN** the plugin reports no errors and opens vhost `/`
@@ -1017,7 +1017,7 @@ The `grpc` plugin SHALL accept these `check_options` keys and SHALL report every
 
 Type errors SHALL be `must be a string` and `must be a boolean`.
 
-#### Scenario: Defaults
+#### Scenario: gRPC defaults
 
 - **WHEN** a service with `check = "grpc"` sets no `check_options`
 - **THEN** the plugin reports no errors and checks the whole server over plaintext HTTP/2
@@ -1165,7 +1165,7 @@ The `quic` plugin SHALL accept these `check_options` keys and SHALL report every
 
 `path`, `host_header`, `expect_status` and `expect_body` SHALL be reported as `requires http3 = true` when `http3` is not `true`. Type errors SHALL be `must be a string` and `must be a boolean`.
 
-#### Scenario: Defaults
+#### Scenario: QUIC defaults
 
 - **WHEN** a service with `check = "quic"` sets no `check_options`
 - **THEN** the plugin reports no errors and each check is a QUIC handshake offering ALPN `h3` with certificate verification on
