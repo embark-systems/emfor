@@ -19,6 +19,7 @@
 | `cannot open state store: /var/lib/emfor/state.mdb.writer: No such file or directory (os error 2)` | store 目錄不存在；daemon 不會自己建。 | `install -d -o emfor -g emfor -m 0755 /var/lib/emfor`（unit 的 `StateDirectory=` 會幫你做這件事）。 |
 | `cannot open state store: store is already in use by another emfor daemon: lock file /var/lib/emfor/state.mdb.writer is held` | 已經有另一個 daemon 在用這個 store。 | 把那個停掉，或給這個 daemon 另一個 `[store] path`。 |
 | `cannot start metrics server: cannot listen on 127.0.0.1:8080 (tcp): Address already in use (os error 98)` | port 已經被佔用。 | 把 port 空出來，或改 `listen`。 |
+| `emfor status` 印出 `store is empty: the daemon has not written to it yet; if it should be running, check its log` | daemon 開了 store，在第一次寫入之前就退出了，例如綁不上 DNS port。store 沒有壞。 | 看 log（`journalctl -u emfor`）找 daemon 退出時的錯誤；上面幾列和 `[dns] listen` 的 port 是最常見的原因。 |
 | `invalid config /etc/emfor/emfor.toml: 2 error(s)` 以及後面的錯誤行 | 設定無效（結束代碼 2）。 | 跑 `emfor check-config`，一行一行修（見下）。 |
 | `/etc/emfor/conf.d: writable by group or others (mode 0775); refusing to load it; to fix it: chmod g-w,o-w /etc/emfor/conf.d` | 設定檔或目錄可以被其他人修改。 | 照訊息裡寫的跑 `chmod`（或 `chown`）。 |
 | `include_dir: cannot read directory /etc/emfor/conf.d: No such file or directory (os error 2)` | `include_dir` 指到一個不存在的目錄。 | 把目錄建起來，或拿掉 `include_dir`。 |

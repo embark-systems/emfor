@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`emfor status` no longer calls an empty store a version problem.** A store
+  the daemon never wrote to (it exited at start, for example because the DNS
+  port was taken) gives `store is empty: the daemon has not written to it yet;
+  if it should be running, check its log` instead of `store format version
+  (missing)`. A store with a heartbeat or services but no version keeps the
+  old message.
+
 - **A reload logs what it changed.** After an accepted reload the log has one
   line per difference (services and backends added, removed or changed,
   `drain`, a changed check definition by digest only, peer group settings),

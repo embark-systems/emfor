@@ -192,6 +192,23 @@ impl Reader {
 
         match get(KEY_SCHEMA_VERSION)? {
             Some(v) if emfor_format::readable_schema(v) => {}
+            None if get(KEY_HEARTBEAT)?.is_none()
+                && self
+                    .db
+                    .prefix_iter(&rtxn, SERVICE_KEY_PREFIX)
+                    .map_err(lmdb)?
+                    .next()
+                    .is_none() =>
+            {
+                // A daemon that exited before its first write (for example
+                // the DNS port was taken) leaves no keys at all; calling
+                // that a format problem sends the operator the wrong way.
+                return Err(Failure(
+                    "store is empty: the daemon has not written to it yet; \
+                     if it should be running, check its log"
+                        .into(),
+                ));
+            }
             v => {
                 return Err(Failure(format!(
                     "store format version {}; this emfor reads versions {READABLE_SCHEMA_VERSIONS}",
@@ -2425,6 +2442,41 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Spec "Status reads the store read-only": a store without a version
+    /// is empty when it has no heartbeat and no service record, and a format
+    /// problem when it has either.
+    // spectra-scenario: status-command / Store without any data
+    // spectra-scenario: status-command / Heartbeat but no format version
+    #[test]
+    fn reader_tells_an_empty_store_from_a_missing_version() {
+        let empty = "store is empty: the daemon has not written to it yet; \
+                     if it should be running, check its log";
+        let missing = "store format version (missing); this emfor reads versions 1 and 2";
+        let rows: [(&[(&str, &str)], &str); 3] = [
+            (&[], empty),
+            (&[(KEY_HEARTBEAT, "1")], missing),
+            (&[("svc/web", "{}")], missing),
+        ];
+        for (keys, want) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let cfg = crate::store::tests::cfg(dir.path());
+            let store = crate::store::Store::open(&cfg).unwrap();
+            store
+                .write(|txn, db| {
+                    for (k, v) in keys {
+                        db.put(txn, k, v)?;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            drop(store);
+            let Err(Failure(m)) = Reader::open(&cfg).unwrap().read() else {
+                panic!("keys {keys:?} read");
+            };
+            assert_eq!(m, want, "keys {keys:?}");
         }
     }
 
