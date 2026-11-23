@@ -149,6 +149,24 @@ exit 0
 
 每個 backend 每檢查一次就要啟動一個行程，成本不低。要頻繁檢查很多 backend 時，改寫一個 [plugin](07-plugins.md#自己寫-plugin) 比較好。想用現有的 Nagios 外掛（它們要在命令列帶 `-H` 與 `-p`），可以參考[第 14 章](14-integrations.md#把-nagios-外掛當成檢查)的包裝 script。
 
+### ping 與 SCTP
+
+emfor 沒有 ICMP 檢查，也沒有 SCTP 檢查，而且 `sip` 和 `diameter` 外掛會拒絕 `transport = "sctp"`。在有內建檢查之前，請用 `exec`。底下的東西都沒有實際跑過，只是個起點。
+
+`exec` 的命令列是固定的，backend 是從環境變數傳進去的，所以要寫一支小 script：
+
+```sh
+#!/bin/sh
+# /usr/local/libexec/check_ping.sh：backend 回應一次 ping 就算 up。
+/usr/bin/ping -c 1 -W 1 "$EMFOR_IP" >/dev/null 2>&1 || { echo "no ping answer"; exit 1; }
+```
+
+port 用不到。IPv6 的 backend 要加 `-6`。套件附的 unit 沒有任何 capability，又有 `NoNewPrivileges`，所以靠檔案 capability（`cap_net_raw`）才能用的 `ping` 在這裡不能用。Linux 上的 `ping` 可以改開不需特權的 ICMP socket，但 kernel 只允許 `net.ipv4.ping_group_range` 範圍內的 group ID 這麼做；`emfor` 這個 group 必須在範圍裡（`sysctl net.ipv4.ping_group_range` 可以看）。unit 的 `RestrictAddressFamilies` 本來就允許這種 socket。用之前先跑 `runuser -u emfor -- ping -c 1 <位址>` 確認。
+
+SCTP 的話，用任何一支「到 `$EMFOR_IP:$EMFOR_PORT` 的 association 建起來就結束代碼 0、建不起來就結束代碼 1」的程式，放進同樣的 script。主機的 kernel 要有 SCTP（Linux 上是 `sctp` 模組，有些發行版預設不讓它載入）；沒有的話程式開不了 socket，檢查會依結束代碼回報 `error` 或 `down`。用 `AF_INET` 和 `IPPROTO_SCTP` 開 socket，unit 的 `RestrictAddressFamilies` 是允許的，不過這點同樣沒有試過。這樣的檢查只能證明 association 建得起來，不能證明後面的應用程式有回應。
+
+每一種都是每次檢查啟動一個 process，成本見上面。
+
 ## 檢查程式拿到的環境
 
 從 0.7.0 起，`exec` 程式與 plugin **拿不到 daemon 的環境**。它們只會拿到：

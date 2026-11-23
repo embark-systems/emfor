@@ -168,6 +168,42 @@ instead. To use an existing Nagios plugin, which wants `-H` and `-p` on its
 command line, see the wrapper in
 [chapter 14](14-integrations.md#using-a-nagios-plugin-as-a-check).
 
+### Ping and SCTP
+
+emfor has no ICMP check and no SCTP check, and the `sip` and `diameter`
+plugins reject `transport = "sctp"`. Until there is one, use `exec`. None of
+what follows has been run; it is a starting point.
+
+`exec` takes a fixed command line, and the backend comes in the environment,
+so use a small script:
+
+```sh
+#!/bin/sh
+# /usr/local/libexec/check_ping.sh: up when the backend answers one ping.
+/usr/bin/ping -c 1 -W 1 "$EMFOR_IP" >/dev/null 2>&1 || { echo "no ping answer"; exit 1; }
+```
+
+The port is not used. For an IPv6 backend add `-6`. The packaged unit has no
+capabilities and `NoNewPrivileges`, so a `ping` that depends on a file
+capability (`cap_net_raw`) cannot use it. On Linux `ping` can instead open an
+unprivileged ICMP socket, which the kernel allows only for group IDs in
+`net.ipv4.ping_group_range`; the `emfor` group must be in that range
+(`sysctl net.ipv4.ping_group_range` shows it). The unit's
+`RestrictAddressFamilies` already allows the socket. Check with
+`runuser -u emfor -- ping -c 1 <address>` before relying on it.
+
+For SCTP, use any program that exits 0 when an association to
+`$EMFOR_IP:$EMFOR_PORT` comes up and 1 when it does not, in the same kind of
+script. The host needs SCTP in its kernel (on Linux the `sctp` module, which
+some distributions keep from loading); without it the program fails to open
+the socket and the check reports `error` or `down`, depending on the exit
+code. Opening a socket with `AF_INET` and `IPPROTO_SCTP` is allowed by the
+unit's `RestrictAddressFamilies`, but this has not been tried either. A
+check like this only shows that the association comes up, not that the
+application behind it answers.
+
+Each of these starts a process per check; see above for what that costs.
+
 ## The environment of check programs
 
 Since 0.7.0 an `exec` program and a plugin **do not get the daemon's

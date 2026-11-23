@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The manual shows how to check ping and SCTP with `exec`.** emfor has no
+  ICMP or SCTP checker; chapter 6 gives a wrapper script for `ping` (with
+  what the unit's sandbox and `net.ipv4.ping_group_range` mean for it) and
+  describes what an SCTP check program needs. Nothing there has been run. No
+  code change.
+
 - **The manual says which releases get fixes.** Only the latest one, with no
   backports before 1.0, no support contract and no promised response time
   (chapter 15). No code change.
