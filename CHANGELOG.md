@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **How to scrape `/metrics` over TLS.** `/metrics` still has no TLS of its
+  own. Chapter 12 (en and zh_TW) has a section "Metrics over TLS": `listen`
+  stays on loopback, nginx in front terminates TLS and asks the scraper for a
+  certificate, and Prometheus uses `tls_config`. Chapter 13 and
+  `docs/deploy/daemon.md` point to it. `tools/metrics-proxy-test.sh` tries the
+  recipe in a container with nginx and a throwaway CA; Prometheus, HAProxy and
+  stunnel were not tried.
+
 - **The repository has a Nix flake.** It builds `emfor` (the daemon and
   `emfor-check`) and `libemfor`, and its NixOS module `services.emfor` writes
   `emfor.toml` from Nix settings and runs the daemon under the hardened unit of

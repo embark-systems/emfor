@@ -288,7 +288,7 @@ scrape_configs:
       - targets: ["127.0.0.1:5301"]
 ```
 
-The default address is loopback only, for a Prometheus or agent on the same host. To scrape from elsewhere, listen on an address the scraper can reach and allow only the scraper's address in the host firewall: the endpoint has no authentication and no TLS, and it shows every service name and backend address.
+The default address is loopback only, for a Prometheus or agent on the same host. To scrape from elsewhere, listen on an address the scraper can reach and allow only the scraper's address in the host firewall: the endpoint has no authentication and no TLS, and it shows every service name and backend address. To scrape over TLS with client certificates, keep `listen` on loopback and put a TLS proxy in front of it ([manual chapter 12](../manual/12-operating.md#metrics-over-tls)).
 
 ### Alerting rules
 

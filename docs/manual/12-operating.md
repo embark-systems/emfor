@@ -181,6 +181,65 @@ Ready-made alerting rules are in
 [examples/prometheus/emfor-rules.yml](../../examples/prometheus/emfor-rules.yml)
 ([chapter 14](14-integrations.md#prometheus)).
 
+### Metrics over TLS
+
+The `/metrics` endpoint is plain HTTP and has no authentication of its own.
+To scrape it from another host without sending it in the clear, keep `listen`
+on loopback and put a reverse proxy in front that terminates TLS and asks the
+scraper for a certificate. The proxy connects from `127.0.0.1`, so that is the
+one source `allow` needs:
+
+```toml
+[metrics]
+listen = ["127.0.0.1:5301"]
+allow = ["127.0.0.1/32"]
+```
+
+With nginx:
+
+```nginx
+server {
+    listen 8443 ssl;
+    ssl_certificate         /etc/nginx/emfor/server.pem;
+    ssl_certificate_key     /etc/nginx/emfor/server.key;
+    ssl_protocols           TLSv1.2 TLSv1.3;
+    # Only scrapers with a certificate of this CA.
+    ssl_client_certificate  /etc/nginx/emfor/ca.pem;
+    ssl_verify_client       on;
+    location = /metrics { proxy_pass http://127.0.0.1:5301/metrics; }
+    location / { return 404; }
+}
+```
+
+and in Prometheus:
+
+```yaml
+scrape_configs:
+  - job_name: emfor
+    scheme: https
+    tls_config:
+      ca_file: /etc/prometheus/emfor-ca.pem
+      cert_file: /etc/prometheus/scraper.pem
+      key_file: /etc/prometheus/scraper.key
+    static_configs:
+      - targets: ["host1:8443", "host2:8443"]
+```
+
+- Without `ssl_verify_client`, anyone who can reach the port reads the
+  metrics, encrypted. Keep it on, or firewall the port to the scrapers.
+- A new server certificate is a `nginx -s reload`; emfor is not touched.
+- The server certificate has to name the address the scraper connects to
+  (`subjectAltName`).
+- `stunnel` or HAProxy in front of the same loopback address does the same.
+  emfor itself has no TLS for `/metrics`.
+
+[tools/metrics-proxy-test.sh](../../tools/metrics-proxy-test.sh) tries this in
+a container with nginx from Debian and a throwaway CA: the metrics come over
+TLS only with a certificate of the CA, another CA or no certificate gets
+none, plain HTTP to the TLS port gets none, and a new server certificate takes
+effect with a reload while emfor keeps running. The project has not run
+Prometheus against it, or tried HAProxy or stunnel.
+
 ## Logs
 
 The daemon logs to standard error: the journal under systemd, syslog (tag

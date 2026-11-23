@@ -128,6 +128,53 @@ allow = ["127.0.0.0/8", "10.20.0.0/16"]   # 選用
 [examples/prometheus/emfor-rules.yml](../../examples/prometheus/emfor-rules.yml)
 （[第 14 章](14-integrations.md#prometheus)）。
 
+### 用 TLS 提供 metrics
+
+`/metrics` 是明文 HTTP，本身沒有認證。要從別的主機抓、又不想讓它明文經過網路時，把 `listen` 留在 loopback，前面放一個終結 TLS 的反向 proxy，並要求抓取端出示憑證。proxy 從 `127.0.0.1` 連進來，所以 `allow` 只要放這一個來源：
+
+```toml
+[metrics]
+listen = ["127.0.0.1:5301"]
+allow = ["127.0.0.1/32"]
+```
+
+用 nginx：
+
+```nginx
+server {
+    listen 8443 ssl;
+    ssl_certificate         /etc/nginx/emfor/server.pem;
+    ssl_certificate_key     /etc/nginx/emfor/server.key;
+    ssl_protocols           TLSv1.2 TLSv1.3;
+    # 只有持有這個 CA 簽發的憑證的抓取端可以連。
+    ssl_client_certificate  /etc/nginx/emfor/ca.pem;
+    ssl_verify_client       on;
+    location = /metrics { proxy_pass http://127.0.0.1:5301/metrics; }
+    location / { return 404; }
+}
+```
+
+Prometheus 這邊：
+
+```yaml
+scrape_configs:
+  - job_name: emfor
+    scheme: https
+    tls_config:
+      ca_file: /etc/prometheus/emfor-ca.pem
+      cert_file: /etc/prometheus/scraper.pem
+      key_file: /etc/prometheus/scraper.key
+    static_configs:
+      - targets: ["host1:8443", "host2:8443"]
+```
+
+- 沒有 `ssl_verify_client` 時，連得到這個 port 的人都讀得到 metrics，只是加密而已。請開著它，或用防火牆把這個 port 限制給抓取端。
+- 換伺服器憑證只要 `nginx -s reload`，不必動 emfor。
+- 伺服器憑證要寫上抓取端連的位址（`subjectAltName`）。
+- 在同一個 loopback 位址前面放 `stunnel` 或 HAProxy 也一樣。emfor 本身沒有 `/metrics` 的 TLS。
+
+[tools/metrics-proxy-test.sh](../../tools/metrics-proxy-test.sh) 在容器裡用 Debian 的 nginx 和一個臨時 CA 試過這個做法：只有持有該 CA 憑證的抓取端拿得到 metrics，別的 CA 或沒有憑證的都拿不到，對 TLS port 說明文 HTTP 也拿不到，換掉伺服器憑證後 reload 就生效，emfor 全程沒有停。專案沒有用 Prometheus 實際抓過，也沒試過 HAProxy 或 stunnel。
+
 ## Log
 
 daemon 把 log 寫到 standard error：在 systemd 底下會進 journal，用 FreeBSD rc script 時會進 syslog（tag `emfor`）。等級用 `[log] level` 設定（`trace`、`debug`、`info`、`warn`、`error`；預設 `info`）；想在某一次執行時改用別的等級，可以用 `RUST_LOG` 覆寫。`[log] format` 是 `"text"`（預設）或 `"json"`（見[下面](#json-行)）。啟動和一次狀態變化的 log 長這樣：

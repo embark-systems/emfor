@@ -111,7 +111,9 @@ Neither has authentication. Both listen on `127.0.0.1` by default; the daemon
 warns when DNS listens elsewhere, and when `/metrics` does and `[metrics]
 allow` is not set. `allow` lists the networks that may read `/metrics`; the
 others get `403`. If you expose them, firewall them to the
-hosts that need them. The DNS server has a per-network rate limit for UDP
+hosts that need them. `/metrics` has no TLS of its own; to scrape it across a
+network, put a TLS proxy that asks for client certificates in front of the
+loopback address ([chapter 12](12-operating.md#metrics-over-tls)). The DNS server has a per-network rate limit for UDP
 ([chapter 10](10-dns.md#rate-limit)) and answers never exceed the query's
 offered size.
 

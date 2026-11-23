@@ -80,7 +80,7 @@ store 裡存的是服務名稱、backend 位址、狀態和 reason，不存任�
 
 ## DNS 與 metrics
 
-兩者都沒有認證，預設都只聽 `127.0.0.1`；DNS 聽在其他位址時，daemon 會發出警告；`/metrics` 聽在其他位址又沒設 `[metrics] allow` 時也會。`allow` 列出可以讀 `/metrics` 的網段，其他來源得到 `403`。如果要對外開放，請用防火牆限制只讓需要的主機連進來。DNS server 對 UDP 有依網段計算的速率限制（[第 10 章](10-dns.md#速率限制)），回答的大小也絕不會超過查詢端宣告可接受的大小。
+兩者都沒有認證，預設都只聽 `127.0.0.1`；DNS 聽在其他位址時，daemon 會發出警告；`/metrics` 聽在其他位址又沒設 `[metrics] allow` 時也會。`allow` 列出可以讀 `/metrics` 的網段，其他來源得到 `403`。如果要對外開放，請用防火牆限制只讓需要的主機連進來。`/metrics` 本身沒有 TLS；要跨網路抓取，請在 loopback 位址前面放一個要求客戶端憑證的 TLS proxy（[第 12 章](12-operating.md#用-tls-提供-metrics)）。DNS server 對 UDP 有依網段計算的速率限制（[第 10 章](10-dns.md#速率限制)），回答的大小也絕不會超過查詢端宣告可接受的大小。
 
 ## 聯防訊息
 
