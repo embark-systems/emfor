@@ -309,6 +309,37 @@ on every exit after 2 seconds.
   process that maps it can die with `SIGBUS`. To replace it, write a file
   next to it and `mv` it over.
 
+### Sizing the store
+
+The store holds one record per service and one history per service (the last
+20 state changes of each backend), rewritten in place, so its size follows the
+number of backends and not the number of checks. `tools/scale-test.sh` measured
+it in a Debian docker container on a laptop (`interval = "1s"`,
+`timeout = "500ms"`, `tcp` checks against local listeners, at most 80 services):
+
+| Backends | Store when all are up | Store with full histories | Memory (RSS) | CPU | Switch time |
+| --- | --- | --- | --- | --- | --- |
+| 400 | 0.57 MB | 1.6 MB | 13 MiB | 5 % | 2.2 s |
+| 2,000 | 2.7 MB | 4.4 MB | 32 MiB | 18 % | 2.8 s |
+| 4,000 | 4.4 MB | 7.8 MB | 60 MiB | 19 % | 3.3 s |
+| 8,000 | 7.2 MB | 17.6 MB | 114 MiB | 23 % | 3.4 s |
+
+"Full histories" is after half of the backends had changed state 24 times;
+"switch time" is from stopping a listener until all its backends were
+`unhealthy` (the limit is `fall` × `interval` + `timeout` = 3.5 s here). CPU is
+a percentage of one core.
+
+A rule that covers these numbers: plan **6 KB per backend** for the store, and
+set `map_size` to **at least twice** that, because LMDB writes a changed page
+to a new place before it frees the old one. The twice is a margin, not a
+measurement. The default 64 MiB then fits about 5,000 backends. Check the
+result on your own hosts with `emfor_store_used_bytes`, and alert before it
+reaches `emfor_store_map_size_bytes` ([a full store](#a-full-store)).
+
+These numbers are for one host and one container. They say nothing about
+checks that take time (`http`, `exec`, a plugin), about a slow disk, or about
+the peer group; test those on your own hardware before relying on them.
+
 ### Keeping the store in memory
 
 Since nothing in the store must outlive a reboot, it can live on a tmpfs

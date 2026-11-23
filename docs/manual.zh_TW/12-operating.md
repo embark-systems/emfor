@@ -214,6 +214,23 @@ systemd unit 遇到 1 和 2 不會重新啟動；FreeBSD 的 `daemon(8)` 則是�
 - 快速入門的 store 只有一個服務，回報的是 `emfor_store_used_bytes 32768`。請拿這個 metric 和 `emfor_store_map_size_bytes`（預設 64 MiB）對照著看：store 滿了以後 commit 會失敗，client 很快就會看到 store 過期。調高 `map_size` 要重新啟動。
 - 絕對不要直接改 store 檔案本身（用 `cp` 蓋過去、`truncate`、`>`）：每個映射這個檔案的行程都可能因為 `SIGBUS` 掛掉。要替換的話，先在旁邊寫一個新檔案，再用 `mv` 蓋過去。
 
+### 估算 store 要多大
+
+store 為每個服務存一筆記錄和一份歷史（每個 backend 最近 20 次狀態變化），都是原地改寫，所以它的大小跟著 backend 的數量走，不跟檢查的次數走。`tools/scale-test.sh` 在筆電上的 Debian docker 容器裡量過（`interval = "1s"`、`timeout = "500ms"`，`tcp` 檢查打本機的 listener，最多 80 個服務）：
+
+| backend 數 | 全部正常時的 store | 歷史填滿時的 store | 記憶體（RSS） | CPU | 切換時間 |
+| --- | --- | --- | --- | --- | --- |
+| 400 | 0.57 MB | 1.6 MB | 13 MiB | 5 % | 2.2 秒 |
+| 2,000 | 2.7 MB | 4.4 MB | 32 MiB | 18 % | 2.8 秒 |
+| 4,000 | 4.4 MB | 7.8 MB | 60 MiB | 19 % | 3.3 秒 |
+| 8,000 | 7.2 MB | 17.6 MB | 114 MiB | 23 % | 3.4 秒 |
+
+「歷史填滿」是指一半的 backend 各變過 24 次狀態之後；「切換時間」是從停掉一個 listener 到它的 backend 全部變成 `unhealthy`（上限是 `fall` × `interval` + `timeout`，這裡是 3.5 秒）。CPU 是一顆核心的百分比。
+
+涵蓋這些數字的經驗法則：每個 backend 抓 **6 KB**，`map_size` 設成這個數字的**至少兩倍**，因為 LMDB 改一頁時會先寫到新的位置，才放掉舊的。兩倍是留的餘裕，不是量出來的。照這樣算，預設的 64 MiB 大約夠 5,000 個 backend。實際用量在自己的主機上看 `emfor_store_used_bytes`，並在它逼近 `emfor_store_map_size_bytes` 之前就告警（[store 滿了](#store-滿了)）。
+
+這些數字來自一台主機、一個容器。需要時間的檢查（`http`、`exec`、plugin）、慢的磁碟、聯防，它們都沒有涵蓋；要靠它們之前，請在自己的硬體上測。
+
 ### 把 store 放在記憶體
 
 store 裡沒有任何資料需要在重開機後留下來，所以可以把 store 放在 tmpfs 上，直接掛在 store 所在的目錄，大小至少要等於 `map_size`：

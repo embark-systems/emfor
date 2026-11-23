@@ -30,7 +30,7 @@
 | Key | 種類 | 預設值 | 說明 |
 | --- | --- | --- | --- |
 | `path` | 路徑 | `/var/lib/emfor/state.mdb` | client 讀的是 `EMFOR_STORE`，所以兩邊要設成一樣。目錄必須已經存在。 |
-| `map_size` | 大小 | `"64MiB"` | 至少 `1MiB`，會無條件進位到 64 KiB。 |
+| `map_size` | 大小 | `"64MiB"` | 至少 `1MiB`，會無條件進位到 64 KiB。要設多大見[第 12 章](12-operating.md#估算-store-要多大)。 |
 | `file_mode` | 檔案權限 | `"0640"` | 每次啟動時套用到 store 上。 |
 | `lock_file_mode` | 檔案權限 | `"0660"` | 每次啟動時套用到 `<path>-lock` 上。設成其他人可寫的權限會有警告。 |
 | `sync` | 布林值 | `false` | 設成 `true` 時，每次 commit 都會先寫進磁碟才算完成。 |

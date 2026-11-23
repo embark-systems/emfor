@@ -32,7 +32,7 @@ key`). The options of each check are in [chapter 6](06-health-checks.md)
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `path` | path | `/var/lib/emfor/state.mdb` | Clients read `EMFOR_STORE`, so keep the two equal. The directory must exist. |
-| `map_size` | size | `"64MiB"` | At least `1MiB`, rounded up to 64 KiB. |
+| `map_size` | size | `"64MiB"` | At least `1MiB`, rounded up to 64 KiB. How big to make it: [chapter 12](12-operating.md#sizing-the-store). |
 | `file_mode` | mode | `"0640"` | Set on the store at every start. |
 | `lock_file_mode` | mode | `"0660"` | Set on `<path>-lock` at every start. A mode others can write gives a warning. |
 | `sync` | boolean | `false` | `true` flushes every commit to disk before it completes. |

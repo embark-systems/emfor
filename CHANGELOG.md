@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The manual says how big the store gets, from a measurement.** New
+  `tools/scale-test.sh` (run by hand in docker, not by the CI) starts up to
+  8,000 `tcp` backends in 80 services and reports the store size, memory, CPU
+  and the time to switch. Chapter 12 ("Sizing the store") has the table and a
+  rule: 6 KB per backend, `map_size` at least twice that; the default 64 MiB
+  fits about 5,000 backends. Nothing in the daemon changed.
+
 - **A peer member that sends no results is now shown.** When a member is an
   assigned checker of a backend, is live and does not leave the service out,
   but sends no fresh result for it (it lacks the service or the backend, its
