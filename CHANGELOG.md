@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **A peer secret rotation is logged with a stable line.** When the content of
+  `[peers] secret_file` changes (no reload needed), the daemon logs one `info`
+  line with `change=peers_secret_rotated` and `secret_file=<path>`; the message
+  text is unchanged. It never holds the secret or a hash of it. Chapters 11 and
+  12 (en and zh_TW) describe it.
+
 - **How to scrape `/metrics` over TLS.** `/metrics` still has no TLS of its
   own. Chapter 12 (en and zh_TW) has a section "Metrics over TLS": `listen`
   stays on loopback, nginx in front terminates TLS and asks the scraper for a

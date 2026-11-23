@@ -229,6 +229,7 @@ reload 被接受之後，每個差異各有一行 `info`，排在 `config reload
 - 檢查定義改變時只會看到新舊定義的摘要（digest），不會看到選項本身。`resets_state=true` 表示這個服務的 backend 會從 `unknown` 重來；只改 `timeout` 時是 `false`。
 - `applies=next_start` 標的是 `previous_secret_file`，它只在啟動時讀。
 - 一次 reload 最多記 50 行，其餘合成一行 `change=more`，數量在 `omitted`。什麼都沒改的 reload 不會有這些行。
+- `secret_file` 的**內容**換掉不算 reload：daemon 會自己發現，並記一行 `info`，帶 `change=peers_secret_rotated` 和 `secret_file=<路徑>`。只有**路徑**改變時才會有上面的 `peers_changed` 行。
 - 任何一行都不含檢查選項、密鑰檔的內容，或它的雜湊。
 - log 記的是改了什麼、什麼時候，不是誰改的：`SIGHUP` 不帶寄件者。要記下誰改了檔案，請用 auditd 監看設定目錄（`auditctl -w /etc/emfor -p wa -k emfor-config`），或把檔案放在設定管理工具底下，並把 daemon 的 log 送到集中的 log 系統。
 

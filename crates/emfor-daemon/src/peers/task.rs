@@ -414,7 +414,7 @@ impl SecretReader {
             // The content of the path that was read before a reload changed
             // it is not the secret of the new path.
             if read_path == path {
-                apply_secret(group, done, warned, now);
+                apply_secret(group, done, path, warned, now);
             }
         }
         let read = self.read;
@@ -422,7 +422,7 @@ impl SecretReader {
         let to_read = path.clone();
         let mut handle = tokio::task::spawn_blocking(move || read(&to_read));
         match tokio::time::timeout(SECRET_READ_WAIT, &mut handle).await {
-            Ok(done) => apply_secret(group, joined(done), warned, now),
+            Ok(done) => apply_secret(group, joined(done), &path, warned, now),
             Err(_) => self.pending = Some((handle, now, path)),
         }
         true
@@ -631,17 +631,23 @@ async fn watch_event(notifier: &Option<Arc<Notify>>) {
 
 /// Apply a secret just read: a changed valid one becomes current; a missing
 /// or invalid one keeps the last valid secret, warning at most once a
-/// minute.
+/// minute. `path` is the file `read` came from.
 fn apply_secret(
     group: &mut Group,
     read: Result<Vec<u8>, String>,
+    path: &Path,
     warned: &mut Option<Instant>,
     now: Instant,
 ) {
     match read {
         Ok(k) => {
             if group.keys.rotate(k, now) {
+                // `change` and `secret_file` are stable fields, as in the
+                // audit log of a reload; the path is all that names the
+                // secret, never its content or a hash of it.
                 tracing::info!(
+                    change = %"peers_secret_rotated",
+                    secret_file = %path.display(),
                     "peer secret changed; messages are signed with the previous one for {}s more and it is accepted for {}s",
                     SIGN_PREVIOUS_FOR.as_secs(),
                     ACCEPT_PREVIOUS_FOR.as_secs()
@@ -1109,12 +1115,13 @@ mod tests {
         let (_d, path) = secret_file(&[1u8; 40], 0o600);
         let mut g = group(start);
         let mut warned = None;
-        apply_secret(&mut g, read_secret(&path), &mut warned, start);
+        apply_secret(&mut g, read_secret(&path), &path, &mut warned, start);
         assert_eq!(g.keys.current(), &[1u8; 40]);
         std::fs::remove_file(&path).expect("the temporary secret file can be removed");
         apply_secret(
             &mut g,
             read_secret(&path),
+            &path,
             &mut warned,
             start + Duration::from_secs(1),
         );
@@ -1123,6 +1130,7 @@ mod tests {
         apply_secret(
             &mut g,
             read_secret(&path),
+            &path,
             &mut warned,
             start + Duration::from_secs(30),
         );
@@ -1134,10 +1142,147 @@ mod tests {
         apply_secret(
             &mut g,
             read_secret(&path),
+            &path,
             &mut warned,
             start + Duration::from_secs(61),
         );
         assert_eq!(warned, Some(start + Duration::from_secs(61)));
+    }
+
+    /// The log lines that are rotation lines. A macro because
+    /// `traced_test` defines `logs_assert` inside each test function.
+    macro_rules! rotation_lines {
+        () => {{
+            let found = std::cell::RefCell::new(Vec::<String>::new());
+            logs_assert(|lines: &[&str]| {
+                found.borrow_mut().extend(
+                    lines
+                        .iter()
+                        .filter(|l| l.contains("peers_secret_rotated"))
+                        .map(|l| l.to_string()),
+                );
+                Ok(())
+            });
+            found.into_inner()
+        }};
+    }
+
+    /// Spec peer-group "Peer secret rotation log line": a secret that
+    /// changes is logged with `change` and the path it was read from, and
+    /// the line holds neither the old nor the new secret, nor a hash.
+    // spectra-scenario: peer-group / Secret file replaced with a new secret
+    #[test]
+    #[tracing_test::traced_test]
+    fn secret_rotation_is_logged_with_the_path_and_no_secret() {
+        let start = Instant::now();
+        let (_d, path) = secret_file(&[b'!'; 40], 0o600);
+        let mut g = group(start);
+        let mut warned = None;
+        apply_secret(&mut g, read_secret(&path), &path, &mut warned, start);
+        assert_eq!(g.keys.current(), &[b'!'; 40]);
+        let lines = rotation_lines!();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("change=peers_secret_rotated"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[0].contains(&format!("secret_file={}", path.display())),
+            "{lines:?}"
+        );
+        // Neither secret is in the log in any form it could leak in: raw
+        // text, hexadecimal, a Debug-printed byte list, or a hash.
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let dec = |b: &[u8]| {
+            b.iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let new_secret = [b'!'; 40];
+        for secret in [&new_secret[..], KEY] {
+            let forbidden = [
+                String::from_utf8_lossy(secret).into_owned(),
+                hex(secret),
+                dec(&secret[..8]),
+            ];
+            for f in forbidden {
+                assert!(!logs_contain(&f), "the log holds {f:?}: {lines:?}");
+            }
+        }
+        assert!(!logs_contain("sha256"), "{lines:?}");
+    }
+
+    /// Spec peer-group "Peer secret rotation log line": a file written again
+    /// with the content it has is not a rotation.
+    // spectra-scenario: peer-group / Same content written again
+    #[test]
+    #[tracing_test::traced_test]
+    fn same_secret_again_is_not_logged_as_a_rotation() {
+        let start = Instant::now();
+        let (_d, path) = secret_file(&[0xa7u8; 40], 0o600);
+        let mut g = group(start);
+        let mut warned = None;
+        apply_secret(&mut g, read_secret(&path), &path, &mut warned, start);
+        std::fs::write(&path, [0xa7u8; 40]).expect("the secret file can be written again");
+        apply_secret(
+            &mut g,
+            read_secret(&path),
+            &path,
+            &mut warned,
+            start + Duration::from_secs(1),
+        );
+        assert_eq!(
+            rotation_lines!().len(),
+            1,
+            "only the first change is logged"
+        );
+    }
+
+    /// Spec peer-group "Peer secret rotation log line": content that is not
+    /// a valid secret keeps the last one, with the warning as before and no
+    /// rotation line.
+    // spectra-scenario: peer-group / Invalid content is not logged as a rotation
+    #[test]
+    #[tracing_test::traced_test]
+    fn invalid_secret_is_not_logged_as_a_rotation() {
+        let start = Instant::now();
+        let (_d, path) = secret_file(&[0xa7u8; 5], 0o600);
+        let mut g = group(start);
+        let mut warned = None;
+        apply_secret(&mut g, read_secret(&path), &path, &mut warned, start);
+        assert_eq!(g.keys.current(), KEY, "keeps the last valid secret");
+        assert!(logs_contain("keeping the last valid secret"));
+        assert!(rotation_lines!().is_empty(), "{:?}", rotation_lines!());
+    }
+
+    /// Spec peer-group "Peer secret rotation log line": a reload that points
+    /// `secret_file` at a file with another secret is logged with the new
+    /// path (the read of the new path is what the peer task applies).
+    // spectra-scenario: peer-group / Reload changes the path to a file with another secret
+    #[test]
+    #[tracing_test::traced_test]
+    fn rotation_after_a_path_change_names_the_new_path() {
+        let start = Instant::now();
+        let (_d1, first) = secret_file(&[0xa7u8; 40], 0o600);
+        let (_d2, second) = secret_file(&[0xb8u8; 40], 0o600);
+        let mut g = group(start);
+        let mut warned = None;
+        apply_secret(&mut g, read_secret(&first), &first, &mut warned, start);
+        apply_secret(
+            &mut g,
+            read_secret(&second),
+            &second,
+            &mut warned,
+            start + Duration::from_secs(1),
+        );
+        assert_eq!(g.keys.current(), &[0xb8u8; 40]);
+        let lines = rotation_lines!();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[1].contains(&format!("secret_file={}", second.display())),
+            "{lines:?}"
+        );
     }
 
     /// A running daemon whose secret file changes owner to someone else keeps
@@ -1153,7 +1298,7 @@ mod tests {
         let (_d, path) = secret_file(&[1u8; 40], 0o640);
         let mut g = group(start);
         let mut warned = None;
-        apply_secret(&mut g, read_secret(&path), &mut warned, start);
+        apply_secret(&mut g, read_secret(&path), &path, &mut warned, start);
         assert_eq!(g.keys.current(), &[1u8; 40]);
         assert_eq!(warned, None);
 
@@ -1170,7 +1315,7 @@ mod tests {
             "expected an owner error, got {:?}",
             read.as_ref().err()
         );
-        apply_secret(&mut g, read, &mut warned, now);
+        apply_secret(&mut g, read, &path, &mut warned, now);
         assert_eq!(g.keys.current(), &[1u8; 40], "keeps the last valid secret");
         assert_eq!(warned, Some(now), "and warns");
 
@@ -1179,6 +1324,7 @@ mod tests {
         apply_secret(
             &mut g,
             read_secret(&path),
+            &path,
             &mut warned,
             start + Duration::from_secs(2),
         );

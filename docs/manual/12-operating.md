@@ -322,6 +322,10 @@ the values of `change` are stable; the wording of the line is not.
 - At most 50 lines are logged for one reload; the rest become one line with
   `change=more` and the number in `omitted`. A reload that changes nothing
   logs no such line.
+- A `secret_file` that changes its *content* is not a reload: the daemon
+  notices it by itself and logs one `info` line with
+  `change=peers_secret_rotated` and `secret_file=<path>`. Only a changed
+  *path* gives the `peers_changed` line above.
 - No line holds a check option, the content of a secret file or a hash of it.
 - The log says what changed and when, not who: a `SIGHUP` carries no sender.
   To record who edited the files, watch the config directory with auditd

@@ -348,6 +348,11 @@ is lost.
 > done
 ```
 
+Each member logs the change at `info` level, once per change, with
+`change=peers_secret_rotated` and `secret_file=<path>` (the path only, never
+the secret or a hash of it). It is not a reload line: a rotation needs no
+reload. A file written again with the same content logs nothing.
+
 Replace the file with `mv` (a rename), so the daemon never reads half a file.
 A file it cannot read, or an invalid one, is ignored: it keeps the last valid
 secret and warns at most once a minute. Watch

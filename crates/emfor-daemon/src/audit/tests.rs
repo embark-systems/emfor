@@ -363,3 +363,29 @@ fn cipher_change_is_one_peers_changed_line() {
     );
     assert!(changes(&new, &new).is_empty(), "same cipher, no line");
 }
+
+// spectra-scenario: service-config / Peer group changes
+#[test]
+fn secret_file_path_change_is_a_peers_changed_line_without_content() {
+    let mut old = conf("", B1);
+    let mut new = conf("", B1);
+    let members = ["10.0.0.5:5302", "10.0.0.6:5302"];
+    old.peers = Some(peers(&members, true, None));
+    let mut moved = peers(&members, true, None);
+    moved.secret_file = PathBuf::from("/etc/emfor/peers-new.key");
+    new.peers = Some(moved);
+    let c = changes(&old, &new);
+    assert_eq!(
+        c,
+        vec![Change::PeersChanged {
+            field: "secret_file",
+            from: "/etc/emfor/peers.key".into(),
+            to: "/etc/emfor/peers-new.key".into(),
+            applies: "now"
+        }]
+    );
+    let out = logged(c);
+    assert!(out.contains("field=secret_file"), "{out}");
+    assert!(out.contains("applies=now"), "{out}");
+    assert!(!out.contains("sha256"), "{out}");
+}

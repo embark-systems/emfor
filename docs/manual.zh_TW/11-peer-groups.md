@@ -185,6 +185,8 @@ daemon 會自己發現 `secret_file` 有變動（Linux 上用 inotify，FreeBSD 
 > done
 ```
 
+每個成員發現密鑰換了，都會記一行 `info`，每次更換一行，帶 `change=peers_secret_rotated` 和 `secret_file=<路徑>`（只有路徑，不含密鑰或它的雜湊）。這不是 reload 的 log 行：更換密鑰不用 reload。檔案被寫成一樣的內容時不會記。
+
 用 `mv`（rename）來替換檔案，daemon 就不會讀到只寫了一半的檔案。讀不到或無效的檔案會被忽略：daemon 會繼續用最後一把有效的密鑰，並且最多每分鐘警告一次。請留意
 `emfor_peer_messages_rejected_total{reason="auth"}`：成員用的密鑰不一樣時，這個值會上升。
 
