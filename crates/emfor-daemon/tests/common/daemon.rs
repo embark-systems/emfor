@@ -24,6 +24,17 @@ pub fn write_main_file(path: &Path, text: &str) {
         .expect("the config mode can be set");
 }
 
+/// Run `f` again for as long as it fails with `Interrupted`: a signal that
+/// arrives while a test is blocked in a read is not a failure of the read.
+pub fn retry_interrupted<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    loop {
+        match f() {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            other => return other,
+        }
+    }
+}
+
 /// How long [`wait_for`] and [`Daemon::wait_log`] wait.
 pub const WAIT: Duration = Duration::from_secs(15);
 
@@ -126,7 +137,7 @@ impl Daemon {
         let sink = log.clone();
         let reader = std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
-            while let Ok(n @ 1..) = pipe.read(&mut buf) {
+            while let Ok(n @ 1..) = retry_interrupted(|| pipe.read(&mut buf)) {
                 sink.lock()
                     .expect("log lock")
                     .push_str(&String::from_utf8_lossy(&buf[..n]));

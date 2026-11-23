@@ -15,7 +15,7 @@ use emfor_daemon::peers::{
 use nix::sys::signal::Signal;
 
 mod common;
-use common::{Daemon, Locked, free_tcp, free_udp, scrape, sockets, wait_within};
+use common::{Daemon, Locked, free_tcp, free_udp, retry_interrupted, scrape, sockets, wait_within};
 
 /// A member: a daemon with a `[metrics]` listener on `metrics`.
 struct Member {
@@ -269,9 +269,8 @@ fn member_stops_and_member_added_on_reload() {
     da.wait_log("config reloaded");
     assert!(da.has_line(&format!("emfor_peer_up{{peer=\"{c_addr}\"}} 0")));
     let mut buf = [0u8; 1500];
-    let (n, from) = c
-        .recv_from(&mut buf)
-        .expect("C receives a heartbeat within 3s");
+    let (n, from) =
+        retry_interrupted(|| c.recv_from(&mut buf)).expect("C receives a heartbeat within 3s");
     assert_eq!(from, a);
     assert_eq!(&buf[..4], b"EMP2");
     assert_eq!(payload(&buf[..n])["kind"], "heartbeat");
@@ -881,8 +880,7 @@ fn three_services(
 fn next_heartbeat_off(socket: &UdpSocket) -> serde_json::Value {
     let mut buf = [0u8; 1500];
     loop {
-        let n = socket
-            .recv(&mut buf)
+        let n = retry_interrupted(|| socket.recv(&mut buf))
             .expect("a heartbeat arrives within the timeout");
         let payload = payload(&buf[..n]);
         if payload["kind"] == "heartbeat" {
@@ -969,9 +967,8 @@ fn more_services_left_out_than_fit() {
 /// The next datagram `socket` receives from a member.
 fn next_datagram(socket: &UdpSocket) -> Vec<u8> {
     let mut buf = [0u8; 1500];
-    let n = socket
-        .recv(&mut buf)
-        .expect("a datagram arrives within the timeout");
+    let n =
+        retry_interrupted(|| socket.recv(&mut buf)).expect("a datagram arrives within the timeout");
     buf[..n].to_vec()
 }
 
