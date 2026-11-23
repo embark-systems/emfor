@@ -11,6 +11,10 @@ set -u
 fail() {
     echo "FAIL: $*" >&2
     echo "--- emfor:" >&2; tail -4 /tmp/emfor.log >&2
+    # What kinit asked and was answered, and which servers a client reached.
+    for f in /tmp/krb.trace /tmp/conn.log; do
+        [ -s "$f" ] && { echo "--- $f:" >&2; head -60 "$f" >&2; }
+    done
     exit 1
 }
 
