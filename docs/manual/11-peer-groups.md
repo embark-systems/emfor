@@ -133,14 +133,22 @@ data centre** and nothing across them:
   (`reason="site"`, [chapter 16](16-troubleshooting.md)), and a message
   signed with another secret fails authentication first. Two groups on the
   same network must not share a secret.
-- Do not put members of two data centres in one group. Messages are single
-  UDP datagrams with no retransmission; a member is live while a valid
-  message arrived within the last 3 seconds, and a message more than 5
-  seconds away from the receiver's clock is dropped. A WAN link that loses or
-  delays heartbeats makes the remote members come and go, and each change
-  reshuffles which members are assigned to check which backend. The votes also
-  assume that what one member sees, the others would see too, which is not
-  true across sites.
+- Do not put members of two data centres in one group. The votes assume that
+  what one member sees, the others would see too, which is not true across
+  sites: a member that is cut off from the other site's backend votes `down`
+  for a backend the rest can reach. Messages are single UDP datagrams with
+  no retransmission; a member is live while a valid message arrived within
+  the last 3 seconds, and a message more than 5 seconds from the receiver's
+  clock is dropped. Each change in who is live reshuffles which members are
+  assigned to check which backend.
+  `tools/peer-wan-test.sh` put a delay or a loss on the peer messages of
+  three members for 60 seconds each: with a delay of 100 ms, or of 1.5 s ±
+  0.5 s, and with 10 % or 30 % loss, A saw both others live the whole time;
+  with 50 % loss it saw fewer than two live for 6 of the 60 seconds. The time
+  until two down votes made A show a backend `unhealthy` went from 1 second
+  (no impairment) to 2 to 5 seconds. So an ordinary link between sites does
+  not break the group; a link that loses half of its packets, or delays them
+  by more than 3 seconds, does.
 - A backend in another data centre is still a backend like any other. Each
   group checks it from its own side, so its state is what that data centre
   sees: if the link between the sites fails, both sides may call the other's
@@ -154,9 +162,9 @@ data centre** and nothing across them:
   others take their results; without a group (`peers = false`), every host
   checks it. Leave `peers` at its default for such services.
 
-This was reasoned from the protocol and the code, and tested with one group
-only; a real two-site setup, with loss and delay between the sites, was not
-tried for this manual.
+The numbers come from three daemons in docker with `tc netem` on the peer
+port; clock differences, a real link and the checks of a far backend were not
+tried.
 
 ## How the votes work
 

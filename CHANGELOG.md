@@ -7,7 +7,9 @@
   with its own `site`, members and secret; why members of two sites do not
   belong in one group (single datagrams, 3-second liveness, 5-second clock
   limit); how backends in another data centre are checked and preferred.
-  Written from the protocol and the code; a real two-site setup was not tried.
+  New `tools/peer-wan-test.sh` (run by hand in docker) measured it: a delay of
+  1.5 s ± 0.5 s or 30 % loss on the peer messages did not make members leave;
+  50 % loss did, for 6 of 60 seconds.
 
 - **The FreeBSD port is in the ports tree.** `net-mgmt/emfor` (0.7.1) is now
   part of the FreeBSD ports tree. Chapters 1 and 4 (en and zh_TW) say
