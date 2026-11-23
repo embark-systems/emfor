@@ -70,6 +70,7 @@
 | `previous_secret_file` | 絕對路徑 | 無 | 規則同上。只在啟動時讀取。 |
 | `encrypt` | 布林值 | `true` | |
 | `accept_plaintext` | 布林值 | `encrypt` 開啟時為 `false`，否則為 `true` | 設成 `false` 又搭配 `encrypt = false` 會報錯。 |
+| `cipher` | 字串 | `"chacha20-poly1305"` | `"chacha20-poly1305"` 或 `"aes-256-gcm"`；後者要搭配 `encrypt = true`。見[第 11 章](11-peer-groups.md#選用-aes-gcm)。 |
 
 ## [defaults]
 

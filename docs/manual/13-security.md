@@ -118,8 +118,9 @@ offered size.
 ## Peer messages
 
 - Authenticated with HMAC-SHA256 (`EMP1`) or encrypted with
-  ChaCha20-Poly1305 (`EMP2`) or XChaCha20-Poly1305 (`EMP3`), with keys
-  derived by HKDF-SHA256 from the secret.
+  ChaCha20-Poly1305 (`EMP2`) or XChaCha20-Poly1305 (`EMP3`), or with
+  `cipher = "aes-256-gcm"` AES-256-GCM (`EMP4`), with keys derived by
+  HKDF-SHA256 from the secret.
 - Since 0.7.0 a daemon with `encrypt = true` drops plaintext messages by
   default (`accept_plaintext = false`).
 - Replays, old messages, unknown senders and other sites are dropped and
@@ -136,6 +137,35 @@ read-only file system except the store directory, `NoNewPrivileges`, a
 system call filter, `UMask=0027`, `ProtectProc=invisible` and more
 ([chapter 4](04-installing.md#the-systemd-unit)). `systemd-analyze security
 emfor` shows the result; it was not run for this manual.
+
+## FIPS
+
+emfor has **no FIPS mode**, and nothing in this manual says that emfor
+"complies with FIPS 140". What it uses:
+
+| Use | Algorithm | Implementation |
+| --- | --- | --- |
+| Peer messages `EMP1` | HMAC-SHA256, HKDF-SHA256 | RustCrypto crates (`hmac`, `hkdf`, `sha2`) |
+| Peer messages `EMP2`, `EMP3` | ChaCha20-Poly1305, XChaCha20-Poly1305 | RustCrypto (`chacha20poly1305`) |
+| Peer messages `EMP4` | AES-256-GCM, HKDF-SHA256 | `aws-lc-rs` |
+| TLS checks and the TLS clients of plugins | TLS 1.2 and 1.3 | `rustls` with `aws-lc-rs` |
+| Rendezvous hashing of the check owners | MD5, not for security | RustCrypto (`md-5`) |
+| The `radius` plugin | MD5, as the protocol says | RustCrypto (`md-5`) |
+
+Why this is not FIPS:
+
+- ChaCha20-Poly1305 is not an approved algorithm, and the RustCrypto crates
+  are not validated modules. `cipher = "aes-256-gcm"` swaps the algorithm,
+  not the module: the `aws-lc-rs` that emfor builds against is the ordinary
+  build, not the FIPS-validated one.
+- Other code still carries its own cryptography (`ring`, through the DNS,
+  QUIC and certificate libraries), and the `radius` plugin needs MD5.
+- A host in FIPS mode does not change this. emfor does not call the
+  operating system's crypto library, so the host setting neither affects
+  emfor nor makes it compliant.
+
+If you need a validated module, emfor is not it today; this chapter will
+change when that does.
 
 ## SELinux and AppArmor
 

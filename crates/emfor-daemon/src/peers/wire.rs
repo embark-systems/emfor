@@ -26,6 +26,18 @@ pub(super) const OVERHEAD_V3: usize = MAGIC_V3.len() + XNONCE_LEN + AEAD_TAG_LEN
 /// Shortest `EMP3` datagram: the overhead and a payload of `{}`.
 pub(super) const MIN_DATAGRAM_V3: usize = OVERHEAD_V3 + 2;
 
+/// First four bytes of a message encrypted with AES-256-GCM: magic and
+/// format version 4.
+pub const MAGIC_V4: &[u8; 4] = b"EMP4";
+/// Bytes of an `EMP4` datagram before the ciphertext, all of them also the
+/// additional authenticated data: magic, the sender's `boot` (8 bytes) and
+/// the counter (8 bytes).
+pub(super) const HEADER_V4: usize = MAGIC_V4.len() + 8 + 8;
+/// Bytes of an `EMP4` datagram besides the payload: the header and the tag.
+pub(super) const OVERHEAD_V4: usize = HEADER_V4 + AEAD_TAG_LEN;
+/// Shortest `EMP4` datagram: the overhead and a payload of `{}`.
+pub(super) const MIN_DATAGRAM_V4: usize = OVERHEAD_V4 + 2;
+
 /// Largest datagram sent or accepted; small enough not to be fragmented.
 pub const MAX_DATAGRAM: usize = 1200;
 /// Longest `reason` of a `down` message, in bytes of UTF-8.
@@ -95,6 +107,8 @@ pub enum Format {
     Encrypted,
     /// `EMP3`: payload encrypted with XChaCha20-Poly1305.
     EncryptedV3,
+    /// `EMP4`: payload encrypted with AES-256-GCM.
+    EncryptedV4,
 }
 
 /// The JSON payload as sent.

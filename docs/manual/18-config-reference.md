@@ -72,6 +72,7 @@ The metrics server runs only when this table exists.
 | `previous_secret_file` | absolute path | none | Same rules. Read at start only. |
 | `encrypt` | boolean | `true` | |
 | `accept_plaintext` | boolean | `false` if `encrypt`, else `true` | `false` with `encrypt = false` is an error. |
+| `cipher` | string | `"chacha20-poly1305"` | `"chacha20-poly1305"` or `"aes-256-gcm"`; the latter needs `encrypt = true`. See [chapter 11](11-peer-groups.md#choosing-aes-gcm). |
 
 ## [defaults]
 

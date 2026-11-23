@@ -20,7 +20,7 @@ use super::stats::PeerStats;
 use super::targets::{DIGEST_DIFFERS, Targets};
 use super::watch::SecretWatch;
 use super::wire::{Down, Kind, MAX_DATAGRAM, Message, Outcome, ResultMsg};
-use crate::config::{PeersConfig, read_secret};
+use crate::config::{Cipher, PeersConfig, read_secret};
 use crate::quorum::{Quorum, Stamp};
 use crate::schedule::unix_ms;
 use crate::writer::WriterMsg;
@@ -110,6 +110,7 @@ pub struct PeerSettings {
     pub site: String,
     pub encrypt: bool,
     pub accept_plaintext: bool,
+    pub cipher: Cipher,
 }
 
 /// The running peer task.
@@ -144,6 +145,7 @@ impl PeersHandle {
             site: site.to_string(),
             encrypt: config.encrypt,
             accept_plaintext: config.accept_plaintext,
+            cipher: config.cipher,
         });
     }
 }
@@ -293,6 +295,7 @@ fn start_with_reader(
     );
     group.set_encrypt(config.encrypt);
     group.set_accept_plaintext(config.accept_plaintext);
+    group.set_cipher(config.cipher);
     group.share_live_with(quorum.clone());
     let settings = PeerSettings {
         members: config.members.clone(),
@@ -300,6 +303,7 @@ fn start_with_reader(
         site: site.to_string(),
         encrypt: config.encrypt,
         accept_plaintext: config.accept_plaintext,
+        cipher: config.cipher,
     };
     let (settings_tx, settings_rx) = watch::channel(settings);
     let (out_tx, out_rx) = PeerSender::channel(stats.clone());
@@ -821,6 +825,7 @@ async fn run(
                 group.set_site(s.site);
                 group.set_encrypt(s.encrypt);
                 group.set_accept_plaintext(s.accept_plaintext);
+                group.set_cipher(s.cipher);
                 if s.secret_file != secret.path() {
                     secret
                         .on_path(s.secret_file, &mut group, Instant::now())
@@ -1014,6 +1019,7 @@ mod tests {
             previous_secret_file: previous,
             encrypt: true,
             accept_plaintext: true,
+            cipher: crate::config::Cipher::default(),
         };
         let now = Instant::now();
         let at = |s| now + Duration::from_secs(s);
@@ -1209,6 +1215,7 @@ mod tests {
             previous_secret_file: None,
             encrypt: true,
             accept_plaintext: true,
+            cipher: crate::config::Cipher::default(),
         };
         let ha = start_with_reader(
             sa,
@@ -1269,6 +1276,7 @@ mod tests {
                 previous_secret_file: None,
                 encrypt: true,
                 accept_plaintext: true,
+                cipher: crate::config::Cipher::default(),
             },
             "dc1",
         );
@@ -1312,6 +1320,7 @@ mod tests {
                 previous_secret_file: None,
                 encrypt: true,
                 accept_plaintext: true,
+                cipher: crate::config::Cipher::default(),
             },
             "dc1",
         );
@@ -1324,6 +1333,7 @@ mod tests {
                 previous_secret_file: None,
                 encrypt: true,
                 accept_plaintext: true,
+                cipher: crate::config::Cipher::default(),
             },
             "dc1",
             Keys::new(vec![3u8; 32]),

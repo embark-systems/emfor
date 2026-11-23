@@ -11,12 +11,13 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use super::crypto::{Keys, encode, encode_encrypted, encode_encrypted_v3};
+use super::crypto::{Keys, encode, encode_encrypted, encode_encrypted_v3, encode_encrypted_v4};
 use super::stats::{PeerStats, Reject};
 use super::wire::{
-    Format, HEADER_LEN, Kind, MAGIC, MAGIC_V2, MAGIC_V3, MAX_DATAGRAM, MIN_DATAGRAM_V2,
-    MIN_DATAGRAM_V3, Message, parse_payload,
+    Format, HEADER_LEN, Kind, MAGIC, MAGIC_V2, MAGIC_V3, MAGIC_V4, MAX_DATAGRAM, MIN_DATAGRAM_V2,
+    MIN_DATAGRAM_V3, MIN_DATAGRAM_V4, Message, parse_payload,
 };
+use crate::config::Cipher;
 use crate::quorum::Quorum;
 
 /// A member is live while a message from it was accepted this recently.
@@ -139,6 +140,12 @@ pub struct Group {
     encrypt: bool,
     /// `[peers] accept_plaintext`: accept `EMP1` messages.
     accept_plaintext: bool,
+    /// `[peers] cipher`: `EMP4` for every member, or `EMP2`/`EMP3`.
+    cipher: Cipher,
+    /// The counter of the last `EMP4` datagram sent since this daemon
+    /// started; 0 before the first. With `boot` it makes a nonce that no
+    /// key is used with twice.
+    emp4_counter: u64,
     stats: Arc<PeerStats>,
     /// Where the live members go besides `stats`; see [`Group::share_live_with`].
     quorum: Option<Arc<Quorum>>,
@@ -191,6 +198,8 @@ impl Group {
             plain_warned: HashMap::new(),
             encrypt: true,
             accept_plaintext: true,
+            cipher: Cipher::default(),
+            emp4_counter: 0,
             stats,
             quorum: None,
         };
@@ -224,6 +233,13 @@ impl Group {
     /// `[peers] encrypt`: the format of the next messages sent.
     pub fn set_encrypt(&mut self, encrypt: bool) {
         self.encrypt = encrypt;
+    }
+
+    /// `[peers] cipher`: with `Aes256Gcm` and `encrypt`, the next messages
+    /// are `EMP4`; with `ChaCha20Poly1305`, `EMP2` or `EMP3` as chosen for
+    /// each member.
+    pub fn set_cipher(&mut self, cipher: Cipher) {
+        self.cipher = cipher;
     }
 
     /// `[peers] accept_plaintext`: whether `EMP1` messages received from
@@ -267,6 +283,20 @@ impl Group {
         if !self.encrypt {
             return vec![Outgoing {
                 data: encode(&msg, secret.raw()),
+                to: others,
+            }];
+        }
+        if self.cipher == Cipher::Aes256Gcm {
+            // The counter is the nonce: a datagram is never sealed twice
+            // under one counter, and the counter never wraps (a daemon that
+            // sent 2^64 datagrams has run for longer than anything).
+            let Some(counter) = self.emp4_counter.checked_add(1) else {
+                tracing::warn!("the EMP4 counter is used up; sending no more EMP4 messages");
+                return Vec::new();
+            };
+            self.emp4_counter = counter;
+            return vec![Outgoing {
+                data: encode_encrypted_v4(&msg, secret, counter),
                 to: others,
             }];
         }
@@ -326,6 +356,9 @@ impl Group {
                         Format::Plain => false,
                         Format::Encrypted => msg.emp3,
                         Format::EncryptedV3 => true,
+                        // Not a choice between `EMP2` and `EMP3`: what the
+                        // member last told us stays.
+                        Format::EncryptedV4 => p.v3,
                     };
                     if v3 != p.v3 {
                         p.v3 = v3;
@@ -396,6 +429,18 @@ impl Group {
                 let payload = self.keys.open_v3(data, now).ok_or(Reject::Auth)?;
                 let msg = parse_payload(&payload).ok_or(Reject::Malformed)?;
                 (msg, Format::EncryptedV3)
+            }
+            Some(m) if m == MAGIC_V4 => {
+                if !(MIN_DATAGRAM_V4..=MAX_DATAGRAM).contains(&data.len()) {
+                    return Err(Reject::Malformed);
+                }
+                let payload = self.keys.open_v4(data, now).ok_or(Reject::Auth)?;
+                let msg = parse_payload(&payload).ok_or(Reject::Malformed)?;
+                // The header's `boot` chose the key; it must be the sender's.
+                if data[MAGIC_V4.len()..MAGIC_V4.len() + 8] != msg.boot.to_be_bytes() {
+                    return Err(Reject::Malformed);
+                }
+                (msg, Format::EncryptedV4)
             }
             _ => return Err(Reject::Malformed),
         };
@@ -495,7 +540,7 @@ impl Group {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::peers::crypto::{Secret, seal, seal_v3};
+    use crate::peers::crypto::{Secret, seal, seal_v3, seal_v4};
     use crate::peers::test_support::*;
     use crate::peers::wire::{TAG_LEN, decode};
     use chacha20poly1305::aead::Aead;
@@ -588,8 +633,8 @@ mod tests {
                 .expect("encrypting a short payload works");
             [MAGIC_V2.as_slice(), nonce.as_slice(), &sealed].concat()
         };
-        let mut emp4 = hb(1);
-        emp4[3] = b'4';
+        let mut emp5 = hb(1);
+        emp5[3] = b'5';
         let cases: Vec<(&str, Vec<u8>, Result<(), Reject>)> = vec![
             ("valid", hb(1), Ok(())),
             ("33 bytes", sized(33), Err(Reject::Malformed)),
@@ -617,12 +662,137 @@ mod tests {
                 Err(Reject::Auth),
             ),
             ("decrypts to non-JSON", not_json, Err(Reject::Malformed)),
-            ("EMP4", emp4, Err(Reject::Malformed)),
+            ("EMP5", emp5, Err(Reject::Malformed)),
         ];
         for (name, data, want) in cases {
             let mut g = group(now);
             assert_eq!(g.accept(&data, addr(B), t, now).map(|_| ()), want, "{name}");
         }
+    }
+
+    /// Spec peer-group "acceptance checks", the `EMP4` rows.
+    // spectra-scenario: peer-group / Sender restarts / acceptance checks
+    #[test]
+    fn emp4_acceptance_checks() {
+        let now = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let secret = Secret::new(KEY.to_vec());
+        let m = msg(B, 1, 1, t, Kind::Heartbeat(Vec::new()));
+        let hb = encode_encrypted_v4(&m, &secret, 1);
+        let sized = |n: usize| {
+            let mut d = MAGIC_V4.to_vec();
+            d.resize(n, 0x41);
+            d
+        };
+        let flip = |i: usize| {
+            let mut d = hb.clone();
+            d[i] ^= 1;
+            d
+        };
+        let payload = Keys::new(KEY.to_vec())
+            .open_v4(&hb, now)
+            .expect("the datagram just sealed opens");
+        // The header names another start than the payload does.
+        let boot_mismatch = seal_v4(&payload, &secret, 2u64.to_be_bytes(), 1);
+        let not_json = seal_v4(b"not json at all", &secret, 1u64.to_be_bytes(), 1);
+        let mut emp5 = hb.clone();
+        emp5[3] = b'5';
+        let cases: Vec<(&str, Vec<u8>, Result<(), Reject>)> = vec![
+            ("valid", hb.clone(), Ok(())),
+            ("37 bytes", sized(37), Err(Reject::Malformed)),
+            ("38 bytes that do not decrypt", sized(38), Err(Reject::Auth)),
+            ("1200 bytes of garbage", sized(1200), Err(Reject::Auth)),
+            ("1201 bytes", sized(1201), Err(Reject::Malformed)),
+            ("boot changed", flip(5), Err(Reject::Auth)),
+            ("counter changed", flip(15), Err(Reject::Auth)),
+            ("ciphertext changed", flip(21), Err(Reject::Auth)),
+            ("tag changed", flip(hb.len() - 1), Err(Reject::Auth)),
+            (
+                "other secret",
+                encode_encrypted_v4(&m, &Secret::new(vec![8u8; 32]), 1),
+                Err(Reject::Auth),
+            ),
+            ("decrypts to non-JSON", not_json, Err(Reject::Malformed)),
+            (
+                "header boot is not the payload boot",
+                boot_mismatch,
+                Err(Reject::Malformed),
+            ),
+            ("EMP5", emp5, Err(Reject::Malformed)),
+        ];
+        for (name, data, want) in cases {
+            let mut g = group(now);
+            assert_eq!(g.accept(&data, addr(B), t, now).map(|_| ()), want, "{name}");
+        }
+        // Accepted also when plaintext is refused, and it leaves the
+        // EMP2/EMP3 choice for the member alone.
+        let mut g = group(now);
+        g.set_accept_plaintext(false);
+        assert!(g.accept(&hb, addr(B), t, now).is_ok());
+        assert_eq!(magic_to(&mut g, B), MAGIC_V2);
+        let emp3 = encode_encrypted_v3(&msg(B, 1, 2, t, Kind::Heartbeat(Vec::new())), &secret);
+        assert!(g.accept(&emp3, addr(B), t, now).is_ok());
+        assert_eq!(magic_to(&mut g, B), MAGIC_V3);
+        let again = encode_encrypted_v4(&msg(B, 1, 3, t, Kind::Heartbeat(Vec::new())), &secret, 2);
+        assert!(g.accept(&again, addr(B), t, now).is_ok());
+        assert_eq!(magic_to(&mut g, B), MAGIC_V3, "EMP4 changes no choice");
+    }
+
+    /// Spec peer-group "Members send AES-GCM", "AES-GCM key and counter
+    /// after a restart" and "Cipher changed by a reload".
+    // spectra-scenario: peer-group / Members send AES-GCM
+    // spectra-scenario: peer-group / AES-GCM key and counter after a restart
+    // spectra-scenario: peer-group / Cipher changed by a reload
+    #[test]
+    fn cipher_aes_gcm_is_sent_with_a_counter() {
+        let now = Instant::now();
+        let counter_of = |d: &[u8]| u64::from_be_bytes(d[12..20].try_into().expect("8 bytes"));
+        let mut g = group(now);
+        g.set_cipher(Cipher::Aes256Gcm);
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            let out = g.encode(Kind::Heartbeat(Vec::new()), 1, now);
+            assert_eq!(out.len(), 1, "one datagram for every member");
+            assert_eq!(&out[0].data[..4], MAGIC_V4);
+            assert_eq!(out[0].to, vec![addr(B)]);
+            assert!(open_v4(&out[0].data, KEY).is_some());
+            seen.push(counter_of(&out[0].data));
+        }
+        assert_eq!(seen, vec![1, 2, 3]);
+        // A restart: new boot, counter back at 1, another key.
+        let mut again = Group::new(
+            addr(ME),
+            "dc1".into(),
+            vec![addr(ME), addr(B)],
+            Keys::new(KEY.to_vec()),
+            2,
+            Arc::new(PeerStats::default()),
+        );
+        again.set_cipher(Cipher::Aes256Gcm);
+        let first = again.encode_one(Kind::Heartbeat(Vec::new()), 1, now);
+        assert_eq!(counter_of(&first), 1);
+        assert_eq!(&first[4..12], 2u64.to_be_bytes());
+        // A reload back to the default: the next datagram is EMP2 again,
+        // and without `encrypt` EMP4 is not sent at all.
+        g.set_cipher(Cipher::ChaCha20Poly1305);
+        assert_eq!(magic_to(&mut g, B), MAGIC_V2);
+        g.set_cipher(Cipher::Aes256Gcm);
+        g.set_encrypt(false);
+        assert_eq!(magic_to(&mut g, B), MAGIC);
+    }
+
+    /// A used-up `EMP4` counter sends nothing instead of reusing a nonce.
+    #[test]
+    #[tracing_test::traced_test]
+    fn used_up_emp4_counter_sends_nothing() {
+        let now = Instant::now();
+        let mut g = group(now);
+        g.set_cipher(Cipher::Aes256Gcm);
+        g.emp4_counter = u64::MAX - 1;
+        let last = g.encode(Kind::Heartbeat(Vec::new()), 1, now);
+        assert_eq!(&last[0].data[12..20], u64::MAX.to_be_bytes());
+        assert!(g.encode(Kind::Heartbeat(Vec::new()), 1, now).is_empty());
+        assert!(logs_contain("the EMP4 counter is used up"));
     }
 
     /// Spec peer-group "acceptance checks", the `EMP3` rows.

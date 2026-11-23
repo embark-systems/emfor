@@ -256,6 +256,28 @@ pub struct PeersConfig {
     pub encrypt: bool,
     /// `accept_plaintext`: accept `EMP1` messages; `false` needs `encrypt`.
     pub accept_plaintext: bool,
+    /// `cipher`: the encryption of the messages sent while `encrypt` is on.
+    pub cipher: Cipher,
+}
+
+/// `[peers] cipher`: how encrypted peer messages are sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Cipher {
+    /// `EMP2` or `EMP3`, chosen for each member (the default).
+    #[default]
+    ChaCha20Poly1305,
+    /// `EMP4` for every member.
+    Aes256Gcm,
+}
+
+impl Cipher {
+    /// The value in the config file.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Cipher::ChaCha20Poly1305 => "chacha20-poly1305",
+            Cipher::Aes256Gcm => "aes-256-gcm",
+        }
+    }
 }
 
 impl PeersConfig {
@@ -1474,6 +1496,7 @@ impl Validator {
                 "previous_secret_file",
                 "encrypt",
                 "accept_plaintext",
+                "cipher",
             ],
         );
         let encrypt = match t.get("encrypt") {
@@ -1505,6 +1528,26 @@ impl Validator {
                 "accept_plaintext = false needs encrypt = true: this daemon would send the plaintext messages it refuses",
             );
         }
+        let cipher = match t.get("cipher") {
+            None => Cipher::default(),
+            Some(toml::Value::String(s)) if s == "chacha20-poly1305" => Cipher::ChaCha20Poly1305,
+            Some(toml::Value::String(s)) if s == "aes-256-gcm" => {
+                if !encrypt {
+                    self.err(
+                        "peers.cipher",
+                        "cipher = \"aes-256-gcm\" needs encrypt = true: this daemon sends no encrypted messages",
+                    );
+                }
+                Cipher::Aes256Gcm
+            }
+            Some(_) => {
+                self.err(
+                    "peers.cipher",
+                    "cipher must be \"chacha20-poly1305\" or \"aes-256-gcm\"",
+                );
+                Cipher::default()
+            }
+        };
         let listen = match t.get("listen") {
             None => {
                 self.err("peers.listen", "missing: this daemon's peer address");
@@ -1605,6 +1648,7 @@ impl Validator {
             previous_secret_file,
             encrypt,
             accept_plaintext,
+            cipher,
         })
     }
 
@@ -2487,6 +2531,52 @@ backends = ["10.0.0.1:80"]
                 && e.message.contains("needs encrypt = true")),
             "{e:?}"
         );
+    }
+
+    /// The `cipher` rows of the example "peer config validation" of the
+    /// peer-group spec.
+    // spectra-scenario: peer-group / Peer group configuration
+    #[test]
+    fn peers_cipher_validation() {
+        let (_d, key) = secret_file(&[b'k'; 64], 0o600);
+        let site = "site = \"dc1\"\n\n";
+        let ok: [(&str, Cipher); 3] = [
+            ("", Cipher::ChaCha20Poly1305),
+            ("cipher = \"chacha20-poly1305\"\n", Cipher::ChaCha20Poly1305),
+            ("cipher = \"aes-256-gcm\"\n", Cipher::Aes256Gcm),
+        ];
+        for (extra, want) in ok {
+            let c = parse_ok(&peers_conf(site, &format!("{LISTEN_MEMBERS}{extra}"), &key));
+            assert_eq!(c.peers.as_ref().map(|p| p.cipher), Some(want), "{extra:?}");
+        }
+        let bad: [(&str, &str); 3] = [
+            (
+                "cipher = \"aes-128-gcm\"\n",
+                "cipher must be \"chacha20-poly1305\" or \"aes-256-gcm\"",
+            ),
+            (
+                "cipher = true\n",
+                "cipher must be \"chacha20-poly1305\" or \"aes-256-gcm\"",
+            ),
+            (
+                "encrypt = false\ncipher = \"aes-256-gcm\"\n",
+                "cipher = \"aes-256-gcm\" needs encrypt = true",
+            ),
+        ];
+        for (extra, message) in bad {
+            let e = parse_err(&peers_conf(site, &format!("{LISTEN_MEMBERS}{extra}"), &key));
+            assert!(
+                e.iter()
+                    .any(|e| e.path == "peers.cipher" && e.message.contains(message)),
+                "{extra:?}: {e:?}"
+            );
+        }
+        // `encrypt = false` with the default cipher is valid.
+        parse_ok(&peers_conf(
+            site,
+            &format!("{LISTEN_MEMBERS}encrypt = false\ncipher = \"chacha20-poly1305\"\n"),
+            &key,
+        ));
     }
 
     /// Spec peer-group "Key order does not matter" and "what changes the digest".

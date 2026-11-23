@@ -84,7 +84,7 @@ store 裡存的是服務名稱、backend 位址、狀態和 reason，不存任�
 
 ## 聯防訊息
 
-- 用 HMAC-SHA256 驗證（`EMP1`），或用 ChaCha20-Poly1305（`EMP2`）或 XChaCha20-Poly1305（`EMP3`）加密；金鑰是用 HKDF-SHA256 從密鑰導出來的。
+- 用 HMAC-SHA256 驗證（`EMP1`），或用 ChaCha20-Poly1305（`EMP2`）或 XChaCha20-Poly1305（`EMP3`）加密，設了 `cipher = "aes-256-gcm"` 時用 AES-256-GCM（`EMP4`）；金鑰是用 HKDF-SHA256 從密鑰導出來的。
 - 從 0.7.0 起，`encrypt = true` 的 daemon 預設會丟掉明文訊息（`accept_plaintext = false`）。
 - 重送的訊息、太舊的訊息、不認識的寄件者，以及其他 site 來的訊息，都會被丟掉並計數。
 - 單一 peer 沒辦法自己改變 backend 的狀態：`down` 通知只會讓本機重新檢查，而投票要三台負責主機中的兩台同意。不過，拿到密鑰的人可以靠送投票，讓每個成員都把某個 backend 標成 down。請像保護密碼一樣保護密鑰。
@@ -92,6 +92,27 @@ store 裡存的是服務名稱、backend 位址、狀態和 reason，不存任�
 ## systemd unit
 
 套件附的 unit 用 `emfor` 身分執行 daemon，不給任何 capability，除了 store 目錄以外整個檔案系統都是唯讀，另外還設了 `NoNewPrivileges`、system call 過濾、`UMask=0027`、`ProtectProc=invisible` 等等（[第 4 章](04-installing.md#systemd-unit)）。用 `systemd-analyze security emfor` 可以看結果；寫這份手冊時沒有實際跑過。
+
+## FIPS
+
+emfor **沒有 FIPS 模式**，本手冊也不會說 emfor「符合 FIPS 140」。它用到的密碼學如下：
+
+| 用途 | 演算法 | 實作 |
+| --- | --- | --- |
+| 聯防訊息 `EMP1` | HMAC-SHA256、HKDF-SHA256 | RustCrypto 的 crate（`hmac`、`hkdf`、`sha2`） |
+| 聯防訊息 `EMP2`、`EMP3` | ChaCha20-Poly1305、XChaCha20-Poly1305 | RustCrypto（`chacha20poly1305`） |
+| 聯防訊息 `EMP4` | AES-256-GCM、HKDF-SHA256 | `aws-lc-rs` |
+| TLS 檢查與外掛的 TLS 客戶端 | TLS 1.2 與 1.3 | `rustls` 搭配 `aws-lc-rs` |
+| 決定檢查負責主機的 rendezvous hashing | MD5，與安全無關 | RustCrypto（`md-5`） |
+| `radius` 外掛 | MD5（協定規定的） | RustCrypto（`md-5`） |
+
+為什麼這不算 FIPS：
+
+- ChaCha20-Poly1305 不在核准的演算法裡，RustCrypto 的 crate 也不是驗證過的模組。`cipher = "aes-256-gcm"` 換的是演算法，不是模組：emfor 連結的 `aws-lc-rs` 是一般版本，不是通過 FIPS 驗證的那一版。
+- 還有別的程式碼帶著自己的密碼學（DNS、QUIC 和憑證函式庫裡的 `ring`），`radius` 外掛也需要 MD5。
+- 主機開了 FIPS 模式也一樣。emfor 不呼叫作業系統的密碼學函式庫，所以主機的設定既不影響 emfor，也不會讓它變成符合規範。
+
+如果你需要通過驗證的模組，emfor 目前不是；等這點改變了，這一章才會跟著改。
 
 ## SELinux 與 AppArmor
 

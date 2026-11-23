@@ -6,6 +6,8 @@
 
 use std::time::Duration;
 
+use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce as GcmNonce, UnboundKey};
+use aws_lc_rs::hkdf::{HKDF_SHA256, KeyType, Salt};
 use chacha20poly1305::aead::{Aead, Generate, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
@@ -15,13 +17,17 @@ use tokio::time::Instant;
 use zeroize::Zeroize;
 
 use super::wire::{
-    HEADER_LEN, MAGIC, MAGIC_V2, MAGIC_V3, MAX_DATAGRAM, MIN_DATAGRAM_V2, MIN_DATAGRAM_V3, Message,
-    NONCE_LEN, OVERHEAD_V2, OVERHEAD_V3, XNONCE_LEN, payload_for,
+    HEADER_LEN, HEADER_V4, MAGIC, MAGIC_V2, MAGIC_V3, MAGIC_V4, MAX_DATAGRAM, MIN_DATAGRAM_V2,
+    MIN_DATAGRAM_V3, MIN_DATAGRAM_V4, Message, NONCE_LEN, OVERHEAD_V2, OVERHEAD_V3, OVERHEAD_V4,
+    XNONCE_LEN, payload_for,
 };
 
 const HKDF_SALT: &[u8] = b"emfor peers";
 const HKDF_INFO: &[u8] = b"EMP2 chacha20-poly1305";
 const HKDF_INFO_V3: &[u8] = b"EMP3 xchacha20-poly1305";
+/// `EMP4` keys are derived per sender start: this, then the 8 bytes of the
+/// sender's `boot`, is the HKDF info.
+const HKDF_INFO_V4: &[u8] = b"EMP4 aes-256-gcm";
 
 /// How long messages are still signed with a replaced secret, so members
 /// whose file has not changed yet keep accepting them.
@@ -172,8 +178,79 @@ pub(super) fn seal_v3(payload: &[u8], secret: &Secret, nonce: &XNonce) -> Vec<u8
     out
 }
 
+/// The length of the `EMP4` key, for `aws-lc-rs`'s HKDF.
+struct KeyLen32;
+
+impl KeyType for KeyLen32 {
+    fn len(&self) -> usize {
+        32
+    }
+}
+
+/// The `EMP4` key for the sender start `boot`: the first 32 bytes of
+/// HKDF-SHA256 with salt `emfor peers`, `secret` as input key material and
+/// as info `EMP4 aes-256-gcm` followed by the 8 bytes of `boot`.
+///
+/// The whole `EMP4` path (HKDF and AES-GCM) runs in `aws-lc-rs`, so that
+/// moving to its validated build would need no other change. The key
+/// depends on `boot`, so it is derived per datagram instead of once per
+/// secret as for `EMP2` and `EMP3`: two HMAC runs, which a flood of forged
+/// datagrams does not make costly.
+fn key_v4(secret: &[u8], boot: &[u8]) -> LessSafeKey {
+    let prk = Salt::new(HKDF_SHA256, HKDF_SALT).extract(secret);
+    let info = [HKDF_INFO_V4, boot];
+    let okm = prk
+        .expand(&info, KeyLen32)
+        .expect("32 bytes is far below HKDF-SHA256's limit of 255 * 32 bytes of output");
+    let mut bytes = [0u8; 32];
+    okm.fill(&mut bytes)
+        .expect("the output key material has the 32 bytes that were asked for");
+    let key = UnboundKey::new(&AES_256_GCM, &bytes)
+        .expect("a 32-byte key is the length AES-256-GCM takes");
+    bytes.zeroize();
+    LessSafeKey::new(key)
+}
+
+/// The nonce of the `EMP4` datagram with this counter: four zero bytes, then
+/// the counter.
+fn nonce_v4(counter: &[u8]) -> GcmNonce {
+    let mut n = [0u8; 12];
+    n[4..].copy_from_slice(counter);
+    GcmNonce::assume_unique_for_key(n)
+}
+
+/// The `EMP4` datagram for `msg`, encrypted with the key of `secret` and
+/// the sender start in `msg.boot`, with `counter` as nonce. Reasons are cut
+/// as for [`encode`]. The caller makes `counter` greater than the counter
+/// of every earlier `EMP4` datagram of this `boot`, so that no key is used
+/// with the same nonce twice.
+pub fn encode_encrypted_v4(msg: &Message, secret: &Secret, counter: u64) -> Vec<u8> {
+    seal_v4(
+        &payload_for(msg, OVERHEAD_V4),
+        secret,
+        msg.boot.to_be_bytes(),
+        counter,
+    )
+}
+
+/// `EMP4`, `boot`, `counter`, then `payload` encrypted with them as
+/// additional authenticated data.
+pub(super) fn seal_v4(payload: &[u8], secret: &Secret, boot: [u8; 8], counter: u64) -> Vec<u8> {
+    let counter = counter.to_be_bytes();
+    let mut out = Vec::with_capacity(OVERHEAD_V4 + payload.len());
+    out.extend_from_slice(MAGIC_V4);
+    out.extend_from_slice(&boot);
+    out.extend_from_slice(&counter);
+    let mut body = payload.to_vec();
+    key_v4(secret.raw(), &boot)
+        .seal_in_place_append_tag(nonce_v4(&counter), Aad::from(&out[..HEADER_V4]), &mut body)
+        .expect("AES-256-GCM encrypts any payload below 64 GiB, and ours is at most 1200 bytes");
+    out.extend_from_slice(&body);
+    out
+}
+
 /// The JSON payload of a datagram of any format that `secret` signed
-/// (`EMP1`) or encrypted (`EMP2`, `EMP3`); `None` otherwise. For tests and
+/// (`EMP1`) or encrypted (`EMP2`, `EMP3`, `EMP4`); `None` otherwise. For tests and
 /// tools that read what members send.
 pub fn open_with(data: &[u8], secret: &[u8]) -> Option<Vec<u8>> {
     let keys = Keys::new(secret.to_vec());
@@ -187,6 +264,9 @@ pub fn open_with(data: &[u8], secret: &[u8]) -> Option<Vec<u8>> {
         }
         Some(m) if m == MAGIC_V3 && (MIN_DATAGRAM_V3..=MAX_DATAGRAM).contains(&data.len()) => {
             keys.open_v3(data, now)
+        }
+        Some(m) if m == MAGIC_V4 && (MIN_DATAGRAM_V4..=MAX_DATAGRAM).contains(&data.len()) => {
+            keys.open_v4(data, now)
         }
         _ => None,
     }
@@ -349,6 +429,23 @@ impl Keys {
                     },
                 )
                 .ok()
+        })
+    }
+
+    /// The payload of an `EMP4` datagram of a valid length, or `None` when
+    /// no accepted secret decrypts it. The `boot` and counter in the header
+    /// are authenticated with the payload; whether the `boot` is also the
+    /// payload's is for the caller to check.
+    pub(super) fn open_v4(&self, data: &[u8], now: Instant) -> Option<Vec<u8>> {
+        let (header, sealed) = data.split_at(HEADER_V4);
+        let boot = &header[MAGIC_V4.len()..MAGIC_V4.len() + 8];
+        let counter = &header[MAGIC_V4.len() + 8..];
+        self.accepted(now).find_map(|k| {
+            let mut body = sealed.to_vec();
+            let plain = key_v4(k.raw(), boot)
+                .open_in_place(nonce_v4(counter), Aad::from(header), &mut body)
+                .ok()?;
+            Some(plain.to_vec())
         })
     }
 }
@@ -542,6 +639,130 @@ mod tests {
         assert_eq!(
             hex(&data),
             "454d50330102030405060708090a0b0c0d0e0f1011121314151617183c2d23cdef44cbd6f26312bce8878f12b1b1de854524875c2c223dd4c15895ca067ea94197a9f3854c8cb52c5a745e248366dda966af381056ddc1d6693c8009fc503aa3133f7c72a7b6ed7dace76b55ba70c167f9a9e07620b530398bda988097c8d4b185e0f1684c37d890f0fd71e086d7ef66ff0d42074c7113c506"
+        );
+        assert_eq!(open_with(&data, KEY).as_deref(), Some(payload.as_slice()));
+    }
+
+    /// `EMP4`: every kind survives the trip, the payload is not readable on
+    /// the wire, the header carries the `boot` and the counter, and a new
+    /// counter gives new bytes.
+    // spectra-scenario: peer-group / Members send AES-GCM
+    #[test]
+    fn emp4_round_trip() {
+        let secret = Secret::new(KEY.to_vec());
+        for kind in [
+            Kind::Heartbeat(vec![1, 0xdeadbeef]),
+            down("refused"),
+            result(Outcome::Up),
+            Kind::Unknown("assign".into()),
+        ] {
+            let m = msg(B, 0xabc, 7, 1_763_000_000_000, kind);
+            let data = encode_encrypted_v4(&m, &secret, 5);
+            assert_eq!(&data[..4], MAGIC_V4);
+            assert_eq!(&data[4..12], &0xabcu64.to_be_bytes());
+            assert_eq!(&data[12..20], &5u64.to_be_bytes());
+            assert!(!data.windows(3).any(|w| w == b"dc1"), "site in plaintext");
+            assert_eq!(open_v4(&data, KEY), Some(m));
+        }
+        let m = msg(B, 1, 1, 1, Kind::Heartbeat(Vec::new()));
+        assert_ne!(
+            encode_encrypted_v4(&m, &secret, 1),
+            encode_encrypted_v4(&m, &secret, 2)
+        );
+        assert_eq!(MIN_DATAGRAM_V4, 38);
+    }
+
+    /// `EMP4`: changing any byte, the header (the AAD) and the nonce
+    /// included, makes the datagram not decrypt; the other formats' keys do
+    /// not open it.
+    // spectra-scenario: peer-group / Peer message authentication and replay protection / acceptance checks
+    #[test]
+    fn emp4_tampered_does_not_open() {
+        let secret = Secret::new(KEY.to_vec());
+        let data = encode_encrypted_v4(&msg(B, 1, 1, 1, Kind::Heartbeat(Vec::new())), &secret, 9);
+        assert!(open_with(&data, KEY).is_some());
+        for i in 0..data.len() {
+            let mut d = data.clone();
+            d[i] ^= 1;
+            assert!(open_with(&d, KEY).is_none(), "byte {i} changed");
+        }
+        assert!(open_with(&data, &[9u8; 32]).is_none(), "another secret");
+    }
+
+    /// `EMP4` is 38 to 1200 bytes: a valid datagram of 38 or 1200 bytes
+    /// opens, one of 37 or 1201 bytes does not.
+    // spectra-scenario: peer-group / Peer message authentication and replay protection / acceptance checks
+    #[test]
+    fn emp4_length_bounds() {
+        let secret = Secret::new(KEY.to_vec());
+        let sized = |n: usize| seal_v4(&vec![b' '; n - OVERHEAD_V4], &secret, [3; 8], 1);
+        for n in [MIN_DATAGRAM_V4, MAX_DATAGRAM] {
+            let d = sized(n);
+            assert_eq!(d.len(), n);
+            assert!(open_with(&d, KEY).is_some(), "{n} bytes");
+        }
+        let d = sized(MAX_DATAGRAM + 1);
+        assert_eq!(d.len(), 1201);
+        assert!(open_with(&d, KEY).is_none(), "1201 bytes");
+        let d = seal_v4(b" ", &secret, [3; 8], 1);
+        assert_eq!(d.len(), 37);
+        assert!(open_with(&d, KEY).is_none(), "37 bytes");
+    }
+
+    /// The replaced secret decrypts `EMP4` for 120 seconds.
+    // spectra-scenario: peer-group / Peer message authentication and replay protection / acceptance checks
+    #[test]
+    fn previous_secret_decrypts_emp4_for_120_seconds() {
+        let start = Instant::now();
+        let mut keys = Keys::new(KEY.to_vec());
+        assert!(keys.rotate(vec![9u8; 32], start));
+        let old = encode_encrypted_v4(
+            &msg(B, 1, 1, 1, Kind::Heartbeat(Vec::new())),
+            &Secret::new(KEY.to_vec()),
+            1,
+        );
+        for secs in [30, 90] {
+            let at = start + Duration::from_secs(secs);
+            assert!(keys.open_v4(&old, at).is_some(), "{secs}s");
+        }
+        assert!(
+            keys.open_v4(&old, start + Duration::from_secs(130))
+                .is_none()
+        );
+    }
+
+    /// The key depends on the secret and on the sender's `boot`, so a
+    /// restart (a new `boot`) never reuses a key, and two senders with
+    /// different `boot`s never share one: the same counter and payload give
+    /// different datagrams.
+    // spectra-scenario: peer-group / AES-GCM key and counter after a restart
+    #[test]
+    fn emp4_key_differs_per_boot_and_secret() {
+        let a = Secret::new(KEY.to_vec());
+        let b = Secret::new(vec![9u8; 32]);
+        let seal = |s: &Secret, boot: u8| seal_v4(b"{}", s, [boot; 8], 1);
+        let body = |d: &[u8]| d[HEADER_V4..].to_vec();
+        assert_ne!(body(&seal(&a, 1)), body(&seal(&a, 2)), "boot");
+        assert_ne!(body(&seal(&a, 1)), body(&seal(&b, 1)), "secret");
+        assert_eq!(seal(&a, 1), seal(&a, 1), "deterministic for a counter");
+    }
+
+    /// `EMP4` bytes for a fixed secret, `boot`, counter and payload, computed
+    /// apart from this code by `crates/emfor-daemon/tests/emp2_kat.py`: a
+    /// plain-Python HKDF, AES-256 and GCM, checked against FIPS 197 C.3 and
+    /// test cases 15 and 16 of the GCM specification:
+    /// key = HKDF-SHA256(salt "emfor peers", ikm 32 bytes of 7,
+    /// info "EMP4 aes-256-gcm" and `boot` 1 as 8 bytes), counter 5, nonce four
+    /// zero bytes and the counter, AAD the 20 bytes of header.
+    // spectra-scenario: peer-group / Members send AES-GCM
+    #[test]
+    fn emp4_known_answer() {
+        let secret = Secret::new(KEY.to_vec());
+        let payload = br#"{"from":"10.0.0.6:5302","site":"dc1","boot":"0000000000000001","seq":1,"ts":1763000000000,"kind":"heartbeat"}"#;
+        let data = seal_v4(payload, &secret, 1u64.to_be_bytes(), 5);
+        assert_eq!(
+            hex(&data),
+            "454d503400000000000000010000000000000005b2b5720afae264f5f87cbaac7e88df65cd5ae069c3daf6cb7c5de1f13ab356886ed10598549b05008113fc611910715c2893f356ef29074b74108e6e952d8817fbb594783ea69d5c87aeab28197f606f7d6c3b01fe04426dcab5f410c6998da18f57474d5aa57c86969d5d8786d7774eedd2926979f2e6c3e7610bcccd"
         );
         assert_eq!(open_with(&data, KEY).as_deref(), Some(payload.as_slice()));
     }

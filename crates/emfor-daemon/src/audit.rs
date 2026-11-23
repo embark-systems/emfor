@@ -244,6 +244,12 @@ fn peer_changes(old: &PeersConfig, new: &PeersConfig, out: &mut Vec<Change>) {
             "now",
         ),
         (
+            "cipher",
+            old.cipher.as_str().to_string(),
+            new.cipher.as_str().to_string(),
+            "now",
+        ),
+        (
             "secret_file",
             old.secret_file.display().to_string(),
             new.secret_file.display().to_string(),

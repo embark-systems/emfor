@@ -250,6 +250,7 @@ fn peers(members: &[&str], encrypt: bool, previous: Option<&str>) -> PeersConfig
         previous_secret_file: previous.map(PathBuf::from),
         encrypt,
         accept_plaintext: true,
+        cipher: crate::config::Cipher::default(),
     }
 }
 
@@ -338,4 +339,27 @@ fn a_changed_default_changes_every_service_that_uses_it() {
         )),
         "{c:?}"
     );
+}
+
+// spectra-scenario: service-config / Cipher changed
+#[test]
+fn cipher_change_is_one_peers_changed_line() {
+    let mut old = conf("", B1);
+    let mut new = conf("", B1);
+    let members = ["10.0.0.5:5302", "10.0.0.6:5302"];
+    old.peers = Some(peers(&members, true, None));
+    let mut gcm = peers(&members, true, None);
+    gcm.cipher = crate::config::Cipher::Aes256Gcm;
+    new.peers = Some(gcm);
+    let c = changes(&old, &new);
+    assert_eq!(
+        c,
+        vec![Change::PeersChanged {
+            field: "cipher",
+            from: "chacha20-poly1305".into(),
+            to: "aes-256-gcm".into(),
+            applies: "now"
+        }]
+    );
+    assert!(changes(&new, &new).is_empty(), "same cipher, no line");
 }

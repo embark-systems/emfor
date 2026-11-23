@@ -997,6 +997,74 @@ fn heartbeats_are_encrypted_by_default() {
     assert_eq!(payload(&data)["site"], "dc1");
 }
 
+/// Spec peer-group "Members send AES-GCM" and "Cipher changed by a
+/// reload": with `cipher = "aes-256-gcm"` the datagrams on the wire are
+/// `EMP4` with a counter that grows by one; both members stay live; after a
+/// reload without `cipher` the next datagrams are not `EMP4` and both are
+/// still live.
+// spectra-scenario: peer-group / Members send AES-GCM
+// spectra-scenario: peer-group / Cipher changed by a reload
+#[test]
+fn aes_gcm_members_are_live_and_a_reload_goes_back() {
+    let held = sockets(|| TcpListener::bind("127.0.0.1:0")).expect("the backend can listen");
+    let backend = held.local_addr().expect("the backend has an address");
+    let tap = sockets(|| UdpSocket::bind("127.0.0.1:0")).expect("the tap's address is free");
+    tap.set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("a read timeout can be set");
+    let tap_addr = tap.local_addr().expect("the tap has an address");
+    let (a, b) = (free_udp(), free_udp());
+    let gcm = "encrypt = true\ncipher = \"aes-256-gcm\"\n";
+    let da = spawn(|dir, m| config_peers(dir, m, a, &[a, b, tap_addr], backend, "", gcm));
+    let db = spawn(|dir, m| config_peers(dir, m, b, &[a, b], backend, "", gcm));
+    for d in [&da, &db] {
+        d.wait_log(HEALTHY);
+    }
+    wait_within("both members live", Duration::from_secs(5), || {
+        da.has_line(&format!("emfor_peer_up{{peer=\"{b}\"}} 1"))
+            && db.has_line(&format!("emfor_peer_up{{peer=\"{a}\"}} 1"))
+    });
+    let counter_of = |d: &[u8]| u64::from_be_bytes(d[12..20].try_into().expect("8 bytes"));
+    let first = next_datagram(&tap);
+    let second = next_datagram(&tap);
+    assert_eq!(&first[..4], b"EMP4");
+    assert_eq!(&second[..4], b"EMP4");
+    assert!(counter_of(&second) > counter_of(&first), "counter grows");
+    assert!(!first.windows(3).any(|w| w == b"dc1"), "site in plaintext");
+    assert_eq!(payload(&first)["site"], "dc1");
+    for d in [&da, &db] {
+        for reason in ["malformed", "auth"] {
+            assert!(
+                d.has_line(&format!(
+                    "emfor_peer_messages_rejected_total{{reason=\"{reason}\"}} 0"
+                )),
+                "{reason} rejections"
+            );
+        }
+    }
+
+    // A reload without `cipher`: A sends EMP2 or EMP3 from now on, and
+    // both members stay live (B still sends EMP4, which A accepts).
+    da.write_whole_config(&config_peers(
+        da.dir.path(),
+        da.metrics,
+        a,
+        &[a, b, tap_addr],
+        backend,
+        "",
+        "encrypt = true\n",
+    ));
+    da.signal(Signal::SIGHUP);
+    da.wait_log("config reloaded");
+    wait_within(
+        "EMP2 or EMP3 after the reload",
+        Duration::from_secs(5),
+        || matches!(&next_datagram(&tap)[..4], b"EMP2" | b"EMP3"),
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(da.has_line(&format!("emfor_peer_up{{peer=\"{b}\"}} 1")));
+    assert!(db.has_line(&format!("emfor_peer_up{{peer=\"{a}\"}} 1")));
+}
+
 /// Two members that both set `encrypt = true` read each other's messages:
 /// both are live, none is rejected, neither warns about plaintext, and each
 /// moves the other to `EMP3` after its first message.

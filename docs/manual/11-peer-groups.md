@@ -47,6 +47,7 @@ backends = ["10.0.2.21:8080", "10.0.2.22:8080"]
 | `previous_secret_file` | none | Read at start only, for a restart during a secret change ([below](#rotating-the-secret)). |
 | `encrypt` | `true` | Encrypt messages. `false` only signs them. Reloadable. |
 | `accept_plaintext` | `false` when `encrypt` is `true`, else `true` | Accept signed messages that are not encrypted. `false` together with `encrypt = false` is an error. Reloadable. |
+| `cipher` | `"chacha20-poly1305"` | The cipher of encrypted messages: `"chacha20-poly1305"` (`EMP2`/`EMP3`) or `"aes-256-gcm"` (`EMP4`). `"aes-256-gcm"` needs `encrypt = true`. Reloadable. See [below](#choosing-aes-gcm). |
 
 `site` is required with `[peers]`. Members of a group should be in one data
 centre: the votes assume that what one member sees, the others would see too.
@@ -163,10 +164,30 @@ root, while a file owned by `emfor` fails when root runs the check.
 | `EMP1` | `encrypt = false` | HMAC-SHA256: authenticated, readable on the network. |
 | `EMP2` | `encrypt = true`, to a member not yet known to read `EMP3` (0.6 and earlier) | ChaCha20-Poly1305 |
 | `EMP3` | `encrypt = true`, to a member that sent `EMP3` or announced it | XChaCha20-Poly1305 |
+| `EMP4` | `encrypt = true` and `cipher = "aes-256-gcm"`, to every member | AES-256-GCM |
 
 A member starts by sending `EMP2` to everyone, and switches to `EMP3` for a
 member as soon as one of its messages shows it reads `EMP3`; the log says
 `sending EMP3 to peer 127.0.0.2:5302 from now on`. You configure nothing.
+
+### Choosing AES-GCM
+
+With `cipher = "aes-256-gcm"` (and `encrypt = true`) a member sends `EMP4` to
+every member and no longer chooses between `EMP2` and `EMP3`. Use it when a
+policy asks for AES-GCM rather than ChaCha20; the group is no safer
+otherwise, and the default stays as it was. Every daemon always *reads*
+`EMP4`, whatever its own `cipher` and `accept_plaintext`.
+
+An `EMP4` message has a counter that starts at 1 each time the daemon starts
+and grows by one per datagram; it is the nonce, so no nonce is used twice
+under one key, and each start of the daemon gets its own key.
+
+**Upgrade order.** A member of an earlier version does not know `EMP4`: it
+drops the message and counts it as `malformed`, and shows as not live to the
+member that sent it. So upgrade every member first, and set `cipher` only
+when all of them run a version that reads `EMP4`; reload each member (`SIGHUP`)
+to apply it. To go back, remove `cipher` and reload: the next message is
+`EMP2` again, and members that still send `EMP4` are still read.
 
 Every message carries a timestamp, a boot id and a sequence number; a
 replayed, too old, malformed or wrongly signed message, one from an address

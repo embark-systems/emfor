@@ -91,6 +91,13 @@ pub(super) fn open_v3(data: &[u8], key: &[u8]) -> Option<Message> {
         .and_then(|p| parse_payload(&p))
 }
 
+/// The message in an `EMP4` datagram encrypted with `key`.
+pub(super) fn open_v4(data: &[u8], key: &[u8]) -> Option<Message> {
+    Keys::new(key.to_vec())
+        .open_v4(data, Instant::now())
+        .and_then(|p| parse_payload(&p))
+}
+
 pub(super) fn targets(digest: &str) -> (Targets, Arc<Recheck>) {
     let r = Arc::new(Recheck::default());
     let t = Targets::default();

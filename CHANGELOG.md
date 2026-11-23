@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Peer messages can use AES-256-GCM (`EMP4`).** New `[peers] cipher`
+  (`"chacha20-poly1305"`, the default, changes nothing; `"aes-256-gcm"`
+  sends `EMP4` to every member; it needs `encrypt = true` and is reloadable).
+  The nonce is a counter that restarts with each daemon start, under a key
+  derived per start. Every daemon reads `EMP4`; an earlier version counts it
+  as `malformed`, so upgrade all members before setting `cipher`. The audit
+  log gains `field=cipher`. The manual (chapters 11, 13, 18) has a FIPS
+  section that says emfor has no FIPS mode: this is a different cipher, not
+  a validated module.
+
 - **The manual shows how to check ping and SCTP with `exec`.** emfor has no
   ICMP or SCTP checker; chapter 6 gives a wrapper script for `ping` (with
   what the unit's sandbox and `net.ipv4.ping_group_range` mean for it) and

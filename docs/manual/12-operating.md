@@ -209,7 +209,7 @@ the values of `change` are stable; the wording of the line is not.
 | `service_changed` | `service`, `field` (`check`, `interval`, `timeout`, `rise`, `fall`, `jitter`, `on_all_down`, `balance`, `peers`, `slow_start`, `dns_ttl`), `from`, `to` |
 | `check_definition_changed` | `service`, `digest_from`, `digest_to`, `resets_state` |
 | `peer_member_added`, `peer_member_removed` | `peer` |
-| `peers_changed` | `field` (`encrypt`, `accept_plaintext`, `secret_file`, `previous_secret_file`), `from`, `to`, `applies` |
+| `peers_changed` | `field` (`encrypt`, `accept_plaintext`, `cipher`, `secret_file`, `previous_secret_file`), `from`, `to`, `applies` |
 | `more` | `omitted` |
 
 - A check definition change shows only the digests of the old and new

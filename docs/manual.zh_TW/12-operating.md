@@ -160,7 +160,7 @@ reload 被接受之後，每個差異各有一行 `info`，排在 `config reload
 | `service_changed` | `service`、`field`（`check`、`interval`、`timeout`、`rise`、`fall`、`jitter`、`on_all_down`、`balance`、`peers`、`slow_start`、`dns_ttl`）、`from`、`to` |
 | `check_definition_changed` | `service`、`digest_from`、`digest_to`、`resets_state` |
 | `peer_member_added`、`peer_member_removed` | `peer` |
-| `peers_changed` | `field`（`encrypt`、`accept_plaintext`、`secret_file`、`previous_secret_file`）、`from`、`to`、`applies` |
+| `peers_changed` | `field`（`encrypt`、`accept_plaintext`、`cipher`、`secret_file`、`previous_secret_file`）、`from`、`to`、`applies` |
 | `more` | `omitted` |
 
 - 檢查定義改變時只會看到新舊定義的摘要（digest），不會看到選項本身。`resets_state=true` 表示這個服務的 backend 會從 `unknown` 重來；只改 `timeout` 時是 `false`。

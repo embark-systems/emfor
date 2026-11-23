@@ -35,6 +35,7 @@ backends = ["10.0.2.21:8080", "10.0.2.22:8080"]
 | `previous_secret_file` | 無 | 只在啟動時讀取，給更換密鑰途中重新啟動的情況用（[見下文](#更換密鑰)）。 |
 | `encrypt` | `true` | 加密訊息。設成 `false` 只簽署、不加密。可以 reload。 |
 | `accept_plaintext` | `encrypt` 是 `true` 時為 `false`，否則為 `true` | 接受有簽署但沒加密的訊息。設成 `false` 又同時設 `encrypt = false`，會被當成錯誤。可以 reload。 |
+| `cipher` | `"chacha20-poly1305"` | 加密訊息用的演算法：`"chacha20-poly1305"`（`EMP2`／`EMP3`）或 `"aes-256-gcm"`（`EMP4`）。`"aes-256-gcm"` 要搭配 `encrypt = true`。可以 reload。見[下面](#選用-aes-gcm)。 |
 
 有 `[peers]` 時一定要設 `site`。群組成員應該放在同一個資料中心：投票的前提是，一個成員看到的狀況，其他成員也會看到。
 
@@ -108,9 +109,18 @@ peers: 1/2 live, not live 127.0.0.3:5302, too few live members to vote
 | `EMP1` | `encrypt = false` | HMAC-SHA256：有驗證，但在網路上看得到內容。 |
 | `EMP2` | `encrypt = true`，送給還不確定能讀 `EMP3` 的成員（0.6 和更早的版本） | ChaCha20-Poly1305 |
 | `EMP3` | `encrypt = true`，送給送過 `EMP3` 或宣告過支援它的成員 | XChaCha20-Poly1305 |
+| `EMP4` | `encrypt = true` 且 `cipher = "aes-256-gcm"`，送給每個成員 | AES-256-GCM |
 
 成員一開始對所有人都送 `EMP2`；一旦從某個成員的訊息看出它能讀 `EMP3`，就改對那個成員送 `EMP3`，log 會寫
 `sending EMP3 to peer 127.0.0.2:5302 from now on`。這部分你什麼都不用設定。
+
+### 選用 AES-GCM
+
+設了 `cipher = "aes-256-gcm"`（並且 `encrypt = true`），成員就對每個成員送 `EMP4`，不再在 `EMP2` 和 `EMP3` 之間挑。規定要用 AES-GCM、不能用 ChaCha20 時才需要它；除此之外不會比較安全，預設也沒變。每個 daemon 都一律讀得懂 `EMP4`，不管自己的 `cipher` 和 `accept_plaintext` 怎麼設。
+
+`EMP4` 訊息帶一個計數器：daemon 每次啟動從 1 開始，每送一份 datagram 加 1。計數器就是 nonce，所以同一把金鑰下 nonce 不會重複，而 daemon 每次啟動也都用自己的金鑰。
+
+**升級順序。** 舊版成員不認得 `EMP4`：它會丟掉訊息並計為 `malformed`，在送訊息的那個成員眼裡它就變成「不 live」。所以請先把每個成員都升級，確定全部都讀得懂 `EMP4` 之後才設 `cipher`；每個成員改完設定後 reload（`SIGHUP`）就生效。要退回去，就拿掉 `cipher` 再 reload：下一份訊息又是 `EMP2`，還在送 `EMP4` 的成員照樣讀得懂。
 
 每則訊息都帶有時間戳記、boot id 和序號。下面這些訊息都會被丟掉：重送的、太舊的、格式錯誤的、簽章不對的、來自不在 `members` 裡的位址的、來自別的 site 的，以及（預設情況下）沒加密的。丟掉的訊息會分別以 `replay`、`stale`、`malformed`、`auth`、`sender`、`site` 或 `plaintext` 計入 `emfor_peer_messages_rejected_total{reason}`。
 
