@@ -106,10 +106,13 @@ wait_srv() { # <name> <n>
 # Until a backend has been checked once it is "unknown", and emfor offers every
 # backend of a service that has none healthy: two records say nothing about
 # the checks. Wait until every backend has a result, then for the records.
+# Count the healthy ones instead of waiting for "unknown" to go away: right
+# after the start `emfor status` has nothing to show yet (an empty store), so
+# "no unknown backend" is true before the first check has run.
 t=0
-while emfor status --config /etc/emfor/emfor.toml 2>/dev/null | grep -q ' unknown '; do
+while [ "$(emfor status --config /etc/emfor/emfor.toml 2>/dev/null | grep -c ' healthy ')" -lt 8 ]; do
     t=$((t + 1))
-    [ "$t" -lt 50 ] || fail "backends still unknown after 10 s: $(emfor status --config /etc/emfor/emfor.toml 2>&1 | grep ' unknown ' | head -3)"
+    [ "$t" -lt 50 ] || fail "backends not all healthy after 10 s: $(emfor status --config /etc/emfor/emfor.toml 2>&1 | head -12)"
     sleep 0.2
 done
 for n in _kerberos._tcp.kdc.svc.emfor _ldap._tcp.ldap.svc.emfor _mongodb._tcp.db.svc.emfor; do wait_srv "$n" 2; done
