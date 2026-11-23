@@ -158,6 +158,15 @@ peers: 1/2 live, not live 127.0.0.3:5302, too few live members to vote
 
 「太舊」是拿接收端自己的時鐘來比，時間戳記在未來也一樣算：訊息的時間戳記和接收端的時鐘差超過 **5 秒**，不論往前或往後，都會以 `stale` 丟掉。這個上限是固定的。所以各成員的時鐘要校準到遠小於 5 秒（chrony 或 ntpd 做得到）；時鐘差得比這還多的成員，其他成員完全收不到它的訊息，在他們看來它就是不在線上。
 
+在那之前，daemon 就會告訴你。每一則通過驗證到 `site` 這一步的訊息，包括之後被當成 `stale` 丟掉的，daemon 都會量一次這個成員的時鐘和自己差多少：訊息的時間戳記減去收到時主機的時鐘（所以含 datagram 的傳送時間；在同一個機房裡是毫秒）。一個成員最近三則訊息都往同一個方向差了 2 秒以上，就會被回報，直到它的差距小於 1.5 秒，或它 10 秒沒有送任何訊息。回報出現在四個地方：
+
+- `emfor status`：`peers: clock of <member> is <n.n> s behind this host (messages more than 5 s apart are dropped)`，或 `ahead of this host`，在沉默的負責主機那幾行之後。群組有三個以上成員、而且每個成員都被回報時，這幾行改成一行 `peers: clock of this host differs from every member by up to <n.n> s; check this host's clock (...)`：多半是這台主機的時鐘有問題。只有一個其他成員時，沒辦法判斷是誰的時鐘錯，所以那一行寫的是那個成員；
+- `emfor status --json`：`peers.clock_offsets`，每個成員一筆 `{"member", "offset_ms"}`，成員的時鐘比較慢時是負數；沒有成員被回報時沒有這個 key；
+- metric `emfor_peer_clock_offset_seconds{peer}`，單位是秒、正負號相同，只要量過的成員都有，不論有沒有被回報；
+- log：成員被回報時一行 `warn`，不再被回報時一行 `info`，各一行，另外還有 `stale` 的 warn。
+
+其他都不變：偏差不會被校正，投票也不用它。
+
 ## 更換密鑰
 
 daemon 會自己發現 `secret_file` 有變動（Linux 上用 inotify，FreeBSD 和 macOS 上用 kqueue，另外不管怎樣每 30 秒都會讀一次），不用 reload。發現變動後，daemon 會：
@@ -232,5 +241,6 @@ previous_secret_file = "/etc/emfor/peers.key.old"
 | `emfor_peer_results_total{direction}` | 送出和收到的檢查結果。 |
 | `emfor_peer_disagreements` | 投票結果是 down、但在這裡是 up 的 backend 數。 |
 | `emfor_peer_silent_checkers` | 沒有送結果的負責主機數（以服務、backend、成員各算一筆）。 |
+| `emfor_peer_clock_offset_seconds{peer}` | 成員的時鐘減這台主機的時鐘，單位是秒；成員比較慢時是負數。 |
 | `emfor_peer_checks_skipped_total` | 只靠投票決定的檢查時間點次數。 |
 | `emfor_peer_queue_dropped_total` | peer task 跟不上而丟掉的訊息數。 |

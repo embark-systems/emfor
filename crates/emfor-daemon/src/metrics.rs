@@ -391,6 +391,20 @@ pub fn render(view: &LiveView, version: &str) -> String {
         }
         family(
             &mut out,
+            "emfor_peer_clock_offset_seconds",
+            "gauge",
+            "The clock of a peer group member minus this host's clock, in seconds, from its latest message; negative when its clock is behind.",
+        );
+        for (member, ms) in peers.clock() {
+            put!(
+                out,
+                "emfor_peer_clock_offset_seconds{{peer=\"{}\"}} {}",
+                label(&member.to_string()),
+                ms as f64 / 1000.0
+            );
+        }
+        family(
+            &mut out,
             "emfor_peer_messages_rejected_total",
             "counter",
             "Peer messages dropped, by the first check they failed.",
@@ -806,6 +820,32 @@ mod tests {
             body.lines().any(|l| l == "emfor_peer_silent_checkers 1"),
             "{body}"
         );
+        // Spec metrics-endpoint "Clock offset metric".
+        // spectra-scenario: metrics-endpoint / Member never heard from
+        assert!(
+            !body.contains("emfor_peer_clock_offset_seconds{"),
+            "no series without a measurement: {body}"
+        );
+        assert!(
+            body.contains("# TYPE emfor_peer_clock_offset_seconds gauge"),
+            "{body}"
+        );
+        // spectra-scenario: metrics-endpoint / Member behind by three seconds
+        stats.set_clock_for_test([(other, -3000)]);
+        let body = render(&v, "0.1.0");
+        assert!(
+            body.lines()
+                .any(|l| l == "emfor_peer_clock_offset_seconds{peer=\"127.0.0.1:5303\"} -3"),
+            "{body}"
+        );
+        // spectra-scenario: metrics-endpoint / Small offset is shown too
+        stats.set_clock_for_test([(other, 12)]);
+        let body = render(&v, "0.1.0");
+        assert!(
+            body.lines()
+                .any(|l| l == "emfor_peer_clock_offset_seconds{peer=\"127.0.0.1:5303\"} 0.012"),
+            "{body}"
+        );
         // Spec metrics-endpoint "Skipped checks counted".
         stats.set_checks_skipped(8);
         let body = render(&v, "0.1.0");
@@ -814,6 +854,8 @@ mod tests {
                 .any(|l| l == "emfor_peer_checks_skipped_total 8"),
             "{body}"
         );
+        // The clock series follow at the next heartbeat round (a second).
+        stats.set_clock_for_test([]);
         // A member removed on reload loses its series.
         g.set_members(vec![me, "127.0.0.1:5304".parse().unwrap()]);
         let body = render(&v, "0.1.0");

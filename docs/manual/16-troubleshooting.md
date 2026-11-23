@@ -214,7 +214,7 @@ policy does not allow that program to run from the daemon's domain.
 | `reason="plaintext"` | A member sends `EMP1` (`encrypt = false`) to one that refuses it. |
 | `reason="sender"` | A message from an address that is not in `members` (NAT, a wrong `listen`). |
 | `reason="site"` | A member with another `site`. |
-| `reason="stale"` or `replay` | Clocks differ by more than 5 seconds in either direction ([chapter 11](11-peer-groups.md#the-secret)), or messages are duplicated on the way. |
+| `reason="stale"` or `replay` | Clocks differ by more than 5 seconds in either direction ([chapter 11](11-peer-groups.md#the-secret)), or messages are duplicated on the way. For `stale`, `emfor status` shows `peers: clock of <member> is <n.n> s behind this host` from 2 seconds on, and `emfor_peer_clock_offset_seconds` the offset of each member; when one line says that the clock of this host differs from every member, fix this host's clock first. |
 | `peers: 1/2 live, ... too few live members to vote` | Fewer than three live members: no votes, each decides alone. |
 | A digest mismatch in `emfor status --json` | Members check a service differently (options, timeout, plugin command, `env_pass`). |
 | `peers: no results from <member> for <service>` in `emfor status`, or `emfor_peer_silent_checkers` above 0 | That member is an assigned checker but sends no results for the backend: it lacks the service or the backend, its check keeps giving `error`, or its packets do not reach this host ([chapter 11](11-peer-groups.md#silent-checkers)). Compare the services and backend lists of the members. |

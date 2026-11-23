@@ -44,6 +44,7 @@
 | 聯防群組 | peer group（`[peers]`） | 同一個 `site` 裡、列在彼此設定檔 `[peers]` 的 emfor daemon。成員互相交換檢查結果，用來更快發現故障、以多數決避免誤判、分工減少對後端的檢查；交換的資料只是本機 daemon 判斷的參考，查詢仍只讀本機 store。收不到成員的資料時退回完全本機的判斷。不跨 `site`，也沒有 master。 | 區域、cluster、master / slave |
 | 負責主機 | assigned checker | 聯防群組中負責某台後端的 3 台成員：在「本機加上存活成員」中以 rendezvous hashing（MD5(`<服務>/<後端 id>/<成員 listen>`) 前 4 bytes）取最大的 3 台。負責主機每次 up / down 檢查後把本機結果送給其他成員。存活成員連同本機少於 3 台時沒有負責主機。 | 檢查者、voter、leader |
 | 沉默的負責主機 | silent checker（`silent_checkers`、`emfor_peer_silent_checkers`） | 聯防群組中，某台 backend 的負責主機（本機以外）存活、沒有讓這個服務不參加、也沒有 digest 不符，卻連續超過「10 秒與服務 `interval` 的 6 倍中較長者」沒有送這個 backend 的新鮮結果。不論原因（缺服務、缺 backend、封包不通、檢查一直 `error`）。只是被顯示，不改變負責主機、投票與全區判斷。 | 失聯的成員、掉線的成員（沉默的成員仍存活） |
+| 時鐘偏差 | clock offset（`clock_offsets`、`emfor_peer_clock_offset_seconds`） | 聯防成員的時間戳記減去收到訊息時本機時鐘的差，單位毫秒，成員比較快時是正數。每則通過驗證到 `site` 的訊息都會量（包括之後被當成 `stale` 丟掉的）；最近三則都往同一個方向差了 2 秒以上就被回報，差距小於 1.5 秒或 10 秒沒有訊息時結束。只被顯示，不校正，也不改變存活與投票。 | 時間差、時鐘跳動（時鐘跳動是主機時鐘被調整的事件，不是這個量測）、`stale`（被丟掉的訊息的原因） |
 | 全區判斷 | region verdict | 每次本機檢查後，以負責主機的新鮮結果計票：至少 2 票 down 時全區判 down（原因 `peers d/f:`），優先於本機檢查；否則用本機結果（本機 down 時原因 `local:`）；沒有負責主機或沒有新鮮票時完全依本機。全區判 down 而本機 up 的後端稱為不一致，status 標 `local-up`。 | 共識、quorum（只指 change 名稱） |
 | 投票決定 | decided by votes | 聯防群組中，本機不是某台後端的負責主機時，在一次排定的檢查時間不檢查，直接以其他負責主機新鮮結果中至少 2 票同向的結論（up，或 down 原因 `peers d/f:`）當結果。連續 2 次投票決定後第 3 次一定自己檢查；本機上次結果不是 up、票數不足、快節奏連查時都自己檢查。 | 略過檢查、探測、skip |
 

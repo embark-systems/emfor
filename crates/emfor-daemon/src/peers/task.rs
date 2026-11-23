@@ -307,7 +307,11 @@ fn start_with_reader(
     };
     let (settings_tx, settings_rx) = watch::channel(settings);
     let (out_tx, out_rx) = PeerSender::channel(stats.clone());
-    let initial_state = quorum.summary(&group.members_live(), Instant::now());
+    let initial_state = quorum.summary_with_clock(
+        &group.members_live(),
+        &group.clock_offsets(),
+        Instant::now(),
+    );
     let task = tokio::spawn(run(
         socket,
         group,
@@ -765,6 +769,8 @@ async fn run(
                 let now = Instant::now();
                 secret.on_tick(&mut group, now).await;
                 group.check_liveness(now);
+                group.update_clock(now);
+                group.stats().set_clock(group.clock_samples());
                 group
                     .stats()
                     .disagreements
@@ -778,7 +784,11 @@ async fn run(
                     .stats()
                     .silent_checkers
                     .store(quorum.silent_count() as u64, Ordering::Relaxed);
-                state.publish(quorum.summary(&group.members_live(), now));
+                state.publish(quorum.summary_with_clock(
+                    &group.members_live(),
+                    &group.clock_offsets(),
+                    now,
+                ));
                 let batches = group.encode(Kind::Heartbeat(quorum.off_tags()), unix_ms(), now);
                 send_all(&socket, &batches).await;
             }

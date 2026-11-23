@@ -25,6 +25,20 @@ pub const LIVE_WINDOW: Duration = Duration::from_secs(3);
 /// Largest accepted difference between a message's `ts` and our clock.
 pub const MAX_SKEW_MS: u64 = 5000;
 
+/// A member enters the state "clock offset" when its latest
+/// [`CLOCK_CONSECUTIVE`] offsets are all at least this far from our clock, in
+/// milliseconds, in the same direction (spec peer-group, "Clock offset of
+/// members").
+pub const CLOCK_WARN_MS: u64 = 2000;
+/// ... and leaves it when its latest offset is closer than this.
+pub const CLOCK_CLEAR_MS: u64 = 1500;
+/// How many messages in a row must be at least [`CLOCK_WARN_MS`] off, so
+/// that one message delayed on the network does not look like a wrong clock.
+pub const CLOCK_CONSECUTIVE: usize = 3;
+/// A measurement is dropped when no message that passed the checks up to the
+/// site has arrived from the member for this long.
+pub const CLOCK_KEEP: Duration = Duration::from_secs(10);
+
 /// At most one warning per source address and reason in this time.
 pub(super) const WARN_EVERY: Duration = Duration::from_secs(60);
 /// Rate-limit entries kept before old ones are dropped.
@@ -96,9 +110,40 @@ impl Last {
     }
 }
 
+/// The clock offsets measured from one member: the timestamp of a message
+/// minus our clock at its arrival, in milliseconds (positive: the member is
+/// ahead of us).
+#[derive(Debug, Clone, Copy)]
+struct Clock {
+    /// The latest offsets, the newest last; `len` of them are set.
+    recent: [i64; CLOCK_CONSECUTIVE],
+    len: usize,
+    /// When the latest one was measured.
+    at: Instant,
+    /// Whether the member is in the state "clock offset"; only
+    /// [`Group::update_clock`] changes it.
+    flagged: bool,
+}
+
+impl Clock {
+    fn latest(&self) -> i64 {
+        self.recent[CLOCK_CONSECUTIVE - 1]
+    }
+
+    /// The latest [`CLOCK_CONSECUTIVE`] offsets are all at least
+    /// [`CLOCK_WARN_MS`] away from our clock, in one direction.
+    fn off(&self) -> bool {
+        self.len == CLOCK_CONSECUTIVE
+            && (self.recent.iter().all(|o| *o >= CLOCK_WARN_MS as i64)
+                || self.recent.iter().all(|o| *o <= -(CLOCK_WARN_MS as i64)))
+    }
+}
+
 /// What we know about one other member.
 #[derive(Debug, Default)]
 struct PeerState {
+    /// Clock offset measurements; see [`Group::note_clock`].
+    clock: Option<Clock>,
     /// Replay state, from the messages accepted so far.
     last: Option<Last>,
     seen: Option<Instant>,
@@ -149,6 +194,15 @@ pub struct Group {
     stats: Arc<PeerStats>,
     /// Where the live members go besides `stats`; see [`Group::share_live_with`].
     quorum: Option<Arc<Quorum>>,
+}
+
+/// The timestamp of a message minus our clock, in milliseconds.
+fn clock_offset_ms(ts: u64, now_ms: u64) -> i64 {
+    if ts >= now_ms {
+        i64::try_from(ts - now_ms).unwrap_or(i64::MAX)
+    } else {
+        -i64::try_from(now_ms - ts).unwrap_or(i64::MAX)
+    }
 }
 
 /// Whether a warning keyed by `key` is due: not logged in the last
@@ -343,7 +397,12 @@ impl Group {
         now_ms: u64,
         now: Instant,
     ) -> Result<Message, Reject> {
-        match self.check(data, src, now_ms, now) {
+        let mut offset = None;
+        let checked = self.check(data, src, now_ms, now, &mut offset);
+        if let Some((from, offset_ms)) = offset {
+            self.note_clock(from, offset_ms, now);
+        }
+        match checked {
             Ok((msg, format)) => {
                 if format == Format::Plain && self.encrypt {
                     self.warn_plaintext(src, now);
@@ -386,12 +445,17 @@ impl Group {
         }
     }
 
+    /// Check a datagram. `offset` is set to the sender and its clock offset
+    /// once the message passed the checks of format, authentication, sender
+    /// and site and is not a replay, whatever the later checks say: a message
+    /// dropped as `stale` still shows how far the member's clock is from ours.
     fn check(
         &self,
         data: &[u8],
         src: SocketAddr,
         now_ms: u64,
         now: Instant,
+        offset: &mut Option<(SocketAddr, i64)>,
     ) -> Result<(Message, Format), Reject> {
         let (msg, format) = match data.get(..4) {
             Some(m) if m == MAGIC => {
@@ -450,6 +514,17 @@ impl Group {
         if msg.site != self.site {
             return Err(Reject::Site);
         }
+        // A replay is not measured: its timestamp is old by the time it is
+        // sent again, and anyone who captured a datagram could use it to
+        // make a member's clock look wrong.
+        if self
+            .peers
+            .get(&msg.from)
+            .and_then(|p| p.last)
+            .is_none_or(|last| last.admits(&msg))
+        {
+            *offset = Some((msg.from, clock_offset_ms(msg.ts, now_ms)));
+        }
         if now_ms.abs_diff(msg.ts) > MAX_SKEW_MS {
             return Err(Reject::Stale);
         }
@@ -503,6 +578,91 @@ impl Group {
         if changed {
             self.publish_live();
         }
+    }
+
+    /// Record the clock offset of `from` measured from a message that passed
+    /// the checks up to the site (spec peer-group, "Clock offset of members").
+    /// The state "clock offset" and its log lines are kept by
+    /// [`Group::update_clock`].
+    fn note_clock(&mut self, from: SocketAddr, offset_ms: i64, now: Instant) {
+        let Some(p) = self.peers.get_mut(&from) else {
+            return;
+        };
+        let c = p.clock.get_or_insert(Clock {
+            recent: [0; CLOCK_CONSECUTIVE],
+            len: 0,
+            at: now,
+            flagged: false,
+        });
+        c.recent.rotate_left(1);
+        c.recent[CLOCK_CONSECUTIVE - 1] = offset_ms;
+        c.len = (c.len + 1).min(CLOCK_CONSECUTIVE);
+        c.at = now;
+    }
+
+    /// Once per second: drop the measurements that are older than
+    /// [`CLOCK_KEEP`], and put members into or take them out of the state
+    /// "clock offset" with a `warn` or an `info` line each.
+    pub fn update_clock(&mut self, now: Instant) {
+        for (addr, p) in self.peers.iter_mut() {
+            let Some(c) = p.clock else {
+                continue;
+            };
+            let back = c.flagged && c.latest().unsigned_abs() < CLOCK_CLEAR_MS;
+            if now.duration_since(c.at) > CLOCK_KEEP || back {
+                if c.flagged {
+                    tracing::info!(
+                        peer = %addr,
+                        "clock of peer {addr} is within limits again"
+                    );
+                }
+                p.clock = if back {
+                    Some(Clock {
+                        flagged: false,
+                        ..c
+                    })
+                } else {
+                    None
+                };
+            } else if !c.flagged && c.off() {
+                let ms = c.latest();
+                p.clock = Some(Clock { flagged: true, ..c });
+                tracing::warn!(
+                    peer = %addr,
+                    offset_ms = ms,
+                    "clock of peer {addr} is {:.1} s {} this host; messages more than {} s apart are dropped",
+                    ms.unsigned_abs() as f64 / 1000.0,
+                    if ms < 0 { "behind" } else { "ahead of" },
+                    MAX_SKEW_MS / 1000
+                );
+            }
+        }
+    }
+
+    /// The members in the state "clock offset" with their latest offset in
+    /// milliseconds, ordered by the text of the address.
+    pub fn clock_offsets(&self) -> Vec<(SocketAddr, i64)> {
+        let mut v: Vec<_> = self
+            .peers
+            .iter()
+            .filter_map(|(a, p)| p.clock.filter(|c| c.flagged).map(|c| (*a, c.latest())))
+            .collect();
+        v.sort_by_key(|(a, _)| a.to_string());
+        v
+    }
+
+    /// Every member with a measurement and its latest offset in
+    /// milliseconds, in the order of [`Group::members_live`].
+    pub fn clock_samples(&self) -> Vec<(SocketAddr, i64)> {
+        self.others()
+            .into_iter()
+            .filter_map(|m| {
+                self.peers
+                    .get(&m)
+                    .and_then(|p| p.clock)
+                    .map(|c| (m, c.latest()))
+            })
+            .collect()
     }
 
     pub fn is_live(&self, member: SocketAddr) -> bool {
@@ -1548,5 +1708,216 @@ mod tests {
         assert_eq!(checkers().len(), 3);
         g.check_liveness(start + LIVE_WINDOW + Duration::from_millis(1));
         assert!(checkers().is_empty(), "neither is live");
+    }
+    /// A message of member B with sequence `seq` whose timestamp is
+    /// `off` milliseconds from `t`, accepted or not.
+    fn clock_msg(g: &mut Group, seq: u64, t: u64, off: i64, now: Instant) -> Result<(), Reject> {
+        let ts = t.checked_add_signed(off).expect("the test timestamps fit");
+        let m = encode(&msg(B, 1, seq, ts, Kind::Heartbeat(Vec::new())), KEY);
+        g.accept(&m, addr(B), t, now).map(|_| ())
+    }
+
+    /// Spec peer-group "Clock offset of members": a member that is 3
+    /// seconds behind enters the state after three messages, with one
+    /// `warn` line.
+    // spectra-scenario: peer-group / Member behind by 3 seconds
+    #[tracing_test::traced_test]
+    #[test]
+    fn member_behind_by_three_seconds() {
+        let start = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let mut g = group(start);
+        for seq in 1..=2 {
+            clock_msg(&mut g, seq, t, -3000, start).expect("within the limit");
+            g.update_clock(start);
+            assert!(g.clock_offsets().is_empty(), "two messages are not enough");
+        }
+        clock_msg(&mut g, 3, t, -3000, start).expect("within the limit");
+        g.update_clock(start);
+        g.update_clock(start);
+        assert_eq!(g.clock_offsets(), vec![(addr(B), -3000)]);
+        assert!(logs_contain(
+            "clock of peer 10.0.0.6:5302 is 3.0 s behind this host"
+        ));
+        logs_assert(|lines: &[&str]| {
+            match lines.iter().filter(|l| l.contains("clock of peer")).count() {
+                1 => Ok(()),
+                n => Err(format!("{n} lines about the clock, wanted 1")),
+            }
+        });
+    }
+
+    /// An offset beyond the 5 second limit is still measured; the
+    /// message is dropped as `stale` as before, and the member is not live.
+    // spectra-scenario: peer-group / Offset beyond the limit is still measured
+    // spectra-scenario: peer-group / Offsets do not change the votes
+    #[test]
+    fn offset_beyond_the_limit_is_still_measured() {
+        let start = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let mut g = group(start);
+        for seq in 1..=3 {
+            assert_eq!(clock_msg(&mut g, seq, t, -6000, start), Err(Reject::Stale));
+        }
+        g.update_clock(start);
+        assert_eq!(g.clock_offsets(), vec![(addr(B), -6000)]);
+        assert_eq!(g.stats.rejected(Reject::Stale), 3);
+        assert!(!g.is_live(addr(B)), "dropped messages do not make it live");
+    }
+
+    // spectra-scenario: peer-group / One delayed message does not enter the state
+    #[tracing_test::traced_test]
+    #[test]
+    fn one_delayed_message_does_not_enter_the_state() {
+        let start = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let mut g = group(start);
+        for (seq, off) in [(1, -20), (2, -2500), (3, -20)] {
+            clock_msg(&mut g, seq, t, off, start).expect("within the limit");
+            g.update_clock(start);
+        }
+        assert!(g.clock_offsets().is_empty());
+        assert!(!logs_contain("clock of peer"));
+    }
+
+    // spectra-scenario: peer-group / Hysteresis
+    #[tracing_test::traced_test]
+    #[test]
+    fn the_state_ends_below_the_lower_limit() {
+        let start = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let mut g = group(start);
+        for seq in 1..=3 {
+            clock_msg(&mut g, seq, t, -2500, start).expect("within the limit");
+        }
+        g.update_clock(start);
+        assert_eq!(g.clock_offsets().len(), 1);
+        clock_msg(&mut g, 4, t, -1800, start).expect("within the limit");
+        g.update_clock(start);
+        assert_eq!(
+            g.clock_offsets(),
+            vec![(addr(B), -1800)],
+            "between the limits"
+        );
+        clock_msg(&mut g, 5, t, -400, start).expect("within the limit");
+        g.update_clock(start);
+        g.update_clock(start);
+        assert!(g.clock_offsets().is_empty());
+        assert!(logs_contain(
+            "clock of peer 10.0.0.6:5302 is within limits again"
+        ));
+        assert_eq!(
+            g.clock_samples(),
+            vec![(addr(B), -400)],
+            "the measurement stays after the state ends"
+        );
+    }
+
+    // spectra-scenario: peer-group / Ahead of this host
+    #[tracing_test::traced_test]
+    #[test]
+    fn member_ahead_of_this_host() {
+        let start = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let mut g = group(start);
+        for seq in 1..=3 {
+            clock_msg(&mut g, seq, t, 2500, start).expect("within the limit");
+        }
+        g.update_clock(start);
+        assert_eq!(g.clock_offsets(), vec![(addr(B), 2500)]);
+        assert!(logs_contain("is 2.5 s ahead of this host"));
+    }
+
+    // spectra-scenario: peer-group / The measurement expires
+    #[tracing_test::traced_test]
+    #[test]
+    fn the_measurement_expires() {
+        let start = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let mut g = group(start);
+        for seq in 1..=3 {
+            clock_msg(&mut g, seq, t, -3000, start).expect("within the limit");
+        }
+        g.update_clock(start);
+        assert_eq!(g.clock_offsets().len(), 1);
+        g.update_clock(start + CLOCK_KEEP);
+        assert_eq!(
+            g.clock_offsets().len(),
+            1,
+            "exactly the keep time is not yet over"
+        );
+        g.update_clock(start + CLOCK_KEEP + Duration::from_millis(1));
+        assert!(g.clock_offsets().is_empty());
+        assert!(g.clock_samples().is_empty());
+        assert!(logs_contain(
+            "clock of peer 10.0.0.6:5302 is within limits again"
+        ));
+    }
+
+    // spectra-scenario: peer-group / Clocks agree
+    #[tracing_test::traced_test]
+    #[test]
+    fn clocks_that_agree_show_nothing() {
+        let start = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let mut g = group(start);
+        for (seq, off) in [(1, 0), (2, 120), (3, -450)] {
+            clock_msg(&mut g, seq, t, off, start).expect("within the limit");
+            g.update_clock(start);
+        }
+        assert!(g.clock_offsets().is_empty());
+        assert_eq!(g.clock_samples(), vec![(addr(B), -450)]);
+        assert!(!logs_contain("clock of peer"));
+    }
+
+    /// A replayed message is dropped without a measurement: it must not make
+    /// a member's clock look wrong.
+    // spectra-scenario: peer-group / A replay is not measured
+    #[test]
+    fn a_replay_is_not_measured() {
+        let start = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let mut g = group(start);
+        // The member's real messages are accepted, with the right clock.
+        for seq in 1..=4 {
+            clock_msg(&mut g, seq, t, 0, start).expect("within the limit");
+        }
+        // The first one, captured, is sent again 20 seconds later: dropped as
+        // stale, and as a replay it is not measured.
+        let captured = encode(&msg(B, 1, 1, t, Kind::Heartbeat(Vec::new())), KEY);
+        for _ in 0..3 {
+            assert_eq!(
+                g.accept(&captured, addr(B), t + 20_000, start).map(|_| ()),
+                Err(Reject::Stale)
+            );
+        }
+        g.update_clock(start);
+        assert!(g.clock_offsets().is_empty());
+        assert_eq!(g.clock_samples(), vec![(addr(B), 0)]);
+    }
+
+    /// Messages from a source that is not a member, or from another site,
+    /// are not measured.
+    #[test]
+    fn only_members_of_the_site_are_measured() {
+        let start = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let mut g = group(start);
+        let other_site = Message {
+            site: "dc2".into(),
+            ..msg(B, 1, 1, t - 4000, Kind::Heartbeat(Vec::new()))
+        };
+        assert_eq!(
+            g.accept(&encode(&other_site, KEY), addr(B), t, start)
+                .map(|_| ()),
+            Err(Reject::Site)
+        );
+        let stranger = msg("10.0.0.8:5302", 1, 1, t - 4000, Kind::Heartbeat(Vec::new()));
+        assert_eq!(
+            g.accept(&encode(&stranger, KEY), addr("10.0.0.8:5302"), t, start)
+                .map(|_| ()),
+            Err(Reject::Sender)
+        );
+        assert!(g.clock_samples().is_empty());
     }
 }

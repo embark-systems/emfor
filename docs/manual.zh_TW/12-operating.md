@@ -49,7 +49,7 @@ web.svc.emfor  round-robin  on_all_down=open
 | `local-up` | 意見不一致：投票結果是 down，但在這裡是 up。 |
 | reason | 最近一次檢查失敗的原因。 |
 
-`daemon:` 那一行會是 `running`、`stale, heartbeat 4.5s ago` 或 `stopped`。主機時鐘被往回調之後，heartbeat 可能比現在還晚：這時那一行會寫 `heartbeat 5.0s in the future`，超過 3 秒就是 `stale`。有 `[peers]` 時，下面還會多一行 `peers:`（[第 11 章](11-peer-groups.md#投票如何運作)）；有成員沒有送結果時，還會有像 `peers: no results from 10.0.1.13:5302 for api.svc.emfor (1 backends)` 的行（[第 11 章](11-peer-groups.md#沉默的負責主機)）。
+`daemon:` 那一行會是 `running`、`stale, heartbeat 4.5s ago` 或 `stopped`。主機時鐘被往回調之後，heartbeat 可能比現在還晚：這時那一行會寫 `heartbeat 5.0s in the future`，超過 3 秒就是 `stale`。有 `[peers]` 時，下面還會多一行 `peers:`（[第 11 章](11-peer-groups.md#投票如何運作)）；有成員沒有送結果時，還會有像 `peers: no results from 10.0.1.13:5302 for api.svc.emfor (1 backends)` 的行（[第 11 章](11-peer-groups.md#沉默的負責主機)）；有成員的時鐘差了 2 秒以上時，還會有像 `peers: clock of 10.0.1.12:5302 is 3.0 s behind this host (messages more than 5 s apart are dropped)` 的行（[第 11 章](11-peer-groups.md#密鑰)）。
 
 | 選項 | |
 | --- | --- |
@@ -69,7 +69,7 @@ web.svc.emfor
     2026-11-21 17:31:25 unknown -> healthy
 ```
 
-JSON 物件裡有 `store`、`daemon`、`heartbeat_ms`、`heartbeat_age_ms`（停止時是 `null`，heartbeat 比現在還晚時是負數）、`started_at_ms`、`site`、`dns_listen`、`metrics_listen`、`services`（每個服務有 `name`、`balance`、`on_all_down`、`slow_start_ms`、`all_down`，以及 `backends`，其中有 `id`、`ip`、`port`、`state`、`reason`、`checked_at`、`latency_us`、`weight`、`site`、`backup`、`recovered_at`）、`history`、`flapping`、`peers`（有成員沒有送結果時帶 `silent_checkers`，見[第 11 章](11-peer-groups.md#沉默的負責主機)）和 `assigned_checkers`（每個 backend 的負責主機，照排名排序；沒有聯防群組或 daemon 沒在跑時是 `null`）。
+JSON 物件裡有 `store`、`daemon`、`heartbeat_ms`、`heartbeat_age_ms`（停止時是 `null`，heartbeat 比現在還晚時是負數）、`started_at_ms`、`site`、`dns_listen`、`metrics_listen`、`services`（每個服務有 `name`、`balance`、`on_all_down`、`slow_start_ms`、`all_down`，以及 `backends`，其中有 `id`、`ip`、`port`、`state`、`reason`、`checked_at`、`latency_us`、`weight`、`site`、`backup`、`recovered_at`）、`history`、`flapping`、`peers`（有成員沒有送結果時帶 `silent_checkers`，見[第 11 章](11-peer-groups.md#沉默的負責主機)；有成員的時鐘差了 2 秒以上時帶 `clock_offsets`，見[第 11 章](11-peer-groups.md#密鑰)）和 `assigned_checkers`（每個 backend 的負責主機，照排名排序；沒有聯防群組或 daemon 沒在跑時是 `null`）。
 
 `history` 每個服務一筆，內容是 `{"backends": {"<id>": [...]}}`；每個 backend 有它最近 20 次狀態變化，**最舊的排最前面**（`--history` 的文字輸出是最新的排最前面），每筆是 `{"at": <該次檢查的 Unix 毫秒>, "from": "healthy", "to": "unhealthy", "reason": "connection refused"}`；檢查沒給原因時 `reason` 是 `null`。
 
@@ -340,7 +340,7 @@ reload 是全有或全無，所以被拒絕的 reload 不用撤回：daemon 還�
 heartbeat 和聯防訊息都是主機時鐘的時間戳，所以時鐘一跳，三個地方會看得到：
 
 - **在主機上：** client 拿 heartbeat 和自己的時鐘比。如果時鐘往回調超過 `EMFOR_MAX_STALENESS`，`emfor status` 會寫 `heartbeat <age> in the future`，store 也算過期；daemon 還在跑的話，下一次 heartbeat（約一秒內）就恢復。daemon 沒在跑（被 kill、沒有正常停止）時，留下的 heartbeat 會一直在未來，直到時鐘追上：把 daemon 啟動起來，它會寫一個新的。
-- **在聯防群組裡：** 時間戳和接收端時鐘差超過 5 秒（不論早或晚）的訊息會被當成 `stale` 丟掉。把時鐘修好（chrony 或 ntpd）就好，不用 restart。`emfor_peer_messages_rejected_total{reason="stale"}` 不再增加，就表示成員又對得上了。
+- **在聯防群組裡：** 時間戳和接收端時鐘差超過 5 秒（不論早或晚）的訊息會被當成 `stale` 丟掉。在丟掉之前，從 2 秒起，`emfor status` 就會有一行 `peers: clock of <member> is <n.n> s behind this host`（或 `ahead of`），`emfor_peer_clock_offset_seconds{peer}` 也有每個成員的偏差；如果有一行寫的是這台主機的時鐘和每個成員都不一樣，先修這台的時鐘。把時鐘修好（chrony 或 ntpd）就好，不用 restart。`emfor_peer_messages_rejected_total{reason="stale"}` 不再增加，就表示成員又對得上了。
 
 每一台跑 emfor 的主機，時鐘請用漸進調整（chrony 的預設），不要一次跳過去。
 

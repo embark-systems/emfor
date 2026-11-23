@@ -62,7 +62,10 @@ ahead of now: the line then says `heartbeat 5.0s in the future`, and it is
 `stale` when that is more than 3 seconds. With `[peers]` a `peers:` line follows
 ([chapter 11](11-peer-groups.md#how-the-votes-work)), and lines such as
 `peers: no results from 10.0.1.13:5302 for api.svc.emfor (1 backends)` when a
-member sends no results ([chapter 11](11-peer-groups.md#silent-checkers)).
+member sends no results ([chapter 11](11-peer-groups.md#silent-checkers)), and
+lines such as `peers: clock of 10.0.1.12:5302 is 3.0 s behind this host (messages
+more than 5 s apart are dropped)` when the clock of a member is 2 seconds or more
+off ([chapter 11](11-peer-groups.md#the-secret)).
 
 | Option | |
 | --- | --- |
@@ -89,7 +92,8 @@ The JSON object has `store`, `daemon`, `heartbeat_ms`, `heartbeat_age_ms`
 with `id`, `ip`, `port`, `state`, `reason`, `checked_at`, `latency_us`,
 `weight`, `site`, `backup`, `recovered_at`), `history`, `flapping`, `peers`
 (with `silent_checkers` while a member sends no results,
-[chapter 11](11-peer-groups.md#silent-checkers))
+[chapter 11](11-peer-groups.md#silent-checkers), and `clock_offsets` while the
+clock of a member is 2 seconds or more off, [chapter 11](11-peer-groups.md#the-secret))
 and `assigned_checkers` (the assigned checkers of each backend, in rank
 order; `null` without a peer group or while the daemon is not running).
 
@@ -503,8 +507,13 @@ jump shows up in three places:
   that stays in the future until the clock passes it: start the daemon, which
   writes a new one.
 - **In a peer group:** a message whose timestamp is more than 5 seconds from
-  the receiver's clock, in either direction, is dropped as `stale`. Fix the
-  clock (chrony or ntpd); no restart is needed. When the counter
+  the receiver's clock, in either direction, is dropped as `stale`. From 2
+  seconds on, before anything is dropped, `emfor status` has a line `peers:
+  clock of <member> is <n.n> s behind this host` (or `ahead of`), and
+  `emfor_peer_clock_offset_seconds{peer}` has the offset of each member; when
+  one line says that the clock of this host differs from every member, the
+  clock of this host is the one to fix. Fix the clock (chrony or ntpd); no
+  restart is needed. When the counter
   `emfor_peer_messages_rejected_total{reason="stale"}` stops rising, the
   members agree again.
 

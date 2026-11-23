@@ -408,6 +408,16 @@ struct PeerState {
     /// none, and from a store written before the field existed.
     #[serde(default)]
     silent_checkers: Vec<PeerSilent>,
+    /// Members whose clock is far from this host's; absent when there are
+    /// none, and from a store written before the field existed.
+    #[serde(default)]
+    clock_offsets: Vec<PeerClock>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PeerClock {
+    member: String,
+    offset_ms: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -596,6 +606,32 @@ fn peer_lines(
             lines.push(format!(
                 "peers: no results from {member} for {} ({n} backends)",
                 svc.name
+            ));
+        }
+    }
+    // Clock offsets: one line for each member, or one line about this host
+    // when every member differs.
+    let n = |ms: i64| format!("{:.1}", ms.unsigned_abs() as f64 / 1000.0);
+    if state.clock_offsets.len() >= 2 && state.clock_offsets.len() == state.members.len() {
+        let worst = state
+            .clock_offsets
+            .iter()
+            .map(|c| c.offset_ms.unsigned_abs())
+            .max()
+            .unwrap_or(0);
+        lines.push(format!(
+            "peers: clock of this host differs from every member by up to {}; check this host's clock (messages more than 5 s apart are dropped)",
+            format_args!("{:.1} s", worst as f64 / 1000.0)
+        ));
+    } else {
+        let mut offsets: Vec<&PeerClock> = state.clock_offsets.iter().collect();
+        offsets.sort_by(|a, b| a.member.cmp(&b.member));
+        for c in offsets {
+            lines.push(format!(
+                "peers: clock of {} is {} s {} this host (messages more than 5 s apart are dropped)",
+                c.member,
+                n(c.offset_ms),
+                if c.offset_ms < 0 { "behind" } else { "ahead of" }
             ));
         }
     }
@@ -1794,6 +1830,61 @@ mod tests {
         let mut old = snap(Some(400), vec![api()]);
         old.peers = peers_value(Some(PEERS));
         assert!(!render(&old).iter().any(|l| l.contains("no results from")));
+    }
+
+    /// Spec status-command "Clock offset line in status text".
+    // spectra-scenario: status-command / One member behind
+    // spectra-scenario: status-command / One member ahead
+    // spectra-scenario: status-command / Every member differs
+    // spectra-scenario: status-command / Only one other member
+    // spectra-scenario: status-command / Store from a daemon without the field
+    #[test]
+    fn clock_offset_lines() {
+        let two = |clock: &str| {
+            format!(
+                r#"{{"listen":"10.0.0.5:5302","members":[{{"addr":"10.0.0.12:5302","live":true}},{{"addr":"10.0.0.13:5302","live":true}}],"digest_mismatch":[],"disagreements":[]{clock}}}"#
+            )
+        };
+        let lines_for = |value: String| {
+            let mut s = snap(Some(400), vec![api()]);
+            s.peers = peers_value(Some(&value));
+            render(&s)
+                .into_iter()
+                .filter(|l| l.contains("clock of"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            lines_for(two(
+                r#","clock_offsets":[{"member":"10.0.0.13:5302","offset_ms":-3040}]"#
+            )),
+            [
+                "peers: clock of 10.0.0.13:5302 is 3.0 s behind this host (messages more than 5 s apart are dropped)"
+            ]
+        );
+        assert_eq!(
+            lines_for(two(
+                r#","clock_offsets":[{"member":"10.0.0.12:5302","offset_ms":2460}]"#
+            )),
+            [
+                "peers: clock of 10.0.0.12:5302 is 2.5 s ahead of this host (messages more than 5 s apart are dropped)"
+            ]
+        );
+        assert_eq!(
+            lines_for(two(
+                r#","clock_offsets":[{"member":"10.0.0.12:5302","offset_ms":-4100},{"member":"10.0.0.13:5302","offset_ms":-3900}]"#
+            )),
+            [
+                "peers: clock of this host differs from every member by up to 4.1 s; check this host's clock (messages more than 5 s apart are dropped)"
+            ]
+        );
+        let one = r#"{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.12:5302","live":true}],"digest_mismatch":[],"disagreements":[],"clock_offsets":[{"member":"10.0.0.12:5302","offset_ms":-3000}]}"#;
+        assert_eq!(
+            lines_for(one.to_string()),
+            [
+                "peers: clock of 10.0.0.12:5302 is 3.0 s behind this host (messages more than 5 s apart are dropped)"
+            ]
+        );
+        assert!(lines_for(two("")).is_empty(), "a store without the field");
     }
 
     /// Spec "Status text output", scenario "Members that leave services

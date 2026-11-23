@@ -300,6 +300,33 @@ well within 5 seconds (chrony or ntpd does that); a member whose clock is
 further off than that is never heard by the others, and shows as not live
 for them.
 
+The daemon says so before that. From every message that passes the checks up
+to the site, including one that is then dropped as `stale`, it measures how far
+the member's clock is from its own: the timestamp of the message minus the
+host's clock when it arrives (so it includes the time of the datagram, which
+inside a data centre is milliseconds). A member whose last three messages were
+all at least 2 seconds off in the same direction is reported, until its offset
+is below 1.5 seconds or it sends nothing for 10 seconds. It shows in four
+places:
+
+- `emfor status`: `peers: clock of <member> is <n.n> s behind this host
+  (messages more than 5 s apart are dropped)`, or `ahead of this host`, after
+  the lines for silent checkers. When every member of a group of at least
+  three is reported, one line `peers: clock of this host differs from every
+  member by up to <n.n> s; check this host's clock (...)` replaces them: the
+  clock of this host is the likely one. With only one other member nobody can
+  tell whose clock is wrong, so the line names that member;
+- `emfor status --json`: `peers.clock_offsets`, one `{"member", "offset_ms"}`
+  for each member, negative when its clock is behind; the key is absent when
+  no member is reported;
+- the metric `emfor_peer_clock_offset_seconds{peer}`, in seconds with the same
+  sign, for every member that has been measured, reported or not;
+- the log: a `warn` when a member is reported and an `info` when it is not any
+  more, one of each, besides the `stale` warnings.
+
+Nothing else changes: the offset is not corrected for, and the votes do not
+use it.
+
 ## Rotating the secret
 
 The daemon notices a change of `secret_file` by itself (inotify on Linux,
@@ -408,5 +435,6 @@ that this script was run in a test container; it was not run for this manual.
 | `emfor_peer_results_total{direction}` | Check results sent and received. |
 | `emfor_peer_disagreements` | Backends that are down by votes but up here. |
 | `emfor_peer_silent_checkers` | Assigned checkers that send no results for a backend (one per service, backend and member). |
+| `emfor_peer_clock_offset_seconds{peer}` | The clock of the member minus this host's clock, in seconds; negative when the member is behind. |
 | `emfor_peer_checks_skipped_total` | Check times decided by votes alone. |
 | `emfor_peer_queue_dropped_total` | Messages dropped because the peer task was behind. |

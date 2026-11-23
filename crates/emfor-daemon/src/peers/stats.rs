@@ -61,6 +61,9 @@ pub struct PeerStats {
     /// When a dropped message was last logged.
     queue_warned: Mutex<Option<tokio::time::Instant>>,
     up: Mutex<BTreeMap<SocketAddr, bool>>,
+    /// The latest clock offset of each member with a measurement, in
+    /// milliseconds (spec peer-group, "Clock offset of members").
+    clock: Mutex<BTreeMap<SocketAddr, i64>>,
 }
 
 impl PeerStats {
@@ -147,6 +150,24 @@ impl PeerStats {
     pub fn up(&self) -> Vec<(SocketAddr, bool)> {
         let up = self.up.lock().unwrap_or_else(|e| e.into_inner());
         up.iter().map(|(a, l)| (*a, *l)).collect()
+    }
+
+    /// The members with a clock offset measurement and the latest offset in
+    /// milliseconds, positive when the member's clock is ahead.
+    pub fn clock(&self) -> Vec<(SocketAddr, i64)> {
+        let clock = self.clock.lock().unwrap_or_else(|e| e.into_inner());
+        clock.iter().map(|(a, o)| (*a, *o)).collect()
+    }
+
+    pub(super) fn set_clock(&self, samples: impl IntoIterator<Item = (SocketAddr, i64)>) {
+        let mut clock = self.clock.lock().unwrap_or_else(|e| e.into_inner());
+        *clock = samples.into_iter().collect();
+    }
+
+    /// Set the clock offsets.
+    #[cfg(test)]
+    pub fn set_clock_for_test(&self, samples: impl IntoIterator<Item = (SocketAddr, i64)>) {
+        self.set_clock(samples);
     }
 
     pub(super) fn set_up(&self, members: impl Iterator<Item = (SocketAddr, bool)>) {

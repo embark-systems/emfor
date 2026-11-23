@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **A peer member whose clock is off is now shown before its messages are
+  dropped.** The daemon measures, from every message of a member that passes
+  the checks up to `site` (also one dropped as `stale`), the member's
+  timestamp minus its own clock. When the last three messages are all at
+  least 2 seconds off in one direction, `emfor status` has a line `peers:
+  clock of <member> is <n.n> s behind this host` (or `ahead of`; one line
+  about this host when every member of a group of three or more differs),
+  `emfor status --json` has `peers.clock_offsets`, and the log has a `warn`
+  and later an `info`. New metric `emfor_peer_clock_offset_seconds{peer}`
+  (seconds, negative when the member is behind) for every measured member. The
+  5 second limit, the votes and the protocol are unchanged. Chapters 11, 12
+  and 16 (en and zh_TW) say so; `tools/peer-clock-test.sh` checks it with
+  three containers and libfaketime.
+
 - **The manual says what to do with several data centres.** Chapter 11
   ("Several data centres", en and zh_TW): one peer group per data centre, each
   with its own `site`, members and secret; why members of two sites do not

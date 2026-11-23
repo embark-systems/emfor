@@ -266,6 +266,16 @@ struct Summary<'a> {
     /// checkers in the peer state").
     #[serde(skip_serializing_if = "Vec::is_empty")]
     silent_checkers: Vec<SummarySilent<'a>>,
+    /// Written only while a member is in the state "clock offset" (spec
+    /// state-store, "Clock offsets in the peer state").
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    clock_offsets: Vec<SummaryClock>,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryClock {
+    member: String,
+    offset_ms: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -791,7 +801,20 @@ impl Quorum {
     /// The JSON value of `meta/peers`. `members` are the other members in
     /// config order with whether they are live. Mismatches older than
     /// [`MISMATCH_KEEP`] are dropped first.
+    #[cfg(test)]
     pub fn summary(&self, members: &[(SocketAddr, bool)], now: Instant) -> String {
+        self.summary_with_clock(members, &[], now)
+    }
+
+    /// [`Quorum::summary`] with the members in the state "clock offset" and
+    /// their offsets in milliseconds, in the order given (`Group::clock_offsets`
+    /// orders them).
+    pub fn summary_with_clock(
+        &self,
+        members: &[(SocketAddr, bool)],
+        clock_offsets: &[(SocketAddr, i64)],
+        now: Instant,
+    ) -> String {
         let mut st = self.state();
         st.mismatches
             .retain(|_, at| now.duration_since(*at) < MISMATCH_KEEP);
@@ -839,6 +862,13 @@ impl Quorum {
                     service,
                     backend,
                     member: member.to_string(),
+                })
+                .collect(),
+            clock_offsets: clock_offsets
+                .iter()
+                .map(|(member, offset_ms)| SummaryClock {
+                    member: member.to_string(),
+                    offset_ms: *offset_ms,
                 })
                 .collect(),
         };
@@ -1675,6 +1705,39 @@ mod tests {
     }
 
     const ONE_SEC: Duration = Duration::from_secs(1);
+
+    /// Spec state-store "Member behind reaches the store" and "Field absent
+    /// while the clocks agree".
+    // spectra-scenario: state-store / Member behind reaches the store
+    // spectra-scenario: state-store / Field absent while the clocks agree
+    #[test]
+    fn clock_offsets_in_the_summary() {
+        let q = Quorum::new(addr("10.0.0.5:5302"));
+        let now = Instant::now();
+        let peers = [(addr("10.0.0.6:5302"), true)];
+        assert!(
+            !q.summary(&peers, now).contains("clock_offsets"),
+            "no field without offsets"
+        );
+        assert!(
+            !q.summary_with_clock(&peers, &[], now)
+                .contains("clock_offsets")
+        );
+        let json = q.summary_with_clock(
+            &peers,
+            &[
+                (addr("10.0.0.6:5302"), -3000),
+                (addr("10.0.0.7:5302"), 2500),
+            ],
+            now,
+        );
+        assert!(
+            json.contains(
+                r#""clock_offsets":[{"member":"10.0.0.6:5302","offset_ms":-3000},{"member":"10.0.0.7:5302","offset_ms":2500}]"#
+            ),
+            "{json}"
+        );
+    }
 
     /// Spec state-store "Silent member reaches the store" and "Field absent
     /// while nobody is silent".
