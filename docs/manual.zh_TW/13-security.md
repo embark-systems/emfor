@@ -93,6 +93,23 @@ store 裡存的是服務名稱、backend 位址、狀態和 reason，不存任�
 
 套件附的 unit 用 `emfor` 身分執行 daemon，不給任何 capability，除了 store 目錄以外整個檔案系統都是唯讀，另外還設了 `NoNewPrivileges`、system call 過濾、`UMask=0027`、`ProtectProc=invisible` 等等（[第 4 章](04-installing.md#systemd-unit)）。用 `systemd-analyze security emfor` 可以看結果；寫這份手冊時沒有實際跑過。
 
+## SELinux 與 AppArmor
+
+emfor 不附 SELinux 模組，也不附 AppArmor profile，而且沒有在 SELinux enforcing 或 AppArmor profile 底下跑過：測試是在 Debian container 裡跑的，那裡兩者都沒開。底下寫的是程式實際會做什麼，讓你自己寫 policy；它不是一份測過的 policy。
+
+上面的 systemd unit 從 daemon 這一側限制它能做什麼，強制存取控制（MAC）的 policy 則從 kernel 這一側限制，兩者疊加，不能互相取代。稽核規則如果要求 daemon 要被限制住，就需要 policy。
+
+daemon 會碰到的東西：
+
+- **讀：** 設定檔和 `include_dir` 裡的檔案（[第 5 章](05-configuring.md)）、祕密檔、檢查裡指定的 `ca_file`、`password_file` 和金鑰檔，以及系統的 CA 憑證（沒設 `ca_file` 的 `http` 檢查）。它也用 inotify 監看聯防祕密檔所在的目錄。
+- **讀寫：** store 目錄，預設是 `/var/lib/emfor`：`state.mdb`、`state.mdb-lock`、`state.mdb.writer`、`state.mdb-peers`，以及 store 損壞時被移開的 `state.mdb.corrupt`。它會在那裡建立檔案並 rename。
+- **監聽：** DNS 位址（UDP 與 TCP）、metrics 位址（TCP）、`[peers]` 位址（UDP），都由設定檔指定。
+- **連線：** 每個 backend 位址，用檢查的協定（TCP；有些外掛用 UDP）。
+- **啟動程式：** `exec` 檢查和外掛會以 `emfor` 身分、在各自的 process group 裡啟動設定檔寫的程式。外掛通常是 `/usr/bin/emfor-check`。要限制 daemon 的 policy 必須允許你寫在設定檔裡的每一支程式，而這些程式也受同一套規則限制；這通常是需要你自己加規則的地方。
+- **不會用到：** raw socket、packet socket 或 capability；正常執行時也不讀 `/proc`。
+
+如果你的發行版只在載入 policy 時才限制 daemon，那沒有 policy 的 daemon 就不會被限制；你的系統怎麼處理沒有標籤的程式，我們沒有查證。加了 policy 之後遇到拒絕的處理，見[第 16 章](16-troubleshooting.md#selinux-或-apparmor-的拒絕)。
+
 ## 回報安全漏洞
 
 請用 GitHub repository 上的私人漏洞回報功能（先按 Security，再按 Report a vulnerability），不要開公開的 issue。1.0 以前，只有最新的發行版會收到安全修正。

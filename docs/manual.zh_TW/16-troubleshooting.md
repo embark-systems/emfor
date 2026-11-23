@@ -154,6 +154,23 @@ ALL_DOWN: service db.svc.emfor: no backend is healthy, and on_all_down is closed
 
 如果 `<store>-lock` 在應用程式還在跑的時候被刪掉，第一個開啟 store 的行程會重建這個檔案，擁有者就變成它自己，之後 daemon 可能就啟動不了。這時請先停掉應用程式，或是對 lock 檔執行 `chown emfor:emfor` 和 `chmod 0660`，再啟動 daemon。千萬不要只刪 lock 檔。
 
+## SELinux 或 AppArmor 的拒絕
+
+emfor 不附 policy（[第 13 章](13-security.md#selinux-與-apparmor)），所以這一段只適用於你或你的發行版自己加了 policy 的情況。徵兆是：檔案權限、擁有者和 unit 的 sandbox 看起來都沒問題，檢查或 daemon 卻出現 `Permission denied`，而把 policy 關掉就正常。底下是常用的工具，沒有拿 emfor 實際跑過。
+
+```sh
+# getenforce                                  # SELinux：Enforcing 或 Permissive
+# ausearch -m AVC,USER_AVC -ts recent         # SELinux 的拒絕紀錄
+# aa-status                                   # AppArmor：已載入的 profile
+# journalctl -k | grep 'apparmor="DENIED"'    # AppArmor 的拒絕紀錄
+```
+
+1. 找到那筆拒絕，記下程式、路徑或 port，以及操作。
+2. 確認原因是 policy：先暫時把它切到 permissive（`setenforce 0`，或對該 profile 用 `aa-complain`），重做失敗的動作，再切回來。
+3. 在 policy 裡只開出那一項存取，不要放得更寬。store 放在別的目錄時，讓那個目錄的標籤和 `/var/lib/emfor` 一樣（SELinux），或把路徑加進 profile，並在 unit 裡設 `ReadWritePaths=`（[第 4 章](04-installing.md#systemd-unit)）。
+
+啟動程式的檢查（`exec`、外掛）如果被拒絕，是因為 policy 不允許那支程式從 daemon 的 domain 執行。
+
 ## 聯防群組的問題
 
 | 症狀 | 原因 |

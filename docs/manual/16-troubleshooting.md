@@ -179,6 +179,33 @@ open the store recreated it with its own owner, and the daemon may then fail
 to start. Stop the applications, or `chown emfor:emfor` and `chmod 0660` the
 lock file, then start the daemon. Never delete the lock file alone.
 
+## A denial from SELinux or AppArmor
+
+emfor ships no policy ([chapter 13](13-security.md#selinux-and-apparmor)), so
+this applies when you or your distribution added one. The signs: a check or
+the daemon fails with `Permission denied` although the file modes, the owner
+and the unit's sandbox look right, and the same thing works with the policy
+off. The commands below are the usual tools; they were not run against emfor.
+
+```sh
+# getenforce                                  # SELinux: Enforcing or Permissive
+# ausearch -m AVC,USER_AVC -ts recent         # SELinux denials
+# aa-status                                   # AppArmor: loaded profiles
+# journalctl -k | grep 'apparmor="DENIED"'    # AppArmor denials
+```
+
+1. Find the denial and note the program, the path or port and the operation.
+2. Confirm the policy is the cause: put it in permissive mode for a moment
+   (`setenforce 0`, or `aa-complain` on the profile), repeat the failing
+   action, and switch it back.
+3. Allow exactly that access in the policy, not a wider one. For a store
+   under another directory, give that directory the same label as
+   `/var/lib/emfor` (SELinux) or add its path to the profile, and set
+   `ReadWritePaths=` in the unit ([chapter 4](04-installing.md#the-systemd-unit)).
+
+A check that starts a program (`exec`, a plugin) fails with a denial when the
+policy does not allow that program to run from the daemon's domain.
+
 ## Peer problems
 
 | Symptom | Cause |

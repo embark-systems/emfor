@@ -137,6 +137,47 @@ system call filter, `UMask=0027`, `ProtectProc=invisible` and more
 ([chapter 4](04-installing.md#the-systemd-unit)). `systemd-analyze security
 emfor` shows the result; it was not run for this manual.
 
+## SELinux and AppArmor
+
+emfor ships no SELinux module and no AppArmor profile, and it has not been
+run under SELinux in enforcing mode or under an AppArmor profile: its tests
+run in Debian containers, where neither is active. What follows is what the
+code does, so that you can write a policy; it is not a tested policy.
+
+The systemd unit above limits what the daemon can do, and a mandatory access
+control policy limits it from the kernel's side. They add up; one does not
+replace the other. If your audit rules ask for a confined daemon, you need
+the policy.
+
+What the daemon touches:
+
+- **Reads:** the config file and the files in `include_dir`
+  ([chapter 5](05-configuring.md)), the secret files and the
+  `ca_file`, `password_file` and key files that checks name, and the
+  system CA certificates (for `http` checks without `ca_file`). It also
+  watches the directory of the peer secret file with inotify.
+- **Reads and writes:** the store directory, `/var/lib/emfor` by default:
+  `state.mdb`, `state.mdb-lock`, `state.mdb.writer`, `state.mdb-peers` and a
+  `state.mdb.corrupt` it sets aside when the store is damaged. It creates
+  files there and renames them.
+- **Listens on:** the DNS address (UDP and TCP), the metrics address (TCP)
+  and the `[peers]` address (UDP), all given in the config.
+- **Connects to:** every backend address, with the check's protocol
+  (TCP, and UDP for some plugins).
+- **Starts programs:** `exec` checks and plugins start the programs the
+  config names, as the `emfor` user, in their own process group.
+  `/usr/bin/emfor-check` is the usual plugin. A policy that confines the
+  daemon must allow every program you put in the config, and those programs
+  run under the same rules; this is the part that usually needs your own
+  rules.
+- **Does not use:** raw sockets, packet sockets or capabilities, and it
+  reads nothing from `/proc` in normal operation.
+
+If you run a distribution that confines a daemon only when a policy for it
+is loaded, a daemon without a policy is not confined; we have not checked
+how yours treats an unlabeled one. For denials after you add a policy, see
+[chapter 16](16-troubleshooting.md#a-denial-from-selinux-or-apparmor).
+
 ## Reporting a vulnerability
 
 Use GitHub's private vulnerability reporting on the repository (Security,

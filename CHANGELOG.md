@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The manual says where emfor stands on SELinux and AppArmor.** emfor ships
+  no policy and has not been run under either in enforcing mode. Chapter 13
+  lists what the daemon reads, writes, listens on and starts, for anyone who
+  writes a policy; chapter 16 has a short way to find a denial. No code
+  change.
+
 - **`emfor status` no longer calls an empty store a version problem.** A store
   the daemon never wrote to (it exited at start, for example because the DNS
   port was taken) gives `store is empty: the daemon has not written to it yet;
