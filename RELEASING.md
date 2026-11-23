@@ -98,6 +98,30 @@ on every run, so the checks are not affected; but before building against
 `clients/build/prefix` by hand on macOS (step 8), run
 `make -C clients/go libemfor` there first.
 
+### The rpm under systemd
+
+If the release ships the rpm, test it before tagging with
+[tools/rpm-release-test.sh](tools/rpm-release-test.sh). It starts Rocky Linux 9
+with systemd as PID 1 in docker, and checks install, start, reload, stop,
+`rpm -V`, removal and reinstall; with the previous release's rpm as second
+argument it also checks an upgrade and a downgrade. Build the previous rpm in a
+worktree of its tag, and the new one here:
+
+```sh
+git worktree add ../emfor-prev vPREVIOUS
+(cd ../emfor-prev && packages/build.sh)
+cp ../emfor-prev/packages/dist/emfor-*.rpm /tmp/emfor-prev.rpm
+git worktree remove --force ../emfor-prev
+packages/build.sh
+tools/rpm-release-test.sh packages/dist/emfor-X.Y.Z-1.*.rpm /tmp/emfor-prev.rpm
+```
+
+It must end with `all checks passed`. Run it once on an x86-64 host as well
+(`PLATFORM=linux/amd64 packages/build.sh` is slow under emulation, so build
+there), and once on a Rocky Linux VM by hand if you can: a container is not a
+real host and has no SELinux. Only what was run may be listed as tested in
+[packages/README.md](packages/README.md) and chapter 4 of the manual.
+
 ## 5. Fuzz
 
 Run every fuzz target in [fuzz/](fuzz/README.md) for 10 minutes. This

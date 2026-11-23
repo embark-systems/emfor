@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The rpm has a test under systemd, and RHEL 8 is stated as unsupported.**
+  New `tools/rpm-release-test.sh` (run before a release, not by the CI) starts
+  Rocky Linux 9 with systemd as PID 1 in docker and checks install, start,
+  reload, stop, `rpm -V`, removal, reinstall, and with the previous rpm an
+  upgrade and a downgrade. RELEASING.md says how to run it. The rpm and the
+  deb do not run on RHEL 8 (glibc 2.28; the binary needs 2.30): the manual
+  (chapter 4) and `packages/README.md` now say so, and list what was tested.
+
 - **The log can be JSON, and the fields of a state change are stable.** New
   `[log] format = "json"` (default `"text"`) writes one JSON object per line
   after the config is read, with the fields of the event at the top level and

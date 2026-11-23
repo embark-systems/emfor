@@ -85,6 +85,16 @@ behave as above. The deb was also run under systemd 252 as PID 1 in a Debian
 checks, `systemctl reload` refuses a conf.d file that others can write and
 the daemon keeps running, `restart` with an invalid config leaves the unit
 retrying until its start limit (`systemctl reset-failed` after the fix),
-and a killed daemon is started again. **Not tested**: the rpm under systemd,
-x86-64 packages, a real host (journald, other cgroup limits), an upgrade
-between two different versions, and other distributions than the two.
+and a killed daemon is started again. The rpm was run under systemd as PID 1
+in a Rocky Linux 9 container by `tools/rpm-release-test.sh`: install (not
+enabled), start, reload, `emfor status --json`, stop, `rpm -V`, removal (a
+changed config stays as `.rpmsave`, the user and the data stay), reinstall,
+an upgrade from the previous release (the daemon is restarted, a changed
+`emfor.toml` stays) and a downgrade back. **Not tested**: x86-64 packages
+(run the script on an x86-64 host), a real host (journald, other cgroup
+limits), SELinux enforcing (a container does not have it), an upgrade that
+makes an `emfor.toml.rpmnew`, and other distributions than the two.
+
+**RHEL 8 and its relatives are not supported.** The packages are built with
+glibc 2.31 and `/usr/bin/emfor` needs symbols up to `GLIBC_2.30`; RHEL 8 has
+glibc 2.28, so the binary does not start there. Use RHEL 9 or later.

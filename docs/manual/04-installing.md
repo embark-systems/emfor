@@ -64,11 +64,16 @@ The scripts create the user and group `emfor` and make `/etc/emfor` and
 Both packages depend on `ca-certificates`, which `https` checks with
 verification need.
 
+**RHEL 8 and its relatives are not supported.** The binary needs glibc 2.30
+and RHEL 8 has 2.28; use RHEL 9 or later (the deb: Debian 11 or later).
+
 What has been tested: the deb and the rpm in Debian 12 and Rocky Linux 9
 containers on arm64 (install, remove, purge, upgrade over a changed config),
-and the deb under systemd 252 as PID 1 in a Debian 12 container. **Not
-tested**: the rpm under systemd as a long-running service on a real host,
-x86-64 packages, other distributions. See
+the deb under systemd 252 as PID 1 in a Debian 12 container, and the rpm under
+systemd as PID 1 in a Rocky Linux 9 container (start, reload, stop, `rpm -V`,
+remove and reinstall, an upgrade from the previous release and back). **Not
+tested**: the packages on a real host (a container is not one), x86-64
+packages, SELinux enforcing, other distributions. See
 [packages/README.md](../../packages/README.md).
 
 ## Without network access
