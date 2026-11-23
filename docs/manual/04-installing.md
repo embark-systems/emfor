@@ -239,6 +239,67 @@ The project itself has built and installed the port on FreeBSD 15.1-RELEASE
 (arm64, in a virtual machine) with `make stage check-plist install`; it has
 not run it on 13.x or 14.x, or on amd64 beyond the project's CI.
 
+## Nix
+
+The repository has a [flake](../../flake.nix) with two packages and a NixOS
+module. The flake is not in version 0.7.1; it comes with the next release.
+Until then, use the `main` branch. emfor is not in nixpkgs.
+
+```sh
+$ nix build github:embark-systems/emfor#emfor
+$ nix build github:embark-systems/emfor#libemfor
+```
+
+`emfor` holds the daemon and `emfor-check`; `libemfor` is the C client
+library of [Client libraries](#client-libraries) below. Build both from the
+same revision, as for any other install.
+
+The module, [nix/module.nix](../../nix/module.nix), writes `emfor.toml` from
+Nix settings, links it to `/etc/emfor/emfor.toml`, creates the `emfor` user and
+runs the daemon under the same hardened unit as the deb and rpm packages:
+
+```nix
+{
+  inputs.emfor.url = "github:embark-systems/emfor";
+
+  outputs = { nixpkgs, emfor, ... }: {
+    nixosConfigurations.host = nixpkgs.lib.nixosSystem {
+      modules = [
+        emfor.nixosModules.default
+        {
+          services.emfor = {
+            enable = true;
+            settings = {
+              site = "dc1";
+              dns = { listen = [ "127.0.0.1:5300" ]; zone = "svc.emfor"; };
+              services."api.svc.emfor" = {
+                check = "tcp";
+                backends = [ "10.0.0.1:8080" ];
+              };
+            };
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+- `settings` takes the keys of `emfor.toml` ([chapter 5](05-configuring.md)).
+  The generated file is in the Nix store, which every user can read: do not put
+  a secret in it. Keys that name a file (the peer secret, a check's password
+  file) point at a file outside the store.
+- The unit runs `emfor check-config` before it starts and when it reloads. A
+  change to `settings` reloads the daemon; it does not restart it.
+- The store is `/var/lib/emfor/state.mdb`. With the default `file_mode` the
+  users of applications that use an emfor client have to be in the group set
+  by `services.emfor.group` (`emfor` by default).
+
+The flake was built in a `nixos/nix` container on aarch64 Linux without the Nix
+sandbox: both packages build, the daemon's tests pass, and `emfor check-config`
+accepts the file the module generates. The project has not started the service
+on a NixOS machine, and has not tried x86-64 Linux or macOS.
+
 ## Client libraries
 
 Every client reads the store through `libemfor`, built from

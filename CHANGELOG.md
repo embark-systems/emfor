@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The repository has a Nix flake.** It builds `emfor` (the daemon and
+  `emfor-check`) and `libemfor`, and its NixOS module `services.emfor` writes
+  `emfor.toml` from Nix settings and runs the daemon under the hardened unit of
+  the deb and rpm packages. Chapter 4 (en and zh_TW) has a Nix section. Built
+  and tested in a container on aarch64 Linux; not started on a NixOS machine.
+
 - **A peer member whose clock is off is now shown before its messages are
   dropped.** The daemon measures, from every message of a member that passes
   the checks up to `site` (also one dropped as `stale`), the member's

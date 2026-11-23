@@ -175,6 +175,52 @@ unit 做了哪些事：
 
 專案自己在 FreeBSD 15.1-RELEASE（arm64，在虛擬機器裡）上用 `make stage check-plist install` 建置並安裝過這個 port；沒在 13.x、14.x，或專案 CI 以外的 amd64 上跑過。
 
+## Nix
+
+repository 裡有一個 [flake](../../flake.nix)，含兩個套件和一個 NixOS module。0.7.1 沒有這個 flake，下一個發行版才會帶；在那之前請用 `main` 分支。emfor 不在 nixpkgs 裡。
+
+```sh
+$ nix build github:embark-systems/emfor#emfor
+$ nix build github:embark-systems/emfor#libemfor
+```
+
+`emfor` 有 daemon 和 `emfor-check`；`libemfor` 是下面[client 函式庫](#client-函式庫)的 C 函式庫。兩個要用同一個 revision 建，和其他安裝方式一樣。
+
+module [nix/module.nix](../../nix/module.nix) 會用 Nix 的設定寫出 `emfor.toml`，連到 `/etc/emfor/emfor.toml`，建立 `emfor` 使用者，並用和 deb、rpm 套件相同的加固 unit 執行 daemon：
+
+```nix
+{
+  inputs.emfor.url = "github:embark-systems/emfor";
+
+  outputs = { nixpkgs, emfor, ... }: {
+    nixosConfigurations.host = nixpkgs.lib.nixosSystem {
+      modules = [
+        emfor.nixosModules.default
+        {
+          services.emfor = {
+            enable = true;
+            settings = {
+              site = "dc1";
+              dns = { listen = [ "127.0.0.1:5300" ]; zone = "svc.emfor"; };
+              services."api.svc.emfor" = {
+                check = "tcp";
+                backends = [ "10.0.0.1:8080" ];
+              };
+            };
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+- `settings` 填的是 `emfor.toml` 的鍵（[第 5 章](05-configuring.md)）。產生的檔案放在 Nix store，每個使用者都讀得到：不要把密鑰寫進去。要指定檔案的鍵（聯防的 secret、檢查的密碼檔）請指向 store 以外的檔案。
+- unit 在啟動前和 reload 時都會跑 `emfor check-config`。`settings` 改了會 reload daemon，不會重新啟動。
+- store 是 `/var/lib/emfor/state.mdb`。用預設的 `file_mode` 時，使用 emfor client 的應用程式，其使用者要在 `services.emfor.group` 指定的群組裡（預設是 `emfor`）。
+
+這個 flake 在 aarch64 Linux 的 `nixos/nix` 容器裡（不開 Nix sandbox）建過：兩個套件都建得起來，daemon 的測試通過，`emfor check-config` 也接受 module 產生的檔案。專案還沒在 NixOS 機器上啟動過這個服務，也沒在 x86-64 Linux 或 macOS 上試過。
+
 ## client 函式庫
 
 每個 client 都透過 `libemfor` 讀 store。`libemfor` 用 [cargo-c](https://github.com/lu-zero/cargo-c) 從 [clients/rust](../../clients/rust/README.md) 建出來，內含 emfor 自己的 LMDB build；系統的 liblmdb 讀不了 store。
