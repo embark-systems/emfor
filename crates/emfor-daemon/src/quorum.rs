@@ -32,6 +32,12 @@ pub const FRESH_INTERVALS: u32 = 3;
 /// A digest mismatch is shown until no message showing it arrived for this
 /// long.
 pub const MISMATCH_KEEP: Duration = Duration::from_secs(60);
+/// A member is a silent checker after this long without a fresh result, or
+/// [`SILENT_INTERVALS`] intervals of the service, whichever is longer (spec
+/// peer-group, "Silent assigned checkers").
+pub const SILENT_MIN: Duration = Duration::from_secs(10);
+/// See [`SILENT_MIN`].
+pub const SILENT_INTERVALS: u32 = 6;
 /// Most service tags one heartbeat announces (spec peer-group, "Peer
 /// heartbeats and liveness"): with the longest `from`, `site` and `seq`
 /// the datagram then still fits in [`crate::peers::MAX_DATAGRAM`].
@@ -186,6 +192,30 @@ struct Kept {
 
 type BackendKey = (String, String);
 
+/// What this daemon chose at its latest own check of one backend, for
+/// finding silent checkers.
+#[derive(Debug, Clone)]
+struct Watch {
+    /// The digest of the check definition of that check.
+    digest: String,
+    /// The `interval` of the service.
+    interval: Duration,
+    /// The assigned checkers other than this daemon.
+    members: Vec<SocketAddr>,
+    /// When the check was made.
+    at: Instant,
+}
+
+impl Watch {
+    /// How long a member may send no fresh result before it is silent.
+    fn window(&self) -> Duration {
+        SILENT_MIN.max(self.interval.saturating_mul(SILENT_INTERVALS))
+    }
+}
+
+/// A silent checker: service, backend and member.
+type Silent = (String, String, SocketAddr);
+
 #[derive(Debug, Default)]
 struct State {
     live: BTreeSet<SocketAddr>,
@@ -205,6 +235,12 @@ struct State {
     tag_stamps: HashMap<SocketAddr, Stamp>,
     /// Every service of this daemon, in or out of the peer group, sorted.
     services: Vec<String>,
+    /// The latest own check of each backend, see [`Watch`].
+    watch: HashMap<BackendKey, Watch>,
+    /// Since when an assigned checker has had no fresh result for a backend.
+    quiet_since: HashMap<(BackendKey, SocketAddr), Instant>,
+    /// The silent checkers now.
+    silent: BTreeSet<Silent>,
 }
 
 /// Votes, liveness and the lists `meta/peers` shows; shared by the peer
@@ -226,6 +262,17 @@ struct Summary<'a> {
     digest_mismatch: Vec<SummaryMismatch<'a>>,
     disagreements: Vec<SummaryDisagreement<'a>>,
     services_off: &'a [String],
+    /// Written only while a member is silent (spec state-store, "Silent
+    /// checkers in the peer state").
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    silent_checkers: Vec<SummarySilent<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct SummarySilent<'a> {
+    service: &'a str,
+    backend: &'a str,
+    member: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -594,6 +641,9 @@ impl Quorum {
         let mut st = self.state();
         st.votes.retain(|k, _| has(k));
         st.disagreements.retain(|k, _| has(k));
+        st.watch.retain(|k, _| has(k));
+        st.quiet_since.retain(|(k, _), _| has(k));
+        st.silent.retain(|(s, b, _)| has(&(s.clone(), b.clone())));
         st.mismatches.retain(|(s, _), _| keep.contains_key(s));
     }
 
@@ -604,9 +654,125 @@ impl Quorum {
             v.retain(|m, _| members.contains(m));
         }
         st.mismatches.retain(|(_, m), _| members.contains(m));
+        st.quiet_since.retain(|(_, m), _| members.contains(m));
+        st.silent.retain(|(_, _, m)| members.contains(m));
+        for w in st.watch.values_mut() {
+            w.members.retain(|m| members.contains(m));
+        }
         st.live.retain(|m| members.contains(m));
         st.member_tags.retain(|m, _| members.contains(m));
         st.tag_stamps.retain(|m, _| members.contains(m));
+    }
+
+    /// Keep the assigned checkers of `backend` other than this daemon, chosen
+    /// as for a check now, to find the ones that send no results (spec
+    /// peer-group, "Silent assigned checkers"). Called after every own check;
+    /// `interval` is the service's and `digest` that of the check definition.
+    pub fn watch(
+        &self,
+        service: &str,
+        backend: &str,
+        digest: &str,
+        interval: Duration,
+        now: Instant,
+    ) {
+        let mut st = self.state();
+        let key = (service.to_string(), backend.to_string());
+        let members: Vec<SocketAddr> =
+            assigned(service, backend, self.me, &candidates(&st, service))
+                .into_iter()
+                .filter(|m| *m != self.me)
+                .collect();
+        if members.is_empty() {
+            st.watch.remove(&key);
+        } else {
+            let watch = Watch {
+                digest: digest.to_string(),
+                interval,
+                members,
+                at: now,
+            };
+            st.watch.insert(key, watch);
+        }
+    }
+
+    /// Find the silent checkers (spec peer-group, "Silent assigned
+    /// checkers"): to be called once per second. Logs when the first backend
+    /// of a service becomes silent for a member, and when none is left.
+    pub fn update_silent(&self, now: Instant) {
+        let mut st = self.state();
+        st.watch
+            .retain(|_, w| now.duration_since(w.at) < w.window());
+        let mut quiet: Vec<(BackendKey, SocketAddr, Duration)> = Vec::new();
+        for (key, w) in &st.watch {
+            for m in &w.members {
+                let tag = service_tag(&key.0);
+                let announces = st.member_tags.get(m).is_some_and(|t| t.contains(&tag));
+                if !st.live.contains(m)
+                    || announces
+                    || st.mismatches.contains_key(&(key.0.clone(), *m))
+                    || kept_vote(&st, key, *m, &w.digest, now).is_some()
+                {
+                    continue;
+                }
+                quiet.push((key.clone(), *m, w.window()));
+            }
+        }
+        let mut since = HashMap::new();
+        let mut found: BTreeSet<Silent> = BTreeSet::new();
+        for (key, m, window) in quiet {
+            let k = (key, m);
+            let first = st.quiet_since.get(&k).copied().unwrap_or(now);
+            if now.duration_since(first) >= window {
+                found.insert((k.0.0.clone(), k.0.1.clone(), m));
+            }
+            since.insert(k, first);
+        }
+        st.quiet_since = since;
+        {
+            // One line per service and member, not per backend.
+            fn pairs(set: &BTreeSet<Silent>) -> BTreeMap<(&str, SocketAddr), &str> {
+                let mut m = BTreeMap::new();
+                for (service, backend, member) in set {
+                    m.entry((service.as_str(), *member))
+                        .or_insert(backend.as_str());
+                }
+                m
+            }
+            let now_pairs = pairs(&found);
+            let old_pairs = pairs(&st.silent);
+            for ((service, member), backend) in &now_pairs {
+                if !old_pairs.contains_key(&(*service, *member)) {
+                    tracing::warn!(
+                        service = %service,
+                        backend = %backend,
+                        member = %member,
+                        "member {member} sends no results for service {service} (backend {backend})",
+                    );
+                }
+            }
+            for (service, member) in old_pairs.keys() {
+                if !now_pairs.contains_key(&(*service, *member)) {
+                    tracing::info!(
+                        service = %service,
+                        member = %member,
+                        "member {member} sends results for service {service} again",
+                    );
+                }
+            }
+        }
+        st.silent = found;
+    }
+
+    /// The number of silent checkers now (service, backend and member).
+    pub fn silent_count(&self) -> usize {
+        self.state().silent.len()
+    }
+
+    /// The silent checkers now, in order.
+    #[cfg(test)]
+    pub fn silent(&self) -> Vec<Silent> {
+        self.state().silent.iter().cloned().collect()
     }
 
     /// The kept result of `from` for a backend.
@@ -666,6 +832,15 @@ impl Quorum {
                 })
                 .collect(),
             services_off: &st.off,
+            silent_checkers: st
+                .silent
+                .iter()
+                .map(|(service, backend, member)| SummarySilent {
+                    service,
+                    backend,
+                    member: member.to_string(),
+                })
+                .collect(),
         };
         serde_json::to_string(&summary)
             .expect("a struct of strings, integers and booleans always serializes to JSON")
@@ -1476,5 +1651,262 @@ mod tests {
         q.set_live([m]);
         q.set_member_tags_at(m, &[service_tag(SVC)], stamp(1, 1));
         assert_eq!(q.member_tags(m), vec![service_tag(SVC)]);
+    }
+
+    /// Watch the backend once a second from `from` to `to` seconds after
+    /// `start`, as the own checks do, with the kept results of `senders`
+    /// refreshed each second, and scan after each.
+    fn run_silent(
+        q: &Quorum,
+        start: Instant,
+        from: u64,
+        to: u64,
+        interval: Duration,
+        senders: &[&str],
+    ) {
+        for s in from..=to {
+            let now = start + Duration::from_secs(s);
+            for m in senders {
+                q.record(addr(m), &result(Outcome::Up), now);
+            }
+            q.watch(SVC, BACKEND, DIGEST, interval, now);
+            q.update_silent(now);
+        }
+    }
+
+    const ONE_SEC: Duration = Duration::from_secs(1);
+
+    /// Spec state-store "Silent member reaches the store" and "Field absent
+    /// while nobody is silent".
+    // spectra-scenario: state-store / Silent member reaches the store
+    // spectra-scenario: state-store / Field absent while nobody is silent
+    #[test]
+    fn silent_checkers_in_the_summary() {
+        let start = Instant::now();
+        let q = quorum();
+        let peers = [(addr("10.0.0.6:5302"), true)];
+        run_silent(&q, start, 0, 9, ONE_SEC, &["10.0.0.8:5302"]);
+        assert!(!q.summary(&peers, start).contains("silent_checkers"));
+        run_silent(&q, start, 10, 10, ONE_SEC, &["10.0.0.8:5302"]);
+        let json = q.summary(&peers, start + Duration::from_secs(10));
+        assert!(
+            json.ends_with(
+                r#""services_off":[],"silent_checkers":[{"service":"api.svc.emfor","backend":"10.0.0.11:8080","member":"10.0.0.6:5302"}]}"#
+            ),
+            "{json}"
+        );
+    }
+
+    /// Spec peer-group "Silent assigned checkers": a member that sends no
+    /// result is reported once the window has passed, not before.
+    // spectra-scenario: peer-group / Member without the backend becomes silent
+    // spectra-scenario: peer-group / Not reported before the window
+    #[test]
+    #[tracing_test::traced_test]
+    fn member_without_the_backend_becomes_silent() {
+        let start = Instant::now();
+        let q = quorum();
+        // .8 sends, .6 does not.
+        run_silent(&q, start, 0, 9, ONE_SEC, &["10.0.0.8:5302"]);
+        assert_eq!(q.silent(), vec![], "9 seconds are not enough");
+        assert!(!logs_contain("sends no results"));
+        run_silent(&q, start, 10, 10, ONE_SEC, &["10.0.0.8:5302"]);
+        assert_eq!(
+            q.silent(),
+            vec![(SVC.to_string(), BACKEND.to_string(), addr("10.0.0.6:5302"))]
+        );
+        assert_eq!(q.silent_count(), 1);
+        // Still silent: logged once.
+        run_silent(&q, start, 11, 14, ONE_SEC, &["10.0.0.8:5302"]);
+        logs_assert(|lines: &[&str]| {
+            match lines
+                .iter()
+                .filter(|l| l.contains("sends no results"))
+                .count()
+            {
+                1 => Ok(()),
+                n => Err(format!("{n} lines")),
+            }
+        });
+        assert!(logs_contain(
+            "member 10.0.0.6:5302 sends no results for service api.svc.emfor (backend 10.0.0.11:8080)"
+        ));
+    }
+
+    /// Spec peer-group "A result ends the silence".
+    // spectra-scenario: peer-group / A result ends the silence
+    #[test]
+    #[tracing_test::traced_test]
+    fn a_result_ends_the_silence() {
+        let start = Instant::now();
+        let q = quorum();
+        run_silent(&q, start, 0, 10, ONE_SEC, &["10.0.0.8:5302"]);
+        assert_eq!(q.silent_count(), 1);
+        run_silent(
+            &q,
+            start,
+            11,
+            12,
+            ONE_SEC,
+            &["10.0.0.8:5302", "10.0.0.6:5302"],
+        );
+        assert_eq!(q.silent_count(), 0);
+        logs_assert(|lines: &[&str]| {
+            match lines
+                .iter()
+                .filter(|l| l.contains("sends results for service api.svc.emfor again"))
+                .count()
+            {
+                1 => Ok(()),
+                n => Err(format!("{n} lines")),
+            }
+        });
+    }
+
+    /// Spec peer-group "A slower service waits longer".
+    // spectra-scenario: peer-group / A slower service waits longer
+    #[test]
+    fn a_slower_service_waits_longer() {
+        let start = Instant::now();
+        let q = quorum();
+        let slow = Duration::from_secs(30);
+        // Nobody sends: both other assigned checkers are silent.
+        run_silent(&q, start, 0, 179, slow, &[]);
+        assert_eq!(q.silent_count(), 0, "179 seconds are not enough at 30 s");
+        run_silent(&q, start, 180, 180, slow, &[]);
+        assert_eq!(q.silent_count(), 2);
+    }
+
+    /// Spec peer-group "Member with another digest is not silent".
+    // spectra-scenario: peer-group / Member with another digest is not silent
+    #[test]
+    fn a_member_with_another_digest_is_not_silent() {
+        let start = Instant::now();
+        let q = quorum();
+        for s in 0..=12 {
+            let now = start + Duration::from_secs(s);
+            q.record(addr("10.0.0.8:5302"), &result(Outcome::Up), now);
+            q.note_mismatch(SVC, addr("10.0.0.6:5302"), now);
+            q.watch(SVC, BACKEND, DIGEST, ONE_SEC, now);
+            q.update_silent(now);
+        }
+        assert_eq!(q.silent_count(), 0);
+    }
+
+    /// Spec peer-group "Member that leaves the service out is not silent".
+    // spectra-scenario: peer-group / Member that leaves the service out is not silent
+    #[test]
+    fn a_member_that_leaves_the_service_out_is_not_silent() {
+        let start = Instant::now();
+        let q = quorum();
+        run_silent(&q, start, 0, 10, ONE_SEC, &["10.0.0.8:5302"]);
+        assert_eq!(q.silent_count(), 1);
+        q.set_member_tags(addr("10.0.0.6:5302"), &[service_tag(SVC)]);
+        run_silent(
+            &q,
+            start,
+            11,
+            12,
+            ONE_SEC,
+            &["10.0.0.8:5302", "10.0.0.7:5302"],
+        );
+        assert_eq!(
+            q.silent(),
+            vec![],
+            "no longer a candidate, and the new third checker sends"
+        );
+    }
+
+    /// Spec peer-group "All members send results".
+    // spectra-scenario: peer-group / All members send results
+    #[test]
+    #[tracing_test::traced_test]
+    fn nobody_is_silent_when_all_send() {
+        let start = Instant::now();
+        let q = quorum();
+        run_silent(
+            &q,
+            start,
+            0,
+            30,
+            ONE_SEC,
+            &["10.0.0.8:5302", "10.0.0.6:5302"],
+        );
+        assert_eq!(q.silent_count(), 0);
+        assert!(!logs_contain("sends no results"));
+    }
+
+    /// A member whose checks now give `error` sends nothing, and is reported
+    /// like any other silent member (its last result goes stale).
+    // spectra-scenario: peer-group / Member without the backend becomes silent
+    #[test]
+    fn a_member_that_stopped_sending_is_reported() {
+        let start = Instant::now();
+        let q = quorum();
+        run_silent(
+            &q,
+            start,
+            0,
+            4,
+            ONE_SEC,
+            &["10.0.0.8:5302", "10.0.0.6:5302"],
+        );
+        assert_eq!(q.silent_count(), 0);
+        // .6 sends nothing from now on; its kept result is fresh for 6 s.
+        run_silent(&q, start, 5, 30, ONE_SEC, &["10.0.0.8:5302"]);
+        assert_eq!(
+            q.silent(),
+            vec![(SVC.to_string(), BACKEND.to_string(), addr("10.0.0.6:5302"))]
+        );
+    }
+
+    /// Many backends of one service: one line per service and member.
+    // spectra-scenario: peer-group / Member without the backend becomes silent
+    // spectra-scenario: peer-group / A result ends the silence
+    #[test]
+    #[tracing_test::traced_test]
+    fn one_log_line_per_service_and_member() {
+        let start = Instant::now();
+        let q = quorum();
+        let backends: Vec<String> = (1..=20).map(|i| format!("10.0.1.{i}:80")).collect();
+        let send = |now: Instant| {
+            for b in &backends {
+                for m in 6..=9 {
+                    let mut r = result(Outcome::Up);
+                    r.backend = b.clone();
+                    q.record(addr(&format!("10.0.0.{m}:5302")), &r, now);
+                }
+            }
+        };
+        for s in 0..=10 {
+            let now = start + Duration::from_secs(s);
+            for b in &backends {
+                q.watch(SVC, b, DIGEST, ONE_SEC, now);
+            }
+            q.update_silent(now);
+        }
+        let silent = q.silent();
+        assert!(silent.len() > 4, "several backends are silent: {silent:?}");
+        let members: BTreeSet<_> = silent.iter().map(|(_, _, m)| *m).collect();
+        let count = |what: &str| {
+            let n = std::cell::Cell::new(0);
+            logs_assert(|lines: &[&str]| {
+                n.set(lines.iter().filter(|l| l.contains(what)).count());
+                Ok(())
+            });
+            n.get()
+        };
+        assert_eq!(count("sends no results"), members.len());
+        // Results from everybody for every backend end it.
+        for s in 11..=12 {
+            let now = start + Duration::from_secs(s);
+            send(now);
+            for b in &backends {
+                q.watch(SVC, b, DIGEST, ONE_SEC, now);
+            }
+            q.update_silent(now);
+        }
+        assert_eq!(q.silent_count(), 0);
+        assert_eq!(count("sends results for service"), members.len());
     }
 }

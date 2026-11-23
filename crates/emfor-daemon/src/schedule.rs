@@ -193,9 +193,9 @@ fn combine(
     own: CheckResult,
     interval: Duration,
 ) -> (CheckResult, bool, bool) {
-    let c = p
-        .quorum
-        .combine(service, backend, digest, &own, Instant::now());
+    let now = Instant::now();
+    let c = p.quorum.combine(service, backend, digest, &own, now);
+    p.quorum.watch(service, backend, digest, interval, now);
     let outcome = match &own {
         CheckResult::Up => Some(Outcome::Up),
         CheckResult::Down(r) => Some(Outcome::Down(r.clone())),

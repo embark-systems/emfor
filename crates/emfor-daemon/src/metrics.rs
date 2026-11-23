@@ -444,6 +444,17 @@ pub fn render(view: &LiveView, version: &str) -> String {
         put!(out, "emfor_peer_disagreements {}", peers.disagreements());
         family(
             &mut out,
+            "emfor_peer_silent_checkers",
+            "gauge",
+            "Assigned checkers that are live and take part in a service but send no results for a backend (service, backend and member).",
+        );
+        put!(
+            out,
+            "emfor_peer_silent_checkers {}",
+            peers.silent_checkers()
+        );
+        family(
+            &mut out,
             "emfor_peer_queue_dropped_total",
             "counter",
             "Down and result messages not sent because the queue to the peer task was full.",
@@ -763,6 +774,8 @@ mod tests {
         for line in [
             "emfor_peer_results_total{direction=\"sent\"} 0",
             "emfor_peer_disagreements 0",
+            // spectra-scenario: metrics-endpoint / Nobody is silent
+            "emfor_peer_silent_checkers 0",
             "emfor_peer_checks_skipped_total 0",
             "emfor_peer_queue_dropped_total 0",
             "emfor_peer_up{peer=\"127.0.0.1:5303\"} 1",
@@ -785,6 +798,14 @@ mod tests {
         ] {
             assert!(body.lines().any(|l| l == line), "{line}: {body}");
         }
+        // Spec metrics-endpoint "One silent member".
+        // spectra-scenario: metrics-endpoint / One silent member
+        stats.set_silent_checkers(1);
+        let body = render(&v, "0.1.0");
+        assert!(
+            body.lines().any(|l| l == "emfor_peer_silent_checkers 1"),
+            "{body}"
+        );
         // Spec metrics-endpoint "Skipped checks counted".
         stats.set_checks_skipped(8);
         let body = render(&v, "0.1.0");

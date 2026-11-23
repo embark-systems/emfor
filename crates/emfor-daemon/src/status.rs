@@ -404,6 +404,16 @@ struct PeerState {
     /// the field existed.
     #[serde(default)]
     services_off: Vec<String>,
+    /// Members that send no results for a backend; absent when there are
+    /// none, and from a store written before the field existed.
+    #[serde(default)]
+    silent_checkers: Vec<PeerSilent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PeerSilent {
+    service: String,
+    member: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -569,6 +579,23 @@ fn peer_lines(
                 "peers: check definition of {} differs at {}",
                 svc.name,
                 at.join(" ")
+            ));
+        }
+    }
+    // Silent checkers: one line per shown service and member, in order.
+    for svc in &snap.services {
+        let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for s in state
+            .silent_checkers
+            .iter()
+            .filter(|s| s.service == svc.name)
+        {
+            *counts.entry(s.member.as_str()).or_default() += 1;
+        }
+        for (member, n) in counts {
+            lines.push(format!(
+                "peers: no results from {member} for {} ({n} backends)",
+                svc.name
             ));
         }
     }
@@ -1727,6 +1754,46 @@ mod tests {
             "peers: 2/3 live, not live 10.0.0.7:5302"
         );
         assert!(!render(&only_db)[3].starts_with("peers:"));
+    }
+
+    /// Spec "Silent checker line in status text".
+    // spectra-scenario: status-command / One member without results
+    // spectra-scenario: status-command / Silent member of a service that is not shown
+    // spectra-scenario: status-command / Store from a daemon without the field
+    #[test]
+    fn silent_checker_lines() {
+        let value = r#"{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.6:5302","live":true},{"addr":"10.0.0.8:5302","live":true}],"digest_mismatch":[{"service":"api.svc.emfor","member":"10.0.0.8:5302"}],"disagreements":[],"silent_checkers":[{"service":"api.svc.emfor","backend":"10.0.0.11:8080","member":"10.0.0.6:5302"},{"service":"api.svc.emfor","backend":"10.0.0.12:8080","member":"10.0.0.6:5302"},{"service":"db.svc.emfor","backend":"10.0.1.5:5432","member":"10.0.0.6:5302"}]}"#;
+        let mut s = snap(Some(400), vec![api()]);
+        s.peers = peers_value(Some(value));
+        let lines = render(&s);
+        assert_eq!(
+            lines[3..5],
+            [
+                "peers: check definition of api.svc.emfor differs at 10.0.0.8:5302",
+                "peers: no results from 10.0.0.6:5302 for api.svc.emfor (2 backends)",
+            ]
+        );
+        // db.svc.emfor is not shown: no line for it.
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.contains("no results from"))
+                .count(),
+            1
+        );
+        let mut only_db = snap(Some(400), vec![service("db.svc.emfor", false, vec![])]);
+        only_db.peers = s.peers.clone();
+        assert_eq!(
+            render(&only_db)
+                .iter()
+                .filter(|l| l.contains("for api.svc.emfor"))
+                .count(),
+            0
+        );
+        // A store without the field.
+        let mut old = snap(Some(400), vec![api()]);
+        old.peers = peers_value(Some(PEERS));
+        assert!(!render(&old).iter().any(|l| l.contains("no results from")));
     }
 
     /// Spec "Status text output", scenario "Members that leave services

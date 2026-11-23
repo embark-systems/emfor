@@ -56,6 +56,7 @@ pub struct PeerStats {
     pub(super) results_received: AtomicU64,
     pub(super) disagreements: AtomicU64,
     pub(super) checks_skipped: AtomicU64,
+    pub(super) silent_checkers: AtomicU64,
     queue_dropped: AtomicU64,
     /// When a dropped message was last logged.
     queue_warned: Mutex<Option<tokio::time::Instant>>,
@@ -90,6 +91,18 @@ impl PeerStats {
     /// Backends that are a disagreement, as of the last heartbeat round.
     pub fn disagreements(&self) -> u64 {
         self.disagreements.load(Ordering::Relaxed)
+    }
+
+    /// Silent checkers (service, backend and member), as of the last
+    /// heartbeat round.
+    pub fn silent_checkers(&self) -> u64 {
+        self.silent_checkers.load(Ordering::Relaxed)
+    }
+
+    /// Set the silent checkers gauge.
+    #[cfg(test)]
+    pub fn set_silent_checkers(&self, n: u64) {
+        self.silent_checkers.store(n, Ordering::Relaxed);
     }
 
     /// Check times decided by votes alone, as of the last heartbeat round.

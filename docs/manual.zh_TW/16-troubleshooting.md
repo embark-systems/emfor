@@ -181,6 +181,6 @@ emfor 不附 policy（[第 13 章](13-security.md#selinux-與-apparmor)），所
 | `reason="site"` | 有成員的 `site` 不一樣。 |
 | `reason="stale"` 或 `replay` | 時鐘差超過 5 秒（往前或往後都算，見[第 11 章](11-peer-groups.md#密鑰)），或訊息在傳送途中被複製。 |
 | `peers: 1/2 live, ... too few live members to vote` | 存活成員不到三台：不投票，每台各自判斷。 |
-| peers 應該判成 down 的 backend 一直是 up，`emfor status` 也沒有摘要不符 | 有成員沒有那個服務或 backend，所以沒有投票，而且沒有任何訊息說明（[第 11 章](11-peer-groups.md#成員不一樣時)）。比對各成員的服務與 backend 清單。 |
+| `emfor status` 出現 `peers: no results from <member> for <service>`，或 `emfor_peer_silent_checkers` 大於 0 | 那個成員是負責主機，卻沒有送這個 backend 的結果：它沒有這個服務或 backend、檢查一直回 `error`，或它的封包到不了這台主機（[第 11 章](11-peer-groups.md#沉默的負責主機)）。比對各成員的服務與 backend 清單。 |
 | `emfor status --json` 裡的 digest 不符 | 成員檢查服務的方式不一樣（選項、timeout、plugin 指令、`env_pass`）。 |
 | `emfor status` 裡出現 `local-up` | 投票結果是 down，這台卻是 up：只有這台主機才有的網路路徑，或檢查方式不同。 |

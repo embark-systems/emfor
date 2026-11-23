@@ -60,7 +60,9 @@ The `daemon:` line says `running`, `stale, heartbeat 4.5s ago` or
 `stopped`. After the clock of the host was set back, the heartbeat can be
 ahead of now: the line then says `heartbeat 5.0s in the future`, and it is
 `stale` when that is more than 3 seconds. With `[peers]` a `peers:` line follows
-([chapter 11](11-peer-groups.md#how-the-votes-work)).
+([chapter 11](11-peer-groups.md#how-the-votes-work)), and lines such as
+`peers: no results from 10.0.1.13:5302 for api.svc.emfor (1 backends)` when a
+member sends no results ([chapter 11](11-peer-groups.md#silent-checkers)).
 
 | Option | |
 | --- | --- |
@@ -86,6 +88,8 @@ The JSON object has `store`, `daemon`, `heartbeat_ms`, `heartbeat_age_ms`
 `name`, `balance`, `on_all_down`, `slow_start_ms`, `all_down` and `backends`
 with `id`, `ip`, `port`, `state`, `reason`, `checked_at`, `latency_us`,
 `weight`, `site`, `backup`, `recovered_at`), `history`, `flapping`, `peers`
+(with `silent_checkers` while a member sends no results,
+[chapter 11](11-peer-groups.md#silent-checkers))
 and `assigned_checkers` (the assigned checkers of each backend, in rank
 order; `null` without a peer group or while the daemon is not running).
 

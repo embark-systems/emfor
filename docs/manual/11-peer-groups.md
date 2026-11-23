@@ -81,14 +81,41 @@ services and backends:
   candidate on the others, but it never checks the backend and never sends a
   result. The others get fewer than three votes for it. With two voters left,
   both must see the backend down for the votes to apply `down`; a peer's `down`
-  alone no longer does. Nothing warns about it: the member ignores the
-  messages for a service or backend it does not have (a line at `debug`).
+  alone no longer does. The member ignores the messages for a service or
+  backend it does not have (a line at `debug`); the others see the missing
+  votes as a **silent checker** ([below](#silent-checkers)).
 - A member whose digest differs does send results, but the others store them
   and do not count them, so its place is lost the same way. This is the only
   difference `emfor status` shows: a digest mismatch, until 60 seconds after
   the last message from that member.
 - `interval`, `rise`, `fall`, `balance` and `on_all_down` may differ without
   any effect on the votes.
+
+#### Silent checkers
+
+A member that is an assigned checker of a backend, is live and does not leave
+the service out, but sends no fresh result for the backend, is a **silent
+checker**. Each member looks for them once a second, from what it has kept; it
+needs no new message. A member is reported when it has been silent for the
+longer of 10 seconds and 6 times the `interval` of the service, so a member
+that has just started or become live, and one lost datagram, report nothing.
+It shows in four places:
+
+- `emfor status`: `peers: no results from <member> for <service> (<n> backends)`,
+  after the lines for digest mismatches;
+- `emfor status --json`: `peers.silent_checkers`, one
+  `{"service", "backend", "member"}` for each backend; the key is absent when
+  nobody is silent;
+- the metric `emfor_peer_silent_checkers`, the number of those entries;
+- the log: a `warn` when the first backend of a service becomes silent for a
+  member, and an `info` when none is left.
+
+The cause is not told. A member without the service or backend, one that loses
+the packets of this member only, and one whose check keeps giving `error` (that
+sends no result) all look the same. A member with another check definition is
+shown as a digest mismatch instead, and one that leaves the service out is not
+an assigned checker. A silent checker changes nothing in the votes: it still
+holds one of the three places.
 
 Keep the services and their backend lists equal on every member, for example
 by generating one `conf.d` file for all of them. A service that only some
@@ -337,5 +364,6 @@ that this script was run in a test container; it was not run for this manual.
 | `emfor_peer_notifications_total{direction}` | `down` notices sent and received. |
 | `emfor_peer_results_total{direction}` | Check results sent and received. |
 | `emfor_peer_disagreements` | Backends that are down by votes but up here. |
+| `emfor_peer_silent_checkers` | Assigned checkers that send no results for a backend (one per service, backend and member). |
 | `emfor_peer_checks_skipped_total` | Check times decided by votes alone. |
 | `emfor_peer_queue_dropped_total` | Messages dropped because the peer task was behind. |

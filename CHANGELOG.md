@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **A peer member that sends no results is now shown.** When a member is an
+  assigned checker of a backend, is live and does not leave the service out,
+  but sends no fresh result for it (it lacks the service or the backend, its
+  check keeps giving `error`, or its packets do not arrive), the other members
+  now report it after 10 seconds or 6 intervals of the service, whichever is
+  longer: a line `peers: no results from <member> for <service> (<n> backends)`
+  in `emfor status`, `peers.silent_checkers` in `emfor status --json`, the
+  metric `emfor_peer_silent_checkers`, and a `warn` and an `info` log line.
+  Nothing changes in the votes or on the wire. Chapter 11 ("When members
+  differ", "Silent checkers"), chapter 12 and chapter 16 say so, and
+  `tools/peer-mismatch-test.sh` runs three members in docker to check it.
+
 - **The rpm has a test under systemd, and RHEL 8 is stated as unsupported.**
   New `tools/rpm-release-test.sh` (run before a release, not by the CI) starts
   Rocky Linux 9 with systemd as PID 1 in docker and checks install, start,

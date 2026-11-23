@@ -217,5 +217,5 @@ policy does not allow that program to run from the daemon's domain.
 | `reason="stale"` or `replay` | Clocks differ by more than 5 seconds in either direction ([chapter 11](11-peer-groups.md#the-secret)), or messages are duplicated on the way. |
 | `peers: 1/2 live, ... too few live members to vote` | Fewer than three live members: no votes, each decides alone. |
 | A digest mismatch in `emfor status --json` | Members check a service differently (options, timeout, plugin command, `env_pass`). |
-| A backend that peers should mark down stays up, and `emfor status` shows no digest mismatch | A member lacks that service or backend and so casts no vote, and nothing says so ([chapter 11](11-peer-groups.md#when-members-differ)). Compare the services and backend lists of the members. |
+| `peers: no results from <member> for <service>` in `emfor status`, or `emfor_peer_silent_checkers` above 0 | That member is an assigned checker but sends no results for the backend: it lacks the service or the backend, its check keeps giving `error`, or its packets do not reach this host ([chapter 11](11-peer-groups.md#silent-checkers)). Compare the services and backend lists of the members. |
 | `local-up` in `emfor status` | Down by votes but up here: a network path from this host only, or a different check. |

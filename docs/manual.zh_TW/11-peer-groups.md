@@ -51,9 +51,20 @@ backends = ["10.0.2.21:8080", "10.0.2.22:8080"]
 
 下面的排名只看服務名稱、backend 位址和存活的成員（扣掉讓這個服務不參加的成員），不知道哪個成員有這個服務或 backend。所以成員列的服務和 backend 不一樣時：
 
-- 沒有這個服務或 backend 的成員，在其他成員的排名裡仍然是候選，但它不會檢查這個 backend，也不會送結果。其他成員拿到的票就少於三張。剩下兩張時，要兩張都是 `down`，投票才會套用 `down`；只有一個 peer 說 `down` 不夠。**沒有任何警告**：這個成員對自己沒有的服務或 backend，收到的訊息直接忽略（只有一行 `debug`）。
+- 沒有這個服務或 backend 的成員，在其他成員的排名裡仍然是候選，但它不會檢查這個 backend，也不會送結果。其他成員拿到的票就少於三張。剩下兩張時，要兩張都是 `down`，投票才會套用 `down`；只有一個 peer 說 `down` 不夠。這個成員對自己沒有的服務或 backend，收到的訊息直接忽略（只有一行 `debug`）；其他成員會把缺少的票看成「沉默的負責主機」（見[下面](#沉默的負責主機)）。
 - 摘要不同的成員會送結果，但其他成員只存起來、不算票，所以它的名額也同樣浪費掉。`emfor status` 只看得到這一種差異：摘要不符，顯示到那個成員最後一則訊息之後 60 秒。
 - `interval`、`rise`、`fall`、`balance` 和 `on_all_down` 不同，不影響投票。
+
+#### 沉默的負責主機
+
+某個成員是某個 backend 的負責主機、存活、也沒有讓這個服務不參加，卻沒有送這個 backend 的新鮮結果，就是**沉默的負責主機**。每個成員每秒用已經保留的資料找一次，不需要任何新訊息。沉默超過「10 秒」與「服務 `interval` 的 6 倍」中較長的那一個，才會回報，所以剛啟動、剛變存活的成員，以及掉一個封包，都不會回報。回報出現在四個地方：
+
+- `emfor status`：`peers: no results from <member> for <service> (<n> backends)`，在摘要不符的行之後；
+- `emfor status --json`：`peers.silent_checkers`，每個 backend 一筆 `{"service", "backend", "member"}`；沒有沉默的成員時沒有這個 key；
+- metric `emfor_peer_silent_checkers`，就是這些筆數；
+- log：某個成員的某個服務第一次有 backend 沉默時一行 `warn`，都恢復時一行 `info`。
+
+原因不會告訴你。成員沒有這個服務或 backend、只有這台收不到它的封包、它的檢查一直回 `error`（`error` 不送結果），看起來都一樣。檢查定義不同的成員顯示成摘要不符；讓服務不參加的成員不是負責主機。沉默的負責主機不會改變投票：它仍然佔三個名額中的一個。
 
 請讓每個成員的服務和 backend 清單一樣，例如用同一份 `conf.d` 檔產生。只有部分成員有的服務，在有的那幾台設 `peers = false`：它們自己檢查，其他成員也不會把它們算進去。要讓某個成員用不同的 backend 清單，請給它另一個服務名稱。
 
@@ -209,5 +220,6 @@ previous_secret_file = "/etc/emfor/peers.key.old"
 | `emfor_peer_notifications_total{direction}` | 送出和收到的 `down` 通知。 |
 | `emfor_peer_results_total{direction}` | 送出和收到的檢查結果。 |
 | `emfor_peer_disagreements` | 投票結果是 down、但在這裡是 up 的 backend 數。 |
+| `emfor_peer_silent_checkers` | 沒有送結果的負責主機數（以服務、backend、成員各算一筆）。 |
 | `emfor_peer_checks_skipped_total` | 只靠投票決定的檢查時間點次數。 |
 | `emfor_peer_queue_dropped_total` | peer task 跟不上而丟掉的訊息數。 |

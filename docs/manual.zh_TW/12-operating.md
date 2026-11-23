@@ -49,7 +49,7 @@ web.svc.emfor  round-robin  on_all_down=open
 | `local-up` | 意見不一致：投票結果是 down，但在這裡是 up。 |
 | reason | 最近一次檢查失敗的原因。 |
 
-`daemon:` 那一行會是 `running`、`stale, heartbeat 4.5s ago` 或 `stopped`。主機時鐘被往回調之後，heartbeat 可能比現在還晚：這時那一行會寫 `heartbeat 5.0s in the future`，超過 3 秒就是 `stale`。有 `[peers]` 時，下面還會多一行 `peers:`（[第 11 章](11-peer-groups.md#投票如何運作)）。
+`daemon:` 那一行會是 `running`、`stale, heartbeat 4.5s ago` 或 `stopped`。主機時鐘被往回調之後，heartbeat 可能比現在還晚：這時那一行會寫 `heartbeat 5.0s in the future`，超過 3 秒就是 `stale`。有 `[peers]` 時，下面還會多一行 `peers:`（[第 11 章](11-peer-groups.md#投票如何運作)）；有成員沒有送結果時，還會有像 `peers: no results from 10.0.1.13:5302 for api.svc.emfor (1 backends)` 的行（[第 11 章](11-peer-groups.md#沉默的負責主機)）。
 
 | 選項 | |
 | --- | --- |
@@ -69,7 +69,7 @@ web.svc.emfor
     2026-11-21 17:31:25 unknown -> healthy
 ```
 
-JSON 物件裡有 `store`、`daemon`、`heartbeat_ms`、`heartbeat_age_ms`（停止時是 `null`，heartbeat 比現在還晚時是負數）、`started_at_ms`、`site`、`dns_listen`、`metrics_listen`、`services`（每個服務有 `name`、`balance`、`on_all_down`、`slow_start_ms`、`all_down`，以及 `backends`，其中有 `id`、`ip`、`port`、`state`、`reason`、`checked_at`、`latency_us`、`weight`、`site`、`backup`、`recovered_at`）、`history`、`flapping`、`peers` 和 `assigned_checkers`（每個 backend 的負責主機，照排名排序；沒有聯防群組或 daemon 沒在跑時是 `null`）。
+JSON 物件裡有 `store`、`daemon`、`heartbeat_ms`、`heartbeat_age_ms`（停止時是 `null`，heartbeat 比現在還晚時是負數）、`started_at_ms`、`site`、`dns_listen`、`metrics_listen`、`services`（每個服務有 `name`、`balance`、`on_all_down`、`slow_start_ms`、`all_down`，以及 `backends`，其中有 `id`、`ip`、`port`、`state`、`reason`、`checked_at`、`latency_us`、`weight`、`site`、`backup`、`recovered_at`）、`history`、`flapping`、`peers`（有成員沒有送結果時帶 `silent_checkers`，見[第 11 章](11-peer-groups.md#沉默的負責主機)）和 `assigned_checkers`（每個 backend 的負責主機，照排名排序；沒有聯防群組或 daemon 沒在跑時是 `null`）。
 
 `history` 每個服務一筆，內容是 `{"backends": {"<id>": [...]}}`；每個 backend 有它最近 20 次狀態變化，**最舊的排最前面**（`--history` 的文字輸出是最新的排最前面），每筆是 `{"at": <該次檢查的 Unix 毫秒>, "from": "healthy", "to": "unhealthy", "reason": "connection refused"}`；檢查沒給原因時 `reason` 是 `null`。
 

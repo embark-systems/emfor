@@ -773,6 +773,11 @@ async fn run(
                     .stats()
                     .checks_skipped
                     .store(quorum.skipped(), Ordering::Relaxed);
+                quorum.update_silent(now);
+                group
+                    .stats()
+                    .silent_checkers
+                    .store(quorum.silent_count() as u64, Ordering::Relaxed);
                 state.publish(quorum.summary(&group.members_live(), now));
                 let batches = group.encode(Kind::Heartbeat(quorum.off_tags()), unix_ms(), now);
                 send_all(&socket, &batches).await;

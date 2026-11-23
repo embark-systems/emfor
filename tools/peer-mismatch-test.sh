@@ -17,6 +17,10 @@
 #   4  A service only A and B list: C is among its assigned checkers, a dead
 #      slot, until A and B set peers = false; then nobody is assigned.
 #
+# A also reports the members that send no results (silent_checkers in
+# status --json, a status line and emfor_peer_silent_checkers): in scenario 2
+# and 4 it names C, in scenarios 1 and 3 nobody is silent.
+#
 # Nothing here is run by the CI or by tools/docker-test.sh.
 set -eu
 cd "$(dirname "$0")/.."
@@ -71,6 +75,8 @@ path = \"/var/lib/emfor/state.mdb\"
 listen = \"$(ip_of "$m"):5302\"
 members = [\"$subnet.11:5302\", \"$subnet.12:5302\", \"$subnet.13:5302\"]
 secret_file = \"/etc/emfor/peers.key\"
+[metrics]
+listen = [\"127.0.0.1:5301\"]
 [defaults]
 interval = \"1s\"
 timeout = \"$timeout\"
@@ -114,6 +120,26 @@ show() {
     echo "   A: $(json | grep -o '"digest_mismatch":[^]]*]' | head -c 200)"
     run a "/t/debug/emfor --config /etc/emfor/emfor.toml status" 2>/dev/null | grep -i 'peers' | sed 's/^/   A text: /'
 }
+silent_json() { json | grep -o '"silent_checkers":\[[^]]*\]' || :; }
+silent_text() { run a "/t/debug/emfor --config /etc/emfor/emfor.toml status" 2>/dev/null | grep 'no results from' || :; }
+silent_metric() { run a "printf 'GET /metrics HTTP/1.0\\r\\n\\r\\n' | nc -w2 127.0.0.1 5301" 2>/dev/null | grep '^emfor_peer_silent_checkers ' || :; }
+# wait_silent SECONDS PATTERN: A's silent_checkers contains PATTERN.
+wait_silent() {
+    n=0
+    while [ "$n" -lt "$1" ]; do
+        silent_json | grep -q "$2" && return 0
+        n=$((n + 1)); sleep 1
+    done
+    return 1
+}
+# no_silent SECONDS: A reports no silent checker at any second of the period.
+no_silent() {
+    n=0
+    while [ "$n" -lt "$1" ]; do
+        [ -z "$(silent_json)" ] || return 1
+        n=$((n + 1)); sleep 1
+    done
+}
 only_checkers() { json | grep -o '{"backend":"[^}]*"service":"only.svc.emfor"}'; }
 live() { # wait until A sees both others
     n=0
@@ -131,6 +157,8 @@ sleep 4; live
 [ "$(state_of)" = healthy ] && ok "A: healthy at the start" || fail "A: healthy at the start ($(state_of))"
 cut_off b; cut_off c
 if wait_for unhealthy 15; then ok "A: down by votes of B and C"; else fail "A: down by votes of B and C ($(state_of))"; fi
+if no_silent 25; then ok "A: nobody is silent while all three send results"; else fail "A: nobody is silent ($(silent_json))"; fi
+[ "$(silent_metric)" = "emfor_peer_silent_checkers 0" ] && ok "metric is 0" || fail "metric is 0 ($(silent_metric))"
 show
 
 step "2 C does not list that backend: only B votes down"
@@ -139,7 +167,14 @@ config a "" 500ms true "$backend"; config b "" 500ms true "$backend"; config c "
 for m in a b c; do start "$m"; done
 sleep 4; live
 cut_off b; cut_off c
-if stays healthy 15; then ok "A stays healthy: one down vote is not enough"; else fail "A stays healthy ($(state_of))"; fi
+if wait_silent 15 "\"member\":\"$subnet.13:5302\",\"service\":\"$svc\""; then
+    ok "A reports C as silent within 15 seconds of the cut"
+else
+    fail "A reports C as silent within 15 seconds of the cut ($(silent_json))"
+fi
+if stays healthy 10; then ok "A stays healthy: one down vote is not enough"; else fail "A stays healthy ($(state_of))"; fi
+silent_text | grep -q "no results from $subnet.13:5302 for $svc (1 backends)" && ok "status text names C" || fail "status text names C ($(silent_text))"
+[ "$(silent_metric)" = "emfor_peer_silent_checkers 1" ] && ok "metric is 1" || fail "metric is 1 ($(silent_metric))"
 show
 
 step "3 C has another check definition (timeout 700ms): its votes do not count"
@@ -149,6 +184,7 @@ for m in a b c; do start "$m"; done
 sleep 4; live
 cut_off b; cut_off c
 if stays healthy 15; then ok "A stays healthy: C's votes are not counted"; else fail "A stays healthy ($(state_of))"; fi
+if [ -z "$(silent_json)" ]; then ok "C is a digest mismatch, not a silent checker"; else fail "C is not silent ($(silent_json))"; fi
 show
 if json | grep -q '"digest_mismatch":\[[^]]*[a-z0-9"]'; then ok "A shows a digest mismatch"; else fail "A shows a digest mismatch"; fi
 
@@ -164,6 +200,11 @@ backends = [\"$backend:8080\"]"
 config a "$only" 500ms true "$backend"; config b "$only" 500ms true "$backend"; config c "" 500ms true "$backend"
 for m in a b c; do start "$m"; done
 sleep 6; live
+if wait_silent 15 "\"member\":\"$subnet.13:5302\",\"service\":\"only.svc.emfor\""; then
+    ok "A reports C as silent for the service C does not have"
+else
+    fail "A reports C as silent for the service C does not have ($(silent_json))"
+fi
 if only_checkers | grep -q "$subnet.13"; then
     ok "A: C is among the assigned checkers of a service C does not have"
 else
@@ -177,6 +218,11 @@ if only_checkers | grep -q "$subnet.13"; then
     fail "A: with peers = false, C is no longer an assigned checker"
 else
     ok "A: with peers = false, C is no longer an assigned checker"
+fi
+if silent_json | grep -q 'only.svc.emfor'; then
+    fail "A: with peers = false, the silent report for the service is gone"
+else
+    ok "A: with peers = false, the silent report for the service is gone"
 fi
 echo
 if [ "$failed" = 0 ]; then echo "all checks passed"; else echo "some checks FAILED"; exit 1; fi
