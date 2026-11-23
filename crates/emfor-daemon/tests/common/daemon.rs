@@ -218,6 +218,9 @@ impl Drop for Daemon {
 pub fn emfor(args: &[&str]) -> (i32, String, String) {
     let mut child = Command::new(cargo_bin("emfor"))
         .args(args)
+        // A RUST_LOG in the environment (an empty one under Nix) replaces the
+        // log level and can hide the messages the tests read.
+        .env_remove("RUST_LOG")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
