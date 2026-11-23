@@ -72,7 +72,7 @@ backend api
 | emfor stopped | Keeps its servers for the `hold` times. |
 | SERVFAIL | Drops the servers after `hold other` (30 s): every request gets 503. |
 | TLS to backends | Add `ssl ... sni str(<name>)`; always set `sni`, since the SRV target names are not in a certificate. |
-| Name servers | Use one: the emfor on the same host. Two that disagree make the server list change from query to query. |
+| Name servers | Use one: the emfor on the same host. Two that disagree make the server list change from query to query; when several backends share one IP (one host, several ports), HAProxy 3.4 then also gave 503 for a few requests (a slot with port 0; 6 of 6 runs of 400 requests, and none in 6 runs with a separate IP per backend). |
 | Tested by | `tests/haproxy/run.sh`, `tests/haproxy/more.sh`; HAProxy 3.4.7 and 2.8.31, and 3.4.4 on FreeBSD 15.1. |
 
 ## Caddy

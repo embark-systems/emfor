@@ -64,7 +64,7 @@ backend api
 | emfor 停掉時 | 照 `hold` 的時間保留原本的 server。 |
 | SERVFAIL | 過了 `hold other`（30 s）就丟掉 server：之後每個請求都會拿到 503。 |
 | 到 backend 的 TLS | 加上 `ssl ... sni str(<name>)`；一定要設 `sni`，因為 SRV 目標的名稱不在憑證裡。 |
-| name server | 只設一個：同一台主機上的 emfor。設了兩個而它們意見不同時，server 清單會每次查詢都在變。 |
+| name server | 只設一個：同一台主機上的 emfor。設了兩個而它們意見不同時，server 清單會每次查詢都在變；如果好幾個 backend 共用同一個 IP（同一台主機的不同埠），HAProxy 3.4 還會對少數請求回 503（槽位的埠變成 0；400 個請求一輪，6 輪都出現，每個 backend 各有 IP 的 6 輪沒有）。 |
 | 測試 | `tests/haproxy/run.sh`、`tests/haproxy/more.sh`；HAProxy 3.4.7 與 2.8.31，以及 FreeBSD 15.1 上的 3.4.4。 |
 
 ## Caddy

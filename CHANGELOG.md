@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The manual says when two name servers make HAProxy answer 503.** Chapter
+  14 (en and zh_TW), row "Name servers": with two name servers that disagree
+  and several backends on one IP (one host, several ports), HAProxy 3.4.8
+  answered a few requests with 503 (a slot with port 0). Six runs of 400
+  requests each all had some (1 to 21 per run); six runs with a separate IP
+  per backend had none. Not tried with HAProxy 2.8 in this setup. Nothing in
+  emfor changed; the advice to use one name server stays.
+
 - **Credential files must be regular files of bounded size.** `emfor-check`
   and the TLS options of the daemon read `password_file`, a RADIUS
   `secret_file`, `tls_key_file`, `tls_cert_file` and `ca_file` without
