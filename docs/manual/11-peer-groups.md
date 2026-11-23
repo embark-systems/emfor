@@ -123,6 +123,41 @@ members have should be `peers = false` on the members that have it: they check
 it alone, and the others do not count them. To give one member another
 backend list, use another service name for it.
 
+### Several data centres
+
+A peer group is for one data centre. With two or more, run **one group per
+data centre** and nothing across them:
+
+- Give each data centre its own `site`, its own `members` list and its own
+  secret. A member whose `site` differs from the receiver's is rejected
+  (`reason="site"`, [chapter 16](16-troubleshooting.md)), and a message
+  signed with another secret fails authentication first. Two groups on the
+  same network must not share a secret.
+- Do not put members of two data centres in one group. Messages are single
+  UDP datagrams with no retransmission; a member is live while a valid
+  message arrived within the last 3 seconds, and a message more than 5
+  seconds away from the receiver's clock is dropped. A WAN link that loses or
+  delays heartbeats makes the remote members come and go, and each change
+  reshuffles which members are assigned to check which backend. The votes also
+  assume that what one member sees, the others would see too, which is not
+  true across sites.
+- A backend in another data centre is still a backend like any other. Each
+  group checks it from its own side, so its state is what that data centre
+  sees: if the link between the sites fails, both sides may call the other's
+  backends `unhealthy`, and each side keeps working with its own. Use
+  `site` on the backends and `balance = "locality"` ([chapter
+  8](08-choosing-a-backend.md)) so that a host prefers its own data
+  centre's backends and uses the others only when none passes, or mark them
+  `backup = true`.
+- A check that crosses the WAN costs the hosts that run it. In a group, three
+  assigned members of the near data centre check each far backend and the
+  others take their results; without a group (`peers = false`), every host
+  checks it. Leave `peers` at its default for such services.
+
+This was reasoned from the protocol and the code, and tested with one group
+only; a real two-site setup, with loss and delay between the sites, was not
+tried for this manual.
+
 ## How the votes work
 
 For each backend, every member ranks the candidates (itself and every live

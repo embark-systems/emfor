@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The manual says what to do with several data centres.** Chapter 11
+  ("Several data centres", en and zh_TW): one peer group per data centre, each
+  with its own `site`, members and secret; why members of two sites do not
+  belong in one group (single datagrams, 3-second liveness, 5-second clock
+  limit); how backends in another data centre are checked and preferred.
+  Written from the protocol and the code; a real two-site setup was not tried.
+
 - **The FreeBSD port is in the ports tree.** `net-mgmt/emfor` (0.7.1) is now
   part of the FreeBSD ports tree. Chapters 1 and 4 (en and zh_TW) say
   `pkg install emfor` or `make -C /usr/ports/net-mgmt/emfor install clean`, and
