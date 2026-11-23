@@ -57,7 +57,8 @@ Members compare a **digest** of each service's check (the check name or
 plugin with its command and `env_pass`, `check_options` and `timeout`); a
 member ignores votes and notices for a service whose digest differs, and
 `emfor status` shows a digest mismatch. `interval`, `rise`, `fall`,
-`balance`, `on_all_down` and the backend list may differ.
+`balance`, `on_all_down` and the backend list may differ, but a different
+service set or backend list costs votes ([below](#when-members-differ)).
 
 Open the UDP port between the members. Each message is one datagram of at most
 1200 bytes; every member sends a heartbeat to every other one each second.
@@ -68,6 +69,32 @@ Open the UDP port between the members. Each message is one datagram of at most
 the group on this host: it is checked here at every interval, its results are
 not sent, and votes and notices for it are ignored. The host tells the others
 in its heartbeats, so they do not count it as a checker of that service.
+
+### When members differ
+
+The ranking below knows only the service name, the backend address and the live
+members (minus those that left the service out). It does not know which member
+has the service or the backend. So when the members do not list the same
+services and backends:
+
+- A member that has no such service, or no such backend, still ranks as a
+  candidate on the others, but it never checks the backend and never sends a
+  result. The others get fewer than three votes for it. With two voters left,
+  both must see the backend down for the votes to apply `down`; a peer's `down`
+  alone no longer does. Nothing warns about it: the member ignores the
+  messages for a service or backend it does not have (a line at `debug`).
+- A member whose digest differs does send results, but the others store them
+  and do not count them, so its place is lost the same way. This is the only
+  difference `emfor status` shows: a digest mismatch, until 60 seconds after
+  the last message from that member.
+- `interval`, `rise`, `fall`, `balance` and `on_all_down` may differ without
+  any effect on the votes.
+
+Keep the services and their backend lists equal on every member, for example
+by generating one `conf.d` file for all of them. A service that only some
+members have should be `peers = false` on the members that have it: they check
+it alone, and the others do not count them. To give one member another
+backend list, use another service name for it.
 
 ## How the votes work
 
