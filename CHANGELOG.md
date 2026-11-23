@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **The manual says which releases get fixes.** Only the latest one, with no
+  backports before 1.0, no support contract and no promised response time
+  (chapter 15). No code change.
+
 - **The manual says where emfor stands on SELinux and AppArmor.** emfor ships
   no policy and has not been run under either in enforcing mode. Chapter 13
   lists what the daemon reads, writes, listens on and starts, for anyone who

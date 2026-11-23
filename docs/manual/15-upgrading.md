@@ -41,6 +41,15 @@
 
 Do one host at a time.
 
+## Which releases get fixes
+
+Only the latest release. Before 1.0, a bug fix or a security fix goes into the
+next release and is not backported to an older one, so the way to get a fix
+is to upgrade (the rules above say what that costs). emfor comes without a
+support contract and without a promised response time; how to report a
+vulnerability is in [chapter 13](13-security.md#reporting-a-vulnerability).
+What 1.0 will promise is not decided yet.
+
 ## From 0.6 to 0.7
 
 The store format (version 2) and the plugin protocol (1) did not change:
