@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **The log can be JSON, and the fields of a state change are stable.** New
+  `[log] format = "json"` (default `"text"`) writes one JSON object per line
+  after the config is read, with the fields of the event at the top level and
+  `timestamp`, `level`, `target` and `message`. A reload that changes `format`
+  is rejected like any restart-only setting. The state change line gains
+  `event=backend_state_changed` (also in text, at the end of the line), and
+  `event`, `service`, `backend`, `from`, `to`, `reason` and the JSON
+  `timestamp` and `level` are now stable. Chapter 14 says why emfor has no SNMP
+  or hook, and has an example script (`examples/snmp/emfor-snmp-trap.sh`, run
+  only against made-up input) and net-snmp `extend`; chapter 12 describes the
+  `history` of `emfor status --json`. New crate `tracing-serde`.
+
 - **Peer messages can use AES-256-GCM (`EMP4`).** New `[peers] cipher`
   (`"chacha20-poly1305"`, the default, changes nothing; `"aes-256-gcm"`
   sends `EMP4` to every member; it needs `encrypt = true` and is reloadable).

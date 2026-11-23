@@ -40,6 +40,7 @@
 | Key | 種類 | 預設值 | 說明 |
 | --- | --- | --- | --- |
 | `level` | `"trace"`、`"debug"`、`"info"`、`"warn"`、`"error"` | `"info"` | 設了 `RUST_LOG` 會蓋過它。 |
+| `format` | `"text"`、`"json"` | `"text"` | `"json"` 是一行一個 JSON 物件（[第 12 章](12-operating.md#json-行)）。要 restart 才能改；reload 改它會被拒絕。 |
 
 ## [dns]
 

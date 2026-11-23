@@ -9,13 +9,14 @@ use clap::Parser;
 use emfor_format::{HIST_KEY_PREFIX, HealthState, ServiceHistory};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, oneshot, watch};
+use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, reload};
 
 use crate::audit;
 use crate::config::{
-    self, Config, ConfigError, DEFAULT_CONFIG_PATH, DnsConfig, StoreConfig, in_zone,
+    self, Config, ConfigError, DEFAULT_CONFIG_PATH, DnsConfig, LogFormat, StoreConfig, in_zone,
 };
 use crate::dns::{self, DnsSettings};
 use crate::live::LiveState;
@@ -185,7 +186,7 @@ async fn start(config_path: PathBuf, check_only: bool, show: bool) -> ExitCode {
 
     // Log at `info` while loading (plugin start lines), then switch to the
     // configured level.
-    let log = init_logging("info");
+    let (log, format_handle) = init_logging("info");
     // Before loading, which starts plugins and can take seconds: until a
     // handler exists, SIGHUP's default action kills the daemon. A signal
     // that arrives meanwhile waits for the main loop, where SIGHUP reloads
@@ -227,28 +228,57 @@ async fn start(config_path: PathBuf, check_only: bool, show: bool) -> ExitCode {
     {
         tracing::error!("cannot set log level: {e}");
     }
+    if config.log.format != LogFormat::Text
+        && let Err(e) = format_handle.reload(fmt_layer(config.log.format))
+    {
+        tracing::error!("cannot set log format: {e}");
+    }
     let code = run(config_path, config, &mut plugins, log, signals).await;
     plugins.stop_all().await;
     code
 }
 
 type LogHandle = reload::Handle<EnvFilter, tracing_subscriber::Registry>;
+type FormatBase = tracing_subscriber::layer::Layered<
+    reload::Layer<EnvFilter, tracing_subscriber::Registry>,
+    tracing_subscriber::Registry,
+>;
+type FormatLayer = Box<dyn tracing_subscriber::Layer<FormatBase> + Send + Sync>;
+type FormatHandle = reload::Handle<FormatLayer, FormatBase>;
 
 /// Install logging. Returns a handle to change the level on reload, or `None`
 /// when `RUST_LOG` is set (it then overrides `[log] level` for the whole run).
-fn init_logging(level: &str) -> Option<LogHandle> {
+fn init_logging(level: &str) -> (Option<LogHandle>, FormatHandle) {
     let from_env = EnvFilter::try_from_default_env().ok();
     let env_set = from_env.is_some();
     let (filter, handle) = reload::Layer::new(from_env.unwrap_or_else(|| log_filter(level)));
+    let (format, format_handle) = reload::Layer::new(fmt_layer(LogFormat::Text));
     let _ = tracing_subscriber::registry()
         .with(filter)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stderr)
-                .with_ansi(log_colors()),
-        )
+        .with(format)
         .try_init();
-    (!env_set).then_some(handle)
+    ((!env_set).then_some(handle), format_handle)
+}
+
+/// The layer that writes the lines. `[log] format` is read from the config
+/// after logging has started, so the lines before that (plugin start,
+/// config errors) are always text.
+fn fmt_layer(format: LogFormat) -> FormatLayer {
+    match format {
+        LogFormat::Text => tracing_subscriber::fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_ansi(log_colors())
+            .boxed(),
+        // Fields of the event at the top level, next to `timestamp`,
+        // `level`, `target` and `message`: no `fields` object, no spans.
+        LogFormat::Json => tracing_subscriber::fmt::layer()
+            .json()
+            .flatten_event(true)
+            .with_current_span(false)
+            .with_span_list(false)
+            .with_writer(std::io::stderr)
+            .boxed(),
+    }
 }
 
 /// Color log lines only on a terminal without `NO_COLOR`, as `emfor
@@ -959,6 +989,14 @@ async fn load(
             errors.push(ConfigError::new(
                 "metrics.allow",
                 "metrics allow settings require restart",
+            ));
+        }
+        if let Ok(new) = &parsed
+            && new.log.format != current.log.format
+        {
+            errors.push(ConfigError::new(
+                "log.format",
+                "log format settings require restart",
             ));
         }
         let current_listen = current.peers.as_ref().map(|p| p.listen);

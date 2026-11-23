@@ -1,0 +1,17 @@
+## 1. 設定與依賴
+
+- [x] 1.1 實作 requirement「Log format」的設定部分（design：「`format` 是 `[log]` 的鍵，改它要重啟，reload 拒絕」）。`config.rs` 的 `LogConfig` 新增 `format`（`LogFormat`，`Text` 預設、`Json`），`[log]` 允許鍵加 `format`，值不是字串或不是 `"text"`／`"json"` 為 `log.format` 錯誤（訊息 `must be one of text, json`）；`cli.rs` 的 reload 驗證在 `format` 與在跑的不同時加 `log.format` 錯誤（`log format settings require restart`），整個 reload 被拒絕、沿用舊設定，只改 `level` 仍可 reload。驗證：`config.rs` 單元測試涵蓋 spec 範例表「format validation」每一列；`cli.rs` 的測試（或 `tests/` 整合測試）涵蓋「Reload changes the format」被拒絕與「Reload changes only the level」被套用，帶 `// spectra-scenario: service-config / Reload changes the format` 等註解；`emfor check-config` 對 `format = "json"` 的設定檔結束代碼 0；`tools/docker-test.sh` 通過。
+- [x] 1.2 `crates/emfor-daemon/Cargo.toml` 的 `tracing-subscriber` 加 `json` feature（design：「JSON 行的形狀：欄位攤平在最上層」）；`Cargo.lock` 與 `fuzz/Cargo.lock` 一併更新（新增 `tracing-serde`）。驗證：`cargo check --manifest-path fuzz/Cargo.toml --bins --locked` 通過（CI 的 `fuzz-build` 用 `--locked`，上次就是漏了這個）、`cargo deny check` 在 `tools/docker-test.sh` 或本機可跑時通過、`tools/docker-test.sh` 通過。
+
+## 2. JSON 輸出
+
+- [x] 2.1 [after: 1.1, 1.2] 實作 requirement「Log format」的輸出部分（design：「讀設定檔之前的行維持文字」、「JSON 行的形狀：欄位攤平在最上層」）。`cli.rs` 的 `init_logging` 把 fmt layer 包進可替換的 layer，讀完設定後與 level 一起套用 `format`：`json` 時用 `.json().flatten_event(true)`、不輸出 span、不用 ANSI；`RUST_LOG` 只影響 level；換 layer 失敗時記 `error`「cannot set log format: …」並沿用文字。先用 grep 確認現有的 tracing 呼叫沒有名為 `timestamp`、`level`、`target` 的欄位。驗證：`crates/emfor-daemon/tests/` 新增整合測試，起 daemon 子行程，`format = "json"` 時 `emfor started` 之後的每一行 stderr 都能被 JSON 解析且有 `timestamp`、`level`、`message`，reload 的稽核行有 `change`；不設 `format` 時行不是 JSON；帶 `// spectra-scenario: service-config / JSON lines` 註解；`tools/docker-test.sh` 通過。
+- [x] 2.2 [after: 2.1] 狀態變化行加 `event`（requirement「Logging of state changes」；design：「新增 `event` 識別欄位，只加在狀態變化行」）。`schedule.rs` 的狀態變化 `tracing::info!` 加 `event = "backend_state_changed"`，措辭與其他欄位不動。驗證：`schedule.rs` 單元測試（tracing_test）檢查該行含 `event=backend_state_changed` 與 `service`、`backend`、`from`、`to`、`reason`；聯防投票造成的狀態變化行（reason 以 `peers ` 開頭）有同樣欄位，測試帶 `// spectra-scenario: health-checking / Transition is logged` 與 `// spectra-scenario: health-checking / Transition caused by peers` 註解；2.1 的整合測試在 JSON 模式下觸發一次狀態變化，斷言這一行的 top-level 欄位值，帶 `// spectra-scenario: service-config / JSON lines`；`tools/docker-test.sh` 通過。
+
+## 3. 文件
+
+- [x] 3.1 [after: 2.2] 手冊與 CHANGELOG（design：「穩定欄位承諾」、「SNMP 與 hook 不內建，手冊示範」）。`docs/manual/12-operating.md`（「Logs」寫 `format`、JSON 範例、穩定欄位表、啟動期的文字行；補 `emfor status --json` 的 `history` 項目格式：`{at(Unix 毫秒), from, to, reason}`、每個 backend 最近 20 筆、JSON 最舊在前、文字最新在前、`--history` 與 `--json` 不能同用）；`14-integrations.md` 新增「接舊式網管（SNMP、hook）」一節：沒有內建 SNMP 與 hook 的原因、一支輪詢 `emfor status --json` 並呼叫 `snmptrap` 的腳本（放 `examples/`，像 `examples/nagios/check_emfor.sh` 那樣）、net-snmp 的 `extend`；`15-upgrading.md` 與 `docs/compatibility.md` 把「log 不穩定」改成「除穩定欄位外不穩定」；`05-configuring.md` 與 `18-config-reference.md` 加 `format`；zh_TW 對應檔；`CHANGELOG.md` Unreleased 一條。驗證：腳本以假的 `emfor status --json` 輸入與取代 `snmptrap` 的指令乾跑，輸出正確的 trap 參數（手冊寫明乾跑了什麼、沒對 SNMP 管理站測試）；`python3 tools/check-manual-links.py` 回報 0 problems；中英內容與 spec 用語（`format` 值、`event`、欄位名）一致。
+
+## 4. 檢查
+
+- [x] 4.1 [after: 3.1] 全部檢查通過：`tools/docker-test.sh`（fmt、clippy -D warnings、workspace 測試、doc tests）、`cargo check --manifest-path fuzz/Cargo.toml --bins --locked`、`spectra analyze emfor-json-log` 沒有 Critical、`spectra validate emfor-json-log` 通過。

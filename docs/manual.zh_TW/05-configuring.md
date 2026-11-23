@@ -43,7 +43,7 @@ check_options = { user = "emfor", database = "postgres", role = "primary", passw
 | --- | --- |
 | 最上層 | `site` 與 `include_dir`。它們一定要寫在第一個 `[table]` 之前，因為 TOML 會把 table 標頭後面的 key 都歸到那個 table。 |
 | `[store]` | state store 放在哪裡、多大、檔案權限。 |
-| `[log]` | log 等級。 |
+| `[log]` | log 等級與格式。 |
 | `[dns]` | DNS server；有這個 table 才會啟動。 |
 | `[metrics]` | Prometheus endpoint；有這個 table 才會啟動。 |
 | `[peers]` | 聯防群組（[第 11 章](11-peer-groups.md)）。 |
@@ -244,6 +244,7 @@ reload 能改哪些東西：
 | `balance`、`weight`、`site`、`backup`、`drain`、`dns_ttl`、`slow_start` | 套用；backend 保留狀態，正在慢啟動的 backend 也保留它的恢復時間。 |
 | `[dns] zone`、`ttl`、`rate_limit` | 套用。 |
 | `[log] level` | 套用，除非設了環境變數 `RUST_LOG`。 |
+| `[log] format` | 會被拒絕，訊息是 `log format settings require restart`；要 restart。 |
 | plugin 的 `command` 或 `env_pass` | 該 plugin 會重新啟動，用到它的服務從 `unknown` 重新開始。沒改到的 plugin 繼續跑。 |
 | `[peers] members`、`secret_file`、`encrypt`、`accept_plaintext` | 套用。新加入的成員一開始算不存活。`previous_secret_file` 會檢查，但只在啟動時讀取。 |
 | `[store]` 裡的任何設定 | 拒絕：`store: store settings require restart`。 |

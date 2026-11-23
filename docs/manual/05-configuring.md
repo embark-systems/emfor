@@ -49,7 +49,7 @@ The tables:
 | --- | --- |
 | top level | `site` and `include_dir`. They must come before the first `[table]`, as TOML puts a key after a table header into that table. |
 | `[store]` | Where the state store is, its size and its file modes. |
-| `[log]` | The log level. |
+| `[log]` | The log level and format. |
 | `[dns]` | The DNS server; it runs only when the table is present. |
 | `[metrics]` | The Prometheus endpoint; it runs only when the table is present. |
 | `[peers]` | The peer group ([chapter 11](11-peer-groups.md)). |
@@ -305,6 +305,7 @@ What a reload can change:
 | `balance`, `weight`, `site`, `backup`, `drain`, `dns_ttl`, `slow_start` | Applied; backends keep their state, and a backend in slow start keeps its recovery time. |
 | `[dns] zone`, `ttl`, `rate_limit` | Applied. |
 | `[log] level` | Applied, unless the `RUST_LOG` environment variable is set. |
+| `[log] format` | Rejected with `log format settings require restart`; restart. |
 | A plugin's `command` or `env_pass` | The plugin is restarted, and the services that use it start over from `unknown`. Unchanged plugins keep running. |
 | `[peers] members`, `secret_file`, `encrypt`, `accept_plaintext` | Applied. Added members start as not live. `previous_secret_file` is checked but only read at start. |
 | Anything in `[store]` | Rejected: `store: store settings require restart`. |

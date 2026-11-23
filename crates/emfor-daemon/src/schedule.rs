@@ -371,6 +371,7 @@ pub fn spawn_backend(
             }
             if let Some(t) = transition {
                 tracing::info!(
+                    event = %"backend_state_changed",
                     service = %service,
                     backend = %backend.id,
                     from = %t.from,
@@ -741,6 +742,16 @@ mod tests {
         assert!(logs_contain(
             "backend 10.0.0.11:8080 of api.svc.emfor changed from healthy to unhealthy (connection refused)"
         ));
+        for field in [
+            "event=backend_state_changed",
+            "service=api.svc.emfor",
+            "backend=10.0.0.11:8080",
+            "from=healthy",
+            "to=unhealthy",
+            "reason=\"connection refused\"",
+        ] {
+            assert!(logs_contain(field), "{field}");
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -1017,7 +1028,9 @@ mod tests {
     // spectra-scenario: peer-group / Assigned checkers among five live members
     // spectra-scenario: peer-group / Two of three assigned checkers see the backend down
     // spectra-scenario: health-checking / Combined result feeds the state machine
+    // spectra-scenario: health-checking / Transition caused by peers
     #[tokio::test(start_paused = true)]
+    #[tracing_test::traced_test]
     async fn two_down_votes_make_an_up_backend_unhealthy() {
         let refused = || Outcome::Down("refused".into());
         let (updates, out) = with_votes(
@@ -1040,6 +1053,14 @@ mod tests {
             updates[2].latency_us, None,
             "a combined down is no latency sample"
         );
+        // The state change line is the same one as for an own check.
+        for field in [
+            "event=backend_state_changed",
+            "to=unhealthy",
+            "reason=\"peers 2/3: refused\"",
+        ] {
+            assert!(logs_contain(field), "{field}");
+        }
         // Assigned: every own result (up) goes out, nothing else.
         assert_eq!(out.len(), updates.len());
         for o in &out {

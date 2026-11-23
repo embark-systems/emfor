@@ -54,7 +54,7 @@ web.svc.emfor  round-robin  on_all_down=open
 | 選項 | |
 | --- | --- |
 | `--service NAME` | 只顯示這個服務（找不到時顯示 `service nope.svc.emfor not found`，結束代碼 2）。 |
-| `--history` | 每個 backend 最近 20 次狀態變化，最新的排最前面。 |
+| `--history` | 每個 backend 最近 20 次狀態變化，最新的排最前面。不能和 `--json` 一起用；`--json` 的 `history` 裡本來就有。 |
 | `--watch` | 全螢幕，每秒更新一次。按鍵：PgUp、PgDn 或空白鍵、上、下、Home、End、`q`。 |
 | `--json` | 所有內容輸出成一個 JSON 物件，給 script 用。 |
 
@@ -70,6 +70,8 @@ web.svc.emfor
 ```
 
 JSON 物件裡有 `store`、`daemon`、`heartbeat_ms`、`heartbeat_age_ms`（停止時是 `null`，heartbeat 比現在還晚時是負數）、`started_at_ms`、`site`、`dns_listen`、`metrics_listen`、`services`（每個服務有 `name`、`balance`、`on_all_down`、`slow_start_ms`、`all_down`，以及 `backends`，其中有 `id`、`ip`、`port`、`state`、`reason`、`checked_at`、`latency_us`、`weight`、`site`、`backup`、`recovered_at`）、`history`、`flapping`、`peers` 和 `assigned_checkers`（每個 backend 的負責主機，照排名排序；沒有聯防群組或 daemon 沒在跑時是 `null`）。
+
+`history` 每個服務一筆，內容是 `{"backends": {"<id>": [...]}}`；每個 backend 有它最近 20 次狀態變化，**最舊的排最前面**（`--history` 的文字輸出是最新的排最前面），每筆是 `{"at": <該次檢查的 Unix 毫秒>, "from": "healthy", "to": "unhealthy", "reason": "connection refused"}`；檢查沒給原因時 `reason` 是 `null`。
 
 結束代碼：daemon 在跑、而且顯示的服務沒有一個是全部 down，為 0；daemon 是 stale 或 stopped，或顯示的服務裡有一個是 `ALL DOWN`，為 1；讀不到設定檔或 store，為 2。所以 `emfor status >/dev/null` 就可以拿來當這台主機上 emfor 的健康檢查。
 
@@ -128,12 +130,14 @@ allow = ["127.0.0.0/8", "10.20.0.0/16"]   # 選用
 
 ## Log
 
-daemon 把 log 寫到 standard error：在 systemd 底下會進 journal，用 FreeBSD rc script 時會進 syslog（tag `emfor`）。等級用 `[log] level` 設定（`trace`、`debug`、`info`、`warn`、`error`；預設 `info`）；想在某一次執行時改用別的等級，可以用 `RUST_LOG` 覆寫。啟動和一次狀態變化的 log 長這樣：
+daemon 把 log 寫到 standard error：在 systemd 底下會進 journal，用 FreeBSD rc script 時會進 syslog（tag `emfor`）。等級用 `[log] level` 設定（`trace`、`debug`、`info`、`warn`、`error`；預設 `info`）；想在某一次執行時改用別的等級，可以用 `RUST_LOG` 覆寫。`[log] format` 是 `"text"`（預設）或 `"json"`（見[下面](#json-行)）。啟動和一次狀態變化的 log 長這樣：
 
 ```text
 INFO emfor_daemon::cli: emfor started: 1 services, 2 backends, store /var/lib/emfor/state.mdb
 INFO emfor_daemon::schedule: backend 127.0.0.2:8080 of web.svc.emfor changed from healthy to unhealthy (error sending request: ...) service=web.svc.emfor backend=127.0.0.2:8080 from=healthy to=unhealthy reason=...
 ```
+
+狀態變化那一行的 `event`、`service`、`backend`、`from`、`to`、`reason` 欄位是穩定的，下面 reload 稽核行的欄位也是；行裡的措辭則不穩定。
 
 | 等級 | 看到什麼 |
 | --- | --- |
@@ -141,6 +145,18 @@ INFO emfor_daemon::schedule: backend 127.0.0.2:8080 of web.svc.emfor changed fro
 | `warn` | 設定警告（檔案權限、密碼不經 TLS、DNS 聽在公開位址、port 混用）、plugin 結束、損毀的 store 被移到旁邊、成員訊息被丟掉、讀不到聯防密鑰。 |
 | `info` | 啟動、reload 和停止，每次狀態變化和它的 reason，plugin 的啟動和 standard error 輸出，成員變成存活或不存活，成員的通知和意見不一致。 |
 | `debug` | 每一次檢查、被忽略的成員訊息。 |
+
+### JSON 行
+
+設了 `[log] format = "json"`，daemon 讀完設定之後寫的每一行 log 都是一行一個 JSON 物件，事件的欄位直接放在最上層，不會包在底下一層：
+
+```json
+{"timestamp":"2026-11-23T04:29:21.959477Z","level":"INFO","message":"backend 127.0.0.2:8080 of web.svc.emfor changed from healthy to unhealthy (connection refused)","event":"backend_state_changed","service":"web.svc.emfor","backend":"127.0.0.2:8080","from":"healthy","to":"unhealthy","reason":"connection refused","target":"emfor_daemon::schedule"}
+```
+
+穩定的有：每一行的 `timestamp`（RFC 3339）和 `level`；狀態變化那一行的 `event`、`service`、`backend`、`from`、`to`、`reason`；以及下面 reload 稽核行的欄位和 `change`。不穩定的有：`message` 的文字、`target`、其他行的欄位。任何一版都可能新增欄位，所以只讀你要的，其餘忽略。
+
+讀設定檔之前寫的行，例如啟動 plugin，或啟動時的設定錯誤，是文字：那時 daemon 還不知道格式。請把不是 JSON 的行送到別的地方，或直接忽略。`format` 只在啟動時讀：reload 改了它會被拒絕，訊息是 `log format settings require restart`；只改 `level` 則會套用。`RUST_LOG` 只改等級，不改格式。
 
 ### reload 改了什麼
 

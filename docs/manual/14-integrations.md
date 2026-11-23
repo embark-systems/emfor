@@ -212,6 +212,57 @@ reason. `--warning up` makes WARNING count as up; `--host-flag` and
 `tests/nagios/run.sh` with a stand-in plugin; real Monitoring Plugins, Nagios,
 Icinga and Zabbix were not tried.
 
+## Old network management systems: SNMP and hooks
+
+emfor has no SNMP agent or trap sender, and no command that runs when a state
+changes. An enterprise OID has to come from IANA, a MIB has to be kept, and
+SNMPv3 needs MD5, SHA and AES, which does not fit what [chapter
+13](13-security.md#fips) says about the algorithms emfor uses. A hook has to be
+told what to do when the command hangs, fails, or runs thousands of times for
+one flapping backend. What emfor gives you instead is a stable record of every
+change, which a small program can turn into whatever the other system wants.
+
+**Poll `emfor status --json`.** Each backend has its last 20 state changes in
+`history` ([chapter 12](12-operating.md#emfor-status)). [examples/snmp/emfor-snmp-trap.sh](../../examples/snmp/emfor-snmp-trap.sh)
+remembers the newest change it sent and sends one SNMPv2c trap, with
+`snmptrap` from net-snmp, for each newer one. Run it from cron or a systemd
+timer, more often than 20 changes can happen:
+
+```console
+$ emfor-snmp-trap.sh -H nms.example.net -o 1.3.6.1.4.1.99999.1 -c secret
+```
+
+`1.3.6.1.4.1.99999` stands for **your** enterprise number; the trap is `OID.1`
+and carries the service, backend, old state, new state and reason as strings
+(`OID.2` to `OID.6`). Write the MIB for these yourself. The first run sends
+nothing and only records where it is. This is the script as the manual
+has run it: with a made-up `emfor status --json` output and a stand-in for
+`snmptrap` that prints its arguments, to check what it reads and sends and
+that it remembers where it was. It has not sent a trap to a management
+station. A community string is sent in clear text; for SNMPv3 give `snmptrap`
+its own options, for example through `snmp.conf`, and change the script's
+arguments to match.
+
+**Read the log.** With `[log] format = "json"` ([chapter
+12](12-operating.md#json-lines)) a state change is a line with `event` set to
+`backend_state_changed`. rsyslog's `omprog`, or a program that reads the journal
+(`journalctl -u emfor -o cat -f`), can act on each line as it comes, with no
+polling delay. Lines before the config is read are text, so the program has to
+skip lines that are not JSON.
+
+**Let the management station ask.** net-snmp's `snmpd` can expose a command's
+output with `extend`; the station then reads it with SNMP GET:
+
+```text
+extend emfor-web /usr/local/bin/check_emfor.sh -s web.svc.emfor
+```
+
+The result and the output of the command are in `NET-SNMP-EXTEND-MIB`
+(`nsExtendResult` and `nsExtendOutput1Line`). `snmpd` runs it as its own user,
+which needs the same store access as an application
+([chapter 12](12-operating.md#who-can-read-the-store)). This line has not been
+run for this manual.
+
 ## Programs that ask for SRV records
 
 Go's `net.LookupSRV("http", "tcp", "api.svc.emfor")` asks

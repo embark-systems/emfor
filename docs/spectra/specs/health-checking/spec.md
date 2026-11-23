@@ -483,38 +483,43 @@ tests:
 ---
 ### Requirement: Logging of state changes
 
-Every health state change SHALL be logged at `info` level with the service name, backend id, old state, new state, and the reason from the result that caused it.
+Every health state change SHALL be logged at `info` level with the service name, backend id, old state, new state, and the reason from the result that caused it. The line SHALL carry these as the fields `service`, `backend`, `from`, `to` and `reason`, and the field `event` with the value `backend_state_changed`; the names of these fields and the value of `event` are stable, the wording of the line is not. A state change caused by the votes of the peer group SHALL be logged the same way, with the reason of the result the votes produced.
 
 #### Scenario: Transition is logged
 
 - **WHEN** backend `10.0.0.11:8080` of `api.svc.emfor` changes from `healthy` to `unhealthy` after `down` results with reason `connection refused`
-- **THEN** an `info` log line contains `api.svc.emfor`, `10.0.0.11:8080`, `healthy`, `unhealthy`, and `connection refused`
+- **THEN** an `info` log line has `event` `backend_state_changed`, `service` `api.svc.emfor`, `backend` `10.0.0.11:8080`, `from` `healthy`, `to` `unhealthy`, and `reason` `connection refused`
+
+#### Scenario: Transition caused by peers
+
+- **WHEN** a backend that passes its own check changes to `unhealthy` because two of its three assigned checkers vote it down
+- **THEN** the same line is logged, with a `reason` that starts with `peers `
+
 
 <!-- @trace
-source: emfor-core
-updated: 2026-11-12
+source: emfor-json-log
+updated: 2026-11-23
 code:
-  - crates/emfor-daemon/src/checker/http.rs
-  - crates/emfor-daemon/src/writer.rs
-  - Cargo.toml
-  - crates/emfor-daemon/src/cli.rs
-  - CLAUDE.md
-  - crates/emfor-daemon/src/main.rs
-  - crates/emfor-daemon/src/state.rs
+  - CHANGELOG.md
   - crates/emfor-daemon/Cargo.toml
-  - .spectra.yaml
-  - crates/emfor-daemon/src/checker/tcp.rs
-  - crates/emfor-daemon/src/checker/mod.rs
-  - crates/emfor-daemon/src/lib.rs
+  - crates/emfor-daemon/src/cli.rs
   - crates/emfor-daemon/src/config.rs
-  - crates/emfor-daemon/src/supervisor.rs
-  - crates/emfor-daemon/src/store.rs
-  - crates/emfor-format/src/lib.rs
-  - examples/emfor.toml
-  - crates/emfor-format/Cargo.toml
   - crates/emfor-daemon/src/schedule.rs
+  - docs/compatibility.md
+  - docs/manual.zh_TW/05-configuring.md
+  - docs/manual.zh_TW/12-operating.md
+  - docs/manual.zh_TW/14-integrations.md
+  - docs/manual.zh_TW/15-upgrading.md
+  - docs/manual.zh_TW/18-config-reference.md
+  - docs/manual/05-configuring.md
+  - docs/manual/12-operating.md
+  - docs/manual/14-integrations.md
+  - docs/manual/15-upgrading.md
+  - docs/manual/18-config-reference.md
+  - examples/snmp/emfor-snmp-trap.sh
+  - packages/freebsd/Makefile.crates
 tests:
-  - crates/emfor-daemon/tests/daemon.rs
+  - crates/emfor-daemon/tests/log_format.rs
 -->
 
 ---

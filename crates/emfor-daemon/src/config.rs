@@ -135,14 +135,26 @@ impl Default for StoreConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogConfig {
     pub level: String,
+    pub format: LogFormat,
 }
 
 impl Default for LogConfig {
     fn default() -> Self {
         Self {
             level: "info".into(),
+            format: LogFormat::default(),
         }
     }
+}
+
+/// `[log] format`: how each log line is written. Read at start only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LogFormat {
+    /// Human-readable lines, as before the key existed.
+    #[default]
+    Text,
+    /// One JSON object per line, with the fields of the event at its top level.
+    Json,
 }
 
 /// The `[dns]` table. The DNS server runs only when it is present.
@@ -1790,7 +1802,13 @@ impl Validator {
         let Some(t) = self.table(root, "log") else {
             return log;
         };
-        self.unknown_keys(t, "log", &["level"]);
+        self.unknown_keys(t, "log", &["level", "format"]);
+        match t.get("format") {
+            None => {}
+            Some(toml::Value::String(f)) if f == "text" => log.format = LogFormat::Text,
+            Some(toml::Value::String(f)) if f == "json" => log.format = LogFormat::Json,
+            Some(_) => self.err("log.format", "must be one of text, json"),
+        }
         if let Some(l) = self.string(t, "log", "level") {
             if ["trace", "debug", "info", "warn", "error"].contains(&l) {
                 log.level = l.to_string();
@@ -2531,6 +2549,26 @@ backends = ["10.0.0.1:80"]
                 && e.message.contains("needs encrypt = true")),
             "{e:?}"
         );
+    }
+
+    /// Spec service-config "Log format", the example table.
+    // spectra-scenario: service-config / Format not set
+    // spectra-scenario: service-config / Reload changes only the level / format validation
+    #[test]
+    fn log_format_validation() {
+        let ok = |body: &str, want: LogFormat| {
+            let c = parse_ok(&format!("{body}{SVC}"));
+            assert_eq!(c.log.format, want, "{body}");
+        };
+        ok("", LogFormat::Text);
+        ok("[log]\nlevel = \"debug\"\n", LogFormat::Text);
+        ok("[log]\nformat = \"text\"\n", LogFormat::Text);
+        ok("[log]\nformat = \"json\"\n", LogFormat::Json);
+        for bad in ["format = \"yaml\"", "format = true", "format = \"JSON\""] {
+            let e = parse_err(&format!("[log]\n{bad}\n{SVC}"));
+            assert_eq!(e[0].path, "log.format", "{bad}");
+            assert_eq!(e[0].message, "must be one of text, json", "{bad}");
+        }
     }
 
     /// The `cipher` rows of the example "peer config validation" of the

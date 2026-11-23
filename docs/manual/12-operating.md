@@ -65,7 +65,7 @@ ahead of now: the line then says `heartbeat 5.0s in the future`, and it is
 | Option | |
 | --- | --- |
 | `--service NAME` | Only that service (`service nope.svc.emfor not found`, exit 2). |
-| `--history` | The last 20 state changes of each backend, newest first. |
+| `--history` | The last 20 state changes of each backend, newest first. Not with `--json`, which has them all in `history`. |
 | `--watch` | Refreshes every second, full screen. Keys: PgUp, PgDn or space, Up, Down, Home, End, `q`. |
 | `--json` | Everything as one JSON object, for scripts. |
 
@@ -88,6 +88,12 @@ with `id`, `ip`, `port`, `state`, `reason`, `checked_at`, `latency_us`,
 `weight`, `site`, `backup`, `recovered_at`), `history`, `flapping`, `peers`
 and `assigned_checkers` (the assigned checkers of each backend, in rank
 order; `null` without a peer group or while the daemon is not running).
+
+`history` has one entry per service, `{"backends": {"<id>": [...]}}`, and each
+backend has its last 20 state changes, **oldest first** (the text of `--history`
+is newest first), as `{"at": <Unix milliseconds of the check>, "from": "healthy",
+"to": "unhealthy", "reason": "connection refused"}`; `reason` is `null` when
+the check gave none.
 
 Exit status: 0 when the daemon runs and no shown service is all down; 1 when
 the daemon is stale or stopped, or a shown service is `ALL DOWN`; 2 when the
@@ -172,12 +178,17 @@ Ready-made alerting rules are in
 The daemon logs to standard error: the journal under systemd, syslog (tag
 `emfor`) under the FreeBSD rc script. `[log] level` sets the level (`trace`,
 `debug`, `info`, `warn`, `error`; default `info`); `RUST_LOG` overrides it for
-one run. A start and a state change look like this:
+one run. `[log] format` is `"text"` (the default) or `"json"`
+([below](#json-lines)). A start and a state change look like this:
 
 ```text
 INFO emfor_daemon::cli: emfor started: 1 services, 2 backends, store /var/lib/emfor/state.mdb
 INFO emfor_daemon::schedule: backend 127.0.0.2:8080 of web.svc.emfor changed from healthy to unhealthy (error sending request: ...) service=web.svc.emfor backend=127.0.0.2:8080 from=healthy to=unhealthy reason=...
 ```
+
+The `event`, `service`, `backend`, `from`, `to` and `reason` fields of the state
+change line are stable, as are the audit fields below; the wording of the line
+is not.
 
 | Level | What you see |
 | --- | --- |
@@ -185,6 +196,29 @@ INFO emfor_daemon::schedule: backend 127.0.0.2:8080 of web.svc.emfor changed fro
 | `warn` | Config warnings (file modes, passwords without TLS, DNS on a public address, mixed ports), a plugin that exited, a damaged store moved aside, dropped peer messages, an unreadable peer secret. |
 | `info` | Start, reload and stop, every state change with its reason, plugin start and standard error, peers becoming live or not, peer notices and disagreements. |
 | `debug` | Every check, ignored peer messages. |
+
+### JSON lines
+
+With `[log] format = "json"` each line the daemon writes after it has read its
+config is one JSON object on one line, with the fields of the event at the top
+level, not nested:
+
+```json
+{"timestamp":"2026-11-23T04:29:21.959477Z","level":"INFO","message":"backend 127.0.0.2:8080 of web.svc.emfor changed from healthy to unhealthy (connection refused)","event":"backend_state_changed","service":"web.svc.emfor","backend":"127.0.0.2:8080","from":"healthy","to":"unhealthy","reason":"connection refused","target":"emfor_daemon::schedule"}
+```
+
+Stable: `timestamp` (RFC 3339) and `level` on every line; `event`, `service`,
+`backend`, `from`, `to` and `reason` on a state change line; and the fields of
+the reload audit lines below, with `change`. Not stable: the text of
+`message`, `target`, the fields of other lines. New fields can appear at any
+release, so read the ones you need and ignore the rest.
+
+Lines written before the config has been read, such as the start of plugins or
+a config error at start, are text: the daemon does not know the format yet.
+Send the lines that are not JSON to another place, or ignore them. `format`
+is read at start only: a reload that changes it is rejected with `log format
+settings require restart`, while a changed `level` is applied. `RUST_LOG`
+changes the level, never the format.
 
 ### What a reload changed
 

@@ -49,7 +49,7 @@ so programs linked against one minor release do not silently load another.
 | `emfor-plugin` Rust crate | Yes, from 1.0 | Before 1.0 it follows the minor-release rule above. |
 | DNS answers | Yes | Answers for names and query types that got no records before. |
 | Metric names, types and labels | Yes | New metrics and new label values. |
-| Log lines | No | Wording and level, at any release. Use metrics or `emfor status` for alerting. |
+| Log lines | No | Wording and level, at any release. Stable: the field names and `change` values of the reload audit lines, the `event`, `service`, `backend`, `from`, `to` and `reason` fields of the state change line, and `timestamp` and `level` with `[log] format = "json"`. Use metrics or `emfor status` for alerting. |
 | Rust crates other than `emfor-client` and `emfor-plugin` | No | They are internal to emfor. |
 
 ### Config file

@@ -42,6 +42,7 @@ key`). The options of each check are in [chapter 6](06-health-checks.md)
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `level` | `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"` | `"info"` | `RUST_LOG` overrides it. |
+| `format` | `"text"`, `"json"` | `"text"` | `"json"` writes one JSON object per line ([chapter 12](12-operating.md#json-lines)). Restart to change; a reload that changes it is rejected. |
 
 ## [dns]
 

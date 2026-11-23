@@ -173,6 +173,28 @@ check_options = { command = ["/usr/local/libexec/emfor-exec.sh", "/usr/local/lib
 
 外掛的結束狀態就是 emfor 的結果：0 是 up，1（WARNING）和 2（CRITICAL）是 down，3（UNKNOWN）和其他值是 error；輸出的第一行就是 reason。加 `--warning up` 會把 WARNING 算成 up；`--host-flag` 和 `--port-flag` 可以換掉旗標。兩支腳本都由 `tests/nagios/run.sh` 搭配替身外掛測過；真正的 Monitoring Plugins、Nagios、Icinga 和 Zabbix 都沒有試過。
 
+## 舊式網管：SNMP 與 hook
+
+emfor 沒有 SNMP agent 或 trap 發送功能，狀態變化時也沒有可以跑的指令。enterprise OID 要向 IANA 申請，MIB 要有人維護，SNMPv3 又要用 MD5、SHA 和 AES，這和[第 13 章](13-security.md#fips)對 emfor 所用演算法的說法對不起來。hook 則要先決定：指令卡住、失敗，或同一個一直震盪的 backend 讓它跑上千次，該怎麼辦。emfor 給你的是每一次狀態變化的穩定紀錄，小程式可以把它轉成對方系統要的東西。
+
+**輪詢 `emfor status --json`。** 每個 backend 最近 20 次狀態變化都在 `history`（[第 12 章](12-operating.md#emfor-status)）。[examples/snmp/emfor-snmp-trap.sh](../../examples/snmp/emfor-snmp-trap.sh) 會記住它送過的最新一筆變化，對每一筆更新的變化用 net-snmp 的 `snmptrap` 送一個 SNMPv2c trap。用 cron 或 systemd timer 跑，間隔要短到 20 次變化發生不完：
+
+```console
+$ emfor-snmp-trap.sh -H nms.example.net -o 1.3.6.1.4.1.99999.1 -c secret
+```
+
+`1.3.6.1.4.1.99999` 代表**你自己的** enterprise number；trap 是 `OID.1`，帶服務、backend、舊狀態、新狀態和原因這幾個字串（`OID.2` 到 `OID.6`）。MIB 請自己照這些寫。第一次執行什麼都不送，只記下目前的位置。這支腳本手冊只跑過這樣的測試：用假造的 `emfor status --json` 輸出，和一個會把參數印出來的 `snmptrap` 替身，檢查它讀了什麼、送了什麼、有沒有記住位置。它沒有對真的管理站送過 trap。community 字串是明文送出的；要用 SNMPv3 的話，請另外給 `snmptrap` 它自己的選項，例如放在 `snmp.conf`，並把腳本的參數改成對應的樣子。
+
+**讀 log。** 設了 `[log] format = "json"`（[第 12 章](12-operating.md#json-行)），狀態變化就是一行 `event` 為 `backend_state_changed` 的 JSON。rsyslog 的 `omprog`，或讀 journal 的程式（`journalctl -u emfor -o cat -f`）可以每來一行就處理一行，沒有輪詢的延遲。讀設定檔之前的行是文字，程式要略過不是 JSON 的行。
+
+**讓管理站來問。** net-snmp 的 `snmpd` 可以用 `extend` 把一個指令的輸出開放出去，管理站再用 SNMP GET 讀：
+
+```text
+extend emfor-web /usr/local/bin/check_emfor.sh -s web.svc.emfor
+```
+
+結果和輸出在 `NET-SNMP-EXTEND-MIB`（`nsExtendResult` 和 `nsExtendOutput1Line`）。`snmpd` 用它自己的使用者執行指令，這個使用者需要和應用程式一樣的 store 存取權限（[第 12 章](12-operating.md#誰能讀取-store)）。這一行沒有為本手冊實際跑過。
+
 ## 會查 SRV 記錄的程式
 
 Go 的 `net.LookupSRV("http", "tcp", "api.svc.emfor")` 查的是 `_http._tcp.api.svc.emfor`，emfor 會回答。這種 client 會拿到每個候選和各自的 port，應該照優先序一個一個試。只拿第一筆記錄的 client 一樣會分散開來，因為記錄的順序會輪替。
