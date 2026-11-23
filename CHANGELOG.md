@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Credential files must be regular files of bounded size.** `emfor-check`
+  and the TLS options of the daemon read `password_file`, a RADIUS
+  `secret_file`, `tls_key_file`, `tls_cert_file` and `ca_file` without
+  waiting for a writer, and refuse a FIFO, a device or a directory (a link to
+  a regular file is fine) and a file larger than 64 KiB (`tls_cert_file` and
+  `tls_key_file`: 1 MiB; `ca_file`: 8 MiB). Before, a path pointed at a FIFO
+  stopped the thread that read it. Compatibility: systemd `LoadCredential`,
+  Docker secrets and Kubernetes secrets end up as regular files, so none of
+  them is affected as far as we know (not tried on each). A Debian
+  `ca-certificates.crt` is 224019 bytes, far below the limit. The daemon's
+  `[peers] secret_file` shares the same code; its checks and messages are
+  unchanged. Owner and mode of these files are still only a warning.
+
 - **A peer secret rotation is logged with a stable line.** When the content of
   `[peers] secret_file` changes (no reload needed), the daemon logs one `info`
   line with `change=peers_secret_rotated` and `secret_file=<path>`; the message

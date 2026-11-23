@@ -312,26 +312,19 @@ pub const MAX_SECRET_LEN: usize = 65536;
 /// Read a peer secret: the file's bytes without one trailing line feed.
 /// Errors are the messages config validation reports for `secret_file`.
 pub fn read_secret(path: &Path) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use emfor_tls::FileError;
+    use std::os::unix::fs::MetadataExt;
     if !path.is_absolute() {
         return Err("must be an absolute path".into());
     }
     // Open first and check the file that was opened (not the name, which
     // could be pointed at another file in between), as `read_trusted` does.
-    // O_NONBLOCK: opening a FIFO for reading must not wait for a writer; it
-    // has no effect on a regular file.
-    let mut f = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    let meta = f
-        .metadata()
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    if !meta.is_file() {
-        return Err(format!("{} is not a regular file", path.display()));
-    }
+    // `open_regular` opens without waiting for a writer, so a FIFO is
+    // refused instead of waited for.
+    let (mut f, meta) = emfor_tls::open_regular(path).map_err(|e| match e {
+        FileError::Io(e) => format!("cannot read {}: {e}", path.display()),
+        _ => format!("{} is not a regular file", path.display()),
+    })?;
     let euid = nix::unistd::geteuid().as_raw();
     if !owner_trusted(meta.uid(), euid) {
         return Err(format!(
@@ -354,17 +347,15 @@ pub fn read_secret(path: &Path) -> Result<Vec<u8>, String> {
     }
     // At most one byte more than allowed: a file that is much larger (the
     // path was pointed at a log, say) is not read into memory.
-    let mut bytes = Vec::new();
-    f.by_ref()
-        .take(MAX_SECRET_LEN as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    if bytes.len() > MAX_SECRET_LEN {
-        return Err(format!(
-            "{} is too large (more than {MAX_SECRET_LEN} bytes)",
-            path.display()
-        ));
-    }
+    let mut bytes =
+        emfor_tls::read_limited(&mut f, MAX_SECRET_LEN as u64).map_err(|e| match e {
+            FileError::TooLarge(_) => format!(
+                "{} is too large (more than {MAX_SECRET_LEN} bytes)",
+                path.display()
+            ),
+            FileError::Io(e) => format!("cannot read {}: {e}", path.display()),
+            FileError::NotRegular => format!("{} is not a regular file", path.display()),
+        })?;
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
     }

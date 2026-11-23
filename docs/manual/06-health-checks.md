@@ -42,7 +42,7 @@ buffers, memory, local ports) is an `error`.
 | `tls` | boolean | `false` | Do a TLS handshake right after connecting. Never falls back to plaintext. |
 | `tls_verify` | boolean | `true` | `false` accepts any certificate (the connection is still encrypted). Needs `tls = true`. |
 | `server_name` | string | the backend's IP | The name (or IP) the certificate must match; sent as SNI when it is a name. Needs `tls = true`. |
-| `ca_file` | absolute path | the system CAs | A PEM file of CA certificates to trust instead. It must hold at least one certificate usable as a CA when the config is loaded. Needs `tls = true`. |
+| `ca_file` | absolute path | the system CAs | A PEM file of CA certificates to trust instead. It must hold at least one certificate usable as a CA when the config is loaded, and be a regular file of at most 8 MiB (a Debian `ca-certificates.crt` is about 220 KB). Needs `tls = true`. |
 
 Examples:
 
@@ -100,7 +100,7 @@ expect_body = '"status":"UP"'
 | `expect_status` | non-empty list | `["200-399"]` | Status codes that count as `up`: codes (`200` or `"200"`) or inclusive ranges (`"200-299"`), all within 100–599. |
 | `expect_body` | string | none | Bytes that must appear, case-sensitively, in the body. Up to 65536 bytes of the body are read. Not empty, at most 16384 bytes. |
 | `tls_verify` | boolean | `true` | With `https`: `false` accepts any certificate. |
-| `ca_file` | absolute path | none | With `https`: a PEM file of the CA certificates to trust, for a server whose certificate a private CA signed. Only this file is trusted, not the system's CA certificates (like `curl --cacert`). Each check notices a replaced or rewritten file and reads it again, so a new file needs no reload; one that cannot be read or has no certificate fails validation, or makes the check `error` if it breaks later. Needs `scheme = "https"`; with `tls_verify = false` it has no effect. |
+| `ca_file` | absolute path | none | With `https`: a PEM file of the CA certificates to trust, for a server whose certificate a private CA signed. Only this file is trusted, not the system's CA certificates (like `curl --cacert`). Each check notices a replaced or rewritten file and reads it again, so a new file needs no reload; one that cannot be read, is not a regular file (a FIFO or a directory), is larger than 8 MiB or has no certificate fails validation, or makes the check `error` if it breaks later. Needs `scheme = "https"`; with `tls_verify = false` it has no effect. |
 
 What the results look like:
 

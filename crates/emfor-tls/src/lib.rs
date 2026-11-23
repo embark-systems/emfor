@@ -23,6 +23,12 @@ use tokio_rustls::client::TlsStream;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
+mod file;
+pub use file::{
+    FileError, MAX_CA_FILE, MAX_PASSWORD_FILE, MAX_TLS_FILE, open_regular, read_limited,
+    read_regular,
+};
+
 /// Below this, a TLS handshake without an answer is left to the check's
 /// timeout instead of being reported as a port that does not speak TLS.
 pub const MIN_HANDSHAKE_BUDGET: Duration = Duration::from_millis(100);
@@ -249,27 +255,28 @@ pub fn check_server_name(name: &str) -> Result<(), &'static str> {
 /// ([`parse_ca`]): it must hold a certificate usable as a trust anchor.
 /// The error is the option's message.
 pub fn check_ca_file(path: &Path) -> Result<(), String> {
-    match parse_ca(&read_file_option(path)?)? {
+    match parse_ca(&read_file_option(path, MAX_CA_FILE)?)? {
         (_, Some(_)) => Ok(()),
         (_, None) => Err("no usable certificate".into()),
     }
 }
 
 /// Read a file named by an option, with the option's error messages.
-fn read_file_option(path: &Path) -> Result<Vec<u8>, String> {
+fn read_file_option(path: &Path, max: u64) -> Result<Vec<u8>, String> {
     if !path.is_absolute() {
         return Err("not an absolute path".into());
     }
-    std::fs::read(path).map_err(|e| match e.kind() {
-        io::ErrorKind::NotFound => "file not found".to_string(),
-        kind => format!("cannot read: {kind}"),
+    read_regular(path, max).map_err(|e| match e {
+        FileError::Io(e) if e.kind() == io::ErrorKind::NotFound => "file not found".to_string(),
+        FileError::Io(e) => format!("cannot read: {}", e.kind()),
+        other => other.reason(),
     })
 }
 
 /// Validate a `tls_cert_file` value by reading it; the error is the
 /// option's message.
 pub fn check_cert_file(path: &Path) -> Result<(), String> {
-    if load_certificates(&read_file_option(path)?).is_empty() {
+    if load_certificates(&read_file_option(path, MAX_TLS_FILE)?).is_empty() {
         return Err("no certificate found".into());
     }
     Ok(())
@@ -300,7 +307,7 @@ pub fn check_client_certificate(client: &ClientCertificate) -> Result<(), String
 /// Validate a `tls_key_file` value by reading it; the error is the
 /// option's message. It never contains the file's content.
 pub fn check_key_file(path: &Path) -> Result<(), String> {
-    let bytes = read_file_option(path)?;
+    let bytes = read_file_option(path, MAX_TLS_FILE)?;
     match PrivateKeyDer::from_pem_slice(&bytes) {
         Ok(_) => Ok(()),
         Err(_) => Err("no private key found".into()),
@@ -310,8 +317,8 @@ pub fn check_key_file(path: &Path) -> Result<(), String> {
 type ClientAuth = (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>);
 
 fn read_client_certificate(client: &ClientCertificate) -> Result<ClientAuth, TlsFailure> {
-    static CERTS: FileCache<Vec<CertificateDer<'static>>> = FileCache::new();
-    static KEYS: FileCache<PrivateKeyDer<'static>> = FileCache::new();
+    static CERTS: FileCache<Vec<CertificateDer<'static>>> = FileCache::new(MAX_TLS_FILE);
+    static KEYS: FileCache<PrivateKeyDer<'static>> = FileCache::new(MAX_TLS_FILE);
     let certs = CERTS.get_or_parse(&client.cert_file, "tls_cert_file", |bytes| {
         let certs = load_certificates(bytes);
         if certs.is_empty() {
@@ -399,12 +406,15 @@ struct Cached<T> {
 /// Failures are not remembered, so a fixed file is read at the next check.
 struct FileCache<T> {
     files: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, Cached<T>>>>,
+    /// The most a file of this cache may hold.
+    max: u64,
 }
 
 impl<T> FileCache<T> {
-    const fn new() -> FileCache<T> {
+    const fn new(max: u64) -> FileCache<T> {
         FileCache {
             files: std::sync::Mutex::new(None),
+            max,
         }
     }
 
@@ -425,10 +435,12 @@ impl<T> FileCache<T> {
         parse: impl FnOnce(&[u8]) -> Result<T, String>,
         now: Instant,
     ) -> Result<Arc<T>, TlsFailure> {
-        let unreadable = |e: io::Error| TlsFailure::local(format!("{option}: {}", e.kind()));
-        // Stamped before reading: a change during the read gets a new
-        // stamp, so it is read again at the next check.
-        let stamp = FileStamp::of(&std::fs::metadata(path).map_err(unreadable)?);
+        let unreadable = |e: FileError| TlsFailure::local(format!("{option}: {}", e.reason()));
+        // The type, the stamp and the content all come from the one file
+        // that was opened. Stamped before reading: a change during the read
+        // gets a new stamp, so it is read again at the next check.
+        let (mut file, meta) = open_regular(path).map_err(unreadable)?;
+        let stamp = FileStamp::of(&meta);
         {
             let mut files = self.files.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(c) = files
@@ -440,7 +452,7 @@ impl<T> FileCache<T> {
                 return Ok(Arc::clone(&c.value));
             }
         }
-        let bytes = std::fs::read(path).map_err(unreadable)?;
+        let bytes = read_limited(&mut file, self.max).map_err(unreadable)?;
         let value =
             Arc::new(parse(&bytes).map_err(|m| TlsFailure::local(format!("{option}: {m}")))?);
         let mut files = self.files.lock().unwrap_or_else(|e| e.into_inner());
@@ -468,7 +480,7 @@ impl<T> FileCache<T> {
 
 /// The parsed `ca_file` at `path`, from [`FileCache`].
 fn ca_file(path: &Path) -> Result<Arc<CaFile>, TlsFailure> {
-    static CACHE: FileCache<CaFile> = FileCache::new();
+    static CACHE: FileCache<CaFile> = FileCache::new(MAX_CA_FILE);
     CACHE.get_or_parse(path, "ca_file", |bytes| {
         parse_ca(bytes).map(|(certs, roots)| CaFile { certs, roots })
     })

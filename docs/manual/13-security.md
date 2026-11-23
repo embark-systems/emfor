@@ -42,7 +42,7 @@ change; for that, watch the config directory with auditd.
 | File | Rules | Warnings |
 | --- | --- | --- |
 | `[peers] secret_file`, `previous_secret_file` | Absolute; owned by root or the daemon's user; not readable by others; not writable by group or others; 32 bytes to 64 KiB. Errors otherwise. | |
-| `password_file`, `secret_file` (radius), `tls_key_file` (diameter) of `emfor-check` | Absolute; non-empty. | A warning when every user can read it, or others can change it. |
+| `password_file`, `secret_file` (radius), `tls_key_file` and `tls_cert_file` (diameter), `ca_file` of `emfor-check` and the checks of the daemon | Absolute; non-empty; a regular file (a FIFO, a device or a directory is refused, a link to a regular file is fine) of at most 64 KiB (1 MiB for `tls_key_file` and `tls_cert_file`, 8 MiB for `ca_file`). | A warning when every user can read it, or others can change it. |
 | A password sent without TLS (redis, ldap, mysql, pgsql, amqp) | | A warning ([chapter 7](07-plugins.md#passwords)). |
 
 Recommended:

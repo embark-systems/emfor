@@ -212,7 +212,8 @@ fn check_radius_password_file(path: &Path) -> Result<(), String> {
 /// Read the shared secret for one check. The error is the check's `error`
 /// reason; it names the I/O error kind and never the file's content.
 fn read_secret(path: &Path) -> Result<Vec<u8>, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("secret_file: {}", e.kind()))?;
+    let bytes = emfor_tls::read_regular(path, emfor_tls::MAX_PASSWORD_FILE)
+        .map_err(|e| format!("secret_file: {}", e.reason()))?;
     let secret = trim_newline(&bytes);
     if secret.is_empty() {
         return Err("secret_file: file is empty".into());
@@ -1067,6 +1068,27 @@ mod tests {
         })
         .await;
         assert_eq!(check(&req(addr), &s).await, down("timeout"));
+    }
+
+    /// Spec network-checks "Credential files of network checks are bounded
+    /// regular files": a FIFO as `secret_file` is refused without waiting.
+    // spectra-scenario: network-checks / RADIUS secret_file is a FIFO
+    #[test]
+    fn secret_file_that_is_a_fifo_is_refused_without_waiting() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("fifo");
+        let c = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `c` is a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_secret(&fifo));
+        });
+        let r = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a FIFO is refused within 5 seconds");
+        assert_eq!(r.unwrap_err(), "secret_file: not a regular file");
     }
 
     // spectra-scenario: network-checks / Secret file removed

@@ -395,9 +395,10 @@ pub(crate) fn read_option_file(path: &Path) -> Result<Vec<u8>, String> {
     if !path.is_absolute() {
         return Err("not an absolute path".into());
     }
-    std::fs::read(path).map_err(|e| match e.kind() {
-        ErrorKind::NotFound => "file not found".into(),
-        kind => format!("cannot read: {kind}"),
+    emfor_tls::read_regular(path, emfor_tls::MAX_PASSWORD_FILE).map_err(|e| match e {
+        emfor_tls::FileError::Io(e) if e.kind() == ErrorKind::NotFound => "file not found".into(),
+        emfor_tls::FileError::Io(e) => format!("cannot read: {}", e.kind()),
+        other => other.reason(),
     })
 }
 
@@ -443,7 +444,8 @@ pub(crate) fn trim_newline(bytes: &[u8]) -> &[u8] {
 /// Read the password for one check. The error is the check's `error`
 /// reason; it names the I/O error kind and never the file's content.
 pub fn read_password(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("password_file: {}", e.kind()))?;
+    let bytes = emfor_tls::read_regular(path, emfor_tls::MAX_PASSWORD_FILE)
+        .map_err(|e| format!("password_file: {}", e.reason()))?;
     let password = trim_newline(&bytes);
     if password.is_empty() {
         return Err("password_file: file is empty".into());
@@ -832,5 +834,55 @@ mod tests {
             read_password(Path::new(&empty)).unwrap_err(),
             "password_file: file is empty"
         );
+    }
+
+    /// Spec database-checks "Password and CA files of database checks are
+    /// bounded regular files": a FIFO is refused without waiting, and the
+    /// error names the option and hides the content.
+    // spectra-scenario: database-checks / password_file is a FIFO
+    // spectra-scenario: network-checks / RADIUS secret_file is a FIFO
+    #[test]
+    fn read_password_refuses_a_fifo_without_waiting() {
+        use std::os::unix::ffi::OsStrExt;
+        let f = Files::new();
+        let fifo = f.dir.path().join("fifo");
+        let c = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `c` is a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send((read_password(&p), read_option_file(&p)));
+        });
+        let (password, option) = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a FIFO is refused within 5 seconds");
+        assert_eq!(password.unwrap_err(), "password_file: not a regular file");
+        assert_eq!(option.unwrap_err(), "not a regular file");
+    }
+
+    /// Spec network-checks "Credential files of network checks are bounded
+    /// regular files": 65536 bytes pass, 65537 do not; a link to a regular
+    /// file passes.
+    // spectra-scenario: network-checks / Credential file larger than its limit
+    // spectra-scenario: network-checks / File of exactly the limit or a link to a regular file
+    #[test]
+    fn password_file_size_limit_and_links() {
+        let f = Files::new();
+        let exact = f.write("exact", &[b'a'; 65536]);
+        let over = f.write("over", &[b'a'; 65537]);
+        assert_eq!(read_password(Path::new(&exact)).unwrap().len(), 65536);
+        assert_eq!(
+            read_password(Path::new(&over)).unwrap_err(),
+            "password_file: file is too large (more than 65536 bytes)"
+        );
+        assert_eq!(
+            read_option_file(Path::new(&over)).unwrap_err(),
+            "file is too large (more than 65536 bytes)"
+        );
+        let link = f.dir.path().join("link");
+        let small = f.write("small", b"pass\n");
+        std::os::unix::fs::symlink(&small, &link).unwrap();
+        assert_eq!(read_password(&link).unwrap(), "pass");
     }
 }

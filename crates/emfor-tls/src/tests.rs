@@ -249,7 +249,7 @@ fn client_files_are_parsed_again_only_when_they_change() {
     std::fs::write(path("client.crt"), &pki.client_cert_pem).unwrap();
     std::fs::write(path("client.key"), &pki.client_key_pem).unwrap();
     let parses = std::sync::atomic::AtomicUsize::new(0);
-    let cache: FileCache<String> = FileCache::new();
+    let cache: FileCache<String> = FileCache::new(MAX_CA_FILE);
     let get = |name: &str| {
         cache.get_or_parse(&path(name), "tls_key_file", |b| {
             parses.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -291,7 +291,7 @@ fn file_cache_drops_unused_paths() {
     for name in ["a", "b", "c"] {
         std::fs::write(path(name), name).unwrap();
     }
-    let cache: FileCache<Vec<u8>> = FileCache::new();
+    let cache: FileCache<Vec<u8>> = FileCache::new(MAX_CA_FILE);
     let at = |name: &str, now: Instant| {
         cache
             .get_or_parse_at(&path(name), "ca_file", |b| Ok(b.to_vec()), now)
@@ -304,6 +304,95 @@ fn file_cache_drops_unused_paths() {
     at("b", t0 + Duration::from_secs(500));
     at("c", t0 + Duration::from_secs(601));
     assert_eq!(cache.paths(), [path("b"), path("c")]);
+}
+
+/// Spec health-checking "ca_file of tcp and http checks is a bounded regular
+/// file": a FIFO or a directory is refused without waiting, a file over the
+/// limit is refused, and none of these failures is remembered.
+// spectra-scenario: health-checking / ca_file is a FIFO
+// spectra-scenario: health-checking / ca_file replaced after an error
+#[test]
+fn file_cache_refuses_a_fifo_and_a_file_over_the_limit() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("fifo");
+    let c = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    // SAFETY: `c` is a valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    let big = dir.path().join("big");
+    std::fs::write(&big, [b'x'; 11]).unwrap();
+    let cache: FileCache<Vec<u8>> = FileCache::new(10);
+    let get = |p: &Path| {
+        cache
+            .get_or_parse(p, "ca_file", |b| Ok(b.to_vec()))
+            .map(|_| ())
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let f = fifo.clone();
+    let result = std::thread::scope(|s| {
+        s.spawn(|| tx.send(get(&f)).unwrap());
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("a FIFO is refused within 5 seconds")
+    });
+    assert_eq!(
+        result,
+        Err(TlsFailure::local("ca_file: not a regular file"))
+    );
+    assert_eq!(
+        get(&big),
+        Err(TlsFailure::local(
+            "ca_file: file is too large (more than 10 bytes)"
+        ))
+    );
+    // The failure was not remembered: the file made valid is read.
+    std::fs::write(&big, b"ten bytes!").unwrap();
+    assert_eq!(get(&big), Ok(()));
+}
+
+/// Spec health-checking "ca_file of tcp and http checks is a bounded regular
+/// file", and database-checks: a CA bundle larger than 64 KiB, as a system
+/// bundle is, is accepted.
+// spectra-scenario: health-checking / Large CA bundle is accepted
+// spectra-scenario: database-checks / Large ca_file within the limit
+#[test]
+fn ca_file_larger_than_64_kib_is_accepted() {
+    let pki = mutual_pki("dra.test", "emfor.test");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bundle.pem");
+    let mut bundle = String::new();
+    while bundle.len() < 100 * 1024 {
+        bundle.push_str(&pki.ca_pem);
+    }
+    std::fs::write(&path, &bundle).unwrap();
+    assert!(bundle.len() > 64 * 1024);
+    assert_eq!(check_ca_file(&path), Ok(()));
+    assert!(ca_file(&path).is_ok());
+}
+
+/// Spec database-checks "Password and CA files of database checks are
+/// bounded regular files": a `ca_file` over 8 MiB is refused at validation.
+// spectra-scenario: database-checks / ca_file larger than its limit
+#[test]
+fn ca_file_over_8_mib_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("huge.pem");
+    std::fs::write(&path, vec![b'#'; MAX_CA_FILE as usize + 1]).unwrap();
+    assert_eq!(
+        check_ca_file(&path),
+        Err("file is too large (more than 8388608 bytes)".to_string())
+    );
+}
+
+/// Spec network-checks "Credential files of network checks are bounded
+/// regular files": a directory as `tls_key_file` is refused at validation.
+// spectra-scenario: network-checks / Diameter key file is a directory
+#[test]
+fn key_file_that_is_a_directory_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        check_key_file(dir.path()),
+        Err("not a regular file".to_string())
+    );
 }
 
 #[test]

@@ -33,7 +33,7 @@
 | 檔案 | 規則 | 警告 |
 | --- | --- | --- |
 | `[peers] secret_file`、`previous_secret_file` | 絕對路徑；擁有者是 root 或 daemon 的使用者；其他人不能讀；group 與其他人不能寫；大小 32 bytes 到 64 KiB。不符合就是錯誤。 | |
-| `emfor-check` 的 `password_file`、`secret_file`（radius）、`tls_key_file`（diameter） | 絕對路徑；不能是空檔。 | 所有使用者都能讀，或其他人能改時，會發出警告。 |
+| `emfor-check` 與 daemon 檢查的 `password_file`、`secret_file`（radius）、`tls_key_file`、`tls_cert_file`（diameter）、`ca_file` | 絕對路徑；不能是空檔；必須是一般檔案（FIFO、裝置、目錄會被拒絕，指向一般檔案的連結沒問題），大小不超過 64 KiB（`tls_key_file` 與 `tls_cert_file` 是 1 MiB，`ca_file` 是 8 MiB）。 | 所有使用者都能讀，或其他人能改時，會發出警告。 |
 | 不經 TLS 送出的密碼（redis、ldap、mysql、pgsql、amqp） | | 發出警告（[第 7 章](07-plugins.md#密碼)）。 |
 
 建議這樣做：
