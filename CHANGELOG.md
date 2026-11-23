@@ -7,8 +7,9 @@
   and several backends on one IP (one host, several ports), HAProxy 3.4.8
   answered a few requests with 503 (a slot with port 0). Six runs of 400
   requests each all had some (1 to 21 per run); six runs with a separate IP
-  per backend had none. Not tried with HAProxy 2.8 in this setup. Nothing in
-  emfor changed; the advice to use one name server stays.
+  per backend had none. HAProxy 2.8 with the same setup (three runs) and
+  HAProxy 3.4.8 with one name server (three runs) had none. Nothing in emfor
+  changed; the advice to use one name server stays.
 
 - **Credential files must be regular files of bounded size.** `emfor-check`
   and the TLS options of the daemon read `password_file`, a RADIUS
