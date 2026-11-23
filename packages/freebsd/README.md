@@ -1,13 +1,15 @@
-# FreeBSD port of emfor (example)
+# FreeBSD port of emfor
 
-A port skeleton for `net-mgmt/emfor`: it builds `emfor` and `emfor-check`
+A copy of the port `net-mgmt/emfor`, which is in the FreeBSD ports tree (0.7.1
+there). The ports tree is the master; this copy is for trying a release before
+it gets there. It builds `emfor` and `emfor-check`
 from the GitHub release, installs its rc.d script (`files/emfor.in`) and a
 sample config from the source's `examples/`, and creates the `emfor` user and the store
 directory.
 
 Built and installed on FreeBSD 15.1-RELEASE (arm64, in a VM) with the
 2026Q4 ports branch and the `rust` package; see [Checked](#checked). Not
-yet through poudriere, and not on 14.x or amd64.
+run by the project on 14.x or amd64.
 
 ## Files
 

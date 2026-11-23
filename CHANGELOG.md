@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The FreeBSD port is in the ports tree.** `net-mgmt/emfor` (0.7.1) is now
+  part of the FreeBSD ports tree. Chapters 1 and 4 (en and zh_TW) say
+  `pkg install emfor` or `make -C /usr/ports/net-mgmt/emfor install clean`, and
+  call `packages/freebsd/` a copy of the port. RELEASING.md adds the step of
+  sending each new version to the ports tree.
+
 - **The manual says how big the store gets, from a measurement.** New
   `tools/scale-test.sh` (run by hand in docker, not by the CI) starts up to
   8,000 `tcp` backends in 80 services and reports the store size, memory, CPU

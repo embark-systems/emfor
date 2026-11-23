@@ -37,7 +37,7 @@ emfor 是一個小型 daemon，**每一台應用程式主機上**都跑一個。
 - **備援、drain 與慢啟動**：把某個 backend 留到其他的都失敗時才用；把某個 backend 拿出來維護，檢查照跑；或讓剛恢復的 backend 慢慢增加流量。
 - **聯防群組**：同一個資料中心的 daemon 可以分享檢查結果。某一台看到故障，所有成員會立刻重新檢查，再用多數決決定。
 - **Plugin**：`emfor-check` 能檢查 redis、MySQL/MariaDB、PostgreSQL、LDAP、DNS、RADIUS、SIP、Diameter、SMTP、AMQP、MongoDB、gRPC 與 QUIC/HTTP/3。你也可以自己寫 plugin，或把任何 script 當成 `exec` 檢查來跑。
-- **維運**：`emfor status`、`emfor lookup --explain`、`emfor check-config`、Prometheus metrics、套件（deb、rpm），以及一個範例 FreeBSD port。
+- **維運**：`emfor status`、`emfor lookup --explain`、`emfor check-config`、Prometheus metrics、套件（deb、rpm），以及 FreeBSD port（`net-mgmt/emfor`）。
 
 ## 出問題時會發生什麼事
 
@@ -70,6 +70,6 @@ emfor 也**不是服務註冊中心**。backend 不會自己註冊。backend 清
 
 ## 平台
 
-Linux 是主要平台，套件格式是 deb 與 rpm。FreeBSD 透過一個範例 port 支援，已經在 FreeBSD 15.1（arm64，在虛擬機器裡）上跑過；FreeBSD 13.x 與 14.x，以及專案 CI job 以外的 amd64，都還沒有手動測試過。macOS 只拿來開發。
+Linux 是主要平台，套件格式是 deb 與 rpm。FreeBSD 透過 `net-mgmt/emfor` 這個 port 支援，專案已經在 FreeBSD 15.1（arm64，在虛擬機器裡）上跑過；FreeBSD 13.x 與 14.x，以及專案 CI job 以外的 amd64，都還沒有手動測試過。macOS 只拿來開發。
 
 下一章：[2. 快速上手](02-quick-start.md)

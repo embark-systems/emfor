@@ -59,8 +59,8 @@ shell script.
   DNS, RADIUS, SIP, Diameter, SMTP, AMQP, MongoDB, gRPC and QUIC/HTTP/3. You
   can write your own plugin, or run any script as an `exec` check.
 - **Operations**: `emfor status`, `emfor lookup --explain`,
-  `emfor check-config`, Prometheus metrics, packages (deb, rpm) and an example
-  FreeBSD port.
+  `emfor check-config`, Prometheus metrics, packages (deb, rpm) and a FreeBSD
+  port (`net-mgmt/emfor`).
 
 ## What happens when something fails
 
@@ -105,8 +105,8 @@ backends the proxy uses: see [chapter 14](14-integrations.md).
 ## Platforms
 
 Linux is the main platform; the packages are deb and rpm. FreeBSD is
-supported through an example port, which has been run on FreeBSD 15.1 (arm64,
-in a virtual machine); FreeBSD 13.x and 14.x, and amd64 beyond the project's
+supported through the `net-mgmt/emfor` port, which the project has run on
+FreeBSD 15.1 (arm64, in a virtual machine); FreeBSD 13.x and 14.x, and amd64 beyond the project's
 CI job, have not been tested by hand. macOS is for development only.
 
 Next: [2. Quick start](02-quick-start.md)

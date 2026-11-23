@@ -109,7 +109,7 @@ The C library, and every client built on it, must come from the same emfor relea
 | Lookup latency and throughput, measured | [docs/performance.md](docs/performance.md) |
 | Writing a checker plugin | [docs/plugins/protocol-v1.md](docs/plugins/protocol-v1.md) |
 | Every config option | [examples/emfor.toml](examples/emfor.toml) |
-| systemd unit, FreeBSD rc.d script and port, Prometheus alerting rules | [examples/](examples/) |
+| systemd unit, FreeBSD rc.d script and port copy, Prometheus alerting rules | [examples/](examples/) |
 | What stays compatible across upgrades | [docs/compatibility.md](docs/compatibility.md) |
 | A FreeBSD libthr problem with fork() and process-shared mutexes: draft report, patch, reproduction | [docs/freebsd/libthr-pshared-fork.md](docs/freebsd/libthr-pshared-fork.md) |
 | Making a release | [RELEASING.md](RELEASING.md) |
@@ -117,7 +117,7 @@ The C library, and every client built on it, must come from the same emfor relea
 
 ## Platforms
 
-Linux and FreeBSD are the deployment platforms; macOS is for development. On FreeBSD, the tests, the rc.d script and the example port have been run on FreeBSD 15.1-RELEASE (arm64, in a VM); 14.x and amd64 are covered only by the optional CI job.
+Linux and FreeBSD are the deployment platforms; macOS is for development. On FreeBSD, the tests, the rc.d script and the port have been run on FreeBSD 15.1-RELEASE (arm64, in a VM); 14.x and amd64 are covered only by the optional CI job.
 
 ### FreeBSD: fork while other threads look up
 

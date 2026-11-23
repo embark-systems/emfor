@@ -34,6 +34,9 @@ Change the current version to `X.Y.Z` in each of these:
 Then run `cargo build` so `Cargo.lock` takes the new version, and
 regenerate `packages/freebsd/Makefile.crates` from it with the command in
 [packages/freebsd/README.md](packages/freebsd/README.md#for-a-new-release).
+The port is in the FreeBSD ports tree as `net-mgmt/emfor`; `packages/freebsd/` is a
+copy. After the release, send the same change (`DISTVERSION`, `Makefile.crates`,
+`distinfo` from `make makesum`) to the ports tree as an update of that port.
 The deb and rpm take their version from `Cargo.toml`: nothing else to change
 ([packages/README.md](packages/README.md)). The tests in
 `clients/rust/tests/versions.rs` fail until the five files

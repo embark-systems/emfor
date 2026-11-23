@@ -3,7 +3,7 @@ DISTVERSIONPREFIX=	v
 DISTVERSION=	0.7.1
 CATEGORIES=	net-mgmt
 
-MAINTAINER=	ports@FreeBSD.org
+MAINTAINER=	vanilla@FreeBSD.org
 COMMENT=	Health-check daemon that publishes healthy backends in a local store
 WWW=		https://github.com/embark-systems/emfor
 

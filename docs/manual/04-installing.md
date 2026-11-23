@@ -201,8 +201,16 @@ Things to know:
 
 ## FreeBSD
 
-[packages/freebsd/](../../packages/freebsd/) is an example port,
-`net-mgmt/emfor`. It builds both programs with `EMFOR_PREFIX=/usr/local`,
+`emfor` is in the FreeBSD ports tree as `net-mgmt/emfor` (version 0.7.1 at
+the time of writing). Install the package, or build the port:
+
+```sh
+# pkg install emfor
+# make -C /usr/ports/net-mgmt/emfor install clean
+```
+
+[packages/freebsd/](../../packages/freebsd/) keeps a copy of the port for
+reference and for trying a release before it reaches the ports tree. It builds both programs with `EMFOR_PREFIX=/usr/local`,
 installs an rc.d script and a sample config, creates the `emfor` user, an
 empty `/usr/local/etc/emfor/conf.d`, and `/var/db/emfor` for the store.
 
@@ -227,9 +235,9 @@ empty `/usr/local/etc/emfor/conf.d`, and `/var/db/emfor` for the store.
   default. Give every application on the host
   `EMFOR_STORE=/var/db/emfor/state.mdb`.
 
-The port has been built and installed on FreeBSD 15.1-RELEASE (arm64, in a
-virtual machine) with `make stage check-plist install`. It has not been run
-through poudriere, on 13.x or 14.x, or on amd64 beyond the project's CI.
+The project itself has built and installed the port on FreeBSD 15.1-RELEASE
+(arm64, in a virtual machine) with `make stage check-plist install`; it has
+not run it on 13.x or 14.x, or on amd64 beyond the project's CI.
 
 ## Client libraries
 

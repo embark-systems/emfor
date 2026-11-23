@@ -147,7 +147,14 @@ unit 做了哪些事：
 
 ## FreeBSD
 
-[packages/freebsd/](../../packages/freebsd/) 是一個範例 port：`net-mgmt/emfor`。它用 `EMFOR_PREFIX=/usr/local` 建出兩個程式，安裝 rc.d script 與範例設定檔，並建立 `emfor` 使用者、空的 `/usr/local/etc/emfor/conf.d`，以及放 store 用的 `/var/db/emfor`。
+`emfor` 已經在 FreeBSD ports tree 裡，是 `net-mgmt/emfor`（本文撰寫時是 0.7.1）。安裝套件，或自己建置 port：
+
+```sh
+# pkg install emfor
+# make -C /usr/ports/net-mgmt/emfor install clean
+```
+
+[packages/freebsd/](../../packages/freebsd/) 留著這個 port 的一份副本，供參考，也供在新版進 ports tree 之前先試用。它用 `EMFOR_PREFIX=/usr/local` 建出兩個程式，安裝 rc.d script 與範例設定檔，並建立 `emfor` 使用者、空的 `/usr/local/etc/emfor/conf.d`，以及放 store 用的 `/var/db/emfor`。
 
 ```sh
 # sysrc emfor_enable=YES
@@ -166,7 +173,7 @@ unit 做了哪些事：
 - plugin 程式在 `/usr/local/bin/emfor-check`，不是 `/usr/bin`。
 - 範例設定檔把 store 放在 `/var/db/emfor/state.mdb`，不是預設位置。主機上的每個應用程式都要設定 `EMFOR_STORE=/var/db/emfor/state.mdb`。
 
-這個 port 已經在 FreeBSD 15.1-RELEASE（arm64，在虛擬機器裡）上用 `make stage check-plist install` 建置並安裝過。還沒用 poudriere 跑過，也沒在 13.x、14.x，或專案 CI 以外的 amd64 上跑過。
+專案自己在 FreeBSD 15.1-RELEASE（arm64，在虛擬機器裡）上用 `make stage check-plist install` 建置並安裝過這個 port；沒在 13.x、14.x，或專案 CI 以外的 amd64 上跑過。
 
 ## client 函式庫
 

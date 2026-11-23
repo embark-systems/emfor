@@ -4,7 +4,7 @@ Packaging of emfor for the systems it is deployed on.
 
 | Directory | What |
 | --- | --- |
-| [`freebsd/`](freebsd/) | An example FreeBSD port (`net-mgmt/emfor`), see its [README](freebsd/README.md). |
+| [`freebsd/`](freebsd/) | A copy of the FreeBSD port `net-mgmt/emfor`, which is in the ports tree; see its [README](freebsd/README.md). |
 | `deb/`, `rpm/`, `common/` | The deb and rpm packages: the maintainer scripts of each, and the files they share (the systemd unit, the packaged config, the `conf.d` README). The package metadata (name, assets, dependencies) is in `[package.metadata.deb]` and `[package.metadata.generate-rpm]` of [`crates/emfor-daemon/Cargo.toml`](../crates/emfor-daemon/Cargo.toml). |
 | `Dockerfile`, `build.sh` | The builder image and the script that builds both packages into `dist/`. |
 | `dist/` | The built `.deb` and `.rpm`. Build output: do not commit it. |
