@@ -73,9 +73,10 @@ the deb under systemd 252 as PID 1 in a Debian 12 container, and the rpm under
 systemd as PID 1 in a Rocky Linux 9 container (start, reload, stop, `rpm -V`,
 remove and reinstall, an upgrade from the previous release and back). **Not
 tested**: the packages on a real host (a container is not one), x86-64
-packages, AppArmor, other distributions. The rpm was also run on Rocky Linux
+packages, other distributions. The rpm was also run on Rocky Linux
 9.9 in a virtual machine with SELinux enforcing (start, checks, reload; no
-denial, see [chapter 13](13-security.md#selinux-and-apparmor)). See
+denial) and the deb on Ubuntu 24.04 with AppArmor enabled (no denial); see
+[chapter 13](13-security.md#selinux-and-apparmor). See
 [packages/README.md](../../packages/README.md).
 
 ## Without network access

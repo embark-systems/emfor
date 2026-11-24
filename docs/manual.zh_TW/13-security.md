@@ -116,7 +116,7 @@ emfor **沒有 FIPS 模式**，本手冊也不會說 emfor「符合 FIPS 140」�
 
 ## SELinux 與 AppArmor
 
-emfor 不附 SELinux 模組，也不附 AppArmor profile。在 Rocky Linux 9.9（aarch64）上用 rpm 試過，SELinux 是 enforcing、policy 是 `targeted`：daemon 跑在 `unconfined_service_t` 這個 domain，policy 不會限制它；跑了 `tcp`、`http`、`exec` 檢查、DNS、`/metrics`、有加密密碼檔的 peer group、`/var/lib/emfor` 底下的 store 和一次 reload，都沒有出現 AVC 拒絕。沒有在 AppArmor 或 x86-64 上跑過，也沒有在會限制它的 policy 底下跑過。底下寫的是程式實際會做什麼，讓你自己寫這樣的 policy；它不是一份測過的 policy。
+emfor 不附 SELinux 模組，也不附 AppArmor profile。在 Rocky Linux 9.9（aarch64）上用 rpm 試過，SELinux 是 enforcing、policy 是 `targeted`：daemon 跑在 `unconfined_service_t` 這個 domain，policy 不會限制它；跑了 `tcp`、`http`、`exec` 檢查、DNS、`/metrics`、有加密密碼檔的 peer group、`/var/lib/emfor` 底下的 store 和一次 reload，都沒有出現 AVC 拒絕。deb 也用同樣的方式在 Ubuntu 24.04（arm64，虛擬機器）、AppArmor 啟用的情況下跑過：daemon 沒有 profile（`/proc/<pid>/attr/current` 是 `unconfined`），kernel log 裡沒有 `apparmor="DENIED"`。沒有在 x86-64 上跑過，也沒有在會限制它的 policy 或 profile 底下跑過。底下寫的是程式實際會做什麼，讓你自己寫這樣的 policy；它不是一份測過的 policy。
 
 上面的 systemd unit 從 daemon 這一側限制它能做什麼，強制存取控制（MAC）的 policy 則從 kernel 這一側限制，兩者疊加，不能互相取代。稽核規則如果要求 daemon 要被限制住，就需要 policy。
 
@@ -129,7 +129,7 @@ daemon 會碰到的東西：
 - **啟動程式：** `exec` 檢查和外掛會以 `emfor` 身分、在各自的 process group 裡啟動設定檔寫的程式。外掛通常是 `/usr/bin/emfor-check`。要限制 daemon 的 policy 必須允許你寫在設定檔裡的每一支程式，而這些程式也受同一套規則限制；這通常是需要你自己加規則的地方。
 - **不會用到：** raw socket、packet socket 或 capability；正常執行時也不讀 `/proc`。
 
-發行版如果只在載入 policy 時才限制 daemon，沒有 policy 的 daemon 就不會被限制：上面 Rocky Linux 9 的測試就是這樣。其他發行版怎麼處理，我們沒有查證。加了 policy 之後遇到拒絕的處理，見[第 16 章](16-troubleshooting.md#selinux-或-apparmor-的拒絕)。
+發行版如果只在載入 policy 時才限制 daemon，沒有 policy 的 daemon 就不會被限制：上面 Rocky Linux 9 和 Ubuntu 24.04 的測試就是這樣。其他發行版怎麼處理，我們沒有查證。加了 policy 之後遇到拒絕的處理，見[第 16 章](16-troubleshooting.md#selinux-或-apparmor-的拒絕)。
 
 ## 回報安全漏洞
 

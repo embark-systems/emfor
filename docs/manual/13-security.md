@@ -176,8 +176,11 @@ emfor ships no SELinux module and no AppArmor profile. Tried on Rocky Linux
 the rpm: the daemon ran in the domain `unconfined_service_t`, which the
 policy does not confine, and with `tcp`, `http` and `exec` checks, DNS,
 `/metrics`, a peer group with an encrypted secret file, the store under
-`/var/lib/emfor` and a reload it raised no AVC denial. It has not been run
-under AppArmor or on x86-64, and not under a policy that confines it. What
+`/var/lib/emfor` and a reload it raised no AVC denial. The deb was run the
+same way on Ubuntu 24.04 (arm64, a virtual machine) with AppArmor enabled:
+the daemon had no profile (`/proc/<pid>/attr/current` says `unconfined`) and
+the kernel log has no `apparmor="DENIED"` line. It has not been run on x86-64,
+and not under a policy or profile that confines it. What
 follows is what the code does, so that you can write such a policy; it is not
 a tested policy.
 
@@ -211,8 +214,8 @@ What the daemon touches:
   reads nothing from `/proc` in normal operation.
 
 A distribution that confines a daemon only when a policy for it is loaded
-does not confine a daemon without one: that is what the Rocky Linux 9 test
-above showed. We have not checked how other distributions treat it. For denials after you add a policy, see
+does not confine a daemon without one: that is what the Rocky Linux 9 and
+Ubuntu 24.04 tests above showed. We have not checked how other distributions treat it. For denials after you add a policy, see
 [chapter 16](16-troubleshooting.md#a-denial-from-selinux-or-apparmor).
 
 ## Reporting a vulnerability

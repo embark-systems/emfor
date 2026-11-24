@@ -8,7 +8,10 @@
   `unconfined_service_t` and, with `tcp`, `http` and `exec` checks, DNS,
   `/metrics`, an encrypted peer group, the store and a reload, raised no AVC
   denial. We do not ship a policy module: a module that confines the daemon is
-  extra hardening, not a need. AppArmor and x86-64 are still untested.
+  extra hardening, not a need. The deb was run the same way on Ubuntu 24.04
+  (arm64, a virtual machine, AppArmor enabled): no profile applies to the
+  daemon and the kernel log has no `apparmor="DENIED"` line. x86-64 is still
+  untested.
 
 - **The manual says what `EMP3` and `EMP4` cost.** Chapter 11 (en and zh_TW),
   "Choosing AES-GCM": on one arm64 machine a datagram of 150 to 500 bytes took
