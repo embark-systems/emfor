@@ -53,6 +53,25 @@ exits, where today a slot is held only during a lookup. The store has
 processes on the host, so a host with many worker processes or large thread
 pools could run out and see lookups fail.
 
+## Pinning threads to cores does not help
+
+CPU affinity was tried on 2026-11-24 in the same Linux container
+(14 vCPUs), with `taskset` around the bench program and the daemon running
+unpinned. Three runs of each, in lookups a second in total:
+
+| Threads | Not pinned | `taskset -c 0-3` | `taskset -c 0,2,4,6` |
+| --- | --- | --- | --- |
+| 4 | 3.1 to 3.5 million | 2.2 million | 2.0 to 3.1 million |
+| 8 | 2.5 to 2.6 million | 2.0 to 3.3 million | 2.2 to 2.5 million |
+
+With 4 threads pinning was slower; with 8 the runs differ more from each
+other than the settings do. The one-thread median stayed at 0.92 to 0.96 µs
+in every setting. The container's vCPUs are not a real socket or cache
+layout, so this says nothing about a host with several sockets. The daemon
+needs no pinning either: DNS answers come from memory, and checks wait for
+the network. To keep emfor off some cores, use `CPUAffinity=` in a systemd
+drop-in (not tried here).
+
 ## Measuring it yourself
 
 With the daemon running, from the repository:
