@@ -7,8 +7,9 @@
   `/metrics`, the peer UDP port, local users), where each defense is and which
   gaps are open; `SECURITY.md` links to it. It comes from reading the code,
   not from a penetration test. It records that the peers check the sender
-  against the UDP source address only, and that a member who holds the secret
-  can vote for any backend. Nothing in the code changed.
+  against the UDP source address only, and what that allows: one member that
+  holds the secret cannot turn a backend down (2 of its 3 assigned checkers
+  must say down), two colluding members can. Nothing in the code changed.
 
 - **The manual says how to keep emfor on some CPU cores.** Chapter 12 (en and
   zh_TW): `CPUAffinity=` in a drop-in, tried on Rocky Linux 9.9 (the daemon and

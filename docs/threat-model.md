@@ -97,10 +97,16 @@ Can capture, replay, modify, delay or forge messages.
 - Not covered: the secret is shared by the whole group. Anyone who holds it
   can send results; the receiver checks that the sender's name is a member
   and equals the UDP source address, which is not a cryptographic check and
-  can be forged by someone who can spoof source addresses. A verified result
-  counts as a vote of that member for any service and backend that exists
-  locally; nothing ties a backend to the member that reports it. Forward
-  secrecy is not provided.
+  can be forged by someone who can spoof source addresses. Forward secrecy
+  is not provided.
+- What a member that holds the secret can do to the verdict: a result is
+  counted only if it comes from one of the three assigned checkers of that
+  backend (as the receiver ranks them), and a region verdict of down needs 2
+  down votes, one of which can be the receiver's own result. One lying member
+  cannot turn a backend down against two honest members. Two members that
+  agree, one liar plus a member with a bad network path, or one secret holder
+  who can also spoof the source addresses of two other members, can. A group
+  of two members has no votes at all; each decides alone.
 - The replay state is in memory only. After the receiver restarts, a message
   captured earlier is accepted once if it is still inside the 5-second
   window. This bound comes from reading the code; it was not measured.
@@ -164,8 +170,9 @@ These are open and stated elsewhere; this page only collects them.
 - No signed releases (waiting for a release key).
 - No authentication on DNS and `/metrics`.
 - Peer secret is shared by the group; no forward secrecy; the sender's
-  identity is checked against the UDP source address only; a member can vote
-  for any backend.
+  identity is checked against the UDP source address only. Two colluding
+  members (or one holder that can spoof two source addresses) can force a
+  backend down; one cannot.
 - A message captured before a receiver restart is accepted once inside the
   5-second window (from the code, not measured).
 - `tls` of database checks defaults to off; only a warning.
