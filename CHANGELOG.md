@@ -57,6 +57,9 @@
   name server was not enough when the backends share an IP: 7 runs of 100
   requests had 0 to 12 requests of 503 after about 3 s each (6 runs had
   some); with a separate IP per backend, 3 runs had 1 failed request each.
+  On FreeBSD 15.1 (HAProxy 3.4.4) the same test gave 14 to 38 requests of
+  503 per 100 with a shared IP and 1 to 2 with a separate IP per backend (4
+  runs each): the 503 that 0.6.0 listed as unexplained there is this case.
   The 503s were not checked for port 0 directly. Nothing in emfor changed;
   the advice to use one name server stays, with a separate IP per backend.
 
