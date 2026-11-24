@@ -54,7 +54,7 @@
   per backend had none. HAProxy 2.8 with the same setup (three runs) and
   HAProxy 3.4.8 with one name server (three runs) had none while the
   backends stayed up. With one backend stopped and started every 1.5 s, one
-  name server was not enough when the backends share an IP: 8 runs of 100
+  name server was not enough when the backends share an IP: 7 runs of 100
   requests had 0 to 12 requests of 503 after about 3 s each (6 runs had
   some); with a separate IP per backend, 3 runs had 1 failed request each.
   The 503s were not checked for port 0 directly. Nothing in emfor changed;
