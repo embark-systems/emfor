@@ -603,7 +603,7 @@ CPUAffinity=0-1
 ```
 
 Restart the daemon. It, its threads and the programs it starts (`exec`
-checks, plugins) all run on those cores; on a Rocky Linux 9.9 virtual
+checks) all run on those cores; on a Rocky Linux 9.9 virtual
 machine with 4 cores, `Cpus_allowed_list` of the daemon and of an `exec`
 child was `0-1` with the drop-in and `0-3` without, and the checks stayed
 healthy with SELinux enforcing. The daemon counts only the cores it may use

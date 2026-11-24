@@ -410,7 +410,7 @@ emfor 的設定檔：
 CPUAffinity=0-1
 ```
 
-重新啟動 daemon。它本身、它的執行緒和它啟動的程式（`exec` 檢查、plugin）都會只在這幾個核心上跑。
+重新啟動 daemon。它本身、它的執行緒和它啟動的程式（`exec` 檢查）都會只在這幾個核心上跑。
 在一台 4 核的 Rocky Linux 9.9 虛擬機器上，加了 drop-in 之後 daemon 和 `exec` 子程序的
 `Cpus_allowed_list` 是 `0-1`，沒加是 `0-3`，SELinux enforcing 時檢查也維持 healthy。
 daemon 只會算它能用的核心數（沒加 drop-in 時有 6 個執行緒，加了之後是 4 個）。
