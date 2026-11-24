@@ -152,6 +152,8 @@ peers: 1/2 live, not live 127.0.0.3:5302, too few live members to vote
 
 `EMP4` 訊息帶一個計數器：daemon 每次啟動從 1 開始，每送一份 datagram 加 1。計數器就是 nonce，所以同一把金鑰下 nonce 不會重複，而 daemon 每次啟動也都用自己的金鑰。
 
+**速度。** 選哪一種，成員的成本幾乎一樣。在一台 arm64 機器上量（`tools/bench-peer-crypto.sh`，Debian 容器，release 建置），一份 150 到 500 bytes 的 datagram 加密或解密，`EMP3` 要 0.7 到 1.5 微秒，`EMP4` 要 0.8 到 1.0 微秒：heartbeat（約 150 bytes）時 `EMP4` 稍慢，因為它每份 datagram 都要重新推導金鑰；490 bytes 的訊息則快約 30 %。驗證不過的 datagram，`EMP3` 要 0.6 到 0.8 微秒，`EMP4` 約 1.0 微秒。一個成員每秒只送幾份 datagram。沒有在 x86-64 或沒有 AES 指令的 CPU 上量過。
+
 **升級順序。** 舊版成員不認得 `EMP4`：它會丟掉訊息並計為 `malformed`，在送訊息的那個成員眼裡它就變成「不 live」。所以請先把每個成員都升級，確定全部都讀得懂 `EMP4` 之後才設 `cipher`；每個成員改完設定後 reload（`SIGHUP`）就生效。要退回去，就拿掉 `cipher` 再 reload：下一份訊息又是 `EMP2`，還在送 `EMP4` 的成員照樣讀得懂。
 
 每則訊息都帶有時間戳記、boot id 和序號。下面這些訊息都會被丟掉：重送的、太舊的、格式錯誤的、簽章不對的、來自不在 `members` 裡的位址的、來自別的 site 的，以及（預設情況下）沒加密的。丟掉的訊息會分別以 `replay`、`stale`、`malformed`、`auth`、`sender`、`site` 或 `plaintext` 計入 `emfor_peer_messages_rejected_total{reason}`。

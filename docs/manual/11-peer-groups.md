@@ -279,6 +279,15 @@ An `EMP4` message has a counter that starts at 1 each time the daemon starts
 and grows by one per datagram; it is the nonce, so no nonce is used twice
 under one key, and each start of the daemon gets its own key.
 
+**Speed.** The choice does not change what a member costs. On one arm64
+machine (`tools/bench-peer-crypto.sh`, Debian container, release build),
+sealing or opening a datagram of 150 to 500 bytes took 0.7 to 1.5
+microseconds in `EMP3` and 0.8 to 1.0 in `EMP4`: `EMP4` is slightly slower for
+a heartbeat (about 150 bytes), because it derives a key for each datagram,
+and about 30 % faster for a message of 490 bytes. A datagram that fails the
+check costs 0.6 to 0.8 microseconds in `EMP3` and about 1.0 in `EMP4`. A member sends a few datagrams
+a second. Not measured on x86-64 or on a CPU without AES instructions.
+
 **Upgrade order.** A member of an earlier version does not know `EMP4`: it
 drops the message and counts it as `malformed`, and shows as not live to the
 member that sent it. So upgrade every member first, and set `cipher` only

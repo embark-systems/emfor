@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The manual says what `EMP3` and `EMP4` cost.** Chapter 11 (en and zh_TW),
+  "Choosing AES-GCM": on one arm64 machine a datagram of 150 to 500 bytes took
+  0.7 to 1.5 microseconds to seal or open in `EMP3` and 0.8 to 1.0 in `EMP4`
+  (`EMP4` derives a key per datagram: slightly slower for a heartbeat, about
+  30 % faster for 490 bytes). New `tools/bench-peer-crypto.sh` repeats it;
+  not run on x86-64. Nothing in the daemon changed.
+
 - **The manual says when two name servers make HAProxy answer 503.** Chapter
   14 (en and zh_TW), row "Name servers": with two name servers that disagree
   and several backends on one IP (one host, several ports), HAProxy 3.4.8
