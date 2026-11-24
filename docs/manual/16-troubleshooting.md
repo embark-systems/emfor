@@ -182,10 +182,11 @@ lock file, then start the daemon. Never delete the lock file alone.
 ## A denial from SELinux or AppArmor
 
 emfor ships no policy ([chapter 13](13-security.md#selinux-and-apparmor)), so
-this applies when you or your distribution added one. The signs: a check or
+this applies when you or your distribution added one; on Rocky Linux 9 with the
+`targeted` policy the daemon is not confined and raised no denial. The signs: a check or
 the daemon fails with `Permission denied` although the file modes, the owner
 and the unit's sandbox look right, and the same thing works with the policy
-off. The commands below are the usual tools; they were not run against emfor.
+off. The commands below are the usual tools; `getenforce` and `ausearch` were run against emfor on Rocky Linux 9, `aa-status` was not.
 
 ```sh
 # getenforce                                  # SELinux: Enforcing or Permissive

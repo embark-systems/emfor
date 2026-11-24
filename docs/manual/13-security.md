@@ -171,10 +171,15 @@ change when that does.
 
 ## SELinux and AppArmor
 
-emfor ships no SELinux module and no AppArmor profile, and it has not been
-run under SELinux in enforcing mode or under an AppArmor profile: its tests
-run in Debian containers, where neither is active. What follows is what the
-code does, so that you can write a policy; it is not a tested policy.
+emfor ships no SELinux module and no AppArmor profile. Tried on Rocky Linux
+9.9 (aarch64) with SELinux in enforcing mode and the `targeted` policy, from
+the rpm: the daemon ran in the domain `unconfined_service_t`, which the
+policy does not confine, and with `tcp`, `http` and `exec` checks, DNS,
+`/metrics`, a peer group with an encrypted secret file, the store under
+`/var/lib/emfor` and a reload it raised no AVC denial. It has not been run
+under AppArmor or on x86-64, and not under a policy that confines it. What
+follows is what the code does, so that you can write such a policy; it is not
+a tested policy.
 
 The systemd unit above limits what the daemon can do, and a mandatory access
 control policy limits it from the kernel's side. They add up; one does not
@@ -205,9 +210,9 @@ What the daemon touches:
 - **Does not use:** raw sockets, packet sockets or capabilities, and it
   reads nothing from `/proc` in normal operation.
 
-If you run a distribution that confines a daemon only when a policy for it
-is loaded, a daemon without a policy is not confined; we have not checked
-how yours treats an unlabeled one. For denials after you add a policy, see
+A distribution that confines a daemon only when a policy for it is loaded
+does not confine a daemon without one: that is what the Rocky Linux 9 test
+above showed. We have not checked how other distributions treat it. For denials after you add a policy, see
 [chapter 16](16-troubleshooting.md#a-denial-from-selinux-or-apparmor).
 
 ## Reporting a vulnerability

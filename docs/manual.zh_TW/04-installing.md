@@ -54,7 +54,7 @@ $ PLATFORM=linux/amd64 packages/build.sh    # 建其他架構（要模擬時很�
 
 **不支援 RHEL 8 與它的衍生版。** 執行檔需要 glibc 2.30，RHEL 8 只有 2.28；請用 RHEL 9 或更新（deb 則是 Debian 11 以上）。
 
-測試過的範圍：deb 與 rpm 在 arm64 上的 Debian 12 與 Rocky Linux 9 container 裡（安裝、移除、purge、在改過的設定上升級）、deb 在 Debian 12 container 裡以 systemd 252 當 PID 1 執行，以及 rpm 在 Rocky Linux 9 container 裡以 systemd 當 PID 1 執行（啟動、reload、停止、`rpm -V`、移除後重裝、從上一版升級再降回去）。**沒有測試過**：在實體主機上執行（container 不算）、x86-64 套件、SELinux enforcing、其他發行版。見 [packages/README.md](../../packages/README.md)。
+測試過的範圍：deb 與 rpm 在 arm64 上的 Debian 12 與 Rocky Linux 9 container 裡（安裝、移除、purge、在改過的設定上升級）、deb 在 Debian 12 container 裡以 systemd 252 當 PID 1 執行，以及 rpm 在 Rocky Linux 9 container 裡以 systemd 當 PID 1 執行（啟動、reload、停止、`rpm -V`、移除後重裝、從上一版升級再降回去）。**沒有測試過**：在實體主機上執行（container 不算）、x86-64 套件、AppArmor、其他發行版。rpm 另外在 SELinux enforcing 的 Rocky Linux 9.9 虛擬機器上跑過（啟動、檢查、reload，沒有拒絕，見[第 13 章](13-security.md#selinux-與-apparmor)）。見 [packages/README.md](../../packages/README.md)。
 
 ## 沒有網路的環境
 

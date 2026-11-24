@@ -92,8 +92,10 @@ changed config stays as `.rpmsave`, the user and the data stay), reinstall,
 an upgrade from the previous release (the daemon is restarted, a changed
 `emfor.toml` stays) and a downgrade back. **Not tested**: x86-64 packages
 (run the script on an x86-64 host), a real host (journald, other cgroup
-limits), SELinux enforcing (a container does not have it), an upgrade that
-makes an `emfor.toml.rpmnew`, and other distributions than the two.
+limits), an upgrade that makes an `emfor.toml.rpmnew`, and other distributions than
+the two. SELinux enforcing: the rpm was also run (not with this script) on Rocky
+Linux 9.9 in a virtual machine with the `targeted` policy; the daemon is
+`unconfined_service_t` and raised no denial (manual chapter 13).
 
 **RHEL 8 and its relatives are not supported.** The packages are built with
 glibc 2.31 and `/usr/bin/emfor` needs symbols up to `GLIBC_2.30`; RHEL 8 has

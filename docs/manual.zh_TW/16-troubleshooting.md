@@ -156,7 +156,7 @@ ALL_DOWN: service db.svc.emfor: no backend is healthy, and on_all_down is closed
 
 ## SELinux 或 AppArmor 的拒絕
 
-emfor 不附 policy（[第 13 章](13-security.md#selinux-與-apparmor)），所以這一段只適用於你或你的發行版自己加了 policy 的情況。徵兆是：檔案權限、擁有者和 unit 的 sandbox 看起來都沒問題，檢查或 daemon 卻出現 `Permission denied`，而把 policy 關掉就正常。底下是常用的工具，沒有拿 emfor 實際跑過。
+emfor 不附 policy（[第 13 章](13-security.md#selinux-與-apparmor)），所以這一段只適用於你或你的發行版自己加了 policy 的情況；Rocky Linux 9 的 `targeted` policy 底下 daemon 不受限制，也沒有出現拒絕。徵兆是：檔案權限、擁有者和 unit 的 sandbox 看起來都沒問題，檢查或 daemon 卻出現 `Permission denied`，而把 policy 關掉就正常。底下是常用的工具；`getenforce` 和 `ausearch` 在 Rocky Linux 9 上對 emfor 跑過，`aa-status` 沒有。
 
 ```sh
 # getenforce                                  # SELinux：Enforcing 或 Permissive

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The manual says what happens under SELinux enforcing.** Chapters 4, 13
+  and 16 (en and zh_TW): the rpm was run on Rocky Linux 9.9 (aarch64, a
+  virtual machine, `targeted` policy, enforcing). The daemon ran as
+  `unconfined_service_t` and, with `tcp`, `http` and `exec` checks, DNS,
+  `/metrics`, an encrypted peer group, the store and a reload, raised no AVC
+  denial. We do not ship a policy module: a module that confines the daemon is
+  extra hardening, not a need. AppArmor and x86-64 are still untested.
+
 - **The manual says what `EMP3` and `EMP4` cost.** Chapter 11 (en and zh_TW),
   "Choosing AES-GCM": on one arm64 machine a datagram of 150 to 500 bytes took
   0.7 to 1.5 microseconds to seal or open in `EMP3` and 0.8 to 1.0 in `EMP4`
