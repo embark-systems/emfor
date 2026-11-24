@@ -252,6 +252,16 @@ arguments to match.
 polling delay. Lines before the config is read are text, so the program has to
 skip lines that are not JSON.
 
+On FreeBSD the rc script sends the log to syslog with the tag `emfor`, and a
+`syslog.conf` rule can pipe it to a program, one line each:
+`daemon.notice	|/usr/local/bin/on-emfor-line` (then `service syslogd
+restart`). Every line arrives with a syslog prefix
+(`Nov 24 22:38:29 host emfor[3262]: `) before the JSON, so the program has to
+cut everything before the first `{`. The manual tried this on FreeBSD 15.1
+with `daemon -S -T emfor` running a stand-in program that wrote two JSON lines
+to standard error (one of 3008 bytes): both reached the piped program whole.
+It did not run emfor itself with `format = "json"`.
+
 **Let the management station ask.** net-snmp's `snmpd` can expose a command's
 output with `extend`; the station then reads it with SNMP GET:
 
