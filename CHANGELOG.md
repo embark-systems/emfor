@@ -52,8 +52,13 @@
   answered a few requests with 503 (a slot with port 0). Six runs of 400
   requests each all had some (1 to 21 per run); six runs with a separate IP
   per backend had none. HAProxy 2.8 with the same setup (three runs) and
-  HAProxy 3.4.8 with one name server (three runs) had none. Nothing in emfor
-  changed; the advice to use one name server stays.
+  HAProxy 3.4.8 with one name server (three runs) had none while the
+  backends stayed up. With one backend stopped and started every 1.5 s, one
+  name server was not enough when the backends share an IP: 8 runs of 100
+  requests had 0 to 12 requests of 503 after about 3 s each (6 runs had
+  some); with a separate IP per backend, 3 runs had 1 failed request each.
+  The 503s were not checked for port 0 directly. Nothing in emfor changed;
+  the advice to use one name server stays, with a separate IP per backend.
 
 - **Credential files must be regular files of bounded size.** `emfor-check`
   and the TLS options of the daemon read `password_file`, a RADIUS
