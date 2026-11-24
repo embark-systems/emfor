@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **The manual says what was run for ping and SCTP checks.** Chapter 6 (en and
+  zh_TW), "Ping and SCTP": the `exec` recipes were run under the packaged unit
+  on Rocky Linux 9.9 and Ubuntu 24.04 (arm64, virtual machines). On Ubuntu the
+  `ping` check failed for every backend until `net.ipv4.ping_group_range`
+  included the `emfor` group (`runuser -u emfor -- ping` works there and is no
+  proof); Rocky allows every group. SCTP through a Python script worked on both,
+  after installing `kernel-modules-extra` and lifting the module blacklist on
+  Rocky. Use a check `timeout` longer than `ping -W`. We still do not plan a
+  built-in ICMP or SCTP check. Not tried on x86-64 or with IPv6.
+
 - **`examples/snmp/emfor-snmp-trap.sh` sent nothing when a service went all
   down.** `emfor status --json` exits 1 then (and when the daemon is stale or
   stopped) but still prints the history; the script treated every non-zero

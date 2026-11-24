@@ -151,7 +151,7 @@ exit 0
 
 ### ping 與 SCTP
 
-emfor 沒有 ICMP 檢查，也沒有 SCTP 檢查，而且 `sip` 和 `diameter` 外掛會拒絕 `transport = "sctp"`。在有內建檢查之前，請用 `exec`。底下的東西都沒有實際跑過，只是個起點。
+emfor 沒有 ICMP 檢查，也沒有 SCTP 檢查，而且 `sip` 和 `diameter` 外掛會拒絕 `transport = "sctp"`。在有內建檢查之前，請用 `exec`。底下的做法在套件附的 unit 之下，於 Rocky Linux 9.9 和 Ubuntu 24.04（arm64、虛擬機器）上實際跑過：`ping` script 和下面的 SCTP script 當 `exec` 檢查，回應的 backend 是 `healthy`，沒回應的是 `unhealthy`。沒有在 x86-64 或用 IPv6 試過。
 
 `exec` 的命令列是固定的，backend 是從環境變數傳進去的，所以要寫一支小 script：
 
@@ -161,9 +161,9 @@ emfor 沒有 ICMP 檢查，也沒有 SCTP 檢查，而且 `sip` 和 `diameter` �
 /usr/bin/ping -c 1 -W 1 "$EMFOR_IP" >/dev/null 2>&1 || { echo "no ping answer"; exit 1; }
 ```
 
-port 用不到。IPv6 的 backend 要加 `-6`。套件附的 unit 沒有任何 capability，又有 `NoNewPrivileges`，所以靠檔案 capability（`cap_net_raw`）才能用的 `ping` 在這裡不能用。Linux 上的 `ping` 可以改開不需特權的 ICMP socket，但 kernel 只允許 `net.ipv4.ping_group_range` 範圍內的 group ID 這麼做；`emfor` 這個 group 必須在範圍裡（`sysctl net.ipv4.ping_group_range` 可以看）。unit 的 `RestrictAddressFamilies` 本來就允許這種 socket。用之前先跑 `runuser -u emfor -- ping -c 1 <位址>` 確認。
+port 用不到。IPv6 的 backend 要加 `-6`。套件附的 unit 沒有任何 capability，又有 `NoNewPrivileges`，所以靠檔案 capability（`cap_net_raw`）才能用的 `ping` 在這裡不能用。Linux 上的 `ping` 可以改開不需特權的 ICMP socket，但 kernel 只允許 `net.ipv4.ping_group_range` 範圍內的 group ID 這麼做；`emfor` 這個 group 必須在範圍裡（`sysctl net.ipv4.ping_group_range` 可以看）。unit 的 `RestrictAddressFamilies` 本來就允許這種 socket。Rocky Linux 9 預設允許所有 group（`0 2147483647`），檢查可以用。Ubuntu 24.04 不是（`1 0`），它的 `ping` 靠 `cap_net_raw`：`runuser -u emfor -- ping` 在那裡能通，但放在 unit 底下，每個 backend（連 `127.0.0.1`）都是 `unhealthy`、原因 "no ping answer"，直到 `sysctl -w net.ipv4.ping_group_range="0 2147483647"`（請把設定寫進 `/etc/sysctl.d/`；範圍只要包含 `emfor` 這個 group 就夠）。所以 `runuser` 不能當證明：啟動檢查之後要看 `emfor status`。檢查的 `timeout` 要比 `ping` 的 `-W` 長（`interval` 至少和 timeout 一樣長）：`timeout` 等於 `-W 1` 時，沒回應的 ping 會顯示成 `timeout`，不是 "no ping answer"。
 
-SCTP 的話，用任何一支「到 `$EMFOR_IP:$EMFOR_PORT` 的 association 建起來就結束代碼 0、建不起來就結束代碼 1」的程式，放進同樣的 script。主機的 kernel 要有 SCTP（Linux 上是 `sctp` 模組，有些發行版預設不讓它載入）；沒有的話程式開不了 socket，檢查會依結束代碼回報 `error` 或 `down`。用 `AF_INET` 和 `IPPROTO_SCTP` 開 socket，unit 的 `RestrictAddressFamilies` 是允許的，不過這點同樣沒有試過。這樣的檢查只能證明 association 建得起來，不能證明後面的應用程式有回應。
+SCTP 的話，用任何一支「到 `$EMFOR_IP:$EMFOR_PORT` 的 association 建起來就結束代碼 0、建不起來就結束代碼 1」的程式，放進同樣的 script。主機的 kernel 要有 SCTP（Linux 上是 `sctp` 模組，有些發行版預設不讓它載入）；沒有的話程式開不了 socket，檢查會依結束代碼回報 `error` 或 `down`。用 `AF_INET` 和 `IPPROTO_SCTP` 開 socket，unit 的 `RestrictAddressFamilies` 和套件附的 `SystemCallFilter` 都允許：一支用 Python `socket.socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP)` 連線、出錯就結束代碼 1 的 script，當 `exec` 命令跑，`127.0.0.1` 上有 listener 時是 `healthy`，沒有 listener 的 port 是 `unhealthy`（"Connection refused"）。Rocky Linux 9 要先裝 `kernel-modules-extra`，並讓 `/etc/modprobe.d/sctp-blacklist.conf` 不再擋它，才有 `sctp` 模組；Ubuntu 24.04 本來就有。這樣的檢查只能證明 association 建得起來，不能證明後面的應用程式有回應。
 
 每一種都是每次檢查啟動一個 process，成本見上面。
 

@@ -171,8 +171,11 @@ command line, see the wrapper in
 ### Ping and SCTP
 
 emfor has no ICMP check and no SCTP check, and the `sip` and `diameter`
-plugins reject `transport = "sctp"`. Until there is one, use `exec`. None of
-what follows has been run; it is a starting point.
+plugins reject `transport = "sctp"`. Until there is one, use `exec`. What
+follows was run under the packaged unit on Rocky Linux 9.9 and Ubuntu 24.04
+(arm64, virtual machines): the `ping` script and an SCTP script (below) as
+`exec` checks gave `healthy` for a backend that answered and `unhealthy` for
+one that did not. Not tried on x86-64 or with IPv6.
 
 `exec` takes a fixed command line, and the backend comes in the environment,
 so use a small script:
@@ -189,8 +192,16 @@ capability (`cap_net_raw`) cannot use it. On Linux `ping` can instead open an
 unprivileged ICMP socket, which the kernel allows only for group IDs in
 `net.ipv4.ping_group_range`; the `emfor` group must be in that range
 (`sysctl net.ipv4.ping_group_range` shows it). The unit's
-`RestrictAddressFamilies` already allows the socket. Check with
-`runuser -u emfor -- ping -c 1 <address>` before relying on it.
+`RestrictAddressFamilies` already allows the socket. Rocky Linux 9 allows every
+group by default (`0 2147483647`) and the check worked. Ubuntu 24.04 does not
+(`1 0`), and its `ping` has `cap_net_raw`: `runuser -u emfor -- ping` works
+there, but under the unit every backend, `127.0.0.1` too, was `unhealthy` with
+"no ping answer" until `sysctl -w net.ipv4.ping_group_range="0 2147483647"`
+(put the setting in `/etc/sysctl.d/`; a narrower range that holds the `emfor`
+group is enough). So `runuser` is not a proof: look at `emfor status` after
+you start the check. Give the check a `timeout` longer than the `-W` of
+`ping` (and an `interval` at least as long as the timeout): with `timeout` equal
+to `-W 1` an unanswered ping showed as `timeout` and not as "no ping answer".
 
 For SCTP, use any program that exits 0 when an association to
 `$EMFOR_IP:$EMFOR_PORT` comes up and 1 when it does not, in the same kind of
@@ -198,8 +209,13 @@ script. The host needs SCTP in its kernel (on Linux the `sctp` module, which
 some distributions keep from loading); without it the program fails to open
 the socket and the check reports `error` or `down`, depending on the exit
 code. Opening a socket with `AF_INET` and `IPPROTO_SCTP` is allowed by the
-unit's `RestrictAddressFamilies`, but this has not been tried either. A
-check like this only shows that the association comes up, not that the
+unit's `RestrictAddressFamilies` and the packaged `SystemCallFilter`: a Python
+script that connects with `socket.socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP)` and
+exits 1 on an error, run as the `exec` command, gave `healthy` for a listener
+on `127.0.0.1` and `unhealthy` ("Connection refused") for a port with none.
+Rocky Linux 9 has no `sctp` module until `kernel-modules-extra` is installed
+and `/etc/modprobe.d/sctp-blacklist.conf` no longer blocks it; Ubuntu 24.04
+had it. A check like this only shows that the association comes up, not that the
 application behind it answers.
 
 Each of these starts a process per check; see above for what that costs.
