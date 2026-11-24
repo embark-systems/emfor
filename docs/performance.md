@@ -70,7 +70,7 @@ in every setting. The container's vCPUs are not a real socket or cache
 layout, so this says nothing about a host with several sockets. The daemon
 needs no pinning either: DNS answers come from memory, and checks wait for
 the network. To keep emfor off some cores, use `CPUAffinity=` in a systemd
-drop-in (not tried here).
+drop-in ([chapter 12](manual/12-operating.md#keeping-emfor-on-some-cpu-cores)).
 
 ## Measuring it yourself
 

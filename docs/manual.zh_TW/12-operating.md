@@ -397,3 +397,21 @@ heartbeat 和聯防訊息都是主機時鐘的時間戳，所以時鐘一跳，�
 每個 store 只能有一個寫入者。第二個用同一個 store 的 daemon 會啟動失敗：
 `cannot open state store: store is already in use by another emfor daemon: lock file /var/lib/emfor/state.mdb.writer is held`
 （結束代碼 1）。如果要跑第二個 daemon（測試用），請給它自己的 `[store] path`、DNS 和 metrics 位址，再用 `EMFOR_STORE` 讓它的 client 指向它的 store。
+
+## 讓 emfor 只用部分 CPU 核心
+
+emfor 不需要綁核來提速（見[效能](../performance.md#pinning-threads-to-cores-does-not-help)）。
+如果要讓它避開別的工作在用的核心，請在 unit 的 drop-in 裡設定 affinity，不要寫在
+emfor 的設定檔：
+
+```ini
+# systemctl edit emfor
+[Service]
+CPUAffinity=0-1
+```
+
+重新啟動 daemon。它本身、它的執行緒和它啟動的程式（`exec` 檢查、plugin）都會只在這幾個核心上跑。
+在一台 4 核的 Rocky Linux 9.9 虛擬機器上，加了 drop-in 之後 daemon 和 `exec` 子程序的
+`Cpus_allowed_list` 是 `0-1`，沒加是 `0-3`，SELinux enforcing 時檢查也維持 healthy。
+daemon 只會算它能用的核心數（沒加 drop-in 時有 6 個執行緒，加了之後是 4 個）。
+請至少留一個核心不要給別的重工作用：檢查等不到忙碌的核心，可能超過 `timeout`，把 backend 報成 down。

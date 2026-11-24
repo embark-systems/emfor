@@ -589,3 +589,24 @@ Each store has one writer. A second daemon with the same store fails:
 `cannot open state store: store is already in use by another emfor daemon: lock file /var/lib/emfor/state.mdb.writer is held`
 (exit 1). For a second daemon (for tests), give it its own `[store] path`,
 DNS and metrics addresses, and point its clients at it with `EMFOR_STORE`.
+
+## Keeping emfor on some CPU cores
+
+emfor needs no pinning for speed (see [performance](../performance.md#pinning-threads-to-cores-does-not-help)).
+To keep it off cores that other work uses, set the affinity in a drop-in of
+the unit, not in emfor's config:
+
+```ini
+# systemctl edit emfor
+[Service]
+CPUAffinity=0-1
+```
+
+Restart the daemon. It, its threads and the programs it starts (`exec`
+checks, plugins) all run on those cores; on a Rocky Linux 9.9 virtual
+machine with 4 cores, `Cpus_allowed_list` of the daemon and of an `exec`
+child was `0-1` with the drop-in and `0-3` without, and the checks stayed
+healthy with SELinux enforcing. The daemon counts only the cores it may use
+(it had 6 threads without the drop-in and 4 with it). Keep at least one core free of other heavy work: a check
+that waits for a busy core can miss its `timeout` and report the backend
+down.

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The manual says how to keep emfor on some CPU cores.** Chapter 12 (en and
+  zh_TW): `CPUAffinity=` in a drop-in, tried on Rocky Linux 9.9 (the daemon and
+  its `exec` checks follow it). `docs/performance.md` reports that pinning
+  threads with `taskset` did not raise lookup speed. No change to the program.
+
 - **The manual says what was run for ping and SCTP checks.** Chapter 6 (en and
   zh_TW), "Ping and SCTP": the `exec` recipes were run under the packaged unit
   on Rocky Linux 9.9 and Ubuntu 24.04 (arm64, virtual machines). On Ubuntu the
