@@ -40,6 +40,8 @@ release (for example 0.5.1 after 0.5.0). Upgrade every component together:
 
 Knowing what emfor is designed to trust helps to decide whether something
 is a vulnerability.
+The [threat model](docs/threat-model.md) goes through who can attack which
+boundary and where the defenses are.
 
 - **The config file and the plugin programs** are trusted: they run with
   the daemon's rights, and `exec` checks run the commands the config names.

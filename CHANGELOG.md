@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A threat model page.** New `docs/threat-model.md` says what emfor
+  protects, which boundaries an attacker can reach (backends, plugins, DNS,
+  `/metrics`, the peer UDP port, local users), where each defense is and which
+  gaps are open; `SECURITY.md` links to it. It comes from reading the code,
+  not from a penetration test. It records that the peers check the sender
+  against the UDP source address only, and that a member who holds the secret
+  can vote for any backend. Nothing in the code changed.
+
 - **The manual says how to keep emfor on some CPU cores.** Chapter 12 (en and
   zh_TW): `CPUAffinity=` in a drop-in, tried on Rocky Linux 9.9 (the daemon and
   its `exec` checks follow it). `docs/performance.md` reports that pinning
