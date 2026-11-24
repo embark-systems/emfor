@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **`examples/snmp/emfor-snmp-trap.sh` sent nothing when a service went all
+  down.** `emfor status --json` exits 1 then (and when the daemon is stale or
+  stopped) but still prints the history; the script treated every non-zero
+  exit as a failure and stopped, so the trap for the last backend going down
+  came only after something recovered. It now stops only on exit 2 or no
+  output. Chapter 14 (en and zh_TW) now says the script and the `snmpd extend`
+  line were run against `snmptrapd` and `snmpd` 5.9.3 in a Debian 12
+  container, that every backend sends an `unknown` to `healthy` trap after a
+  daemon restart, and that `snmpd` caches the output for 5 seconds. New
+  `tools/snmp-test.sh` repeats the run (docker, by hand, not by the CI).
+
 - **The manual says what happens under SELinux enforcing.** Chapters 4, 13
   and 16 (en and zh_TW): the rpm was run on Rocky Linux 9.9 (aarch64, a
   virtual machine, `targeted` policy, enforcing). The daemon ran as

@@ -48,11 +48,16 @@ done
 [ -n "$host" ] && [ -n "$oid" ] || { echo "-H and -o are required" >&2; exit 2; }
 trap_cmd=${SNMPTRAP:-snmptrap}
 
+# `emfor status` exits 1 when a service is all down or the daemon is stale or
+# stopped, and still prints the history: that is when a trap matters most. Only
+# 2 (config or store cannot be read) or no output is a failure here.
 if [ -n "$config" ]; then
-    json=$("$emfor" status --json --config "$config") || exit 1
+    json=$("$emfor" status --json --config "$config")
 else
-    json=$("$emfor" status --json) || exit 1
+    json=$("$emfor" status --json)
 fi
+rc=$?
+[ "$rc" -le 1 ] && [ -n "$json" ] || exit 1
 
 # One line per change: at, service, backend, from, to, reason (tab separated,
 # oldest first).

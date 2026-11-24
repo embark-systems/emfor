@@ -235,11 +235,13 @@ $ emfor-snmp-trap.sh -H nms.example.net -o 1.3.6.1.4.1.99999.1 -c secret
 `1.3.6.1.4.1.99999` stands for **your** enterprise number; the trap is `OID.1`
 and carries the service, backend, old state, new state and reason as strings
 (`OID.2` to `OID.6`). Write the MIB for these yourself. The first run sends
-nothing and only records where it is. This is the script as the manual
-has run it: with a made-up `emfor status --json` output and a stand-in for
-`snmptrap` that prints its arguments, to check what it reads and sends and
-that it remembers where it was. It has not sent a trap to a management
-station. A community string is sent in clear text; for SNMPv3 give `snmptrap`
+nothing and only records where it is. The manual ran it against net-snmp
+5.9.3's `snmptrapd` in a Debian 12 container, with a backend stopped and
+started again: one trap for each change, none again on the next run. It has
+not sent a trap to a management station of another make. After the daemon
+restarts, every backend goes from `unknown` to `healthy` and the script sends
+a trap for each of those changes; a receiver has to expect that burst. A
+community string is sent in clear text; for SNMPv3 give `snmptrap`
 its own options, for example through `snmp.conf`, and change the script's
 arguments to match.
 
@@ -260,8 +262,14 @@ extend emfor-web /usr/local/bin/check_emfor.sh -s web.svc.emfor
 The result and the output of the command are in `NET-SNMP-EXTEND-MIB`
 (`nsExtendResult` and `nsExtendOutput1Line`). `snmpd` runs it as its own user,
 which needs the same store access as an application
-([chapter 12](12-operating.md#who-can-read-the-store)). This line has not been
-run for this manual.
+([chapter 12](12-operating.md#who-can-read-the-store)). The line was run
+against `snmpd` 5.9.3 in a Debian 12 container (as root): `nsExtendResult` was
+0 with every backend healthy and 2 (CRITICAL) with the only backend stopped.
+`snmpd` keeps the output for 5 seconds (`nsExtendCacheTime`), so a change shows
+up after that. A plain Debian install has no `NET-SNMP-EXTEND-MIB` file for
+names like these (it is in `snmp-mibs-downloader`, in non-free); read the
+numeric OIDs `.1.3.6.1.4.1.8072.1.3.2.3.1.4` (result) and `.3.1.1` (first
+line of output), followed by the length and the characters of the name.
 
 ## Programs that ask for SRV records
 

@@ -183,7 +183,7 @@ emfor 沒有 SNMP agent 或 trap 發送功能，狀態變化時也沒有可以�
 $ emfor-snmp-trap.sh -H nms.example.net -o 1.3.6.1.4.1.99999.1 -c secret
 ```
 
-`1.3.6.1.4.1.99999` 代表**你自己的** enterprise number；trap 是 `OID.1`，帶服務、backend、舊狀態、新狀態和原因這幾個字串（`OID.2` 到 `OID.6`）。MIB 請自己照這些寫。第一次執行什麼都不送，只記下目前的位置。這支腳本手冊只跑過這樣的測試：用假造的 `emfor status --json` 輸出，和一個會把參數印出來的 `snmptrap` 替身，檢查它讀了什麼、送了什麼、有沒有記住位置。它沒有對真的管理站送過 trap。community 字串是明文送出的；要用 SNMPv3 的話，請另外給 `snmptrap` 它自己的選項，例如放在 `snmp.conf`，並把腳本的參數改成對應的樣子。
+`1.3.6.1.4.1.99999` 代表**你自己的** enterprise number；trap 是 `OID.1`，帶服務、backend、舊狀態、新狀態和原因這幾個字串（`OID.2` 到 `OID.6`）。MIB 請自己照這些寫。第一次執行什麼都不送，只記下目前的位置。手冊在 Debian 12 container 裡用 net-snmp 5.9.3 的 `snmptrapd` 實際跑過：停掉再啟動一台 backend，每次變化各收到一個 trap，下一次執行不再重送。它沒有對別家的管理站送過 trap。daemon 重啟之後，每台 backend 都會從 `unknown` 變成 `healthy`，腳本會為這些變化各送一個 trap，接收端要預期這一波。community 字串是明文送出的；要用 SNMPv3 的話，請另外給 `snmptrap` 它自己的選項，例如放在 `snmp.conf`，並把腳本的參數改成對應的樣子。
 
 **讀 log。** 設了 `[log] format = "json"`（[第 12 章](12-operating.md#json-行)），狀態變化就是一行 `event` 為 `backend_state_changed` 的 JSON。rsyslog 的 `omprog`，或讀 journal 的程式（`journalctl -u emfor -o cat -f`）可以每來一行就處理一行，沒有輪詢的延遲。讀設定檔之前的行是文字，程式要略過不是 JSON 的行。
 
@@ -193,7 +193,7 @@ $ emfor-snmp-trap.sh -H nms.example.net -o 1.3.6.1.4.1.99999.1 -c secret
 extend emfor-web /usr/local/bin/check_emfor.sh -s web.svc.emfor
 ```
 
-結果和輸出在 `NET-SNMP-EXTEND-MIB`（`nsExtendResult` 和 `nsExtendOutput1Line`）。`snmpd` 用它自己的使用者執行指令，這個使用者需要和應用程式一樣的 store 存取權限（[第 12 章](12-operating.md#誰能讀取-store)）。這一行沒有為本手冊實際跑過。
+結果和輸出在 `NET-SNMP-EXTEND-MIB`（`nsExtendResult` 和 `nsExtendOutput1Line`）。`snmpd` 用它自己的使用者執行指令，這個使用者需要和應用程式一樣的 store 存取權限（[第 12 章](12-operating.md#誰能讀取-store)）。這一行在 Debian 12 container 裡對 `snmpd` 5.9.3 實際跑過（以 root 執行）：每台 backend 都健康時 `nsExtendResult` 是 0，唯一的 backend 停掉後是 2（CRITICAL）。`snmpd` 會把輸出保留 5 秒（`nsExtendCacheTime`），所以變化要過那段時間才看得到。一般的 Debian 安裝沒有這類名稱用的 `NET-SNMP-EXTEND-MIB` 檔案（它在 non-free 的 `snmp-mibs-downloader`），請直接讀數字 OID：`.1.3.6.1.4.1.8072.1.3.2.3.1.4`（結果）和 `.3.1.1`（輸出第一行），後面接名稱的長度與每個字元。
 
 ## 會查 SRV 記錄的程式
 
