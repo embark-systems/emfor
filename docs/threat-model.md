@@ -107,6 +107,13 @@ Can capture, replay, modify, delay or forge messages.
   agree, one liar plus a member with a bad network path, or one secret holder
   who can also spoof the source addresses of two other members, can. A group
   of two members has no votes at all; each decides alone.
+- The other direction: a member that is not assigned to a backend may skip
+  its own check when 2 other assigned checkers send fresh `up` results.
+  Two lying assigned checkers can make it do so for a backend that is down,
+  but at most for 2 check times in a row: the third is always its own check,
+  and once an own check fails every later one is an own check. The backend
+  turns unhealthy after about 3 intervals plus a fraction of a second. An
+  assigned checker always runs its own check.
 - The replay state is in memory only. After the receiver restarts, a message
   captured earlier is accepted once if it is still inside the 5-second
   window. This bound comes from reading the code; it was not measured.
