@@ -187,7 +187,7 @@ $ emfor-snmp-trap.sh -H nms.example.net -o 1.3.6.1.4.1.99999.1 -c secret
 
 **讀 log。** 設了 `[log] format = "json"`（[第 12 章](12-operating.md#json-行)），狀態變化就是一行 `event` 為 `backend_state_changed` 的 JSON。rsyslog 的 `omprog`，或讀 journal 的程式（`journalctl -u emfor -o cat -f`）可以每來一行就處理一行，沒有輪詢的延遲。讀設定檔之前的行是文字，程式要略過不是 JSON 的行。
 
-FreeBSD 上，rc 腳本把 log 以 tag `emfor` 送進 syslog，`syslog.conf` 的一條規則可以把它一行一行接給程式：`daemon.notice	|/usr/local/bin/on-emfor-line`（改完 `service syslogd restart`）。每一行在 JSON 前面都有 syslog 的前綴（`Nov 24 22:38:29 host emfor[3262]: `），程式要把第一個 `{` 之前的東西切掉。手冊在 FreeBSD 15.1 上試過：用 `daemon -S -T emfor` 跑一個替身程式，往 stderr 寫兩行 JSON（其中一行 3008 bytes），兩行都完整送到管線的程式。沒有用 `format = "json"` 的 emfor 本身跑過。
+FreeBSD 上，rc 腳本把 log 以 tag `emfor` 送進 syslog，`syslog.conf` 的一條規則可以把它一行一行接給程式：`daemon.notice	|/usr/local/bin/on-emfor-line`（改完 `service syslogd restart`）。每一行在 JSON 前面都有 syslog 的前綴（`Nov 24 22:38:29 host emfor[3262]: `），程式要把第一個 `{` 之前的東西切掉。手冊在 FreeBSD 15.1 上試過：用 `daemon -S -T emfor` 跑設了 `format = "json"` 的 emfor 本身，把一個 backend 停掉再起來，三次狀態變化各是一行，`event`、`service`、`backend`、`from`、`to` 都在最上層；前面「config file read」那行是文字，如上所述。另外用替身程式送過一行 3008 bytes 的 JSON，同一條規則也完整送到。
 
 **讓管理站來問。** net-snmp 的 `snmpd` 可以用 `extend` 把一個指令的輸出開放出去，管理站再用 SNMP GET 讀：
 
