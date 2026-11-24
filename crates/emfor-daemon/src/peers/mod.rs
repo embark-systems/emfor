@@ -23,6 +23,8 @@
 //! tasks peers can reach, by service digest) and `task` (the async task).
 
 mod crypto;
+#[cfg(test)]
+mod crypto_bench;
 mod group;
 mod record;
 mod stats;
