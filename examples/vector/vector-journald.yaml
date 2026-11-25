@@ -1,0 +1,25 @@
+# Vector reading emfor's JSON log from the journal (systemd).
+# See docs/manual/14-integrations.md, section "Vector".
+# emfor.toml needs [log] format = "json".
+# The journald source keeps its place in the journal here.
+data_dir: /var/lib/vector
+
+sources:
+  emfor_log:
+    type: journald
+    include_units: ["emfor"]
+
+transforms:
+  emfor_json:
+    type: remap
+    inputs: [emfor_log]
+    source: |
+      # Lines written before the config is read are plain text: drop them.
+      . = parse_json!(.message)
+
+sinks:
+  out_log:
+    type: file
+    inputs: [emfor_json]
+    path: /tmp/out-journald.ndjson
+    encoding: { codec: json }

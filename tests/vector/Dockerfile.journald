@@ -1,0 +1,27 @@
+# systemd + Vector + emfor, for tests/vector/journald.sh: emfor runs as a
+# systemd unit, so its JSON log goes to the journal, and Vector reads the
+# journald source. emfor is built on bookworm; Vector's binary comes from its
+# image.
+ARG VECTOR_IMAGE=timberio/vector:latest-debian
+
+FROM rust:1-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+COPY tools tools
+COPY clients/rust clients/rust
+COPY tests/spike/probe tests/spike/probe
+RUN cargo build --locked --bin emfor
+
+FROM ${VECTOR_IMAGE} AS vec
+
+FROM debian:trixie
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends systemd systemd-sysv dbus netcat-openbsd jq curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/debug/emfor /usr/local/bin/emfor
+COPY --from=vec /usr/bin/vector /usr/local/bin/vector
+COPY examples/vector/vector-journald.yaml /etc/vector/emfor-journald.yaml
+COPY tests/vector/journald-inside.sh /journald-inside.sh
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

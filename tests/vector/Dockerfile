@@ -22,5 +22,6 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/debug/emfor /usr/local/bin/emfor
 COPY examples/vector/vector.yaml /etc/vector/emfor.yaml
+COPY examples/vector/vector-stdin.yaml /etc/vector/emfor-stdin.yaml
 COPY tests/vector/inside.sh /inside.sh
 ENTRYPOINT ["/bin/sh", "/inside.sh"]

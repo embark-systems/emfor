@@ -194,16 +194,27 @@ lines can change.
 
 Tested by `tests/vector/run.sh` with Vector 0.62.0: a backend that is stopped
 shows as a `backend_state_changed` event, and the metrics arrive with their
-tags. The test reads the log from a file. Not tested, and written from
-Vector's own documentation:
+tags. That test reads the log from a file.
 
-- With systemd, a `journald` source gives the JSON line in `message`, so the
-  same `parse_json!(.message)` should work.
-- On FreeBSD the log goes to syslog with a prefix before the JSON
-  ([Read the log](#old-network-management-systems-snmp-and-hooks)). Pipe it to
-  a program that cuts everything before the first `{` and give Vector that
-  output with a `stdin` or `exec` source. Vector's `syslog` source reads Unix
-  stream sockets, and syslogd uses datagrams.
+**journald.** With systemd, emfor's log is in the journal and Vector's
+`journald` source gives the JSON line in `message`, so the same
+`parse_json!(.message)` works
+([examples/vector/vector-journald.yaml](../../examples/vector/vector-journald.yaml)).
+The source needs a `data_dir` to keep its place in the journal. Tested by
+`tests/vector/journald.sh` with Vector 0.62.0: emfor as a systemd unit in a
+Debian 13 container, the same event as above.
+
+**FreeBSD.** The log goes to syslog with a prefix before the JSON
+([Read the log](#old-network-management-systems-snmp-and-hooks)). Pipe it to
+`sed -un 's/^[^{]*{/{/p'`, which cuts everything before the first `{` and drops
+the lines that have none, and give the output to Vector's `stdin` source
+([examples/vector/vector-stdin.yaml](../../examples/vector/vector-stdin.yaml)).
+Vector's `syslog` source reads Unix stream sockets, and syslogd writes
+datagrams, so do not point it at syslogd directly. `tests/vector/run.sh` tests
+the `sed` and the `stdin` source with prefixed lines on Linux, and the `sed`
+line was run on FreeBSD 15.1. **Vector itself was not run on FreeBSD:** the 15.1
+arm64 package repository had no Vector package when this was written, so run
+Vector on another host or build it yourself.
 
 ## pf (FreeBSD)
 

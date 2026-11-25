@@ -1,0 +1,23 @@
+# Vector reading emfor's JSON log from standard input, for FreeBSD: syslogd
+# pipes each line to a program (see docs/manual/14-integrations.md, "Read the
+# log"), for example
+#   sed -un 's/^[^{]*{/{/p' | vector --config vector-stdin.yaml
+# The sed cuts the syslog prefix before the first "{" and prints only lines that
+# have one, so text lines never reach Vector.
+sources:
+  emfor_log:
+    type: stdin
+
+transforms:
+  emfor_json:
+    type: remap
+    inputs: [emfor_log]
+    source: |
+      . = parse_json!(.message)
+
+sinks:
+  out_log:
+    type: file
+    inputs: [emfor_json]
+    path: /tmp/out-stdin.ndjson
+    encoding: { codec: json }

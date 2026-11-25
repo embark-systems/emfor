@@ -154,10 +154,11 @@ transforms:
 
 這要先設 `[log] format = "json"`（[第 12 章](12-operating.md#json-行)）。不是 JSON 的行會被 `parse_json!` 丟掉；emfor 讀設定檔之前寫的那幾行就是這樣，丟掉正好。一次狀態變更會變成一筆事件，`event`、`service`、`backend`、`from`、`to`、`reason`、`level` 和 `timestamp` 都在最上層，例如 `from` 是 `healthy`、`to` 是 `unhealthy`、`reason` 是 `Connection refused (os error 111)`。沒有 reason 時 `reason` 是 `-`，`level` 是大寫。只有這些欄位是穩定的（[第 12 章](12-operating.md#json-行)）；`clock_jumped` 和其他行都可能改。
 
-測試：`tests/vector/run.sh`，Vector 0.62.0：停掉一個 backend，會看到一筆 `backend_state_changed` 事件，metrics 也帶著標籤進來。這個測試是從檔案讀 log。下面兩種沒測過，是照 Vector 自己的文件寫的：
+測試：`tests/vector/run.sh`，Vector 0.62.0：停掉一個 backend，會看到一筆 `backend_state_changed` 事件，metrics 也帶著標籤進來。這個測試是從檔案讀 log。
 
-- 用 systemd 時，`journald` 來源會把 JSON 那一行放在 `message`，所以同一個 `parse_json!(.message)` 應該行得通。
-- FreeBSD 的 log 會送進 syslog，JSON 前面有一段前綴（見 [SNMP 那一節](#舊式網管snmp-與-hook)的「Read the log」）。先用管道交給一支程式，切掉第一個 `{` 之前的字，再用 `stdin` 或 `exec` 來源把輸出交給 Vector。Vector 的 `syslog` 來源讀的是 Unix stream socket，而 syslogd 用的是 datagram。
+**journald。** 用 systemd 時，emfor 的 log 在 journal 裡，Vector 的 `journald` 來源會把 JSON 那一行放在 `message`，所以同一個 `parse_json!(.message)` 就行（[examples/vector/vector-journald.yaml](../../examples/vector/vector-journald.yaml)）。這個來源要有 `data_dir`，用來記住讀到 journal 的哪裡。測試：`tests/vector/journald.sh`，Vector 0.62.0：在 Debian 13 container 裡把 emfor 當 systemd unit 跑，會收到同樣的事件。
+
+**FreeBSD。** log 會送進 syslog，JSON 前面有一段前綴（見 [SNMP 那一節](#舊式網管snmp-與-hook)的「Read the log」）。把它交給 `sed -un 's/^[^{]*{/{/p'`：它會切掉第一個 `{` 之前的字，沒有 `{` 的行整行丟掉；輸出再交給 Vector 的 `stdin` 來源（[examples/vector/vector-stdin.yaml](../../examples/vector/vector-stdin.yaml)）。Vector 的 `syslog` 來源讀的是 Unix stream socket，而 syslogd 寫的是 datagram，所以不要讓它直接接 syslogd。`tests/vector/run.sh` 在 Linux 上用帶前綴的行測過 `sed` 加 `stdin` 來源，`sed` 那一行也在 FreeBSD 15.1 上跑過。**Vector 本身沒有在 FreeBSD 上跑過：** 寫這段時，15.1 arm64 的套件庫裡沒有 Vector 套件，請在別台主機跑 Vector，或自己編譯。
 
 ## pf（FreeBSD）
 
