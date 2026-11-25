@@ -120,6 +120,45 @@ $ promtool check rules examples/prometheus/emfor-rules.yml
 $ promtool test rules examples/prometheus/emfor-rules.test.yml
 ```
 
+## Vector
+
+[Vector](https://vector.dev) 可以讀 emfor 的兩種輸出：metrics 和 JSON log。[examples/vector/vector.yaml](../../examples/vector/vector.yaml) 把兩種寫在同一份設定裡。
+
+### Metrics
+
+```yaml
+sources:
+  emfor_metrics:
+    type: prometheus_scrape
+    endpoints: ["http://127.0.0.1:5301/metrics"]
+    scrape_interval_secs: 15
+```
+
+Vector 不會替 endpoint 補上 `/metrics`，要把完整路徑寫出來。這個來源會把每條序列變成 Vector 的 metric，標籤變成 tag，例如 `emfor_backend_state` 帶 `service`、`backend` 和 `state`。要從別台主機抓，請設 `[metrics] listen` 和 `allow`（[第 12 章](12-operating.md#metrics)）；沒有 TLS，也沒有帳號驗證。
+
+### JSON log
+
+```yaml
+sources:
+  emfor_log:
+    type: file
+    include: ["/var/log/emfor.log"]
+
+transforms:
+  emfor_json:
+    type: remap
+    inputs: [emfor_log]
+    source: |
+      . = parse_json!(.message)
+```
+
+這要先設 `[log] format = "json"`（[第 12 章](12-operating.md#json-行)）。不是 JSON 的行會被 `parse_json!` 丟掉；emfor 讀設定檔之前寫的那幾行就是這樣，丟掉正好。一次狀態變更會變成一筆事件，`event`、`service`、`backend`、`from`、`to`、`reason`、`level` 和 `timestamp` 都在最上層，例如 `from` 是 `healthy`、`to` 是 `unhealthy`、`reason` 是 `Connection refused (os error 111)`。沒有 reason 時 `reason` 是 `-`，`level` 是大寫。只有這些欄位是穩定的（[第 12 章](12-operating.md#json-行)）；`clock_jumped` 和其他行都可能改。
+
+測試：`tests/vector/run.sh`，Vector 0.62.0：停掉一個 backend，會看到一筆 `backend_state_changed` 事件，metrics 也帶著標籤進來。這個測試是從檔案讀 log。下面兩種沒測過，是照 Vector 自己的文件寫的：
+
+- 用 systemd 時，`journald` 來源會把 JSON 那一行放在 `message`，所以同一個 `parse_json!(.message)` 應該行得通。
+- FreeBSD 的 log 會送進 syslog，JSON 前面有一段前綴（見 [SNMP 那一節](#舊式網管snmp-與-hook)的「Read the log」）。先用管道交給一支程式，切掉第一個 `{` 之前的字，再用 `stdin` 或 `exec` 來源把輸出交給 Vector。Vector 的 `syslog` 來源讀的是 Unix stream socket，而 syslogd 用的是 datagram。
+
 ## pf（FreeBSD）
 
 pf 可以用 `rdr` 規則把連線分散到一個表裡的位址。[examples/pf/emfor-pf-table.sh](../../examples/pf/emfor-pf-table.sh) 每秒更新一次這個表，讓它和 emfor 的 SRV 回答中優先序最低的那些一致：

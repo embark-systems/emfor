@@ -144,6 +144,67 @@ $ promtool check rules examples/prometheus/emfor-rules.yml
 $ promtool test rules examples/prometheus/emfor-rules.test.yml
 ```
 
+## Vector
+
+[Vector](https://vector.dev) can read both of emfor's outputs: the metrics
+and the JSON log. [examples/vector/vector.yaml](../../examples/vector/vector.yaml)
+has both as one config.
+
+### Metrics
+
+```yaml
+sources:
+  emfor_metrics:
+    type: prometheus_scrape
+    endpoints: ["http://127.0.0.1:5301/metrics"]
+    scrape_interval_secs: 15
+```
+
+Vector does not add `/metrics` to an endpoint, so write the whole path. The
+source turns every series into a Vector metric with its labels as tags, for
+example `emfor_backend_state` with `service`, `backend` and `state`. From
+another host, set `[metrics] listen` and `allow`
+([chapter 12](12-operating.md#metrics)); there is no TLS or login.
+
+### The JSON log
+
+```yaml
+sources:
+  emfor_log:
+    type: file
+    include: ["/var/log/emfor.log"]
+
+transforms:
+  emfor_json:
+    type: remap
+    inputs: [emfor_log]
+    source: |
+      . = parse_json!(.message)
+```
+
+This needs `[log] format = "json"` ([chapter 12](12-operating.md#json-lines)).
+`parse_json!` drops a line that is not JSON, which is right for the few lines
+written before emfor has read its config. A state change then arrives as one
+event with `event`, `service`, `backend`, `from`, `to`, `reason`, `level` and
+`timestamp` at the top level, for example `from` `healthy`, `to` `unhealthy`
+and `reason` `Connection refused (os error 111)`. `reason` is `-` when
+there is none, and `level` is in capitals. Only these fields are stable
+([chapter 12](12-operating.md#json-lines)); `clock_jumped` and the other
+lines can change.
+
+Tested by `tests/vector/run.sh` with Vector 0.62.0: a backend that is stopped
+shows as a `backend_state_changed` event, and the metrics arrive with their
+tags. The test reads the log from a file. Not tested, and written from
+Vector's own documentation:
+
+- With systemd, a `journald` source gives the JSON line in `message`, so the
+  same `parse_json!(.message)` should work.
+- On FreeBSD the log goes to syslog with a prefix before the JSON
+  ([Read the log](#old-network-management-systems-snmp-and-hooks)). Pipe it to
+  a program that cuts everything before the first `{` and give Vector that
+  output with a `stdin` or `exec` source. Vector's `syslog` source reads Unix
+  stream sockets, and syslogd uses datagrams.
+
 ## pf (FreeBSD)
 
 pf can spread connections over a table with an `rdr` rule;

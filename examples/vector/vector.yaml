@@ -1,0 +1,40 @@
+# Vector reading emfor: the metrics and the JSON log.
+# See docs/manual/14-integrations.md, section "Vector".
+#
+# emfor.toml needs:
+#   [log]
+#   format = "json"
+#   [metrics]
+#   listen = ["127.0.0.1:5301"]
+#
+# The log is read from a file here. With systemd, use a journald source
+# instead and parse its MESSAGE field the same way.
+sources:
+  emfor_metrics:
+    type: prometheus_scrape
+    endpoints: ["http://127.0.0.1:5301/metrics"]
+    scrape_interval_secs: 1
+  emfor_log:
+    type: file
+    include: ["/tmp/emfor.log"]
+    read_from: beginning
+
+transforms:
+  emfor_json:
+    type: remap
+    inputs: [emfor_log]
+    source: |
+      # Lines written before the config is read are plain text: drop them.
+      . = parse_json!(.message)
+
+sinks:
+  out_metrics:
+    type: file
+    inputs: [emfor_metrics]
+    path: /tmp/out-metrics.ndjson
+    encoding: { codec: json }
+  out_log:
+    type: file
+    inputs: [emfor_json]
+    path: /tmp/out-log.ndjson
+    encoding: { codec: json }
