@@ -14,9 +14,11 @@ change in this release:
 - **A heartbeat far in the future counts as stale.** Clients stop taking the
   store for fresh when the host clock was set back by more than
   `EMFOR_MAX_STALENESS`. `emfor status` does the same with a fixed 3 s, and
-  its exit status is 1 now where it was 0. `emfor lookup` (also with
-  `--json`) fails with `UNAVAILABLE` and exit status 3 now where it printed
-  the address and exited 0. Exit statuses are a stable interface. Details
+  its exit status is 1 now where it was 0. A lookup in such a store sees
+  every backend as unknown, in `emfor lookup` and in the client of every
+  language: a `closed` service gives `ALL_DOWN` (exit status 1 of `emfor
+  lookup`) where it gave an address, and an `open` service may give a backend
+  that is unhealthy. Exit statuses and answers are stable interfaces. Details
   below.
 - **`heartbeat_age_ms` can be negative.** In `emfor status --json` and in
   `emfor lookup --explain --json` (`store.heartbeat_age_ms`), when the
@@ -32,7 +34,8 @@ change in this release:
 - A config that uses a key added here (`[log] format`, `[peers] cipher`,
   `[metrics] allow`, an `http` check's `ca_file`) fails `emfor check-config`
   on an earlier version, so take it out before a downgrade.
-- A reload now writes up to 50 lines about what it changed, and every start
+- A reload now writes up to 51 lines about what it changed (50 and one for
+  the rest), and every start
   and reload logs the SHA-256 of each config file it reads.
 - After the upgrade, `emfor status` and `/metrics` have new lines and series
   (clock offsets and silent checkers of peer members, `emfor_clock_jumps_total`).
@@ -150,7 +153,7 @@ change in this release:
   them is affected as far as we know (not tried on each). A Debian
   `ca-certificates.crt` is 224019 bytes, far below the limit. The daemon's
   `[peers] secret_file` shares the same code; its checks and messages are
-  unchanged. Owner and mode of these files are still only a warning.
+  unchanged. The mode of these files is still only a warning; their owner is not checked.
 
 - **A peer secret rotation is logged with a stable line.** When the content of
   `[peers] secret_file` changes (no reload needed), the daemon logs one `info`
@@ -230,14 +233,16 @@ change in this release:
 
 - **The log can be JSON, and the fields of a state change are stable.** New
   `[log] format = "json"` (default `"text"`) writes one JSON object per line
-  after the config is read, with the fields of the event at the top level and
+  once the daemon has started with it (the lines before that, including the
+  warnings about the config files and the `config file read` lines of a
+  start, are text), with the fields of the event at the top level and
   `timestamp`, `level`, `target` and `message`. A reload that changes `format`
   is rejected like any restart-only setting. The state change line gains
   `event=backend_state_changed` (also in text, at the end of the line), and
   `event`, `service`, `backend`, `from`, `to`, `reason` and the JSON
   `timestamp` and `level` are now stable. Chapter 14 says why emfor has no SNMP
-  or hook, and has an example script (`examples/snmp/emfor-snmp-trap.sh`, run
-  only against made-up input) and net-snmp `extend`; chapter 12 describes the
+  or hook, and has an example script (`examples/snmp/emfor-snmp-trap.sh`; the
+  entry on what was run is above) and net-snmp `extend`; chapter 12 describes the
   `history` of `emfor status --json`. New crate `tracing-serde`.
 
 - **Peer messages can use AES-256-GCM (`EMP4`).** New `[peers] cipher`
@@ -253,15 +258,16 @@ change in this release:
 - **The manual shows how to check ping and SCTP with `exec`.** emfor has no
   ICMP or SCTP checker; chapter 6 gives a wrapper script for `ping` (with
   what the unit's sandbox and `net.ipv4.ping_group_range` mean for it) and
-  describes what an SCTP check program needs. Nothing there has been run. No
-  code change.
+  describes what an SCTP check program needs. The entry above says what was
+  run. No code change.
 
 - **The manual says which releases get fixes.** Only the latest one, with no
   backports before 1.0, no support contract and no promised response time
   (chapter 15). No code change.
 
 - **The manual says where emfor stands on SELinux and AppArmor.** emfor ships
-  no policy and has not been run under either in enforcing mode. Chapter 13
+  no policy; the entry above says what was run under SELinux enforcing and
+  AppArmor. Chapter 13
   lists what the daemon reads, writes, listens on and starts, for anyone who
   writes a policy; chapter 16 has a short way to find a denial. No code
   change.
@@ -276,7 +282,9 @@ change in this release:
 - **A reload logs what it changed.** After an accepted reload the log has one
   line per difference (services and backends added, removed or changed,
   `drain`, a changed check definition by digest only, peer group settings),
-  at most 50 per reload, before `config reloaded`. The daemon also logs the
+  at most 50 per reload and then one line for the rest, before `config
+  reloaded`. A change of `site`, of `[dns]`, of `[log] level` or a whole
+  `[peers]` table added or removed has no line. The daemon also logs the
   SHA-256 of every config file it reads, at start and at each reload, with or
   without `include_dir`. Field names (`change`, `service`, `backend`, ...) are
   stable; the wording is not. Check options and secrets are never logged. The
@@ -303,7 +311,9 @@ change in this release:
 - **A heartbeat far in the future counts as stale.** When the clock of the
   host is set back by more than `EMFOR_MAX_STALENESS` (3 s by default) and
   the daemon then stops writing, clients no longer take the store for fresh
-  until the clock catches up. `emfor status` applies the same rule with a
+  until the clock catches up; a lookup sees every backend as unknown, so
+  `on_all_down` decides (`closed`: `ALL_DOWN`, exit status 1 of `emfor lookup`;
+  `open`: every backend, healthy or not). `emfor status` applies the same rule with a
   fixed limit of 3 s (it does not read `EMFOR_MAX_STALENESS`) and exits with 1
   in that case, where it exited with 0 before. With a live daemon the
   clients see a stale store for up to about a second, until its next

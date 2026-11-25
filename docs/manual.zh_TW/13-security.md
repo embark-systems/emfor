@@ -11,7 +11,7 @@
 | 設定檔與 `include_dir` | 是 | 裡面指定了 daemon 要執行的程式（`exec` 指令、plugin）。 |
 | plugin 與 `exec` 程式 | 是 | 它們用 daemon 的權限執行。 |
 | backend | **否** | backend 或 plugin 送來的任何東西，進 store、log、status 或 metrics 之前，都會先限制長度再跳脫。 |
-| peer | 只在持有密鑰時 | 每則訊息都用共用密鑰驗證（預設也會加密），還會檢查是不是重送、寄件者和 site 對不對。 |
+| peer | 只在持有密鑰時 | 每則訊息都用共用密鑰驗證（預設也會加密），還會檢查是不是重送、是誰送的、site 對不對。 |
 | 本機使用者 | 部分 | 讀 store 的程式共用同一個 lock 檔（[見下](#store-與本機使用者)）。 |
 | 到 DNS 與 `/metrics` 的網路 | 沒有認證；`/metrics` 可用 `[metrics] allow` 限制來源 | 兩者預設都只聽 loopback。`allow` 只看直接連進來的對端位址（不讀 `X-Forwarded-For`），不能取代防火牆。 |
 
@@ -86,7 +86,7 @@ store 裡存的是服務名稱、backend 位址、狀態和 reason，不存任�
 
 - 用 HMAC-SHA256 驗證（`EMP1`），或用 ChaCha20-Poly1305（`EMP2`）或 XChaCha20-Poly1305（`EMP3`）加密，設了 `cipher = "aes-256-gcm"` 時用 AES-256-GCM（`EMP4`）；金鑰是用 HKDF-SHA256 從密鑰導出來的。
 - 從 0.7.0 起，`encrypt = true` 的 daemon 預設會丟掉明文訊息（`accept_plaintext = false`）。
-- 重送的訊息、太舊的訊息、不認識的寄件者，以及其他 site 來的訊息，都會被丟掉並計數。
+- 重送的訊息、太舊的訊息、不認識的成員送來的訊息，以及其他 site 來的訊息，都會被丟掉並計數。
 - 單一 peer 沒辦法自己改變 backend 的狀態：`down` 通知只會讓本機重新檢查，而投票要三台負責主機中的兩台同意。不過，拿到密鑰的人可以靠送投票，讓每個成員都把某個 backend 標成 down。請像保護密碼一樣保護密鑰。
 
 ## systemd unit
@@ -102,21 +102,21 @@ emfor **沒有 FIPS 模式**，本手冊也不會說 emfor「符合 FIPS 140」�
 | 聯防訊息 `EMP1` | HMAC-SHA256、HKDF-SHA256 | RustCrypto 的 crate（`hmac`、`hkdf`、`sha2`） |
 | 聯防訊息 `EMP2`、`EMP3` | ChaCha20-Poly1305、XChaCha20-Poly1305 | RustCrypto（`chacha20poly1305`） |
 | 聯防訊息 `EMP4` | AES-256-GCM、HKDF-SHA256 | `aws-lc-rs` |
-| TLS 檢查與外掛的 TLS 客戶端 | TLS 1.2 與 1.3 | `rustls` 搭配 `aws-lc-rs` |
+| TLS 檢查與 plugin 的 TLS 客戶端 | TLS 1.2 與 1.3 | `rustls` 搭配 `aws-lc-rs` |
 | 決定檢查負責主機的 rendezvous hashing | MD5，與安全無關 | RustCrypto（`md-5`） |
-| `radius` 外掛 | MD5（協定規定的） | RustCrypto（`md-5`） |
+| `radius` plugin | MD5（協定規定的） | RustCrypto（`md-5`） |
 
 為什麼這不算 FIPS：
 
 - ChaCha20-Poly1305 不在核准的演算法裡，RustCrypto 的 crate 也不是驗證過的模組。`cipher = "aes-256-gcm"` 換的是演算法，不是模組：emfor 連結的 `aws-lc-rs` 是一般版本，不是通過 FIPS 驗證的那一版。
-- 還有別的程式碼帶著自己的密碼學（DNS、QUIC 和憑證函式庫裡的 `ring`），`radius` 外掛也需要 MD5。
+- 還有別的程式碼帶著自己的密碼學（DNS、QUIC 和憑證函式庫裡的 `ring`），`radius` plugin 也需要 MD5。
 - 主機開了 FIPS 模式也一樣。emfor 不呼叫作業系統的密碼學函式庫，所以主機的設定既不影響 emfor，也不會讓它變成符合規範。
 
 如果你需要通過驗證的模組，emfor 目前不是；等這點改變了，這一章才會跟著改。
 
 ## SELinux 與 AppArmor
 
-emfor 不附 SELinux 模組，也不附 AppArmor profile。在 Rocky Linux 9.9（aarch64）上用 rpm 試過，SELinux 是 enforcing、policy 是 `targeted`：daemon 跑在 `unconfined_service_t` 這個 domain，policy 不會限制它；跑了 `tcp`、`http`、`exec` 檢查、DNS、`/metrics`、有加密密碼檔的 peer group、`/var/lib/emfor` 底下的 store 和一次 reload，都沒有出現 AVC 拒絕。deb 也用同樣的方式在 Ubuntu 24.04（arm64，虛擬機器）、AppArmor 啟用的情況下跑過：daemon 沒有 profile（`/proc/<pid>/attr/current` 是 `unconfined`），kernel log 裡沒有 `apparmor="DENIED"`。沒有在 x86-64 上跑過，也沒有在會限制它的 policy 或 profile 底下跑過。底下寫的是程式實際會做什麼，讓你自己寫這樣的 policy；它不是一份測過的 policy。
+emfor 不附 SELinux 模組，也不附 AppArmor profile。在 Rocky Linux 9.9（aarch64）上用 rpm 試過，SELinux 是 enforcing、policy 是 `targeted`：daemon 跑在 `unconfined_service_t` 這個 domain，policy 不會限制它；跑了 `tcp`、`http`、`exec` 檢查、DNS、`/metrics`、有密鑰檔、加密通訊的聯防群組、`/var/lib/emfor` 底下的 store 和一次 reload，都沒有出現 AVC 拒絕。deb 也用同樣的方式在 Ubuntu 24.04（arm64，虛擬機器）、AppArmor 啟用的情況下跑過：daemon 沒有 profile（`/proc/<pid>/attr/current` 是 `unconfined`），kernel log 裡沒有 `apparmor="DENIED"`。沒有在 x86-64 上跑過，也沒有在會限制它的 policy 或 profile 底下跑過。底下寫的是程式實際會做什麼，讓你自己寫這樣的 policy；它不是一份測過的 policy。
 
 上面的 systemd unit 從 daemon 這一側限制它能做什麼，強制存取控制（MAC）的 policy 則從 kernel 這一側限制，兩者疊加，不能互相取代。稽核規則如果要求 daemon 要被限制住，就需要 policy。
 
@@ -125,8 +125,8 @@ daemon 會碰到的東西：
 - **讀：** 設定檔和 `include_dir` 裡的檔案（[第 5 章](05-configuring.md)）、祕密檔、檢查裡指定的 `ca_file`、`password_file` 和金鑰檔，以及系統的 CA 憑證（沒設 `ca_file` 的 `http` 檢查）。它也用 inotify 監看聯防祕密檔所在的目錄。
 - **讀寫：** store 目錄，預設是 `/var/lib/emfor`：`state.mdb`、`state.mdb-lock`、`state.mdb.writer`、`state.mdb-peers`，以及 store 損壞時被移開的 `state.mdb.corrupt`。它會在那裡建立檔案並 rename。
 - **監聽：** DNS 位址（UDP 與 TCP）、metrics 位址（TCP）、`[peers]` 位址（UDP），都由設定檔指定。
-- **連線：** 每個 backend 位址，用檢查的協定（TCP；有些外掛用 UDP）。
-- **啟動程式：** `exec` 檢查和外掛會以 `emfor` 身分、在各自的 process group 裡啟動設定檔寫的程式。外掛通常是 `/usr/bin/emfor-check`。要限制 daemon 的 policy 必須允許你寫在設定檔裡的每一支程式，而這些程式也受同一套規則限制；這通常是需要你自己加規則的地方。
+- **連線：** 每個 backend 位址，用檢查的協定（TCP；有些 plugin 用 UDP）。
+- **啟動程式：** `exec` 檢查和 plugin 會以 `emfor` 身分、在各自的 process group 裡啟動設定檔寫的程式。plugin 通常是 `/usr/bin/emfor-check`。要限制 daemon 的 policy 必須允許你寫在設定檔裡的每一支程式，而這些程式也受同一套規則限制；這通常是需要你自己加規則的地方。
 - **不會用到：** raw socket、packet socket 或 capability；正常執行時也不讀 `/proc`。
 
 發行版如果只在載入 policy 時才限制 daemon，沒有 policy 的 daemon 就不會被限制：上面 Rocky Linux 9 和 Ubuntu 24.04 的測試就是這樣。其他發行版怎麼處理，我們沒有查證。加了 policy 之後遇到拒絕的處理，見[第 16 章](16-troubleshooting.md#selinux-或-apparmor-的拒絕)。

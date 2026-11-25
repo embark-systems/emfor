@@ -267,12 +267,12 @@ is not.
 
 ### JSON lines
 
-With `[log] format = "json"` each line the daemon writes after it has read its
-config is one JSON object on one line, with the fields of the event at the top
-level, not nested:
+With `[log] format = "json"` each line the daemon writes once it has started
+with that config is one JSON object on one line, with the fields of the event
+at the top level, not nested:
 
 ```json
-{"timestamp":"2026-11-23T04:29:21.959477Z","level":"INFO","message":"backend 127.0.0.2:8080 of web.svc.emfor changed from healthy to unhealthy (connection refused)","event":"backend_state_changed","service":"web.svc.emfor","backend":"127.0.0.2:8080","from":"healthy","to":"unhealthy","reason":"connection refused","target":"emfor_daemon::schedule"}
+{"timestamp":"2026-11-23T04:29:21.959477Z","level":"INFO","message":"backend 127.0.0.2:8080 of web.svc.emfor changed from healthy to unhealthy (Connection refused (os error 111))","event":"backend_state_changed","service":"web.svc.emfor","backend":"127.0.0.2:8080","from":"healthy","to":"unhealthy","reason":"Connection refused (os error 111)","target":"emfor_daemon::schedule"}
 ```
 
 Stable: `timestamp` (RFC 3339) and `level` on every line; `event`, `service`,
@@ -281,8 +281,10 @@ the reload audit lines below, with `change`. Not stable: the text of
 `message`, `target`, the fields of other lines. New fields can appear at any
 release, so read the ones you need and ignore the rest.
 
-Lines written before the config has been read, such as the start of plugins or
-a config error at start, are text: the daemon does not know the format yet.
+Lines written before the config has been applied, such as the start of
+plugins, a config error at start, the warnings about the config files and the
+`config file read` lines of a start, are text: the daemon does not know the
+format yet.
 Send the lines that are not JSON to another place, or ignore them. `format`
 is read at start only: a reload that changes it is rejected with `log format
 settings require restart`, while a changed `level` is applied. `RUST_LOG`
@@ -299,8 +301,10 @@ of the files was refused:
 INFO emfor_daemon::cli: config file read: /etc/emfor/emfor.toml file=/etc/emfor/emfor.toml sha256=9f2c...e1
 ```
 
-After an accepted reload, one `info` line per difference comes before `config
-reloaded`. Each has a `change` field and the fields below. The field names and
+After an accepted reload, one `info` line per difference in the services, their
+backends and the peer group settings comes before `config reloaded`. A change
+of `site`, of `[dns]`, of `[log] level`, or a whole `[peers]` table added or
+removed, has no line. Each has a `change` field and the fields below. The field names and
 the values of `change` are stable; the wording of the line is not.
 
 | `change` | Other fields |
@@ -320,8 +324,8 @@ the values of `change` are stable; the wording of the line is not.
   `false`.
 - `applies=next_start` marks `previous_secret_file`, which is read only at
   start.
-- At most 50 lines are logged for one reload; the rest become one line with
-  `change=more` and the number in `omitted`. A reload that changes nothing
+- At most 50 difference lines are logged for one reload; then one more line
+  with `change=more` has the number of the rest in `omitted`. A reload that changes nothing
   logs no such line.
 - A `secret_file` that changes its *content* is not a reload: the daemon
   notices it by itself and logs one `info` line with
@@ -532,7 +536,7 @@ files back and send `SIGHUP`.
 - Run `emfor check-config` on the restored files first, as the unit does.
 - After the reload, compare the `sha256` of each `config file read` line in
   the log with `sha256sum` of the files, and read the audit lines ([what a
-  reload changed](#what-a-reload-changed)): they list what the reload undid.
+  reload changed](#what-a-reload-changed)): they list what the reload undid in services, backends and peer group settings.
 - Backend state follows the same rules as for any reload. A change of a
   service's `check` or `check_options` starts its backends over from
   `unknown`, so backing the change out does so again; a change of `drain`,
@@ -561,7 +565,7 @@ does not lose anything but the short gap of the restart.
 ### After a clock jump
 
 The heartbeat and the peer messages are timestamps of the host's clock, so a
-jump shows up in three places:
+jump shows up in two places:
 
 - **On the host:** clients compare the heartbeat with their own clock. If the
   clock was set back by more than `EMFOR_MAX_STALENESS`, `emfor status` says

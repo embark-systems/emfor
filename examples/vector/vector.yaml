@@ -23,8 +23,10 @@ transforms:
   emfor_json:
     type: remap
     inputs: [emfor_log]
+    drop_on_error: true
     source: |
-      # Lines written before the config is read are plain text: drop them.
+      # Lines that are not JSON (the text lines before the config is read) fail
+      # here, and drop_on_error drops them; without it Vector passes them on.
       . = parse_json!(.message)
 
 sinks:

@@ -169,7 +169,7 @@ emfor 不附 policy（[第 13 章](13-security.md#selinux-與-apparmor)），所
 2. 確認原因是 policy：先暫時把它切到 permissive（`setenforce 0`，或對該 profile 用 `aa-complain`），重做失敗的動作，再切回來。
 3. 在 policy 裡只開出那一項存取，不要放得更寬。store 放在別的目錄時，讓那個目錄的標籤和 `/var/lib/emfor` 一樣（SELinux），或把路徑加進 profile，並在 unit 裡設 `ReadWritePaths=`（[第 4 章](04-installing.md#systemd-unit)）。
 
-啟動程式的檢查（`exec`、外掛）如果被拒絕，是因為 policy 不允許那支程式從 daemon 的 domain 執行。
+如果 policy 不允許那支程式從 daemon 的 domain 執行，啟動程式的檢查（`exec`、plugin）就會因為被拒絕而失敗。
 
 ## 聯防群組的問題
 

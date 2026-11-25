@@ -178,13 +178,15 @@ transforms:
   emfor_json:
     type: remap
     inputs: [emfor_log]
+    drop_on_error: true
     source: |
       . = parse_json!(.message)
 ```
 
 This needs `[log] format = "json"` ([chapter 12](12-operating.md#json-lines)).
-`parse_json!` drops a line that is not JSON, which is right for the few lines
-written before emfor has read its config. A state change then arrives as one
+A line that is not JSON makes `parse_json!` fail, and `drop_on_error: true`
+drops it, which is right for the few lines written before emfor has read its
+config. Without it Vector passes such a line on unchanged. A state change then arrives as one
 event with `event`, `service`, `backend`, `from`, `to`, `reason`, `level` and
 `timestamp` at the top level, for example `from` `healthy`, `to` `unhealthy`
 and `reason` `Connection refused (os error 111)`. `reason` is `-` when

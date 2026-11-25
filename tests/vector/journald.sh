@@ -10,6 +10,7 @@ tag="emfor-vector-journald-test"
 docker build -q -f tests/vector/Dockerfile.journald --build-arg "VECTOR_IMAGE=$image" -t "$tag" . >/dev/null
 cid=$(docker run -d --rm --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw "$tag")
 trap 'docker stop -t 2 "$cid" >/dev/null 2>&1 || true' EXIT
+trap 'exit 1' INT TERM
 t=0
 until docker exec "$cid" systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded'; do
     t=$((t + 1)); [ "$t" -lt 60 ] || { echo "FAIL: systemd did not start" >&2; exit 1; }

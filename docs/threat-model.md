@@ -127,7 +127,8 @@ Can capture, replay, modify, delay or forge messages.
 - Can try to place or replace files the daemon reads: the config, a fragment,
   a password file, a secret file. The daemon refuses config files that others
   can write, and reads credential files only if they are regular files of a
-  bounded size; owner and mode of credential files give a warning.
+  bounded size; the mode of credential files gives a warning (the owner is not
+  checked, except for the peer `secret_file`).
 - Not covered: a user who can write the daemon's config or its plugin
   programs is the operator for emfor's purposes.
 
@@ -142,9 +143,9 @@ Can capture, replay, modify, delay or forge messages.
 
 ### The operator's own mistakes
 
-emfor warns about the common ones: world-readable credential files, a
-password sent without TLS to a database check, a writable config. It does not
-refuse them, because each can be intended. See the manual, chapter 13.
+emfor warns about the common ones: world-readable credential files and a
+password sent without TLS to a database check. It does not refuse them,
+because each can be intended. A config file that others can write is refused. See the manual, chapter 13.
 
 ## What is out of scope
 

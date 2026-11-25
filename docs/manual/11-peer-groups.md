@@ -82,7 +82,8 @@ services and backends:
   result. The others get fewer than three votes for it. With two voters left,
   both must see the backend down for the votes to apply `down`; a peer's `down`
   alone no longer does. The member ignores the messages for a service or
-  backend it does not have (a line at `debug`); the others see the missing
+  backend it does not have (a `down` message gets a line at `debug`, a result
+  is dropped without one); the others see the missing
   votes as a **silent checker** ([below](#silent-checkers)).
 - A member whose digest differs does send results, but the others store them
   and do not count them, so its place is lost the same way. This is the only
@@ -292,8 +293,8 @@ a second. Not measured on x86-64 or on a CPU without AES instructions.
 drops the message and counts it as `malformed`, and shows as not live to the
 member that sent it. So upgrade every member first, and set `cipher` only
 when all of them run a version that reads `EMP4`; reload each member (`SIGHUP`)
-to apply it. To go back, remove `cipher` and reload: the next message is
-`EMP2` again, and members that still send `EMP4` are still read.
+to apply it. To go back, remove `cipher` and reload: each member gets the cipher it had
+before (`EMP2`, or `EMP3` for a member known to read it), and members that still send `EMP4` are still read.
 
 Every message carries a timestamp, a boot id and a sequence number; a
 replayed, too old, malformed or wrongly signed message, one from an address

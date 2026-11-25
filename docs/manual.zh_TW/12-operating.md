@@ -104,7 +104,7 @@ listen = ["127.0.0.1:5301"]
 allow = ["127.0.0.0/8", "10.20.0.0/16"]   # 選用
 ```
 
-`allow` 是網段清單（`位址/前綴長度`，IPv4 或 IPv6，不能重複）。設了之後，來源不在清單內的連線會得到 `403 Forbidden`，拿不到任何 metrics；沒設就每個來源都服務。沒有例外：設了 `allow`，本機要讀就得把 `127.0.0.0/8` 列進去。daemon 看到的是直接連進來的對端位址，所以經過 NAT 或反向 proxy 時算的是 proxy 的位址，也不會讀 `X-Forwarded-For`。`allow` 改了要 restart，跟 `listen` 一樣。`listen` 有非 loopback 的位址又沒設 `allow` 時，daemon 在啟動和 reload 後都會發出警告。
+`allow` 是網段清單（`位址/前綴長度`，IPv4 或 IPv6，不能重複）。設了之後，來源不在清單內的連線會得到 `403 Forbidden`，拿不到任何 metrics；沒設的話，任何來源都讀得到。沒有例外：設了 `allow`，本機要讀就得把 `127.0.0.0/8` 列進去。daemon 看到的是直接連進來的對端位址，所以經過 NAT 或反向 proxy 時算的是 proxy 的位址，也不會讀 `X-Forwarded-For`。`allow` 改了要 restart，跟 `listen` 一樣。`listen` 有非 loopback 的位址又沒設 `allow` 時，daemon 在啟動和 reload 後都會發出警告。
 
 | Metric | Label | 意義 |
 | --- | --- | --- |
@@ -196,15 +196,15 @@ INFO emfor_daemon::schedule: backend 127.0.0.2:8080 of web.svc.emfor changed fro
 
 ### JSON 行
 
-設了 `[log] format = "json"`，daemon 讀完設定之後寫的每一行 log 都是一行一個 JSON 物件，事件的欄位直接放在最上層，不會包在底下一層：
+設了 `[log] format = "json"`，daemon 用這份設定啟動之後寫的每一行 log 都是一行一個 JSON 物件，事件的欄位直接放在最上層，不會包在底下一層：
 
 ```json
-{"timestamp":"2026-11-23T04:29:21.959477Z","level":"INFO","message":"backend 127.0.0.2:8080 of web.svc.emfor changed from healthy to unhealthy (connection refused)","event":"backend_state_changed","service":"web.svc.emfor","backend":"127.0.0.2:8080","from":"healthy","to":"unhealthy","reason":"connection refused","target":"emfor_daemon::schedule"}
+{"timestamp":"2026-11-23T04:29:21.959477Z","level":"INFO","message":"backend 127.0.0.2:8080 of web.svc.emfor changed from healthy to unhealthy (Connection refused (os error 111))","event":"backend_state_changed","service":"web.svc.emfor","backend":"127.0.0.2:8080","from":"healthy","to":"unhealthy","reason":"Connection refused (os error 111)","target":"emfor_daemon::schedule"}
 ```
 
 穩定的有：每一行的 `timestamp`（RFC 3339）和 `level`；狀態變化那一行的 `event`、`service`、`backend`、`from`、`to`、`reason`；以及下面 reload 稽核行的欄位和 `change`。不穩定的有：`message` 的文字、`target`、其他行的欄位。任何一版都可能新增欄位，所以只讀你要的，其餘忽略。
 
-讀設定檔之前寫的行，例如啟動 plugin，或啟動時的設定錯誤，是文字：那時 daemon 還不知道格式。請把不是 JSON 的行送到別的地方，或直接忽略。`format` 只在啟動時讀：reload 改了它會被拒絕，訊息是 `log format settings require restart`；只改 `level` 則會套用。`RUST_LOG` 只改等級，不改格式。
+套用設定之前寫的行是文字，例如啟動 plugin、啟動時的設定錯誤、設定檔的警告，以及啟動時的 `config file read` 行：那時 daemon 還不知道格式。請把不是 JSON 的行送到別的地方，或直接忽略。`format` 只在啟動時讀：reload 改了它會被拒絕，訊息是 `log format settings require restart`；只改 `level` 則會套用。`RUST_LOG` 只改等級，不改格式。
 
 ### reload 改了什麼
 
@@ -214,7 +214,7 @@ daemon 在啟動和每次 reload 時，會把讀到的每個設定檔連同它�
 INFO emfor_daemon::cli: config file read: /etc/emfor/emfor.toml file=/etc/emfor/emfor.toml sha256=9f2c...e1
 ```
 
-reload 被接受之後，每個差異各有一行 `info`，排在 `config reloaded` 之前。每行都有 `change` 欄位和下表的欄位。欄位名和 `change` 的值是穩定的，整行的文字不是。
+reload 被接受之後，服務、它們的 backend 和聯防群組設定的每個差異各有一行 `info`，排在 `config reloaded` 之前。改了 `site`、`[dns]`、`[log] level`，或整個 `[peers]` table 加上或拿掉，都不會有這種行。每行都有 `change` 欄位和下表的欄位。欄位名和 `change` 的值是穩定的，整行的文字不是。
 
 | `change` | 其他欄位 |
 | --- | --- |
@@ -229,10 +229,10 @@ reload 被接受之後，每個差異各有一行 `info`，排在 `config reload
 
 - 檢查定義改變時只會看到新舊定義的摘要（digest），不會看到選項本身。`resets_state=true` 表示這個服務的 backend 會從 `unknown` 重來；只改 `timeout` 時是 `false`。
 - `applies=next_start` 標的是 `previous_secret_file`，它只在啟動時讀。
-- 一次 reload 最多記 50 行，其餘合成一行 `change=more`，數量在 `omitted`。什麼都沒改的 reload 不會有這些行。
+- 一次 reload 最多記 50 行差異，之後再多一行 `change=more`，其餘的數量在 `omitted`。什麼都沒改的 reload 不會有這些行。
 - `secret_file` 的**內容**換掉不算 reload：daemon 會自己發現，並記一行 `info`，帶 `change=peers_secret_rotated` 和 `secret_file=<路徑>`。只有**路徑**改變時才會有上面的 `peers_changed` 行。
 - 任何一行都不含檢查選項、密鑰檔的內容，或它的雜湊。
-- log 記的是改了什麼、什麼時候，不是誰改的：`SIGHUP` 不帶寄件者。要記下誰改了檔案，請用 auditd 監看設定目錄（`auditctl -w /etc/emfor -p wa -k emfor-config`），或把檔案放在設定管理工具底下，並把 daemon 的 log 送到集中的 log 系統。
+- log 記的是改了什麼、什麼時候，不是誰改的：`SIGHUP` 不會帶上是誰送的。要記下誰改了檔案，請用 auditd 監看設定目錄（`auditctl -w /etc/emfor -p wa -k emfor-config`），或把檔案放在設定管理工具底下，並把 daemon 的 log 送到集中的 log 系統。
 
 ## daemon 的結束代碼
 
@@ -276,9 +276,9 @@ store 為每個服務存一筆記錄和一份歷史（每個 backend 最近 20 �
 
 「歷史填滿」是指一半的 backend 各變過 24 次狀態之後；「切換時間」是從停掉一個 listener 到它的 backend 全部變成 `unhealthy`（上限是 `fall` × `interval` + `timeout`，這裡是 3.5 秒）。CPU 是一顆核心的百分比。
 
-涵蓋這些數字的經驗法則：每個 backend 抓 **6 KB**，`map_size` 設成這個數字的**至少兩倍**，因為 LMDB 改一頁時會先寫到新的位置，才放掉舊的。兩倍是留的餘裕，不是量出來的。照這樣算，預設的 64 MiB 大約夠 5,000 個 backend。實際用量在自己的主機上看 `emfor_store_used_bytes`，並在它逼近 `emfor_store_map_size_bytes` 之前就告警（[store 滿了](#store-滿了)）。
+照這些數字，可以這樣估：每個 backend 抓 **6 KB**，`map_size` 設成這個數字的**至少兩倍**，因為 LMDB 改一頁時會先寫到新的位置，才放掉舊的。兩倍是留的餘裕，不是量出來的。照這樣算，預設的 64 MiB 大約夠 5,000 個 backend。實際用量在自己的主機上看 `emfor_store_used_bytes`，並在它逼近 `emfor_store_map_size_bytes` 之前就告警（[store 滿了](#store-滿了)）。
 
-這些數字來自一台主機、一個容器。需要時間的檢查（`http`、`exec`、plugin）、慢的磁碟、聯防，它們都沒有涵蓋；要靠它們之前，請在自己的硬體上測。
+這些數字來自一台主機、一個容器。這些數字沒有涵蓋需要時間的檢查（`http`、`exec`、plugin）、慢的磁碟和聯防；要用到這些，請先在自己的硬體上測。
 
 ### 把 store 放在記憶體
 
@@ -370,7 +370,7 @@ reload 是全有或全無，所以被拒絕的 reload 不用撤回：daemon 還�
 
 - 把設定目錄放在版本控制或設定管理工具底下；主機上沒有前一份設定的副本。
 - 先對放回去的檔案跑 `emfor check-config`，unit 啟動時也是這樣做。
-- reload 之後，拿 log 裡每一行 `config file read` 的 `sha256` 和這些檔案的 `sha256sum` 比對，再看稽核行（[reload 改了什麼](#reload-改了什麼)）：它們會列出這次 reload 撤掉了什麼。
+- reload 之後，拿 log 裡每一行 `config file read` 的 `sha256` 和這些檔案的 `sha256sum` 比對，再看稽核行（[reload 改了什麼](#reload-改了什麼)）：它們會列出這次 reload 在服務、backend 和聯防群組設定裡撤掉了什麼。
 - backend 的狀態和任何 reload 的規則一樣。服務的 `check` 或 `check_options` 一改，它的 backend 就從 `unknown` 重來，所以撤回時也會再來一次；只改 `drain`、`weight` 或 `peers` 則保留狀態。
 - 要 restart 才生效的設定（`[store]`、各個 `listen` 位址、`[metrics] allow`）不管往哪個方向改，reload 都會拒絕：這些要 restart。
 
@@ -386,7 +386,7 @@ reload 是全有或全無，所以被拒絕的 reload 不用撤回：daemon 還�
 
 ### 時鐘跳動之後
 
-heartbeat 和聯防訊息都是主機時鐘的時間戳，所以時鐘一跳，三個地方會看得到：
+heartbeat 和聯防訊息都是主機時鐘的時間戳，所以時鐘一跳，兩個地方會看得到：
 
 - **在主機上：** client 拿 heartbeat 和自己的時鐘比。如果時鐘往回調超過 `EMFOR_MAX_STALENESS`，`emfor status` 會寫 `heartbeat <age> in the future`，store 也算過期；daemon 還在跑的話，下一次 heartbeat（約一秒內）就恢復。daemon 沒在跑（被 kill、沒有正常停止）時，留下的 heartbeat 會一直在未來，直到時鐘追上：把 daemon 啟動起來，它會寫一個新的。
 - **在聯防群組裡：** 時間戳和接收端時鐘差超過 5 秒（不論早或晚）的訊息會被當成 `stale` 丟掉。在丟掉之前，從 2 秒起，`emfor status` 就會有一行 `peers: clock of <member> is <n.n> s behind this host`（或 `ahead of`），`emfor_peer_clock_offset_seconds{peer}` 也有每個成員的偏差；如果有一行寫的是這台主機的時鐘和每個成員都不一樣，先修這台的時鐘。把時鐘修好（chrony 或 ntpd）就好，不用 restart。`emfor_peer_messages_rejected_total{reason="stale"}` 不再增加，就表示成員又對得上了。
@@ -397,11 +397,11 @@ daemon 自己會發現主機時鐘跳動。每次寫 heartbeat（每秒一次）
 WARN host clock jumped forward by 7.0 s; prefer slewing (chrony) to stepping the clock event=clock_jumped direction=forward jump_ms=7000
 ```
 
-並讓 `emfor_clock_jumps_total` 加一。heartbeat 忙或遲到時兩個時鐘一起走，不會被報。這行 log 每 10 秒最多一行，但每次跳動都會計數，所以告警看計數器，時間和大小看 log。小於 2 秒的調動不會被報；它也小到不會讓 store 過期（`EMFOR_MAX_STALENESS` 預設 3 秒）。這一行的欄位不在穩定欄位之內（[第 12 章](12-operating.md#json-行)）。主機被暫停或休眠後恢復，會被當成往前跳。
+並讓 `emfor_clock_jumps_total` 加一。daemon 很忙、heartbeat 晚了，兩個時鐘也是一起走，所以不會回報。這行 log 每 10 秒最多一行，但每次跳動都會計數，所以告警看計數器，時間和大小看 log。小於 2 秒的調動不會被報；它也小到不會讓 store 過期（`EMFOR_MAX_STALENESS` 預設 3 秒）。這一行的欄位不在穩定欄位之內（[第 12 章](12-operating.md#json-行)）。主機被暫停或休眠後恢復，會被當成往前跳。
 
 每一台跑 emfor 的主機，時鐘請用漸進調整（chrony 的預設），不要一次跳過去。
 
-
+## 在一台主機上執行多個 daemon
 
 每個 store 只能有一個寫入者。第二個用同一個 store 的 daemon 會啟動失敗：
 `cannot open state store: store is already in use by another emfor daemon: lock file /var/lib/emfor/state.mdb.writer is held`
@@ -423,4 +423,4 @@ CPUAffinity=0-1
 在一台 4 核的 Rocky Linux 9.9 虛擬機器上，加了 drop-in 之後 daemon 和 `exec` 子程序的
 `Cpus_allowed_list` 是 `0-1`，沒加是 `0-3`，SELinux enforcing 時檢查也維持 healthy。
 daemon 只會算它能用的核心數（沒加 drop-in 時有 6 個執行緒，加了之後是 4 個）。
-請至少留一個核心不要給別的重工作用：檢查等不到忙碌的核心，可能超過 `timeout`，把 backend 報成 down。
+請至少留一個核心，別讓其他吃重的工作佔滿：檢查如果得等忙碌的核心，可能超過 `timeout`，把 backend 報成 down。

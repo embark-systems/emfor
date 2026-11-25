@@ -12,6 +12,7 @@ transforms:
   emfor_json:
     type: remap
     inputs: [emfor_log]
+    drop_on_error: true
     source: |
       . = parse_json!(.message)
 

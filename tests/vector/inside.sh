@@ -66,6 +66,9 @@ wait_for "the state change to unhealthy arrives parsed" \
 l=$(grep '"event":"backend_state_changed"' /tmp/out-log.ndjson | grep '"to":"unhealthy"' | head -1)
 echo "$l" | jq -e --arg s "$SVC" '.service == $s and (.backend|length>0) and (.from|length>0) and (.to|length>0) and has("reason") and has("timestamp") and has("level")' >/dev/null \
     || fail "state change line lacks stable fields: $l"
+jq -s -e 'length > 0 and all(.[]; has("level") and has("timestamp"))' /tmp/out-log.ndjson >/dev/null \
+    || fail "a line that is not emfor JSON got through the remap: $(grep -v '"level"' /tmp/out-log.ndjson | head -1)"
+echo "ok: only JSON lines arrive (the text lines before the config is read are dropped)"
 echo "ok: stable fields of the state change line: $(echo "$l" | jq -c '{event,service,backend,from,to,reason,level}')"
 
 # FreeBSD: syslogd gives each line a prefix; sed cuts it, Vector reads stdin.

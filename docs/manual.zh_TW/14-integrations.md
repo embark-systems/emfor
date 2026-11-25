@@ -64,7 +64,7 @@ backend api
 | emfor 停掉時 | 照 `hold` 的時間保留原本的 server。 |
 | SERVFAIL | 過了 `hold other`（30 s）就丟掉 server：之後每個請求都會拿到 503。 |
 | 到 backend 的 TLS | 加上 `ssl ... sni str(<name>)`；一定要設 `sni`，因為 SRV 目標的名稱不在憑證裡。 |
-| name server | 只設一個：同一台主機上的 emfor。設了兩個而它們意見不同時，server 清單會每次查詢都在變；如果好幾個 backend 共用同一個 IP（同一台主機的不同埠），HAProxy 3.4 還會對少數請求回 503（槽位的埠變成 0；400 個請求一輪，6 輪都出現，每個 backend 各有 IP 的 6 輪沒有）。只設一個 name server 在這種情況下也不夠：讓一個 backend 每 1.5 秒停掉再啟動，共用 IP 時 7 輪各 100 個請求，每輪有 0 到 12 個請求在約 3 秒後回 503（6 輪有出現）；每個 backend 各有 IP 時，3 輪各只有 1 個請求失敗，是 backend 停掉的那一刻。FreeBSD 15.1（HAProxy 3.4.4）上同樣的測試，共用 IP 時 4 輪各 100 個請求，每輪有 14 到 38 個回 503；每個 backend 各有 IP 時，4 輪各只有 1 到 2 個失敗。跑的時候取樣 `show servers state`，看到 503 落在沒有位址、port 為 0 的 slot（`s4` 一直是，`s2` 在它的 backend 停掉時是），HAProxy 仍把它們當 running，log 對應 `SC--`。 |
+| name server | 只設一個：同一台主機上的 emfor。設了兩個而它們意見不同時，server 清單會每次查詢都在變；如果好幾個 backend 共用同一個 IP（同一台主機的不同埠），HAProxy 3.4 還會對少數請求回 503（槽位的埠變成 0；400 個請求一輪，6 輪都出現，每個 backend 各有 IP 的 6 輪沒有）。只設一個 name server 在這種情況下也不夠：讓一個 backend 每 1.5 秒停掉再啟動，共用 IP 時 7 輪各 100 個請求，每輪有 0 到 12 個請求在約 3 秒後回 503（6 輪有出現）；每個 backend 各有 IP 時，3 輪各只有 1 個請求失敗，都發生在 backend 停掉期間。FreeBSD 15.1（HAProxy 3.4.4）上同樣的測試，共用 IP 時 4 輪各 100 個請求，每輪有 14 到 38 個回 503；每個 backend 各有 IP 時，4 輪各只有 1 到 2 個失敗。跑的時候取樣 `show servers state`，看到 503 落在沒有位址、port 為 0 的 slot（`s4` 一直是，`s2` 在它的 backend 停掉時是），HAProxy 仍把它們當 running，log 對應 `SC--`。 |
 | 測試 | `tests/haproxy/run.sh`、`tests/haproxy/more.sh`；HAProxy 3.4.7 與 2.8.31，以及 FreeBSD 15.1 上的 3.4.4。 |
 
 ## Caddy
@@ -148,17 +148,18 @@ transforms:
   emfor_json:
     type: remap
     inputs: [emfor_log]
+    drop_on_error: true
     source: |
       . = parse_json!(.message)
 ```
 
-這要先設 `[log] format = "json"`（[第 12 章](12-operating.md#json-行)）。不是 JSON 的行會被 `parse_json!` 丟掉；emfor 讀設定檔之前寫的那幾行就是這樣，丟掉正好。一次狀態變更會變成一筆事件，`event`、`service`、`backend`、`from`、`to`、`reason`、`level` 和 `timestamp` 都在最上層，例如 `from` 是 `healthy`、`to` 是 `unhealthy`、`reason` 是 `Connection refused (os error 111)`。沒有 reason 時 `reason` 是 `-`，`level` 是大寫。只有這些欄位是穩定的（[第 12 章](12-operating.md#json-行)）；`clock_jumped` 和其他行都可能改。
+這要先設 `[log] format = "json"`（[第 12 章](12-operating.md#json-行)）。不是 JSON 的行會讓 `parse_json!` 失敗，`drop_on_error: true` 會把它丟掉；emfor 讀設定檔之前寫的那幾行就是這樣，丟掉正好。沒有這個設定，Vector 會把這種行原封不動往下傳。一次狀態變更會變成一筆事件，`event`、`service`、`backend`、`from`、`to`、`reason`、`level` 和 `timestamp` 都在最上層，例如 `from` 是 `healthy`、`to` 是 `unhealthy`、`reason` 是 `Connection refused (os error 111)`。沒有 reason 時 `reason` 是 `-`，`level` 是大寫。只有這些欄位是穩定的（[第 12 章](12-operating.md#json-行)）；`clock_jumped` 和其他行都可能改。
 
 測試：`tests/vector/run.sh`，Vector 0.62.0：停掉一個 backend，會看到一筆 `backend_state_changed` 事件，metrics 也帶著標籤進來。這個測試是從檔案讀 log。
 
 **journald。** 用 systemd 時，emfor 的 log 在 journal 裡，Vector 的 `journald` 來源會把 JSON 那一行放在 `message`，所以同一個 `parse_json!(.message)` 就行（[examples/vector/vector-journald.yaml](../../examples/vector/vector-journald.yaml)）。這個來源要有 `data_dir`，用來記住讀到 journal 的哪裡。測試：`tests/vector/journald.sh`，Vector 0.62.0：在 Debian 13 container 裡把 emfor 當 systemd unit 跑，會收到同樣的事件。
 
-**FreeBSD。** log 會送進 syslog，JSON 前面有一段前綴（見 [SNMP 那一節](#舊式網管snmp-與-hook)的「Read the log」）。把它交給 `sed -un 's/^[^{]*{/{/p'`：它會切掉第一個 `{` 之前的字，沒有 `{` 的行整行丟掉；輸出再交給 Vector 的 `stdin` 來源（[examples/vector/vector-stdin.yaml](../../examples/vector/vector-stdin.yaml)）。Vector 的 `syslog` 來源讀的是 Unix stream socket，而 syslogd 寫的是 datagram，所以不要讓它直接接 syslogd。`tests/vector/run.sh` 在 Linux 上用帶前綴的行測過 `sed` 加 `stdin` 來源，`sed` 那一行也在 FreeBSD 15.1 上跑過。**Vector 本身沒有在 FreeBSD 上跑過：** 寫這段時，15.1 arm64 的套件庫裡沒有 Vector 套件，請在別台主機跑 Vector，或自己編譯。
+**FreeBSD。** log 會送進 syslog，JSON 前面有一段前綴（見 [SNMP 那一節](#舊式網管snmp-與-hook)的「讀 log」）。把它交給 `sed -un 's/^[^{]*{/{/p'`：它會切掉第一個 `{` 之前的字，沒有 `{` 的行整行丟掉；輸出再交給 Vector 的 `stdin` 來源（[examples/vector/vector-stdin.yaml](../../examples/vector/vector-stdin.yaml)）。Vector 的 `syslog` 來源讀的是 Unix stream socket，而 syslogd 寫的是 datagram，所以不要讓它直接接 syslogd。`tests/vector/run.sh` 在 Linux 上用帶前綴的行測過 `sed` 加 `stdin` 來源，`sed` 那一行也在 FreeBSD 15.1 上跑過。**Vector 本身沒有在 FreeBSD 上跑過：** 寫這段時，15.1 arm64 的套件庫裡沒有 Vector 套件，請在別台主機跑 Vector，或自己編譯。
 
 ## pf（FreeBSD）
 
@@ -217,7 +218,7 @@ check_options = { command = ["/usr/local/libexec/emfor-exec.sh", "/usr/local/lib
 
 emfor 沒有 SNMP agent 或 trap 發送功能，狀態變化時也沒有可以跑的指令。enterprise OID 要向 IANA 申請，MIB 要有人維護，SNMPv3 又要用 MD5、SHA 和 AES，這和[第 13 章](13-security.md#fips)對 emfor 所用演算法的說法對不起來。hook 則要先決定：指令卡住、失敗，或同一個一直震盪的 backend 讓它跑上千次，該怎麼辦。emfor 給你的是每一次狀態變化的穩定紀錄，小程式可以把它轉成對方系統要的東西。
 
-**輪詢 `emfor status --json`。** 每個 backend 最近 20 次狀態變化都在 `history`（[第 12 章](12-operating.md#emfor-status)）。[examples/snmp/emfor-snmp-trap.sh](../../examples/snmp/emfor-snmp-trap.sh) 會記住它送過的最新一筆變化，對每一筆更新的變化用 net-snmp 的 `snmptrap` 送一個 SNMPv2c trap。用 cron 或 systemd timer 跑，間隔要短到 20 次變化發生不完：
+**輪詢 `emfor status --json`。** 每個 backend 最近 20 次狀態變化都在 `history`（[第 12 章](12-operating.md#emfor-status)）。[examples/snmp/emfor-snmp-trap.sh](../../examples/snmp/emfor-snmp-trap.sh) 會記住它送過的最新一筆變化，對每一筆更新的變化用 net-snmp 的 `snmptrap` 送一個 SNMPv2c trap。用 cron 或 systemd timer 跑，間隔要夠短，別讓兩次執行之間累積超過 20 次變化：
 
 ```console
 $ emfor-snmp-trap.sh -H nms.example.net -o 1.3.6.1.4.1.99999.1 -c secret
