@@ -204,7 +204,7 @@ INFO emfor_daemon::schedule: backend 127.0.0.2:8080 of web.svc.emfor changed fro
 
 穩定的有：每一行的 `timestamp`（RFC 3339）和 `level`；狀態變化那一行的 `event`、`service`、`backend`、`from`、`to`、`reason`；以及下面 reload 稽核行的欄位和 `change`。不穩定的有：`message` 的文字、`target`、其他行的欄位。任何一版都可能新增欄位，所以只讀你要的，其餘忽略。
 
-套用設定之前寫的行是文字，例如啟動 plugin、啟動時的設定錯誤、設定檔的警告，以及啟動時的 `config file read` 行：那時 daemon 還不知道格式。請把不是 JSON 的行送到別的地方，或直接忽略。`format` 只在啟動時讀：reload 改了它會被拒絕，訊息是 `log format settings require restart`；只改 `level` 則會套用。`RUST_LOG` 只改等級，不改格式。
+套用設定之前寫的行是文字，例如啟動 plugin、啟動時的設定錯誤和設定檔的警告：那時 daemon 還不知道格式。啟動時的 `config file read` 行在這之後，`format = "json"` 時是 JSON。請把不是 JSON 的行送到別的地方，或直接忽略。`format` 只在啟動時讀：reload 改了它會被拒絕，訊息是 `log format settings require restart`；只改 `level` 則會套用。`RUST_LOG` 只改等級，不改格式。
 
 ### reload 改了什麼
 

@@ -610,9 +610,15 @@ fn peer_lines(
         }
     }
     // Clock offsets: one line for each member, or one line about this host
-    // when every member differs.
+    // when every member differs in the same direction. Members on both
+    // sides of this host point at the members, not at this host.
     let n = |ms: i64| format!("{:.1}", ms.unsigned_abs() as f64 / 1000.0);
-    if state.clock_offsets.len() >= 2 && state.clock_offsets.len() == state.members.len() {
+    let same_direction = state.clock_offsets.iter().all(|c| c.offset_ms < 0)
+        || state.clock_offsets.iter().all(|c| c.offset_ms >= 0);
+    if state.clock_offsets.len() >= 2
+        && state.clock_offsets.len() == state.members.len()
+        && same_direction
+    {
         let worst = state
             .clock_offsets
             .iter()
@@ -1875,6 +1881,27 @@ mod tests {
             )),
             [
                 "peers: clock of this host differs from every member by up to 4.1 s; check this host's clock (messages more than 5 s apart are dropped)"
+            ]
+        );
+        // Members on both sides of this host: the members differ, not this
+        // host, so there is one line for each member.
+        // spectra-scenario: status-command / Members on both sides of this host
+        assert_eq!(
+            lines_for(two(
+                r#","clock_offsets":[{"member":"10.0.0.12:5302","offset_ms":3000},{"member":"10.0.0.13:5302","offset_ms":-3000}]"#
+            )),
+            [
+                "peers: clock of 10.0.0.12:5302 is 3.0 s ahead of this host (messages more than 5 s apart are dropped)",
+                "peers: clock of 10.0.0.13:5302 is 3.0 s behind this host (messages more than 5 s apart are dropped)"
+            ]
+        );
+        // Both ahead: still this host.
+        assert_eq!(
+            lines_for(two(
+                r#","clock_offsets":[{"member":"10.0.0.12:5302","offset_ms":2100},{"member":"10.0.0.13:5302","offset_ms":3900}]"#
+            )),
+            [
+                "peers: clock of this host differs from every member by up to 3.9 s; check this host's clock (messages more than 5 s apart are dropped)"
             ]
         );
         let one = r#"{"listen":"10.0.0.5:5302","members":[{"addr":"10.0.0.12:5302","live":true}],"digest_mismatch":[],"disagreements":[],"clock_offsets":[{"member":"10.0.0.12:5302","offset_ms":-3000}]}"#;

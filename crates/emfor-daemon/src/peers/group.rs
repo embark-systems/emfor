@@ -515,8 +515,13 @@ impl Group {
             return Err(Reject::Site);
         }
         // A replay is not measured: its timestamp is old by the time it is
-        // sent again, and anyone who captured a datagram could use it to
-        // make a member's clock look wrong.
+        // sent again, and a captured datagram could otherwise make a
+        // member's clock look wrong. The guard needs a message of that
+        // member that was accepted before (`p.last`); for a member with
+        // none since the start, or whose messages are all dropped as
+        // `stale`, a captured datagram sent again with the member's source
+        // address is still measured. That affects the clock offset state,
+        // its log lines and the metric, never the votes.
         if self
             .peers
             .get(&msg.from)
@@ -610,10 +615,18 @@ impl Group {
             };
             let back = c.flagged && c.latest().unsigned_abs() < CLOCK_CLEAR_MS;
             if now.duration_since(c.at) > CLOCK_KEEP || back {
-                if c.flagged {
+                if c.flagged && back {
                     tracing::info!(
                         peer = %addr,
                         "clock of peer {addr} is within limits again"
+                    );
+                } else if c.flagged {
+                    // Nothing was measured for CLOCK_KEEP: the clock may
+                    // still be off, so the line must not say it is fine.
+                    tracing::info!(
+                        peer = %addr,
+                        "no clock offset of peer {addr} measured for {} s; the clock offset state is cleared",
+                        CLOCK_KEEP.as_secs()
                     );
                 }
                 p.clock = if back {
@@ -1806,6 +1819,7 @@ mod tests {
         assert!(logs_contain(
             "clock of peer 10.0.0.6:5302 is within limits again"
         ));
+        assert!(!logs_contain("no clock offset of peer"));
         assert_eq!(
             g.clock_samples(),
             vec![(addr(B), -400)],
@@ -1850,8 +1864,25 @@ mod tests {
         assert!(g.clock_offsets().is_empty());
         assert!(g.clock_samples().is_empty());
         assert!(logs_contain(
-            "clock of peer 10.0.0.6:5302 is within limits again"
+            "no clock offset of peer 10.0.0.6:5302 measured for 10 s"
         ));
+        assert!(
+            !logs_contain("within limits again"),
+            "an expired measurement does not say the clock is fine"
+        );
+        // One line only: a second pass logs nothing more.
+        g.update_clock(start + CLOCK_KEEP + Duration::from_millis(2));
+        logs_assert(|lines: &[&str]| {
+            let n = lines
+                .iter()
+                .filter(|l| l.contains("no clock offset of peer"))
+                .count();
+            if n == 1 {
+                Ok(())
+            } else {
+                Err(format!("{n} lines"))
+            }
+        });
     }
 
     // spectra-scenario: peer-group / Clocks agree
@@ -1894,6 +1925,33 @@ mod tests {
         g.update_clock(start);
         assert!(g.clock_offsets().is_empty());
         assert_eq!(g.clock_samples(), vec![(addr(B), 0)]);
+    }
+
+    /// The limit of the replay guard: a member from which nothing was
+    /// accepted since the start has no accepted message to tell a replay
+    /// from, so a recorded datagram sent again with its source address is
+    /// measured. Only the state, its log lines and the metric change.
+    // spectra-scenario: peer-group / A replay for a member without an accepted message
+    #[test]
+    fn a_recorded_datagram_is_measured_for_a_member_without_an_accepted_message() {
+        let start = Instant::now();
+        let t = 1_763_000_000_000u64;
+        let mut g = group(start);
+        // Recorded four hours ago, sent again now.
+        let recorded = encode(
+            &msg(B, 1, 1, t - 14_400_000, Kind::Heartbeat(Vec::new())),
+            KEY,
+        );
+        for _ in 0..3 {
+            assert_eq!(
+                g.accept(&recorded, addr(B), t, start).map(|_| ()),
+                Err(Reject::Stale)
+            );
+        }
+        g.update_clock(start);
+        assert_eq!(g.clock_offsets(), vec![(addr(B), -14_400_000)]);
+        assert!(!g.is_live(addr(B)), "dropped messages do not make it live");
+        assert_eq!(g.stats.rejected(Reject::Stale), 3);
     }
 
     /// Messages from a source that is not a member, or from another site,

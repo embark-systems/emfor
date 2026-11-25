@@ -84,6 +84,48 @@ fn json_format_writes_one_object_per_line() {
     assert_eq!(added["backend"], "127.0.0.1:10");
 }
 
+/// The `config file read` lines of a start are written once the config is
+/// accepted, so with `format = "json"` they are JSON objects with `file` and
+/// `sha256`.
+// spectra-scenario: service-config / Config file read lines at start
+#[test]
+fn json_format_applies_to_the_config_file_read_lines_of_a_start() {
+    let d = Daemon::spawn(&config("format = \"json\""));
+    d.wait_log("emfor started");
+    let (code, log) = d.stop();
+    assert_eq!(code, 0, "{log}");
+    let read: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("config file read"))
+        .collect();
+    assert!(!read.is_empty(), "a config file read line in {log}");
+    for l in read {
+        let v: serde_json::Value =
+            serde_json::from_str(l).unwrap_or_else(|e| panic!("not JSON ({e}): {l}"));
+        assert_eq!(v["level"], "INFO", "{l}");
+        assert!(
+            v["file"].as_str().is_some_and(|f| f.ends_with(".toml")),
+            "{l}"
+        );
+        let sha = v["sha256"]
+            .as_str()
+            .unwrap_or_else(|| panic!("sha256 in {l}"));
+        assert_eq!(sha.len(), 64, "{l}");
+    }
+}
+
+/// The `config file read` lines of a start are `info` lines that are written
+/// whatever `[log] level` is.
+// spectra-scenario: service-config / Config file read lines at start
+#[test]
+fn config_file_read_lines_of_a_start_ignore_the_log_level() {
+    let d = Daemon::spawn(&config("level = \"warn\""));
+    d.wait_log("config file read");
+    let (code, log) = d.stop();
+    assert_eq!(code, 0, "{log}");
+    assert!(log.contains("sha256="), "{log}");
+}
+
 /// Without `format` the lines are text.
 // spectra-scenario: service-config / Format not set
 #[test]

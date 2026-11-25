@@ -40,6 +40,24 @@ change in this release:
 - After the upgrade, `emfor status` and `/metrics` have new lines and series
   (clock offsets and silent checkers of peer members, `emfor_clock_jumps_total`).
 
+- **Three small fixes around the clock of peer members and the log, and a
+  threat-model note.** None of them is a stable interface.
+  - A clock offset state that ends because no measurement of the member
+    arrived for 10 s now logs `no clock offset of peer … measured for 10 s;
+    the clock offset state is cleared` (`info`). It used to say `within limits
+    again`, which is kept for a member that is back below the limit.
+  - `emfor status` shows `clock of this host differs from every member` only
+    when every member is off in the same direction (all ahead or all
+    behind). With members on both sides of this host, it lists the members one
+    by one.
+  - With `[log] format = "json"`, the `config file read` lines of a start are
+    JSON, like those of a reload. Lines before the format is known (plugin
+    start, config errors, warnings about the config files) stay text.
+  - docs/threat-model.md says what the clock measurement does not cover: a
+    recorded datagram sent again with the source address of a member from
+    which nothing was accepted yet can make that member look off in
+    monitoring. Votes are not affected.
+
 - **The daemon logs a jump of the host clock.** At each heartbeat (once a
   second) it compares how far the wall clock moved with how far a monotonic
   clock moved; when they differ by more than 2 seconds it writes a `warn`
@@ -233,9 +251,9 @@ change in this release:
 
 - **The log can be JSON, and the fields of a state change are stable.** New
   `[log] format = "json"` (default `"text"`) writes one JSON object per line
-  once the daemon has started with it (the lines before that, including the
-  warnings about the config files and the `config file read` lines of a
-  start, are text), with the fields of the event at the top level and
+  once the daemon has started with it (the lines before that, such as plugin
+  start lines, config errors and the warnings about the config files, are
+  text), with the fields of the event at the top level and
   `timestamp`, `level`, `target` and `message`. A reload that changes `format`
   is rejected like any restart-only setting. The state change line gains
   `event=backend_state_changed` (also in text, at the end of the line), and

@@ -282,9 +282,9 @@ the reload audit lines below, with `change`. Not stable: the text of
 release, so read the ones you need and ignore the rest.
 
 Lines written before the config has been applied, such as the start of
-plugins, a config error at start, the warnings about the config files and the
-`config file read` lines of a start, are text: the daemon does not know the
-format yet.
+plugins, a config error at start and the warnings about the config files, are
+text: the daemon does not know the format yet. The `config file read` lines of
+a start come after it and are JSON with `format = "json"`.
 Send the lines that are not JSON to another place, or ignore them. `format`
 is read at start only: a reload that changes it is rejected with `log format
 settings require restart`, while a changed `level` is applied. `RUST_LOG`

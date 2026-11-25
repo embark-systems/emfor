@@ -114,6 +114,15 @@ Can capture, replay, modify, delay or forge messages.
   and once an own check fails every later one is an own check. The backend
   turns unhealthy after about 3 intervals plus a fraction of a second. An
   assigned checker always runs its own check.
+- A captured message can make a member's clock look wrong in monitoring: the
+  daemon measures the clock offset of a member before it drops a message as
+  `stale`, and it leaves out only a replay of a message that it accepted from
+  that member before. For a member from which nothing was accepted since the
+  daemon started, or whose messages are all dropped as `stale`, someone who
+  holds an old datagram and can spoof the member's source address can have
+  the member shown as "clock of B is N.N s behind this host", with a `warn`
+  line and a value in `emfor_peer_clock_offset_seconds`. Votes, liveness and
+  the assigned checkers do not change.
 - The replay state is in memory only. After the receiver restarts, a message
   captured earlier is accepted once if it is still inside the 5-second
   window. This bound comes from reading the code; it was not measured.
@@ -183,6 +192,8 @@ These are open and stated elsewhere; this page only collects them.
   backend down; one cannot.
 - A message captured before a receiver restart is accepted once inside the
   5-second window (from the code, not measured).
+- A recorded peer message can put a member into the "clock offset" state in
+  monitoring (see above); it does not change any verdict.
 - `tls` of database checks defaults to off; only a warning.
 - `MemoryDenyWriteExecute` is not on, because a plugin that generates code
   would fail.

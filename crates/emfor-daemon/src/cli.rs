@@ -222,16 +222,20 @@ async fn start(config_path: PathBuf, check_only: bool, show: bool) -> ExitCode {
         }
     };
     plugins.commit(prepared).await;
+    if config.log.format != LogFormat::Text
+        && let Err(e) = format_handle.reload(fmt_layer(config.log.format))
+    {
+        tracing::error!("cannot set log format: {e}");
+    }
+    // After the format is set, so that with `format = "json"` these lines
+    // are JSON like every line after the config is accepted, and before the
+    // level is set, so that they are written whatever `[log] level` is (the
+    // start-up filter is `info`).
     log_files_read(&read);
     if let Some(h) = &log
         && let Err(e) = h.reload(log_filter(&config.log.level))
     {
         tracing::error!("cannot set log level: {e}");
-    }
-    if config.log.format != LogFormat::Text
-        && let Err(e) = format_handle.reload(fmt_layer(config.log.format))
-    {
-        tracing::error!("cannot set log format: {e}");
     }
     let code = run(config_path, config, &mut plugins, log, signals).await;
     plugins.stop_all().await;
