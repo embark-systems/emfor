@@ -55,8 +55,20 @@ Add a section at the top of `CHANGELOG.md`, below the title:
 ## X.Y.Z — YYYY-MM-DD
 ```
 
-Group the changes as the 0.1.0 entry does (Daemon, emfor-check, Clients,
-Deployment), and update **Known limits**: drop what was fixed, add what is
+Right under that heading put **Breaking**: every change to an interface that
+[docs/compatibility.md](docs/compatibility.md) lists as stable (config,
+commands and exit statuses, `status --json`, the store, the client API,
+metrics, DNS answers, the plugin protocol), including a default that changes,
+a value that used to be accepted and is refused now, and a field that can
+take a new kind of value. Write `Breaking: none.` when there is nothing; the
+heading is there on every release so that nobody has to read the whole entry
+to find out. Then **Upgrading**: what has to happen in what order (upgrade all
+peer members before turning on a new `cipher`, for example) and what a
+downgrade does (a config that uses a key added in this release fails
+`check-config` on the older one).
+
+Group the rest of the changes as the 0.1.0 entry does (Daemon, emfor-check,
+Clients, Deployment), and update **Known limits**: drop what was fixed, add what is
 new. Links go to files in the repository by relative path
 (`docs/performance.md`); step 7 makes them absolute for the GitHub Release.
 

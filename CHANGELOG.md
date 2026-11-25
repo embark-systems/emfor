@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+**Breaking.** Interfaces that docs/compatibility.md lists as stable and that
+change in this release:
+
+- **Credential files must be regular files of bounded size.** A
+  `password_file`, a RADIUS `secret_file`, a `tls_key_file`, a `tls_cert_file`
+  or a `ca_file` that is a FIFO, a device or a directory, or larger than the
+  limit (64 KiB; `tls_cert_file` and `tls_key_file` 1 MiB; `ca_file` 8 MiB),
+  is refused now. A link to a regular file still works. Details below.
+- **A heartbeat far in the future counts as stale.** Clients and
+  `emfor status` stop taking the store for fresh when the host clock was set
+  back by more than `EMFOR_MAX_STALENESS`. Details below.
+- **`heartbeat_age_ms` can be negative.** In `emfor status --json` and in
+  `emfor lookup --explain --json` (`store.heartbeat_age_ms`), when the
+  heartbeat is later than the clock of the reader. A parser that expects a
+  number of at least 0 has to accept a negative one.
+- **Rust API:** `Explanation.heartbeat_age_ms` in `emfor-client` is an `i64`
+  now (it was a `u64`).
+
+**Upgrading.**
+
+- Upgrade every member of a peer group before setting `[peers] cipher =
+  "aes-256-gcm"`: an earlier version counts `EMP4` as `malformed`.
+- A config that uses a key added here (`[log] format`, `[peers] cipher`,
+  `[metrics] allow`, an `http` check's `ca_file`) fails `emfor check-config`
+  on an earlier version, so take it out before a downgrade.
+- A reload now writes up to 50 lines about what it changed, and every start
+  and reload logs the SHA-256 of each config file it reads.
+- After the upgrade, `emfor status` and `/metrics` have new lines and series
+  (clock offsets and silent checkers of peer members, `emfor_clock_jumps_total`).
+
 - **The daemon logs a jump of the host clock.** At each heartbeat (once a
   second) it compares how far the wall clock moved with how far a monotonic
   clock moved; when they differ by more than 2 seconds it writes a `warn`
