@@ -1196,13 +1196,15 @@ mod tests {
         let e = c.explain("api.svc.emfor", None).unwrap();
         assert!(e.stale);
         assert!(
-            (-60_100..-59_000).contains(&e.heartbeat_age_ms),
+            // The test may run late under load (1.1 s was seen in Docker),
+            // so the range is wide; it only has to be about -60 s.
+            (-60_100..-50_000).contains(&e.heartbeat_age_ms),
             "{}",
             e.heartbeat_age_ms
         );
 
         let dir = tempfile::tempdir().unwrap();
-        let c = Client::new(store_with_heartbeat_ahead(dir.path(), 2_000), Ok(3000));
+        let c = Client::new(store_with_heartbeat_ahead(dir.path(), 2_900), Ok(3000));
         let e = c.explain("api.svc.emfor", None).unwrap();
         assert!(!e.stale);
         assert!(e.heartbeat_age_ms < 0, "{}", e.heartbeat_age_ms);
