@@ -325,9 +325,9 @@ fn unhealthy_backend_and_removed_service() {
     assert_eq!(code, 0, "{log}");
 }
 
-/// One service of 10 refused backends gives 117 series once every backend
+/// One service of 10 refused backends gives 118 series once every backend
 /// is checked: 11 per backend (state 3, last check 1, drain 1, checks 3,
-/// transitions 3) plus 6 for the daemon (3 of them for the store, once it
+/// transitions 3) plus 7 for the daemon (3 of them for the store, once it
 /// has committed) and 1 for the service. The count
 /// in docs/deploy/daemon.md, section "Metrics served".
 #[test]
@@ -351,7 +351,7 @@ fn series_for_ten_backends() {
     });
     let (_, body) = body.split_once("\r\n\r\n").unwrap();
     let series = body.lines().filter(|l| !l.starts_with('#')).count();
-    assert_eq!(series, 117, "{body}");
+    assert_eq!(series, 118, "{body}");
     let (code, log) = d.stop();
     assert_eq!(code, 0, "{log}");
 }

@@ -228,6 +228,7 @@ The server answers only `GET /metrics` (a query string is ignored): other paths 
 | `emfor_build_info` | gauge | `version` | Always 1 |
 | `emfor_start_time_seconds` | gauge | | Daemon start time, Unix seconds |
 | `emfor_store_commit_failures_total` | counter | | Failed store commits since start |
+| `emfor_clock_jumps_total` | counter | | Host clock jumps the daemon detected since start |
 | `emfor_store_last_commit_timestamp_seconds` | gauge | | Unix time of the last successful store commit; after the first one. With a 1-second heartbeat, an age of more than a few seconds means commits are failing or stalled |
 | `emfor_store_used_bytes` | gauge | | Bytes of the store in use; after the first commit |
 | `emfor_store_map_size_bytes` | gauge | | `[store] map_size`; commits fail with `MDB_MAP_FULL` when `emfor_store_used_bytes` reaches it |
@@ -244,7 +245,7 @@ The server answers only `GET /metrics` (a query string is ignored): other paths 
 
 The two counters start at 0 when a backend first appears in the running daemon, keep counting across reloads (also when `check` or `check_options` change), and start again from 0 if the backend is removed and added back. They restart with the daemon; Prometheus handles that as a counter reset.
 
-Services are listed by name and backends in config order. One service of 10 unreachable backends gives 117 series, that is 11 series per backend plus 7 for the daemon and the service (the test `series_for_ten_backends` in `crates/emfor-daemon/tests/metrics.rs` keeps it so). The size was measured at 11.6 KB per scrape for 107 series, before `emfor_backend_drain` added one series per backend; the 10 new lines add 740 bytes plus 147 bytes of `# HELP` and `# TYPE` (measured: 12.8 KB for 10 backends, 211 KB for 200 and 1.05 MB for 1000, about 1 KB per backend, with every 3rd or 4th backend drained and all of them unreachable, and with `[dns]` on, which adds the 2 `emfor_dns_rate_limited_total` series to the 117 of the test). A backend has no last-check series before its first check, a healthy backend adds the latency series, and a backend of a `fastest` service adds `in_pool`, so a backend has 10 to 13 series.
+Services are listed by name and backends in config order. One service of 10 unreachable backends gives 118 series, that is 11 series per backend plus 8 for the daemon and the service (the test `series_for_ten_backends` in `crates/emfor-daemon/tests/metrics.rs` keeps it so). The size was measured at 11.6 KB per scrape for 107 series, before `emfor_backend_drain` added one series per backend; the 10 new lines add 740 bytes plus 147 bytes of `# HELP` and `# TYPE` (measured: 12.8 KB for 10 backends, 211 KB for 200 and 1.05 MB for 1000, about 1 KB per backend, with every 3rd or 4th backend drained and all of them unreachable, and with `[dns]` on, which adds the 2 `emfor_dns_rate_limited_total` series to the 118 of the test). A backend has no last-check series before its first check, a healthy backend adds the latency series, and a backend of a `fastest` service adds `in_pool`, so a backend has 10 to 13 series.
 
 ## Peer groups
 
