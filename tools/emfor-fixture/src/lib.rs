@@ -6,7 +6,8 @@
 //! `store` fields:
 //! - `schema_version`: string written to `meta/schema_version`; absent → key absent.
 //! - `heartbeat`: `"fresh"` (now), `"stale"` (now − 2 × max staleness),
-//!   `"zero"` (`"0"`) or `"missing"` (key absent).
+//!   `"future"` (now + 2 × max staleness), `"future_at_limit"` (now + max
+//!   staleness, still fresh), `"zero"` (`"0"`) or `"missing"` (key absent).
 //! - `services`: records written as JSON to `svc/<name>`. A backend's
 //!   `recovered_ago_ms` (test data only) becomes `recovered_at` = now minus
 //!   that many milliseconds and is not written itself.
@@ -67,6 +68,8 @@ pub fn heartbeat_value(
         "fresh" => Some(now_ms.to_string()),
         "stale" => Some(now_ms.saturating_sub(2 * max_staleness_ms).to_string()),
         "future" => Some(now_ms.saturating_add(2 * max_staleness_ms).to_string()),
+        // Exactly at the limit: a difference of `max_staleness_ms` is fresh.
+        "future_at_limit" => Some(now_ms.saturating_add(max_staleness_ms).to_string()),
         "zero" => Some("0".into()),
         "missing" => None,
         other => return Err(format!("unknown heartbeat form {other:?}")),
@@ -254,6 +257,10 @@ mod tests {
         assert_eq!(
             heartbeat_value("stale", 10_000, 3000).unwrap(),
             Some("4000".into())
+        );
+        assert_eq!(
+            heartbeat_value("future_at_limit", 10_000, 3000).unwrap(),
+            Some("13000".into())
         );
         assert_eq!(
             heartbeat_value("zero", 10_000, 3000).unwrap(),

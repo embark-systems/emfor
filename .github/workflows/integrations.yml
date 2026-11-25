@@ -6,7 +6,8 @@ name: Integrations
 # (docs/manual/12-operating.md, "A rolling deploy with drain"), Prometheus and
 # Caddy finding their targets from them ("Prometheus" and "Using
 # it with Caddy"), and the staged check for configuration management tools
-# ("Using a configuration management tool" in chapter 5). What these tests
+# ("Using a configuration management tool" in chapter 5), and Vector reading
+# the metrics and the JSON log ("Vector" in chapter 14). What these tests
 # can catch is a new nginx or HAProxy that behaves differently (the images are
 # the floating tags stable, mainline and lts), and a change in emfor's answers.
 # So they run once a week and when those parts of emfor or the tests change,
@@ -29,8 +30,10 @@ on:
       - "tests/caddy/**"
       - "tests/nagios/**"
       - "tests/srv/**"
+      - "tests/vector/**"
       - "examples/nagios/**"
       - "examples/deploy/**"
+      - "examples/vector/**"
       - ".github/workflows/integrations.yml"
   workflow_dispatch:
 
@@ -112,3 +115,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: tests/srv/run.sh
+
+  vector:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: tests/vector/run.sh

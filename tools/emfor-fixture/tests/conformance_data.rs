@@ -68,7 +68,14 @@ fn every_store_writes_and_coverage_is_complete() {
     let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
     assert_eq!(
         heartbeats,
-        set(&["fresh", "future", "missing", "stale", "zero"])
+        set(&[
+            "fresh",
+            "future",
+            "future_at_limit",
+            "missing",
+            "stale",
+            "zero"
+        ])
     );
     assert_eq!(
         codes,

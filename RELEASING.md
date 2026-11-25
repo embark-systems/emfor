@@ -39,7 +39,7 @@ copy. After the release, send the same change (`DISTVERSION`, `Makefile.crates`,
 `distinfo` from `make makesum`) to the ports tree as an update of that port.
 The deb and rpm take their version from `Cargo.toml`: nothing else to change
 ([packages/README.md](packages/README.md)). The tests in
-`clients/rust/tests/versions.rs` fail until the five files
+`clients/rust/tests/versions.rs` fail until the six files
 above match `Cargo.toml` and `Makefile.crates` matches `Cargo.lock`.
 
 If the release changes the store format (`meta/schema_version`, see

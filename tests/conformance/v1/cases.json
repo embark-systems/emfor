@@ -649,6 +649,75 @@
     ]
   },
   {
+    "case": "heartbeat in the future by exactly the maximum staleness is fresh",
+    "store": {
+      "heartbeat": "future_at_limit",
+      "services": [
+        {
+          "name": "db.svc.emfor",
+          "on_all_down": "closed",
+          "balance": "failover",
+          "all_down": false,
+          "backends": [
+            {
+              "id": "10.0.1.5:5432",
+              "ip": "10.0.1.5",
+              "port": 5432,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null
+            },
+            {
+              "id": "10.0.1.6:5432",
+              "ip": "10.0.1.6",
+              "port": 5432,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null
+            }
+          ]
+        },
+        {
+          "name": "open.svc.emfor",
+          "on_all_down": "open",
+          "balance": "failover",
+          "all_down": false,
+          "backends": [
+            {
+              "id": "10.0.1.5:5432",
+              "ip": "10.0.1.5",
+              "port": 5432,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null
+            },
+            {
+              "id": "10.0.1.6:5432",
+              "ip": "10.0.1.6",
+              "port": 5432,
+              "state": "healthy",
+              "checked_at": 1794455158107,
+              "reason": null
+            }
+          ]
+        }
+      ],
+      "raw": {},
+      "schema_version": "1"
+    },
+    "max_staleness_ms": 3000,
+    "lookups": [
+      {
+        "name": "DB.svc.emfor.",
+        "expect": "10.0.1.5:5432"
+      },
+      {
+        "name": "open.svc.emfor",
+        "expect": "10.0.1.5:5432"
+      }
+    ]
+  },
+  {
     "case": "zero heartbeat after clean shutdown",
     "store": {
       "heartbeat": "zero",
