@@ -14,8 +14,10 @@ change in this release:
 - **A heartbeat far in the future counts as stale.** Clients stop taking the
   store for fresh when the host clock was set back by more than
   `EMFOR_MAX_STALENESS`. `emfor status` does the same with a fixed 3 s, and
-  its exit status is 1 now where it was 0 (the status is a stable
-  interface). Details below.
+  its exit status is 1 now where it was 0. `emfor lookup` (also with
+  `--json`) fails with `UNAVAILABLE` and exit status 3 now where it printed
+  the address and exited 0. Exit statuses are a stable interface. Details
+  below.
 - **`heartbeat_age_ms` can be negative.** In `emfor status --json` and in
   `emfor lookup --explain --json` (`store.heartbeat_age_ms`), when the
   heartbeat is later than the clock of the reader. A parser that expects a
