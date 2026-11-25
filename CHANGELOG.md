@@ -9,10 +9,13 @@ change in this release:
   `password_file`, a RADIUS `secret_file`, a `tls_key_file`, a `tls_cert_file`
   or a `ca_file` that is a FIFO, a device or a directory, or larger than the
   limit (64 KiB; `tls_cert_file` and `tls_key_file` 1 MiB; `ca_file` 8 MiB),
-  is refused now. A link to a regular file still works. Details below.
-- **A heartbeat far in the future counts as stale.** Clients and
-  `emfor status` stop taking the store for fresh when the host clock was set
-  back by more than `EMFOR_MAX_STALENESS`. Details below.
+  is refused now (a directory already failed with a read error; only its
+  message changed). A link to a regular file still works. Details below.
+- **A heartbeat far in the future counts as stale.** Clients stop taking the
+  store for fresh when the host clock was set back by more than
+  `EMFOR_MAX_STALENESS`. `emfor status` does the same with a fixed 3 s, and
+  its exit status is 1 now where it was 0 (the status is a stable
+  interface). Details below.
 - **`heartbeat_age_ms` can be negative.** In `emfor status --json` and in
   `emfor lookup --explain --json` (`store.heartbeat_age_ms`), when the
   heartbeat is later than the clock of the reader. A parser that expects a
@@ -287,12 +290,15 @@ change in this release:
 
 - **A heartbeat far in the future counts as stale.** When the clock of the
   host is set back by more than `EMFOR_MAX_STALENESS` (3 s by default) and
-  the daemon then stops writing, clients and `emfor status` no longer take
-  the store for fresh until the clock catches up. With a live daemon the
+  the daemon then stops writing, clients no longer take the store for fresh
+  until the clock catches up. `emfor status` applies the same rule with a
+  fixed limit of 3 s (it does not read `EMFOR_MAX_STALENESS`) and exits with 1
+  in that case, where it exited with 0 before. With a live daemon the
   clients see a stale store for up to about a second, until its next
   heartbeat. `emfor status` says `heartbeat <age> in the future`, and
   `heartbeat_age_ms` in `--json` is negative in that case.
-- **`emfor lookup --explain` agrees.** For a heartbeat later than now it says
+- **`emfor lookup --explain` agrees** (without `--dns`; `--dns` explains the
+  DNS server, which still takes a future heartbeat for fresh). For a heartbeat later than now it says
   `heartbeat <age> in the future` and, when that is stale, `the heartbeat is
   more than <max> ahead of the clock`, instead of an age of 0 that is
   "older than" the limit; `store.heartbeat_age_ms` in `--json` is negative.
