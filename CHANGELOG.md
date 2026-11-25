@@ -16,7 +16,9 @@
   of 1 ms and no line; setting the clock +30 s, -45 s (3 s later) and +15 s
   (12 s later) gave three counts and two lines (forward 29.7 s, forward
   15.0 s), the -45 s step being counted but not logged inside the 10 s
-  period. The same load for 10 minutes in a Debian container on Linux 7.2 (arm64,
+  period. A second run stepped the clock +30 s, then -45 s 12 s later, then
+  +15 s 3 s after that: two lines (forward 29.1 s, backward 45.0 s) and three
+  counts. The same load for 10 minutes in a Debian container on Linux 7.2 (arm64,
   597 ticks) also gave a largest difference of 1 ms and no line; the clock
   was not stepped there, because a container shares the host's clock. Not
   measured: x86-64, a host that suspends and resumes. The 2-second threshold
