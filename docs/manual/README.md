@@ -2,7 +2,7 @@
 
 This manual is for people who have never used emfor: the administrator who
 installs and runs it, and the developer whose application asks it which
-backend to connect to. It describes **emfor 0.7.0**.
+backend to connect to. It describes **emfor 0.8.0**.
 
 Start with chapter 1 to see whether emfor fits your problem, then do the
 quick start in chapter 2. It takes about ten minutes on one Linux host.
@@ -27,7 +27,7 @@ one table.
 | 12 | [Operating emfor](12-operating.md) | use `emfor status` and `emfor lookup`, reload, read metrics and logs, look after the store |
 | 13 | [Security model](13-security.md) | know who can do what, and what to lock down |
 | 14 | [Integrations](14-integrations.md) | feed nginx, HAProxy, Caddy, Prometheus or pf, or monitor emfor from Nagios |
-| 15 | [Upgrading](15-upgrading.md) | upgrade from 0.6 (or older) to 0.7.0 |
+| 15 | [Upgrading](15-upgrading.md) | upgrade from 0.7 (or older) to 0.8.0 |
 | 16 | [Troubleshooting](16-troubleshooting.md) | fix something, starting from the error message |
 | 17 | [Migrating from HAProxy or Consul](17-migrating.md) | translate an existing setup |
 | 18 | [Configuration reference](18-config-reference.md) | look up a key, its default and its limits |
@@ -50,7 +50,8 @@ one table.
 Every complete TOML example in this manual was checked with
 `emfor check-config` of 0.7.0 in a Debian 13 container. The command output
 shown was produced by emfor 0.7.0 in such a container, except where the text
-says otherwise. Some statements come from emfor's own test suite (for example
+says otherwise; what 0.8.0 added says what it was run with, and the output of
+`emfor --version` is the one of 0.8.0. Some statements come from emfor's own test suite (for example
 the nginx and HAProxy recipes) and say so. Where something has not been run
 (macOS, FreeBSD on amd64, real hardware, real database servers), the text says
 so where it matters.

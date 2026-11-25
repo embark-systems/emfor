@@ -23,6 +23,36 @@
 
 只有最新版。1.0 之前，bug 修正和安全修正都放進下一個版本，不會回植到舊版，所以要拿到修正就是升級（升級要付出什麼，見上面的規則）。emfor 沒有支援合約，也不承諾回應時間；回報安全漏洞的方式見[第 13 章](13-security.md#回報安全漏洞)。1.0 之後要承諾什麼，還沒有決定。
 
+## 從 0.7 到 0.8
+
+store 格式（版本 2）和 plugin 協定（1）都沒有變。共用函式庫改了名字，所以請照上面的規則，把 0.8 的 client 和 daemon 一起裝。
+
+重新啟動 daemon **之前**，先把這份清單逐項處理完：
+
+| # | 0.8.0 的變更 | 什麼會壞 | 該怎麼做 |
+| --- | --- | --- | --- |
+| 1 | 共用函式庫是 `libemfor.so.0.8`（原本是 `libemfor.so.0.7`）。 | 連結 `libemfor.so.0.7` 的程式載入不了 0.8。0.8 的 Python、Perl、PHP 和 Go client 找的是新名字。 | 新函式庫裝在舊的旁邊，程式一個一個重新建置或重新安裝（包括 PHP 和 Perl 擴充模組），最後一個換完再拿掉舊檔。 |
+| 2 | `password_file`、RADIUS 的 `secret_file`、`tls_key_file`、`tls_cert_file` 和 `ca_file` 必須是一般檔案，而且有大小上限（64 KiB；`tls_cert_file` 與 `tls_key_file` 是 1 MiB；`ca_file` 是 8 MiB）。 | FIFO、裝置、目錄和超過上限的檔案會被拒絕。指到一般檔案的連結還是可以用。 | 檢查每個這類路徑都是一般檔案、也沒超過上限。systemd 的 `LoadCredential`、Docker secrets 和 Kubernetes secrets 最後都是一般檔案（沒有一一試過）。 |
+| 3 | 遠在未來的 heartbeat 算過期。 | 主機時鐘被往回調超過 `EMFOR_MAX_STALENESS`（預設 3 秒），而 daemon 之後又停了，查詢會把每個 backend 都看成未知：`closed` 的服務得到 `ALL_DOWN`（`emfor lookup` 結束代碼 1），`open` 的服務會回傳每個 backend。`emfor status` 的結束代碼從 0 變成 1。 | 時鐘正確的話，什麼都不用改。0.7 的 client 沒有這條規則。 |
+| 4 | `heartbeat_age_ms` 可能是負的，在 `emfor status --json` 與 `emfor lookup --explain --json`（`store.heartbeat_age_ms`）裡。Rust 的 `emfor-client` 裡，`Explanation.heartbeat_age_ms` 是 `i64`（原本是 `u64`）。 | 預期這個值至少是 0 的解析程式或 Rust 程式，遇到比讀取端時鐘還晚的 heartbeat 就會出錯。 | 要能接受負數。 |
+| 5 | `[peers] cipher = "aes-256-gcm"` 會送 `EMP4`。 | 舊版的成員會把 `EMP4` 當成 `malformed`。 | 設 `cipher` 之前，先升級群組裡的每個成員。 |
+
+0.8.0 還有其他你可能會注意到的變更：
+
+- **降級。** 設定檔如果用了 0.8 新增的 key（`[log] format`、`[peers] cipher`、`[metrics] allow`、`http` 檢查的 `ca_file`），0.7 的 `emfor check-config` 會失敗。降級前先拿掉。
+- **log 變多了。** 一次 reload 最多寫 51 行它改了什麼（50 行，加一行說剩下的），每次啟動和 reload 也會記下它讀的每個設定檔的 SHA-256。
+- **新的行與指標。** `emfor status` 和 `/metrics` 多了新的行與指標：聯防成員的時鐘偏差、不送結果的檢查者，以及 `emfor_clock_jumps_total`。daemon 也會記下主機時鐘的跳動（[第 12 章](12-operating.md)）。
+- **`[metrics] allow`。** 不設就和以前一樣，只是 `listen` 如果是非 loopback 的位址，啟動與 reload 時會多一行警告。
+- **空的 store。** daemon 從來沒寫過的 store，`emfor status` 現在說 `store is empty`，不再說成版本問題。
+
+重新啟動前，每台主機都可以先快速檢查一下：
+
+```sh
+# emfor check-config                         # 用 0.8 的 binary
+# stat -L -c '%F %s %n' /path/to/each-credential-file   # 是「regular file」嗎？大小在上限之內嗎？
+# ldd /path/to/my-app | grep emfor           # 還連結著 libemfor.so.0.7 嗎？
+```
+
 ## 從 0.6 到 0.7
 
 store 格式（版本 2）和 plugin 協定（1）都沒有變：0.6 的 client 和 plugin 搭 0.7 的 daemon 還是能用，但還是請裝 0.7 的 client。

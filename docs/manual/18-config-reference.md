@@ -2,7 +2,7 @@
 
 [Contents](README.md) · Previous: [17. Migrating](17-migrating.md) · Next: [19. Glossary](19-glossary.md)
 
-Every key emfor 0.7.0 accepts. Any other key is an error (`<path>: unknown
+Every key emfor 0.8.0 accepts. Any other key is an error (`<path>: unknown
 key`). The options of each check are in [chapter 6](06-health-checks.md)
 (`tcp`, `http`, `exec`) and [chapter 7](07-plugins.md) (`emfor-check`).
 

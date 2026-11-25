@@ -3,7 +3,7 @@
 [Contents](README.md) · Previous: [12. Operating emfor](12-operating.md) · Next: [14. Integrations](14-integrations.md)
 
 This chapter says what emfor trusts, what it protects, and what you must
-protect yourself. It follows [SECURITY.md](../../SECURITY.md) and the 0.7.0
+protect yourself. It follows [SECURITY.md](../../SECURITY.md) and the 0.8.0
 code.
 
 ## What is trusted, and what is not

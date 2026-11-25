@@ -2,7 +2,7 @@
 
 [手冊](README.md) · 上一章：[17. 搬移](17-migrating.md) · 下一章：[19. 詞彙表](19-glossary.md)
 
-這裡列出 emfor 0.7.0 接受的每一個 key。除此之外的 key 都會報錯（`<path>: unknown key`）。各種檢查的選項請看[第 6 章](06-health-checks.md)（`tcp`、`http`、`exec`）和[第 7 章](07-plugins.md)（`emfor-check`）。
+這裡列出 emfor 0.8.0 接受的每一個 key。除此之外的 key 都會報錯（`<path>: unknown key`）。各種檢查的選項請看[第 6 章](06-health-checks.md)（`tcp`、`http`、`exec`）和[第 7 章](07-plugins.md)（`emfor-check`）。
 
 ## 值的格式
 

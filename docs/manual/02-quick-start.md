@@ -34,7 +34,7 @@ Check that it runs:
 
 ```console
 $ emfor --version
-emfor 0.7.0
+emfor 0.8.0
 ```
 
 ## Step 2: start two backends

@@ -52,6 +52,47 @@ support contract and without a promised response time; how to report a
 vulnerability is in [chapter 13](13-security.md#reporting-a-vulnerability).
 What 1.0 will promise is not decided yet.
 
+## From 0.7 to 0.8
+
+The store format (version 2) and the plugin protocol (1) did not change. The
+shared library did get a new name, so install the 0.8 clients together with
+the daemon, as the rules above say.
+
+Work through this list **before** you restart the daemon:
+
+| # | Change in 0.8.0 | What breaks | What to do |
+| --- | --- | --- | --- |
+| 1 | The shared library is `libemfor.so.0.8` (it was `libemfor.so.0.7`). | A program linked against `libemfor.so.0.7` does not load 0.8. The Python, Perl, PHP and Go clients of 0.8 look for the new name. | Install the new library next to the old one, rebuild or reinstall the programs one by one (PHP and Perl extensions included), and remove the old file after the last one. |
+| 2 | A `password_file`, a RADIUS `secret_file`, a `tls_key_file`, a `tls_cert_file` or a `ca_file` must be a regular file of bounded size (64 KiB; `tls_cert_file` and `tls_key_file` 1 MiB; `ca_file` 8 MiB). | A FIFO, a device, a directory or a larger file is refused. A link to a regular file still works. | Check that each such path is a regular file below its limit. systemd `LoadCredential`, Docker secrets and Kubernetes secrets end up as regular files (not tried on each). |
+| 3 | A heartbeat far in the future counts as stale. | When the host clock was set back by more than `EMFOR_MAX_STALENESS` (3 s by default) and the daemon then stops writing, a lookup sees every backend as unknown: a `closed` service gives `ALL_DOWN` (exit status 1 of `emfor lookup`), an `open` service gives every backend. `emfor status` exits with 1 where it exited with 0. | Nothing to change if the clock is right. A client of 0.7 does not have this rule. |
+| 4 | `heartbeat_age_ms` can be negative, in `emfor status --json` and in `emfor lookup --explain --json` (`store.heartbeat_age_ms`). In the Rust crate `emfor-client`, `Explanation.heartbeat_age_ms` is an `i64` (it was a `u64`). | A parser or a Rust program that expects a number of at least 0 fails on a heartbeat that is later than the reader's clock. | Accept a negative number. |
+| 5 | `[peers] cipher = "aes-256-gcm"` sends `EMP4`. | A member of an earlier version counts `EMP4` as `malformed`. | Upgrade every member of the group before you set `cipher`. |
+
+Other changes in 0.8.0 that you may notice:
+
+- **Downgrading.** A config that uses a key added in 0.8 (`[log] format`,
+  `[peers] cipher`, `[metrics] allow`, the `ca_file` of an `http` check) fails
+  `emfor check-config` on 0.7. Take the key out first.
+- **The log is longer.** A reload writes up to 51 lines about what it changed
+  (50 and one for the rest), and every start and reload logs the SHA-256 of
+  each config file it reads.
+- **New lines and series.** `emfor status` and `/metrics` have new lines and
+  series: clock offsets and silent checkers of peer members, and
+  `emfor_clock_jumps_total`. The daemon also logs a jump of the host clock
+  ([chapter 12](12-operating.md)).
+- **`[metrics] allow`.** Without it nothing changes, except a warning at start
+  and reload when `listen` has a non-loopback address.
+- **An empty store.** `emfor status` says `store is empty` for a store the
+  daemon never wrote to, instead of a version problem.
+
+A quick check before the restart, on each host:
+
+```sh
+# emfor check-config                         # with the 0.8 binary
+# stat -L -c '%F %s %n' /path/to/each-credential-file   # "regular file", and a size below the limit?
+# ldd /path/to/my-app | grep emfor           # still linked against libemfor.so.0.7?
+```
+
 ## From 0.6 to 0.7
 
 The store format (version 2) and the plugin protocol (1) did not change:

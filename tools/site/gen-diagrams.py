@@ -215,6 +215,53 @@ def cover_071(lang):
     return s + "</svg>\n"
 
 
+def cover_080(lang):
+    T = {
+        "en": dict(
+            title="emfor 0.8.0: stricter files, a clock you can trust, more to see",
+            sub="A host clock that jumps, a peer whose clock is off, a credential file that is not a file: each is found and said",
+            c1="Unchanged since 0.7", c1r=["store format 2", "plugin protocol 1", "votes of a peer group", "config format"],
+            same="same",
+            c2="Breaking", c2r=["libemfor.so.0.8", "credential files: regular, bounded", "future heartbeat counts as stale", "heartbeat_age_ms may be negative", "Rust: Explanation is an i64"],
+            c3="New", c3r=["[log] format = \"json\"", "[metrics] allow", "AES-256-GCM peer messages", "clock jumps and peer clocks", "http check ca_file"],
+            up="Upgrading", up1="Build programs again for libemfor.so.0.8; upgrade every peer before cipher.",
+            up2="Install the new library next to the old one and move the programs one by one."),
+        "zh": dict(
+            title="emfor 0.8.0：檔案查得更嚴，時鐘看得更清楚",
+            sub="主機時鐘跳了、聯防成員的時鐘不準、密鑰檔不是一般檔案：現在都查得到，也會說出來",
+            c1="和 0.7 一樣", c1r=["store 格式 2", "plugin 協定 1", "聯防群組的投票", "設定檔格式"],
+            same="沒變",
+            c2="不相容變更", c2r=["libemfor.so.0.8", "密鑰檔要是一般檔案、有大小上限", "未來的 heartbeat 算過期", "heartbeat_age_ms 可能是負的", "Rust：Explanation 改成 i64"],
+            c3="新增", c3r=["[log] format = \"json\"", "[metrics] allow", "聯防訊息可用 AES-256-GCM", "時鐘跳動與成員時鐘", "http 檢查的 ca_file"],
+            up="怎麼升級", up1="用 libemfor.so.0.8 重新編譯程式；設 cipher 前先升級每個成員。",
+            up2="新舊函式庫可以並存，程式一個一個換。"),
+    }[lang]
+    s = HEAD % (1200, 675, 1200, 675, 1200, 675)
+    s += text(60, 66, T["title"], 30, 700)
+    s += text(60, 102, T["sub"], 19, 400, "#5b6472")
+    cols = [
+        (60, T["c1"], T["c1r"], "#f8fafc", "#9aa1ab", "#e8f6ed", "#1f7a3d"),
+        (430, T["c2"], T["c2r"], "#fff4e0", "#e0a43a", "#ffffff", "#e0a43a"),
+        (800, T["c3"], T["c3r"], "#eaf1ff", "#2f6fde", "#ffffff", "#2f6fde"),
+    ]
+    for i, (x, head, rows, bg, bd, rf, rs) in enumerate(cols):
+        s += box(x, 140, 340, 330, bg, bd, 2.5 if i == 2 else 2)
+        s += text(x + 20, 172, head, 18, 700)
+        for j, r in enumerate(rows):
+            y = 190 + 56 * j
+            s += box(x + 20, y, 300, 48, rf, rs, 2)
+            if i == 0:
+                s += text(x + 36, y + 30, r, 15, 700, mono=True)
+                s += text(x + 304, y + 30, T["same"], 15, 600, "#1f7a3d", "end")
+            else:
+                s += text(x + 36, y + 30, r, 15, 600)
+    s += box(60, 500, 1080, 139, "#fff4e0", "#e0a43a")
+    s += text(84, 536, T["up"], 18, 700)
+    s += text(84, 578, T["up1"], 18, 600)
+    s += text(84, 614, T["up2"], 16, 400, "#5b6472")
+    return s + "</svg>\n"
+
+
 def arch(lang):
     T = {
         "en": dict(title="How emfor fits on one host",
@@ -268,4 +315,5 @@ for lang, suf in (("en", ""), ("zh", ".zh")):
     open(f"{out}/emfor-0.5.0{suf}.svg", "w").write(cover(lang))
     open(f"{out}/emfor-0.6.0{suf}.svg", "w").write(cover_060(lang))
     open(f"{out}/emfor-0.7.1{suf}.svg", "w").write(cover_071(lang))
+    open(f"{out}/emfor-0.8.0{suf}.svg", "w").write(cover_080(lang))
     open(f"{out}/emfor-architecture{suf}.svg", "w").write(arch(lang))

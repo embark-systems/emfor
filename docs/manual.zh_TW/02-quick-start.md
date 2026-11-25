@@ -27,7 +27,7 @@
 
 ```console
 $ emfor --version
-emfor 0.7.0
+emfor 0.8.0
 ```
 
 ## 步驟 2：啟動兩個 backend

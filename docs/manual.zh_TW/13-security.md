@@ -2,7 +2,7 @@
 
 [手冊](README.md) · 上一章：[12. 維運 emfor](12-operating.md) · 下一章：[14. 整合](14-integrations.md)
 
-這一章說明 emfor 信任什麼、保護什麼，還有哪些要你自己顧好。內容以 [SECURITY.md](../../SECURITY.md) 和 0.7.0 的程式碼為準。
+這一章說明 emfor 信任什麼、保護什麼，還有哪些要你自己顧好。內容以 [SECURITY.md](../../SECURITY.md) 和 0.8.0 的程式碼為準。
 
 ## 信任什麼、不信任什麼
 
