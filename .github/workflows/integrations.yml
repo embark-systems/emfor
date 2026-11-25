@@ -10,31 +10,11 @@ name: Integrations
 # the metrics and the JSON log ("Vector" in chapter 14). What these tests
 # can catch is a new nginx or HAProxy that behaves differently (the images are
 # the floating tags stable, mainline and lts), and a change in emfor's answers.
-# So they run once a week and when those parts of emfor or the tests change,
-# not on every push (CI does that).
+# So they run once a week, not on every push (CI does that).
 # Start them by hand from the Actions tab (or `gh workflow run Integrations`).
 on:
   schedule:
     - cron: "17 3 * * 1"
-  push:
-    branches: [main]
-    paths:
-      - "crates/emfor-daemon/src/dns.rs"
-      - "crates/emfor-daemon/src/select.rs"
-      - "crates/emfor-format/**"
-      - "tests/nginx/**"
-      - "tests/haproxy/**"
-      - "tests/deploy/**"
-      - "tests/check-staged/**"
-      - "tests/prometheus/**"
-      - "tests/caddy/**"
-      - "tests/nagios/**"
-      - "tests/srv/**"
-      - "tests/vector/**"
-      - "examples/nagios/**"
-      - "examples/deploy/**"
-      - "examples/vector/**"
-      - ".github/workflows/integrations.yml"
   workflow_dispatch:
 
 permissions:

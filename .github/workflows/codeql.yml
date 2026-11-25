@@ -3,20 +3,13 @@ name: CodeQL
 # Static analysis (SAST) with GitHub's CodeQL: Rust, the daemon and the client
 # library, and Python, the client wrapper. The results are under Security >
 # Code scanning of the repository; nothing here fails a push, and a finding is
-# looked at there. It runs on every push to main, on pull requests, and once a
-# week, because the queries change without a commit here. Neither build mode
+# looked at there. It runs once a week (the queries change without a commit
+# here) and by hand from the Actions tab, not on every push. Neither build mode
 # needs a build.
 #
 # Not covered: Go, C, Perl and PHP (the wrappers of libemfor): the Go client
 # needs libemfor to compile, and Perl and PHP are not CodeQL languages.
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "docs/spectra/**"
-  pull_request:
-    paths-ignore:
-      - "docs/spectra/**"
   schedule:
     - cron: "17 3 * * 1"
   workflow_dispatch:
