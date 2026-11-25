@@ -172,6 +172,7 @@ loopback and has no `allow` gets a warning at start and after a reload.
 | `emfor_backend_transitions_total` | `service`, `backend`, `to` | State changes. |
 | `emfor_store_last_commit_timestamp_seconds` | | Should never be more than a second or two old. |
 | `emfor_store_commit_failures_total` | | Should stay 0. |
+| `emfor_clock_jumps_total` | | Host clock jumps the daemon saw; see [After a clock jump](#after-a-clock-jump). Alert when it rises. |
 | `emfor_store_used_bytes`, `emfor_store_map_size_bytes` | | Alert well before used reaches the map size. |
 | `emfor_plugin_up`, `emfor_plugin_restarts_total` | `plugin` | |
 | `emfor_dns_rate_limited_total` | `action` | `truncated`, `dropped`. |
@@ -579,6 +580,24 @@ jump shows up in three places:
   restart is needed. When the counter
   `emfor_peer_messages_rejected_total{reason="stale"}` stops rising, the
   members agree again.
+
+The daemon notices a jump of its own host clock. At each heartbeat (once a
+second) it compares how far the wall clock moved with how far a monotonic
+clock moved; when they differ by more than 2 seconds it writes one warning,
+for example
+
+```text
+WARN host clock jumped forward by 7.0 s; prefer slewing (chrony) to stepping the clock event=clock_jumped direction=forward jump_ms=7000
+```
+
+and `emfor_clock_jumps_total` goes up by one. A busy or late heartbeat moves
+both clocks alike and is not reported. At most one line is written every 10
+seconds, but every jump is counted, so alert on the counter and use the log
+for the time and the size. A step of less than 2 seconds is not reported; it
+is also too small to make a store stale (`EMFOR_MAX_STALENESS` is 3 seconds
+by default). The fields of this line are not among the stable ones ([chapter
+12](12-operating.md#json-lines)). A host that was suspended or paused and
+resumed shows up as a jump forward.
 
 Prefer slewing the clock (chrony's default) to stepping it, on every host that
 runs emfor.

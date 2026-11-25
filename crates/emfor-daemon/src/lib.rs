@@ -5,6 +5,7 @@ pub mod audit;
 pub mod checker;
 mod child;
 pub mod cli;
+pub mod clock_watch;
 pub mod config;
 pub mod dns;
 pub mod live;

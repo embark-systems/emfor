@@ -170,6 +170,9 @@ is close to the backend's normal response time, or the backend is overloaded.
   with their own clock. A heartbeat more than `EMFOR_MAX_STALENESS` ahead
   counts as stale too; `emfor status` then says `heartbeat <age> in the
   future`. It clears by itself within about a second of the next heartbeat.
+  The daemon writes a `clock_jumped` warning and counts it in
+  `emfor_clock_jumps_total` when its own clock jumped by more than 2 seconds
+  ([chapter 12](12-operating.md#after-a-clock-jump)).
 - The daemon is overloaded or stopped (`SIGSTOP`, a debugger).
 
 ## The lock file is owned by another user

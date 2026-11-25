@@ -119,6 +119,7 @@ allow = ["127.0.0.0/8", "10.20.0.0/16"]   # 選用
 | `emfor_backend_transitions_total` | `service`、`backend`、`to` | 狀態變化次數。 |
 | `emfor_store_last_commit_timestamp_seconds` | | 距離現在不應該超過一兩秒。 |
 | `emfor_store_commit_failures_total` | | 應該一直是 0。 |
+| `emfor_clock_jumps_total` | | daemon 看到的主機時鐘跳動次數；見[時鐘跳動之後](#時鐘跳動之後)。增加就該告警。 |
 | `emfor_store_used_bytes`、`emfor_store_map_size_bytes` | | 在使用量逼近 map size 之前，就要提早告警。 |
 | `emfor_plugin_up`、`emfor_plugin_restarts_total` | `plugin` | |
 | `emfor_dns_rate_limited_total` | `action` | `truncated`、`dropped`。 |
@@ -389,6 +390,14 @@ heartbeat 和聯防訊息都是主機時鐘的時間戳，所以時鐘一跳，�
 
 - **在主機上：** client 拿 heartbeat 和自己的時鐘比。如果時鐘往回調超過 `EMFOR_MAX_STALENESS`，`emfor status` 會寫 `heartbeat <age> in the future`，store 也算過期；daemon 還在跑的話，下一次 heartbeat（約一秒內）就恢復。daemon 沒在跑（被 kill、沒有正常停止）時，留下的 heartbeat 會一直在未來，直到時鐘追上：把 daemon 啟動起來，它會寫一個新的。
 - **在聯防群組裡：** 時間戳和接收端時鐘差超過 5 秒（不論早或晚）的訊息會被當成 `stale` 丟掉。在丟掉之前，從 2 秒起，`emfor status` 就會有一行 `peers: clock of <member> is <n.n> s behind this host`（或 `ahead of`），`emfor_peer_clock_offset_seconds{peer}` 也有每個成員的偏差；如果有一行寫的是這台主機的時鐘和每個成員都不一樣，先修這台的時鐘。把時鐘修好（chrony 或 ntpd）就好，不用 restart。`emfor_peer_messages_rejected_total{reason="stale"}` 不再增加，就表示成員又對得上了。
+
+daemon 自己會發現主機時鐘跳動。每次寫 heartbeat（每秒一次）時，它比較牆鐘走了多少和單調時鐘走了多少；兩者差超過 2 秒，就記一行 warn，例如
+
+```text
+WARN host clock jumped forward by 7.0 s; prefer slewing (chrony) to stepping the clock event=clock_jumped direction=forward jump_ms=7000
+```
+
+並讓 `emfor_clock_jumps_total` 加一。heartbeat 忙或遲到時兩個時鐘一起走，不會被報。這行 log 每 10 秒最多一行，但每次跳動都會計數，所以告警看計數器，時間和大小看 log。小於 2 秒的調動不會被報；它也小到不會讓 store 過期（`EMFOR_MAX_STALENESS` 預設 3 秒）。這一行的欄位不在穩定欄位之內（[第 12 章](12-operating.md#json-行)）。主機被暫停或休眠後恢復，會被當成往前跳。
 
 每一台跑 emfor 的主機，時鐘請用漸進調整（chrony 的預設），不要一次跳過去。
 

@@ -305,6 +305,13 @@ pub fn render(view: &LiveView, version: &str) -> String {
         "emfor_store_commit_failures_total {}",
         view.commit_failures
     );
+    family(
+        &mut out,
+        "emfor_clock_jumps_total",
+        "counter",
+        "Jumps of the host's wall clock the daemon detected since it started.",
+    );
+    put!(out, "emfor_clock_jumps_total {}", view.clock_jumps);
     if view.last_commit_ms > 0 {
         family(
             &mut out,
@@ -933,6 +940,7 @@ mod tests {
 
     /// Spec "Daemon metrics" and the HELP / TYPE lines.
     // spectra-scenario: metrics-endpoint / Store commit failure counted
+    // spectra-scenario: metrics-endpoint / No jump detected
     #[test]
     fn daemon_metrics_and_families() {
         let mut v = view(vec![api()]);
@@ -943,6 +951,15 @@ mod tests {
         ));
         assert!(body.contains("\nemfor_start_time_seconds 1762905000.456\n"));
         assert!(body.contains("\nemfor_store_commit_failures_total 2\n"));
+        assert!(body.contains("\nemfor_clock_jumps_total 0\n"));
+        v.clock_jumps = 2;
+        let body = render(&v, "0.1.0");
+        assert!(body.contains("\nemfor_clock_jumps_total 2\n"));
+        assert_eq!(
+            body.matches("# TYPE emfor_clock_jumps_total counter\n")
+                .count(),
+            1
+        );
         for (name, kind) in [
             ("emfor_backend_state", "gauge"),
             ("emfor_backend_checks_total", "counter"),

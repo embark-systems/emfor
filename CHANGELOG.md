@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **The daemon logs a jump of the host clock.** At each heartbeat (once a
+  second) it compares how far the wall clock moved with how far a monotonic
+  clock moved; when they differ by more than 2 seconds it writes a `warn`
+  line with `event=clock_jumped`, `direction` (`forward` or `backward`) and
+  `jump_ms`, and `emfor_clock_jumps_total` counts it. A busy or late tick
+  moves both clocks alike and is not reported. At most one line is written
+  every 10 seconds; every jump is still counted. The fields of this line are
+  not stable. Nothing else changed: the heartbeat, the store and the client's
+  staleness decision are the same. Chapters 12 and 16 (en and zh_TW) say how
+  to alert on it. Measured on FreeBSD 15.1 (arm64 VM): 6 busy `yes` loops and
+  a looping `dd` for 11 minutes (about 675 ticks) gave a largest difference
+  of 1 ms and no line; setting the clock +30 s, -45 s (3 s later) and +15 s
+  (12 s later) gave three counts and two lines (forward 29.7 s, forward
+  15.0 s), the -45 s step being counted but not logged inside the 10 s
+  period. The same load for 10 minutes in a Debian container on Linux 7.2 (arm64,
+  597 ticks) also gave a largest difference of 1 ms and no line; the clock
+  was not stepped there, because a container shares the host's clock. Not
+  measured: x86-64, a host that suspends and resumes. The 2-second threshold
+  and the 10-second period are choices, not tuned values.
+
 - **A threat model page.** New `docs/threat-model.md` says what emfor
   protects, which boundaries an attacker can reach (backends, plugins, DNS,
   `/metrics`, the peer UDP port, local users), where each defense is and which

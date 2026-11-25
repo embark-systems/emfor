@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use emfor_format::{
     BackendRecord, Balance, HIST_KEY_PREFIX, HealthState, HistoryEntry, KEY_DNS_LISTEN,
@@ -27,6 +27,7 @@ use emfor_format::{
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::MissedTickBehavior;
 
+use crate::clock_watch::ClockWatch;
 use crate::config::Backend;
 #[cfg(test)]
 use crate::live::BackendCounters;
@@ -192,6 +193,25 @@ enum Done<S> {
     },
 }
 
+/// Count a host clock jump seen between two heartbeat ticks and log it
+/// unless one was logged recently (see [`crate::clock_watch`]).
+fn note_clock(clock: &mut ClockWatch, live: &LiveState, wall_ms: u64, mono_ms: u64) {
+    let Some(jump) = clock.observe(wall_ms, mono_ms) else {
+        return;
+    };
+    live.count_clock_jump();
+    if jump.log {
+        tracing::warn!(
+            event = %"clock_jumped",
+            direction = %jump.direction.as_str(),
+            jump_ms = jump.jump_ms,
+            "host clock jumped {} by {:.1} s; prefer slewing (chrony) to stepping the clock",
+            jump.direction.as_str(),
+            jump.jump_ms as f64 / 1000.0
+        );
+    }
+}
+
 struct Writer<S: Sink> {
     /// Taken while a store job runs on a blocking thread.
     sink: Option<S>,
@@ -230,6 +250,10 @@ struct Writer<S: Sink> {
     live: LiveState,
     /// Heartbeats since the last reader slot check.
     ticks_since_reader_check: u32,
+    /// Compares the wall clock with a monotonic clock at each heartbeat.
+    clock: ClockWatch,
+    /// Zero of the monotonic milliseconds given to `clock`.
+    started: Instant,
 }
 
 /// The listen addresses of the running daemon, written to `meta/dns_listen`
@@ -316,6 +340,8 @@ fn spawn_inner<S: Sink>(
             hist_dirty: BTreeSet::new(),
             listen,
             ticks_since_reader_check: 0,
+            clock: ClockWatch::new(),
+            started: Instant::now(),
         };
         // First tick one period from now: start-up already writes a heartbeat.
         let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + tick, tick);
@@ -635,11 +661,14 @@ impl<S: Sink> Writer<S> {
             self.ticks_since_reader_check = 0;
             self.readers_wanted = true;
         }
+        let wall_ms = unix_ms();
+        let mono_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        note_clock(&mut self.clock, &self.live, wall_ms, mono_ms);
         // Only the newest heartbeat matters when a slow commit holds the
         // next one back.
         self.extra
             .retain(|op| !matches!(op, Op::Put(k, _) if k == KEY_HEARTBEAT));
-        self.commit(vec![Op::Put(KEY_HEARTBEAT.into(), unix_ms().to_string())]);
+        self.commit(vec![Op::Put(KEY_HEARTBEAT.into(), wall_ms.to_string())]);
     }
 
     /// Wait for the store jobs in progress and due, then commit
@@ -2126,6 +2155,26 @@ mod tests {
         .unwrap();
         settled(&tx).await;
         assert_eq!(counters(&live, svc, id), Some(BackendCounters::default()));
+    }
+
+    /// Spec metrics-endpoint "Clock jump counter", scenario "Jumps counted when
+    /// the log line is suppressed". The log limit itself is tested in
+    /// `clock_watch`.
+    // spectra-scenario: metrics-endpoint / Jumps counted when the log line is suppressed
+    #[test]
+    fn clock_jumps_counted_each_time() {
+        let live = LiveState::default();
+        let mut clock = ClockWatch::new();
+        let mut wall = 1_700_000_000_000u64;
+        let mut mono = 0u64;
+        note_clock(&mut clock, &live, wall, mono);
+        for step in [0u64, 0, 9000, 0, 0, 0, 0, 0, 9000, 0] {
+            wall += 1000 + step;
+            mono += 1000;
+            note_clock(&mut clock, &live, wall, mono);
+        }
+        // Two jumps, 6 seconds apart: both counted (only one is logged).
+        assert_eq!(live.read().clock_jumps, 2);
     }
 
     /// Spec metrics-endpoint "Daemon metrics", scenario "Store commit failure

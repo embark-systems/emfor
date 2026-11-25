@@ -84,6 +84,8 @@ pub struct LiveView {
     pub counters: HashMap<(String, String), BackendCounters>,
     /// Failed state store commits since the daemon started.
     pub commit_failures: u64,
+    /// Host clock jumps the writer detected since the daemon started.
+    pub clock_jumps: u64,
     /// `meta/started_at` of this run, Unix milliseconds.
     pub started_at_ms: u64,
     /// Unix milliseconds of the last successful store commit; 0 before one.
@@ -236,6 +238,11 @@ impl LiveState {
     pub(crate) fn count_commit_failure(&self) {
         let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
         v.commit_failures += 1;
+    }
+
+    pub(crate) fn count_clock_jump(&self) {
+        let mut v = self.0.write().unwrap_or_else(|e| e.into_inner());
+        v.clock_jumps += 1;
     }
 
     pub(crate) fn record_commit(&self, at_ms: u64, usage: Option<(u64, u64)>) {
