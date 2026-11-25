@@ -191,7 +191,7 @@ func main() {
 ```
 
 ```sh
-$ go get github.com/embark-systems/emfor/clients/go@v0.7.1
+$ go get github.com/embark-systems/emfor/clients/go@v0.8.0
 $ go run .
 ```
 
@@ -201,7 +201,7 @@ $ go run .
   name or key with a NUL byte, or not valid UTF-8, gives a plain error.
 - The package uses cgo and `pkg-config emfor`: it needs a C compiler and
   cannot be built with `CGO_ENABLED=0`.
-- The module's tag is `clients/go/v0.7.1`. In the test, `go.mod` pointed at a
+- The module's tag is `clients/go/v0.8.0`. In the test, `go.mod` pointed at a
   local checkout with a `replace` line.
 
 ## Python

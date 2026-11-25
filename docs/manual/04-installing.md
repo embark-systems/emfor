@@ -47,8 +47,8 @@ The scripts create the user and group `emfor` and make `/etc/emfor` and
 `/var/lib/emfor` is created by the unit (`StateDirectory=emfor`).
 
 ```sh
-# dpkg -i emfor_0.7.1-1_amd64.deb      # Debian, Ubuntu: enabled and started at once
-# rpm -i emfor-0.7.1-1.x86_64.rpm      # RHEL and relatives: not enabled
+# dpkg -i emfor_0.8.0-1_amd64.deb      # Debian, Ubuntu: enabled and started at once
+# rpm -i emfor-0.8.0-1.x86_64.rpm      # RHEL and relatives: not enabled
 # vi /etc/emfor/conf.d/10-web.toml     # your services
 # emfor check-config
 # systemctl enable --now emfor         # rpm; for the deb: systemctl reload emfor
@@ -323,7 +323,7 @@ This installs `libemfor.so` (with the soname `libemfor.so.0.7` for 0.7.x),
 | --- | --- |
 | Rust | Depend on the `emfor-client` crate from the same release (`clients/rust`). No `libemfor` needed. |
 | C | `libemfor` as above; build with `cc app.c $(pkg-config --cflags --libs emfor)`. |
-| Go | `libemfor`, then `go get github.com/embark-systems/emfor/clients/go@v0.7.1`. Needs cgo and `pkg-config emfor`. |
+| Go | `libemfor`, then `go get github.com/embark-systems/emfor/clients/go@v0.8.0`. Needs cgo and `pkg-config emfor`. |
 | Python | `libemfor`, then `pip install clients/python` (Python 3.9 or later; it uses `ctypes`). Set `EMFOR_LIBRARY` to the library's path if it is outside the standard directories. |
 | Perl | `libemfor`, then in `clients/perl`: `perl Makefile.PL && make -f Makefile.xs && make -f Makefile.xs install`. |
 | PHP | `libemfor`, then build the extension with `phpize` from a copy of `clients/php` (see [chapter 9](09-clients.md#php)) and enable `extension=emfor`. PHP 8.1 or later. |

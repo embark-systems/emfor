@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-11-25
 
 **Breaking.** Interfaces that docs/compatibility.md lists as stable and that
 change in this release:
@@ -29,6 +29,11 @@ change in this release:
 
 **Upgrading.**
 
+- `libemfor` is `libemfor.so.0.8` now (it was `libemfor.so.0.7`). A program
+  linked against the C library has to be built again, and the Python, Perl,
+  PHP and Go clients of this release load the new name. Install the new
+  library next to the old one and move the programs one by one; the old file
+  stays until the last one is moved.
 - Upgrade every member of a peer group before setting `[peers] cipher =
   "aes-256-gcm"`: an earlier version counts `EMP4` as `malformed`.
 - A config that uses a key added here (`[log] format`, `[peers] cipher`,
