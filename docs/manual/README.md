@@ -1,5 +1,7 @@
 # The emfor manual
 
+![emfor logo](../logo/emfor-wordmark.svg)
+
 This manual is for people who have never used emfor: the administrator who
 installs and runs it, and the developer whose application asks it which
 backend to connect to. It describes **emfor 0.8.0**.

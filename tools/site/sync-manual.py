@@ -16,6 +16,7 @@ The images (tools/site/gen-diagrams.py) go to the site's static/images.
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -58,6 +59,9 @@ def rewrite_links(text):
         r = re.fullmatch(r"README\.md(#.*)?", target)
         if r:
             return f"](../00-guide/{r.group(1) or ''})"
+        # the logo: an image of the site (copied below)
+        if target.startswith("../logo/"):
+            return f"](/images/{target[len('../logo/'):]})"
         if target.startswith("../../"):
             return f"]({github(target[len('../../'):])})"
         if target.startswith("../") and not target.startswith("../manual"):
@@ -119,3 +123,10 @@ for position, name in enumerate(names, start=1):
     body = replace_architecture(body)
     front = f'+++\ntitle = "{title}"\nweight = {weight}\n+++\n'
     open(os.path.join(dst, out_name), "w", encoding="utf-8").write(front + body)
+
+# the logo files that the pages use go to the site's static/images
+static = os.path.join(dst, "..", "..", "static", "images")
+if os.path.isdir(static):
+    for logo in sorted(set(re.findall(r"\(/images/(emfor-(?:mark|wordmark)[a-z-]*\.svg)\)", "".join(
+            open(os.path.join(dst, n), encoding="utf-8").read() for n in os.listdir(dst) if n.endswith(".md"))))):
+        shutil.copy(os.path.join(root, "docs", "logo", logo), os.path.join(static, logo))
