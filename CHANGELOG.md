@@ -68,6 +68,16 @@ change in this release:
   holds the secret cannot turn a backend down (2 of its 3 assigned checkers
   must say down), two colluding members can. Nothing in the code changed.
 
+- **The manual says how to read emfor with Vector.** Chapter 14 (en and
+  zh_TW) has a Vector section: the `prometheus_scrape` source for `/metrics`,
+  and the JSON log through a `remap` with `parse_json!`, from a file, from
+  the journal (`journald` needs a `data_dir`) or, on FreeBSD, through a `sed`
+  that cuts the syslog prefix into the `stdin` source. New
+  `examples/vector/` has the three configs, and `tests/vector/run.sh` and
+  `tests/vector/journald.sh` (docker, by hand, not by the CI) ran them with
+  Vector 0.62.0. Vector itself was not run on FreeBSD: the 15.1 arm64
+  package repository has no Vector package. Nothing in emfor changed.
+
 - **The manual says how to keep emfor on some CPU cores.** Chapter 12 (en and
   zh_TW): `CPUAffinity=` in a drop-in, tried on Rocky Linux 9.9 (the daemon and
   its `exec` checks follow it). `docs/performance.md` reports that pinning
