@@ -45,7 +45,7 @@ trap 'exit 130' INT TERM
 cleanup
 
 # The daemon, in the volume of the test image.
-tools/docker-test.sh 'cargo build -p emfor-daemon 2>&1 | tail -1' >/dev/null
+tools/docker-test.sh 'cargo build -p emfor-daemon >/tmp/build.log 2>&1 || { tail -20 /tmp/build.log; exit 1; }' >/dev/null
 docker image inspect "$image" >/dev/null 2>&1 || docker build -q -t "$image" - >/dev/null <<'EOF'
 FROM debian:trixie-slim
 RUN apt-get update -qq && apt-get install -y -qq iproute2 netcat-openbsd procps >/dev/null
@@ -214,6 +214,7 @@ fi
 config a "$onlyoff" 500ms true "$backend"; config b "$onlyoff" 500ms true "$backend"
 start a; start b
 sleep 6
+if [ -z "$(json)" ]; then fail "A: status --json answers after the restart"; fi
 if only_checkers | grep -q "$subnet.13"; then
     fail "A: with peers = false, C is no longer an assigned checker"
 else

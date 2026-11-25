@@ -52,11 +52,10 @@ if [ "$inside" = 0 ]; then
     trap cleanup EXIT
     trap 'exit 130' INT TERM
 
-    mounts="-v $new:/rpms/new.rpm:ro -v $self:/rpm-test.sh:ro"
-    [ -n "$old" ] && mounts="$mounts -v $old:/rpms/old.rpm:ro"
-    # shellcheck disable=SC2086
+    set -- -v "$new:/rpms/new.rpm:ro" -v "$self:/rpm-test.sh:ro"
+    [ -n "$old" ] && set -- "$@" -v "$old:/rpms/old.rpm:ro"
     docker run -d --name "$name" --privileged --cgroupns=host \
-        --tmpfs /run --tmpfs /tmp $mounts "$image" \
+        --tmpfs /run --tmpfs /tmp "$@" "$image" \
         sh -c 'dnf -y -q install systemd >/dev/null && exec /sbin/init' >/dev/null
 
     # Wait for systemd (the install takes a while on a cold image).
@@ -184,9 +183,11 @@ if [ "$have_old" = yes ]; then
     echo "new: $(rpm -q --qf '%{VERSION}-%{RELEASE}' emfor)"
     check "emfor user and group stay" sh -c 'getent passwd emfor && getent group emfor'
     if grep -q 'changed by the administrator' /etc/emfor/emfor.toml; then ok "the administrator's change to emfor.toml stays"; else fail "the administrator's change to emfor.toml stays"; fi
-    old_sum=$(rpm -qp --dump /rpms/old.rpm | grep ' /etc/emfor/emfor.toml ' | cut -d' ' -f4)
-    new_sum=$(rpm -qp --dump /rpms/new.rpm | grep ' /etc/emfor/emfor.toml ' | cut -d' ' -f4)
-    if [ "$old_sum" = "$new_sum" ]; then
+    old_sum=$(rpm -qp --dump /rpms/old.rpm | grep '^/etc/emfor/emfor.toml ' | cut -d' ' -f4)
+    new_sum=$(rpm -qp --dump /rpms/new.rpm | grep '^/etc/emfor/emfor.toml ' | cut -d' ' -f4)
+    if [ -z "$old_sum" ] || [ -z "$new_sum" ]; then
+        fail "emfor.toml is not in the dump of both rpms (old: '$old_sum', new: '$new_sum')"
+    elif [ "$old_sum" = "$new_sum" ]; then
         echo "note: the packaged emfor.toml is the same in both, so no .rpmnew is expected (not tested)"
     elif [ -f /etc/emfor/emfor.toml.rpmnew ]; then
         ok "emfor.toml.rpmnew was written (the packaged config changed)"

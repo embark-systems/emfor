@@ -15,16 +15,18 @@ if [ "${1:-}" = "--inside" ]; then
     shift
 else
     cd "$(dirname "$0")/.."
-    deb=${1:-$(ls packages/dist/emfor_*.deb | head -n 1)}
+    case $(uname -m) in aarch64|arm64) arch=arm64;; x86_64|amd64) arch=amd64;; *) arch=$(uname -m);; esac
+    deb=${1:-$(ls packages/dist/emfor_*_"$arch".deb 2>/dev/null | head -n 1)}
     [ -f "$deb" ] || { echo "usage: tools/snmp-test.sh [emfor.deb]" >&2; exit 2; }
-    exec docker run --rm         -v "$PWD/tools/snmp-test.sh:/t.sh:ro"         -v "$PWD/$(dirname "$deb"):/deb:ro"         -v "$PWD/examples:/examples:ro"         -e DEB="/deb/$(basename "$deb")" debian:12 sh /t.sh --inside
+    exec docker run --rm         -v "$PWD/tools/snmp-test.sh:/t.sh:ro"         -v "$(cd "$(dirname "$deb")" && pwd):/deb:ro"         -v "$PWD/examples:/examples:ro"         -e DEB="/deb/$(basename "$deb")" debian:12 sh /t.sh --inside
 fi
 set +e
 set -u
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null 2>&1
 apt-get install -y -qq snmp snmpd snmptrapd jq python3 procps >/dev/null 2>&1 || { echo "apt failed"; exit 1; }
-dpkg -i "$DEB" >/dev/null 2>&1; emfor --version
+dpkg -i "$DEB" || { echo "dpkg -i failed"; exit 1; }
+emfor --version
 mkdir -p /srv/b && (cd /srv/b && python3 -m http.server 9001 --bind 127.0.0.1 >/dev/null 2>&1 & echo $! > /tmp/b.pid)
 cat > /etc/emfor/emfor.toml <<CFG
 [services."web.svc.emfor"]

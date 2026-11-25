@@ -27,7 +27,7 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 cleanup
 
-tools/docker-test.sh 'cargo build --release -p emfor-daemon 2>&1 | tail -1' >/dev/null
+tools/docker-test.sh 'cargo build --release -p emfor-daemon >/tmp/build.log 2>&1 || { tail -20 /tmp/build.log; exit 1; }' >/dev/null
 docker image inspect "$image" >/dev/null 2>&1 || docker build -q -t "$image" - >/dev/null <<'EOF'
 FROM debian:trixie-slim
 RUN apt-get update -qq && apt-get install -y -qq netcat-openbsd procps socat >/dev/null
@@ -77,9 +77,10 @@ for size in $sizes; do
     start=$(date +%s.%N)
     run "pkill -f '^socat TCP-LISTEN:8082' || :"
     n=0
-    while [ "$(count 'state="unhealthy"} 1')" -lt "$down" ] && [ "$n" -lt 60 ]; do n=$((n + 1)); done
+    while [ "$(count 'state="unhealthy"} 1')" -lt "$down" ] && [ "$n" -lt 300 ]; do n=$((n + 1)); sleep 0.2; done
     end=$(date +%s.%N)
     sw=$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.1f", b - a }')
+    [ "$n" -lt 300 ] || sw=">${sw}s"
     # Fill the history: the listener comes and goes until every even backend has
     # changed state more often than the history keeps (20 entries).
     i=0

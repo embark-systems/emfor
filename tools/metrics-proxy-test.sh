@@ -21,7 +21,7 @@ cd "$(dirname "$0")/.."
 image=emfor-metrics-proxy-test
 
 # The daemon, in the volume of the test image.
-tools/docker-test.sh 'cargo build -p emfor-daemon 2>&1 | tail -1' >/dev/null
+tools/docker-test.sh 'cargo build -p emfor-daemon >/tmp/build.log 2>&1 || { tail -20 /tmp/build.log; exit 1; }' >/dev/null
 docker image inspect "$image" >/dev/null 2>&1 || docker build -q -t "$image" - >/dev/null <<'EOF'
 FROM debian:trixie-slim
 RUN apt-get update -qq && apt-get install -y -qq nginx-light openssl curl iproute2 procps >/dev/null

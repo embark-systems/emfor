@@ -40,7 +40,7 @@ trap 'exit 130' INT TERM
 cleanup
 
 # The daemon, in the volume of the test image.
-tools/docker-test.sh 'cargo build -p emfor-daemon 2>&1 | tail -1' >/dev/null
+tools/docker-test.sh 'cargo build -p emfor-daemon >/tmp/build.log 2>&1 || { tail -20 /tmp/build.log; exit 1; }' >/dev/null
 docker image inspect "$image" >/dev/null 2>&1 || docker build -q -t "$image" - >/dev/null <<'EOF'
 FROM debian:trixie-slim
 RUN apt-get update -qq && apt-get install -y -qq iproute2 netcat-openbsd procps faketime >/dev/null
@@ -141,14 +141,6 @@ no_silent() {
     done
 }
 only_checkers() { json | grep -o '{"backend":"[^}]*"service":"only.svc.emfor"}'; }
-live() { # wait until A sees both others
-    n=0
-    while [ "$n" -lt 20 ]; do
-        run a "/t/debug/emfor --config /etc/emfor/emfor.toml status" 2>/dev/null | grep -q 'peers: 2/2 live' && return 0
-        n=$((n + 1)); sleep 1
-    done
-    echo "   (A did not report 2 live members; the votes may not be there)"
-}
 
 
 offsets_json() { json | grep -o '"clock_offsets":\[[^]]*\]' || :; }
@@ -174,7 +166,7 @@ stop_all
 for m in a b c; do config "$m" "" 500ms true "$backend"; start "$m"; done
 sleep 4; live
 n=0; while [ "$n" -lt 20 ] && [ -z "$(offsets_json)" ]; do n=$((n + 1)); sleep 1; done
-if [ -z "$(offsets_json)" ]; then ok "A: no clock offset for 20 seconds"; else fail "A: no clock offset ($(offsets_json))"; fi
+if [ -z "$(json)" ]; then fail "A: status --json answers (no clock offset to check)"; elif [ -z "$(offsets_json)" ]; then ok "A: no clock offset for 20 seconds"; else fail "A: no clock offset ($(offsets_json))"; fi
 if near "$(offset_of "$C")" -0.5 0.5; then ok "A: the metric for C is small ($(offset_of "$C"))"; else fail "A: the metric for C is small ($(offset_of "$C"))"; fi
 if status_text | grep -q 'clock of'; then fail "A: no clock line in status"; else ok "A: no clock line in status"; fi
 
@@ -189,7 +181,7 @@ if near "$(offset_of "$C")" -3.2 -2.8; then ok "A: the metric for C is about -3 
 if [ "$(state_of)" = healthy ]; then ok "A: the backend stays healthy"; else fail "A: the backend stays healthy ($(state_of))"; fi
 start c
 n=0; while [ "$n" -lt 20 ] && [ -n "$(offsets_json)" ]; do n=$((n + 1)); sleep 1; done
-if [ -z "$(offsets_json)" ]; then ok "A: the offset is gone within 20 seconds of C's clock being right"; else fail "A: the offset is gone ($(offsets_json))"; fi
+if [ -z "$(json)" ]; then fail "A: status --json answers (the offset is gone)"; elif [ -z "$(offsets_json)" ]; then ok "A: the offset is gone within 20 seconds of C's clock being right"; else fail "A: the offset is gone ($(offsets_json))"; fi
 
 step "3 C is 6 s behind"
 start c "-6s"

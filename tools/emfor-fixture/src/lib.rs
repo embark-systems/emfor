@@ -66,7 +66,7 @@ pub fn heartbeat_value(
     Ok(match form {
         "fresh" => Some(now_ms.to_string()),
         "stale" => Some(now_ms.saturating_sub(2 * max_staleness_ms).to_string()),
-        "future" => Some((now_ms + 2 * max_staleness_ms).to_string()),
+        "future" => Some(now_ms.saturating_add(2 * max_staleness_ms).to_string()),
         "zero" => Some("0".into()),
         "missing" => None,
         other => return Err(format!("unknown heartbeat form {other:?}")),
