@@ -1030,11 +1030,11 @@ code:
 ---
 ### Requirement: Clock offset of members
 
-A daemon with `[peers]` SHALL measure, from every message of a member that passes the checks of format, authentication, sender and `site` (including a message that is then dropped because its timestamp is more than 5 seconds from the receiver's clock, but not a replay of a message of that member that was accepted before), the clock offset of that member: the timestamp of the message minus the receiver's clock in milliseconds at its arrival, positive when the member's clock is ahead. For each member the daemon SHALL keep the latest measurement and the time it was made, and SHALL drop the measurement when no such message has arrived for 10 seconds. Measuring SHALL NOT change which messages are accepted, the liveness of members, the assigned checkers or the votes.
+A daemon with `[peers]` SHALL measure, from every message of a member that passes the checks of format, authentication, sender and `site` (including a message that is then dropped because its timestamp is more than 5 seconds from the receiver's clock, but not a replay of a message of that member that was accepted before), the clock offset of that member: the timestamp of the message minus the receiver's clock in milliseconds at its arrival, positive when the member's clock is ahead. For each member the daemon SHALL keep the latest measurement and the time it was made, and SHALL drop the measurement when no such message has arrived for 10 seconds. The guard against a replay needs a message of that member that was accepted before: for a member from which no message has been accepted since the daemon started, and for a member whose messages are all dropped as `stale`, no datagram is known to be a replay, so a recorded datagram that is sent again with the member's source address can be measured. This SHALL affect only the state "clock offset", its log lines, `emfor status` and `emfor_peer_clock_offset_seconds`. Measuring SHALL NOT change which messages are accepted, the liveness of members, the assigned checkers or the votes.
 
 Once per second the daemon SHALL put a member into the state "clock offset" when the absolute value of the offsets of its latest three messages are all at least 2000 milliseconds and have the same sign, and SHALL take it out of that state when the absolute value of the offset of its latest message is below 1500 milliseconds or its measurement is dropped. Between the two limits the state SHALL stay as it is.
 
-The daemon SHALL log at `warn` once when a member enters the state, with the member, the direction (`behind` or `ahead` of this host) and the offset in seconds, and at `info` once when it leaves it. These lines are in addition to the log line for dropped messages.
+The daemon SHALL log at `warn` once when a member enters the state, with the member, the direction (`behind` or `ahead` of this host) and the offset in seconds, and at `info` once when it leaves it. The `info` line SHALL say that the clock of the member is within limits only when the member left because the absolute value of the offset of its latest message fell below 1500 milliseconds; when it left because its measurement was dropped, the line SHALL say that no offset has been measured for 10 seconds and SHALL NOT say that the clock is within limits. These lines are in addition to the log line for dropped messages.
 
 #### Scenario: Member behind by 3 seconds
 
@@ -1054,7 +1054,7 @@ The daemon SHALL log at `warn` once when a member enters the state, with the mem
 #### Scenario: Hysteresis
 
 - **WHEN** C is in the state and its next message has an offset of -1800 milliseconds
-- **THEN** C stays in the state; after a message with an offset of -400 milliseconds C is out of the state and one `info` line names C
+- **THEN** C stays in the state; after a message with an offset of -400 milliseconds C is out of the state and one `info` line names C and says that its clock is within limits
 
 #### Scenario: Ahead of this host
 
@@ -1064,7 +1064,7 @@ The daemon SHALL log at `warn` once when a member enters the state, with the mem
 #### Scenario: The measurement expires
 
 - **WHEN** C is in the state and no message of C passes the checks for 10 seconds
-- **THEN** the measurement of C is dropped, C is out of the state and one `info` line names C
+- **THEN** the measurement of C is dropped, C is out of the state and one `info` line names C and says that no offset has been measured for 10 seconds, without saying that the clock is within limits
 
 #### Scenario: A replay is not measured
 
@@ -1100,6 +1100,29 @@ code:
   - docs/manual/16-troubleshooting.md
   - tools/peer-clock-test.sh
 -->
+
+
+<!-- @trace
+source: emfor-clock-state-fixes
+updated: 2026-11-25
+code:
+  - CHANGELOG.md
+  - crates/emfor-daemon/src/cli.rs
+  - crates/emfor-daemon/src/peers/group.rs
+  - crates/emfor-daemon/src/status.rs
+  - docs/manual.zh_TW/12-operating.md
+  - docs/manual/12-operating.md
+  - docs/threat-model.md
+tests:
+  - crates/emfor-daemon/tests/log_format.rs
+-->
+
+---
+
+#### Scenario: A replay for a member without an accepted message
+
+- **WHEN** no message of member C has been accepted since the daemon started, and three recorded datagrams of C, signed with the current secret and 4 hours old, arrive with C's source address
+- **THEN** each is dropped as `stale`, C is put into the state "clock offset" with an offset of about -14400000, and the votes, the liveness of C and the assigned checkers are as without the datagrams
 
 ---
 ### Requirement: Peer secret rotation log line

@@ -1004,7 +1004,7 @@ tests:
 ---
 ### Requirement: Log format
 
-The `[log]` table SHALL accept the key `format`, a string that is `"text"` or `"json"`, with `"text"` when it is not set. A `format` that is not a string, or is any other string, SHALL be a config error at `log.format` with the message `must be one of text, json`. With `"text"` the daemon SHALL log as it did before the key existed, except that the state change line of "Logging of state changes" has the extra field `event`. With `"json"` the daemon SHALL write each log line from the moment it has read the config as one JSON object on one line to standard error, with the keys `timestamp` (RFC 3339), `level`, `target` and `message`, and every field of the event as a key of the same object, not nested; lines written before the config is read, such as plugin start lines and config errors at start, remain text. `RUST_LOG` SHALL override only the level, never `format`. A reload whose config has a `format` other than the running one SHALL be rejected as one that changes a setting that requires restart, with an error at `log.format` and the message `log format settings require restart`, keeping the previous config; a reload that changes only `level` SHALL still be applied. No log line SHALL use `timestamp`, `level` or `target` as the name of a field.
+The `[log]` table SHALL accept the key `format`, a string that is `"text"` or `"json"`, with `"text"` when it is not set. A `format` that is not a string, or is any other string, SHALL be a config error at `log.format` with the message `must be one of text, json`. With `"text"` the daemon SHALL log as it did before the key existed, except that the state change line of "Logging of state changes" has the extra field `event`. With `"json"` the daemon SHALL write each log line from the moment it has read the config as one JSON object on one line to standard error, with the keys `timestamp` (RFC 3339), `level`, `target` and `message`, and every field of the event as a key of the same object, not nested; lines written before the config is read, such as plugin start lines and config errors at start, remain text. The `config file read` lines of start (spec "Listing the files read") are written once the config is accepted and SHALL be JSON objects with `file` and `sha256` as top-level keys; the warnings about the files that are logged before the config is accepted remain text. `RUST_LOG` SHALL override only the level, never `format`. A reload whose config has a `format` other than the running one SHALL be rejected as one that changes a setting that requires restart, with an error at `log.format` and the message `log format settings require restart`, keeping the previous config; a reload that changes only `level` SHALL still be applied. No log line SHALL use `timestamp`, `level` or `target` as the name of a field.
 
 #### Scenario: Format not set
 
@@ -1015,6 +1015,11 @@ The `[log]` table SHALL accept the key `format`, a string that is `"text"` or `"
 
 - **WHEN** the daemon runs with `format = "json"` and a backend changes from `healthy` to `unhealthy` with reason `connection refused`
 - **THEN** the line is one JSON object with `level` `INFO`, a `timestamp`, `event` `backend_state_changed`, `service`, `backend`, `from` `healthy`, `to` `unhealthy` and `reason` `connection refused` as top-level keys
+
+#### Scenario: Config file read lines at start
+
+- **WHEN** the daemon starts with `format = "json"` and a main file only
+- **THEN** the first line with `config file read` in its `message` is one JSON object with `level` `INFO`, `file` the path of the main file and `sha256` the hash that `sha256sum` prints for it, and the log has no `config file read` line that is not JSON
 
 #### Scenario: Reload changes the format
 
@@ -1037,27 +1042,16 @@ The `[log]` table SHALL accept the key `format`, a string that is `"text"` or `"
 | `format = true` | error at `log.format`: `must be one of text, json` |
 
 <!-- @trace
-source: emfor-json-log
-updated: 2026-11-23
+source: emfor-clock-state-fixes
+updated: 2026-11-25
 code:
   - CHANGELOG.md
-  - crates/emfor-daemon/Cargo.toml
   - crates/emfor-daemon/src/cli.rs
-  - crates/emfor-daemon/src/config.rs
-  - crates/emfor-daemon/src/schedule.rs
-  - docs/compatibility.md
-  - docs/manual.zh_TW/05-configuring.md
+  - crates/emfor-daemon/src/peers/group.rs
+  - crates/emfor-daemon/src/status.rs
   - docs/manual.zh_TW/12-operating.md
-  - docs/manual.zh_TW/14-integrations.md
-  - docs/manual.zh_TW/15-upgrading.md
-  - docs/manual.zh_TW/18-config-reference.md
-  - docs/manual/05-configuring.md
   - docs/manual/12-operating.md
-  - docs/manual/14-integrations.md
-  - docs/manual/15-upgrading.md
-  - docs/manual/18-config-reference.md
-  - examples/snmp/emfor-snmp-trap.sh
-  - packages/freebsd/Makefile.crates
+  - docs/threat-model.md
 tests:
   - crates/emfor-daemon/tests/log_format.rs
 -->
