@@ -113,6 +113,26 @@ on every run, so the checks are not affected; but before building against
 `clients/build/prefix` by hand on macOS (step 8), run
 `make -C clients/go libemfor` there first.
 
+### The workflows that do not run on a push
+
+`ci.yml` runs on every push. The other workflows run once a week and by
+hand, so a release is the one time they all run together: Integrations
+(emfor with nginx, HAProxy, Prometheus, Caddy, Vector and the rest), CodeQL
+and Fuzz. Start them on the pushed `main`, before step 6, and wait for all
+of them:
+
+```sh
+gh workflow run Integrations
+gh workflow run CodeQL
+gh workflow run Fuzz
+gh run list --limit 6 --json name,status,conclusion
+```
+
+Each must end `success`, and CodeQL must leave no new open alert. A failure
+stops the release: fix it, push, and start that workflow again. Check the
+workflow names with `gh workflow list`. This does not replace step 5, which
+runs the fuzz targets here for 10 minutes each.
+
 ### The rpm under systemd
 
 If the release ships the rpm, test it before tagging with
